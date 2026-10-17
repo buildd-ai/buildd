@@ -47,6 +47,7 @@ function serveFakeRunner() {
       const body = await req.json().catch(() => ({}));
       posts.push({ path, body });
       if (path === '/api/workers/w-hint/answer') return Response.json({ ok: true });
+      if (path === '/api/talk-context') return Response.json({ cwd: '/work/repo', server: 'https://buildd.example', apiKey: 'bld_secret', explain: null, mission: null });
       return Response.json({ error: 'Worker is not running' }, { status: 409 });
     }
     switch (path) {
@@ -158,6 +159,47 @@ describe('runTop', () => {
     expect(LEAVE_SCREEN).toContain('\x1b[?25h');
     expect(LEAVE_SCREEN).toContain('\x1b[?1049l');
     expect(t.raw).toEqual([true, false]);
+  });
+
+  test('s hands the terminal to claude and takes it back (talk session)', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); t.writes.push('<<claude>>'); return 0; } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => ran.length === 1);
+    expect(posts.at(-1)?.path).toBe('/api/talk-context');
+    expect(ran[0].cwd).toBe('/work/repo');
+    expect(ran[0].mode).toBe('suspend');
+    // top left its screen before claude and came back after it.
+    const i = t.writes.indexOf('<<claude>>');
+    expect(t.writes.slice(0, i).some(w => w.includes('\x1b[?1049l'))).toBe(true);
+    await until(() => t.writes.slice(i).some(w => w.includes('\x1b[?1049h')));
+    expect(t.raw).toEqual([true, false, true]);
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('s without a claude login says so in one line and opens nothing', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    let ran = 0;
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => false, run: async () => { ran++; return 0; } },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes("Claude isn't logged in on this machine: run claude login"));
+    expect(ran).toBe(0);
+    expect(posts.some(p => p.path === '/api/talk-context')).toBe(false);
+    t.type('q');
+    await done;
   });
 
   test('asks the terminal for its background before the first frame: white means Day (R-17, AC-6)', async () => {

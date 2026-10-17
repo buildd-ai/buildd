@@ -43,7 +43,8 @@ let released = new Map<string, any[]>();
 const mockDeliveries = mock(async (_ids: string[]) => deliveries);
 const mockDepRows = mock(async (_ids: readonly string[]) => depRows);
 const mockReleased = mock(async (_m: readonly string[], _w: readonly string[]) => released);
-mock.module('./workflow/delivery-view', () => ({ getOwnerDeliveryDisplays: mockDeliveries }));
+let mockViews: Map<string, unknown> = new Map();
+mock.module('./workflow/delivery-view', () => ({ getOwnerDeliveryDisplays: mockDeliveries, getDeliveryViewsForTasks: async () => mockViews }));
 mock.module('./dependency-rows', () => ({ loadDependencyRows: mockDepRows }));
 mock.module('./mission-board-waiting', () => ({ loadMissionsReleasedEdges: mockReleased }));
 
@@ -70,6 +71,7 @@ beforeEach(() => {
   taskRows = [];
   workerRows = [];
   deliveries = new Map();
+  mockViews = new Map();
   depRows = new Map();
   released = new Map();
   mockDeliveries.mockClear();
@@ -138,6 +140,14 @@ describe('loadMissionStages', () => {
     taskRows = [task({ id: 't1' })];
     workerRows = [{ taskId: 't1', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: null, prLifecycleStatus: 'pr_open' }];
     expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toMatchObject({ step: 'building', waitingOn: '0 of 1 landed' });
+  });
+
+  it('a kernel-owned delivery that merged its PR lands the task over an open worker row', async () => {
+    missionRows = [mission()];
+    taskRows = [task({ id: 't1' })];
+    workerRows = [{ taskId: 't1', prUrl: 'https://github.com/o/r/pull/1', prNumber: 1, mergedAt: null, prLifecycleStatus: 'pr_open' }];
+    mockViews = new Map([['t1', { ownerTaskId: 't1', prNumber: 1, state: 'MERGED', prState: 'merged', mergedAt: '2026-10-14T10:00:00.000Z', headline: 'Landed', repoFullName: 'o/r' }]]);
+    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).not.toMatchObject({ waitingOn: '0 of 1 landed' });
   });
 
   it('a worker without a PR counts for progress, never as a PR for the stage', async () => {

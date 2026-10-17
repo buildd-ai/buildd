@@ -113,3 +113,16 @@ export function accountLimitRefusal(opts: { code: ClaimAccountLimitCode; limit: 
       };
   }
 }
+
+/**
+ * How many runner workers the account may hold at once: the slots its live
+ * runners report (`buildd slots`, spec c7410e76 R-43), added up, since each
+ * runner claims only into a free slot of its own. With no live runner
+ * reporting, the account's own limit applies, as before. `maxConcurrentWorkers`
+ * on the account used to be the only number, so a runner set to 9 slots was
+ * refused at the account default of 3.
+ */
+export function accountWorkerSlotLimit(accountMax: number, liveRunnerSlots: readonly number[]): number {
+  const reported = liveRunnerSlots.filter(n => Number.isInteger(n) && n >= 1);
+  return reported.length > 0 ? reported.reduce((a, b) => a + b, 0) : accountMax;
+}

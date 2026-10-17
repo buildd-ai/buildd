@@ -385,7 +385,15 @@ describe('T3 HeadObserved by state (§6.4)', () => {
       expect(effectKinds(dec)).toContain('dispatch_review');
       expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
       expect(dec.attempts[0]).toMatchObject({ attemptId: 'm1', set: { status: 'skipped', outcome: 'noop' } });
+      // a81a100f: a mechanical row has no task, so the cancel names none, never the role-wide sweep.
+      expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['conflict'], reason: 'head_moved', taskIds: [] });
     }
+  });
+
+  test('a81a100f: an agent repair not yet linked to its task still leaves the role-wide cancel', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1' }), [], [A({ id: 'c1', family: 'ci', mode: 'agent', status: 'queued', taskId: null })]);
+    const dec = applied(h(v, 'H2', { attribution: { descendsFromBound: false } }));
+    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved' });
   });
 });
 
