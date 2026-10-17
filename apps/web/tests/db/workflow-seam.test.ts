@@ -496,6 +496,35 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     const v = await loadView({ deliveryId });
     expect(v.attempts.filter((a) => a.family === 'ci').map((a) => [a.status, a.outcome])).toEqual([['skipped', 'noop']]);
   });
+
+  test('6900a317: outside a CI repair the head\'s reading is recorded, per head, without moving the delivery', async () => {
+    const { deliveryId, prNumber } = await openAndHandOn();
+    const at = { workspaceId, repoFullName: REPO, prNumber, installationId: 1, source: 'webhook:check_suite' };
+    const d = async () => (await loadView({ deliveryId })).delivery!;
+    checks = { complete: true, failing: [] };
+    green = true;
+    // A late green for an older head says nothing about this one.
+    expect(await observeCiGreen({ ...at, headSha: 'H0' }, deps)).toEqual({ handled: true, result: null });
+    expect(await d()).toMatchObject({ ci: null, ciHeadSha: null });
+    const r = await observeCiGreen({ ...at, headSha: 'H1' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'AWAITING_REVIEW' } } });
+    expect(await d()).toMatchObject({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' });
+    // A failing run on the head beats the runs still going.
+    checks = { complete: false, failing: ['check'] };
+    green = false;
+    await observeCiGreen({ ...at, headSha: 'H1' }, deps);
+    expect(await d()).toMatchObject({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' });
+    // It is re-run: nothing failing, not finished, so the head is being checked again.
+    checks = { complete: false, failing: [] };
+    await observeCiGreen({ ...at, headSha: 'H1' }, deps);
+    expect(await d()).toMatchObject({ ci: null, ciHeadSha: null });
+    // The failure hint for the superseded run arrives after the re-run passed: T10 refuses it, the green is recorded.
+    checks = { complete: true, failing: [] };
+    green = true;
+    const seen = await observeCiFailure({ ...at, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3 }, deps);
+    expect(seen).toMatchObject({ handled: true, result: { result: 'rejected', reason: 'ci_not_red' } });
+    expect(await d()).toMatchObject({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' });
+  });
 });
 
 describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel-library.md §5)', () => {

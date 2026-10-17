@@ -2,7 +2,7 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-10-17
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
@@ -1012,6 +1012,18 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   while rounds exist (§13.13 rule 8).
 - A repair shows queued, running, awaiting push, pushed and testing, awaiting
   review, or no change, from attempt facts.
+- CI is read per head (task 6900a317). The delivery keeps one CI reading,
+  bound to the head it was read on (`ci`, `ciHeadSha`); a reading on another
+  head says nothing, so a new commit reads running until its own CI reports,
+  and a late or out-of-order webhook for an older head records nothing. A
+  failed check outranks checks still running. A run that a newer run of the
+  same check name replaced on the same commit (a re-run, or a gate re-triggered
+  by a PR-body edit) no longer counts, in the kernel's reads (`checkRuns`,
+  `ciGreen`) and in the per-commit history alike, the way GitHub's merge box
+  and the landing door (`latestRunPerName`) already read it. The reading is
+  recorded whether or not anything acts on it (`CiObserved`, no state change):
+  T10 deferring to an open CI fix, a state CI does not move, or a green with no
+  repair to end still leaves the head red, running or green.
 
 **Acceptance criteria**:
 - AC-24: GIVEN a delivery with two review rounds WHEN `get_pr`, the task page
@@ -1022,6 +1034,11 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
 - AC-26 (failure): GIVEN a worker row that says merged and a delivery that says
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
+- AC-31 (failure): GIVEN a CI fix that pushed a new head and is still open
+  WHEN one check fails on that head while others run THEN the PR reads CI
+  failed, not running; WHEN that check is re-run THEN it reads running, and
+  WHEN everything passes THEN it reads passed with no state change; a green
+  for the older head changes nothing, and the next commit reads running.
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
 requested · 1 open finding") and a repair's phase are pure readings in the
@@ -1041,6 +1058,7 @@ as a candidate whatever its worker row says.
 | Criterion AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
 | Criterion AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
+| Criterion AC-31 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
 ## 8. Order of work
 
