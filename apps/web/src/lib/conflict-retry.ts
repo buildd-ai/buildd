@@ -47,7 +47,8 @@ import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-t
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
-import { observeConflict, type ConflictSeen } from '@/lib/workflow/seam';
+import type { ConflictSeen } from '@/lib/workflow/seam';
+import { observeConflict, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -794,7 +795,7 @@ async function kernelConflictRetry(
     humanInitiated: params.humanInitiated,
     source: params.humanInitiated ? 'human:conflict' : 'door:conflict',
     maxBaseCommits: policyValue('treadmillMaxBaseCommits'),
-  });
+  }, { principal: systemPrincipal(params.humanInitiated ? 'system:human-conflict' : 'system:door-conflict') });
   if (!seen.handled) return null;
   const out = kernelConflictOutcome(seen);
   if (out.inFlightTaskId) {

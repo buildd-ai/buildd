@@ -83,6 +83,9 @@ mock.module('@/lib/workflow/visual-review-state-load', () => ({
 }));
 mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
 
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -133,6 +136,9 @@ mock.module('@/lib/ci-failure-excerpts', () => ({
 
 // Mock github
 const mockGithubGraphQL = mock(async (..._args: unknown[]) => ({}));
+const mockFindLeaked = mock(async (..._a: any[]): Promise<string[]> => []);
+mock.module('@/lib/agent-instruction-guard', () => ({ findLeakedInstructionFiles: mockFindLeaked }));
+
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   githubGraphQL: mockGithubGraphQL,
@@ -363,6 +369,8 @@ describe('POST /api/github/pr', () => {
     process.env.NODE_ENV = 'production';
     mockAuthenticateApiKey.mockReset();
     mockGithubApi.mockReset();
+    mockFindLeaked.mockReset();
+    mockFindLeaked.mockResolvedValue([]);
     mockWorkersFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
@@ -559,6 +567,16 @@ describe('POST /api/github/pr', () => {
     it('a clean body opens the PR', async () => {
       const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
       expect(res.status).toBe(200);
+    });
+
+    it('refuses a branch whose diff adds the runner instruction block, and opens no PR', async () => {
+      mockFindLeaked.mockResolvedValue(['CLAUDE.md']);
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.code).toBe('agent_instructions_leaked');
+      expect(json.files).toEqual(['CLAUDE.md']);
+      expect(mockGithubApi.mock.calls.some((c: any[]) => String(c[1]).endsWith('/pulls'))).toBe(false);
     });
 
     it('off by default: a workspace that did not opt in is not scanned', async () => {

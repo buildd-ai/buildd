@@ -186,8 +186,9 @@ describe('workflow kernel tables have one writer', () => {
  * check_suite success webhook reports a green head, and only the control plane applies it.
  * And T6 and T9: `recordReviewVerdict` and `adoptReviewVerdict` (the worker PATCH reports a
  * reviewer's verdict) and `claimFix` (the claim route revalidates a fix at claim).
+ * And T12: `observeConflict` (the conflict door reports a conflicted PR).
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
