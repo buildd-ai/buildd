@@ -9,8 +9,13 @@
  * Updates are pushed: /api/events streams worker changes the moment the runner
  * has them, and a queue change the runner learns of (a task assigned over
  * Pusher, a task claimed in one of its workspaces, a refused claim, a worker
- * starting or finishing) refetches the task list, and the queue while the
- * Queue view is open. Timers fetch at most once a minute.
+ * starting or finishing) refetches the task list, at most once per
+ * TASK_EVENT_MIN_MS, and the queue while the Queue view is open. Timers are
+ * only the backstop: every 2 minutes for tasks, 5 for missions. Left without a
+ * key for IDLE_PAUSE_MS, top stops asking the server at all (each task-list
+ * and missions read is a database read on the server) and says so; the next
+ * key catches up. Pushed worker changes still draw meanwhile: they come from
+ * the runner, not the server.
  */
 import { hostname as osHostname } from 'os';
 import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
@@ -25,9 +30,14 @@ export const EXIT_NO_RUNNER = 1;
 export const EXIT_NOT_A_TERMINAL = 64;
 
 /** Never fetch the task list on a timer faster than this (R-4). */
-export const TASK_REFRESH_MS = 60_000;
+export const TASK_REFRESH_MS = 120_000;
 /** Never fetch the missions list faster than this (R-24). */
-export const MISSION_REFRESH_MS = 60_000;
+export const MISSION_REFRESH_MS = 300_000;
+/** A queue event refetches the task list at most this often; a burst gets one trailing refetch. */
+export const TASK_EVENT_MIN_MS = 10_000;
+/** No key for this long and top stops reading from the server until the next key. */
+export const IDLE_PAUSE_MS = 15 * 60_000;
+const IDLE_STATUS = 'Updates paused while idle. Press any key to catch up.';
 /** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
 export const QUEUE_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
@@ -70,6 +80,8 @@ export interface RunTopOptions {
   };
   /** Register process-level exit hooks (off in tests). */
   processHooks?: boolean;
+  /** Shorter floors (tests). */
+  timing?: { taskEventMinMs?: number; idlePauseMs?: number };
 }
 
 function defaultOpenUrl(url: string) {
@@ -129,13 +141,40 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const dispatch = (event: TopEvent) => { state = reduce(state, event); scheduleDraw(); };
 
   // ── data ────────────────────────────────────────────────────────────────
+  const taskEventMinMs = opts.timing?.taskEventMinMs ?? TASK_EVENT_MIN_MS;
+  const idlePauseMs = opts.timing?.idlePauseMs ?? IDLE_PAUSE_MS;
+  // Idle: no key for idlePauseMs. Server-backed reads stop until the next key.
+  let lastInputAt = Date.now();
+  let pausedIdle = false;
+  const serverReadsAllowed = () => {
+    if (Date.now() - lastInputAt < idlePauseMs) return true;
+    if (!pausedIdle) {
+      pausedIdle = true;
+      dispatch({ type: 'status', status: { text: IDLE_STATUS, tone: 'info' } });
+    }
+    return false;
+  };
   let queueTimer: ReturnType<typeof setTimeout> | null = null;
+  let tasksAt = 0;
+  let tasksTrailing: ReturnType<typeof setTimeout> | null = null;
   const refreshTasks = async () => {
+    tasksAt = Date.now();
     try {
       const r = await client.get<{ tasks?: any[]; error?: string }>('/api/tasks');
       if (r.status === 200 && Array.isArray(r.body?.tasks)) dispatch({ type: 'tasks', tasks: r.body.tasks });
       else if (r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the task list: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
+  };
+  // A queue event's refetch: at once when the last read is older than the
+  // floor, else one trailing read when the floor passes.
+  const refreshTasksSoon = () => {
+    if (tasksTrailing) return;
+    const wait = tasksAt + taskEventMinMs - Date.now();
+    if (wait <= 0) { void refreshTasks(); return; }
+    tasksTrailing = setTimeout(() => {
+      tasksTrailing = null;
+      if (serverReadsAllowed()) void refreshTasks();
+    }, wait);
   };
   // The open and recently delivered missions of the runner's workspaces (R-24):
   // Event-triggered reads are throttled; the minute timer is its own cadence.
@@ -174,8 +213,9 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     queueTimer = setTimeout(() => {
       queueTimer = null;
       void refreshConfig();
+      if (!serverReadsAllowed()) return;
       if (state.view === 'missions') {
-        void refreshTasks();
+        refreshTasksSoon();
         void refreshMissions();
       } else if (state.view === 'queue') {
         void refreshQueue();
@@ -333,6 +373,14 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     scheduleDraw();
   };
   const onData = (d: Buffer | string) => {
+    lastInputAt = Date.now();
+    if (pausedIdle) {
+      pausedIdle = false;
+      if (state.status?.text === IDLE_STATUS) dispatch({ type: 'status', status: null });
+      void refreshTasks();
+      void refreshMissions(true);
+      if (state.view === 'queue') void refreshQueue();
+    }
     if (escTimer) { clearTimeout(escTimer); escTimer = null; }
     applyKeys(decoder.feed(typeof d === 'string' ? d : d.toString('utf8')));
     // A lone ESC is the escape key only once nothing follows it.
@@ -352,6 +400,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     for (const t of timers) clearInterval(t);
     if (renderTimer) clearTimeout(renderTimer);
     if (queueTimer) clearTimeout(queueTimer);
+    if (tasksTrailing) clearTimeout(tasksTrailing);
     if (escTimer) clearTimeout(escTimer);
     term.stdin.off?.('data', onData);
     term.stdin.pause?.();
@@ -398,9 +447,9 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   scheduleDraw();
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
-  timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
-  timers.push(setInterval(() => void refreshMissions(true), MISSION_REFRESH_MS));
-  timers.push(setInterval(() => void refreshQueue(), QUEUE_REFRESH_MS));
+  timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshTasks(); }, TASK_REFRESH_MS));
+  timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshMissions(true); }, MISSION_REFRESH_MS));
+  timers.push(setInterval(() => { if (state.view === 'queue' && serverReadsAllowed()) void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
   return done;

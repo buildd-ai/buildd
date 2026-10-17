@@ -12,12 +12,13 @@
  *              plus prMergedAt on a finished task, and the mission's stage, which
  *              the runner adds from GET /api/missions/stages). Refetched when the runner learns of a
  *              queue change (task_assigned, claim_rejected, a worker finishing),
- *              and at most once a minute otherwise.
+ *              at most once per TASK_EVENT_MIN_MS, and every 2 minutes otherwise.
  *   - capacity: maxConcurrent from GET /api/config.
  *   - workspaces: GET /api/workspaces, the workspaces this runner's key reaches
  *     (the `w` switcher and the header count, R-19).
  *   - missions: GET /api/missions/recent, the open missions of those workspaces
- *     and the ones delivered in the last 7 days (R-24), at most once a minute.
+ *     and the ones delivered in the last 7 days (R-24), at most every 5 minutes.
+ *   Neither is read after IDLE_PAUSE_MS without a key (run.ts).
  *   - claim outcomes: what the server said about the runner's last claim of
  *     each task and its last broad claim (R-25), in the `init` frame, then
  *     `claim_outcome` frames. They say what really holds a waiting task.
@@ -1266,6 +1267,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   duplicate_worker: 'a worker already has it',
   sibling_retry_open: 'a retry of it is already open',
   fix_not_needed: 'its fix is no longer needed',
+  kernel_unavailable: 'the workflow control plane did not answer',
   runner_capability: 'needs something this runner lacks',
   role_env_unsatisfied: 'its role needs settings this runner lacks',
   managed_concurrency: 'managed runs are at their limit',

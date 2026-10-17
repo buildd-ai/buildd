@@ -78,9 +78,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
-// T4 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { attemptEnded as workflowAttemptEnded, kernelPrincipalOf } from '@/lib/workflow/kernel-client';
+import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+// T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -4552,7 +4552,7 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         // A kernel round that broke its contract has no verdict to act on (T27 below).
         if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
-        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput, kernelPrincipalOf({ account }));
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
@@ -5582,6 +5582,8 @@ async function handleReviewerOutcomeIfNeeded(
   reviewerTaskId: string,
   workspaceId: string,
   structuredOutput: unknown,
+  /** Who reported the verdict: the principal its kernel command is submitted for (AC-9). */
+  principal: KernelPrincipal | null,
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, reviewerTaskId)),
@@ -5812,13 +5814,14 @@ async function handleReviewerOutcomeIfNeeded(
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
     const kv = await recordReviewVerdict({
+      workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
       output,
-    }).catch((err) => {
+    }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
       return null;
@@ -5848,8 +5851,8 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
-      }).catch((err: unknown) => {
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+      }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
       });

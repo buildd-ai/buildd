@@ -184,8 +184,10 @@ describe('workflow kernel tables have one writer', () => {
  * report a CI failure through `ci-failure-retry.ts`, and only the control plane applies it.
  * And `observeCiGreen` (CiGreenObserved, and the CiObserved reading outside a repair): the
  * check_suite success webhook reports a green head, and only the control plane applies it.
+ * And T6 and T9: `recordReviewVerdict` and `adoptReviewVerdict` (the worker PATCH reports a
+ * reviewer's verdict) and `claimFix` (the claim route revalidates a fix at claim).
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -247,6 +249,9 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeCiGreen']);
     expect(seamDoorImports(`import { observeCiGreen } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    expect(seamDoorImports(`import { adoptReviewVerdict, fixedElsewhereOf, recordReviewVerdict } from '@/lib/workflow/seam';`)).toEqual(['adoptReviewVerdict', 'recordReviewVerdict']);
+    expect(seamDoorImports(`import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';`)).toEqual(['claimFix']);
+    expect(seamDoorImports(`import { claimFix, recordReviewVerdict } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     // Every allowed file still exists and still needs the exception, so the list cannot rot.
     for (const f of Object.keys(DOOR_DIRECT_ALLOWED)) {
       expect(files).toContain(f);
