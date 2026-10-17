@@ -254,6 +254,16 @@ export function ledgerBudget(attempts: AttemptSnapshot[], family: AttemptFamily,
   return { spent, max: Math.max(configuredMax, extended) };
 }
 
+/**
+ * §5.7 rule 4 for one row (295486ba): its 1-based place among the family's attempts that were
+ * dispatched, the N of its "attempt N of M". `attempt_no` is the row's identity and is never
+ * reused, so after a skipped row it runs ahead of the count; a skipped row has no place (null).
+ */
+export function attemptOrdinal(attempts: AttemptSnapshot[], a: AttemptSnapshot): number | null {
+  if (a.status === 'skipped') return null;
+  return attempts.filter((r) => r.family === a.family && r.mode === a.mode && r.status !== 'skipped' && r.attemptNo <= a.attemptNo).length;
+}
+
 /** §5.7 rule 4: the one 1-based "attempt N of M" view of a ledger family. */
 export function attemptView(attempts: AttemptSnapshot[], family: AttemptFamily, defaultMax = 3): { n: number; m: number } {
   const rows = attempts.filter((a) => a.family === family && a.mode === 'agent' && a.status !== 'skipped');
@@ -949,6 +959,19 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.verdict === 'running' && (cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0)) return c.rejected('ci_not_running');
       // A CI repair reads red by its state; its green is CiGreenObserved's, which also ends it.
       if (dd.state === 'REPAIRING' && dd.stateReason === 'ci') return c.stale('ci_repair_owns_head');
+      // 295486ba: a spent CI budget is the person's only while CI is red. A green head (a re-run,
+      // a push from elsewhere) has nothing left to fix: back to the review/landing path, as a CI
+      // repair that ends green does (resumeAfterRepair). A spent review budget under it is still
+      // the person's (2ded4e88), so the escalation stays and names that budget instead.
+      if (cmd.verdict === 'green' && dd.state === 'ESCALATED' && dd.stateReason === 'ci_exhausted') {
+        const ev = { verdict: cmd.verdict, liveChecks: cmd.liveChecks, allPassing: true, cleared: 'ci_exhausted' };
+        if (dd.resumeState === 'ESCALATED') {
+          return c.apply(ciFactKey(dd, cmd.headSha, cmd.verdict), 'ESCALATED', {
+            guardHead: true, patch: { ci: 'green', ciHeadSha: cmd.headSha, stateReason: 'review_exhausted', resumeState: null }, evidence: ev,
+          });
+        }
+        return resumeAfterRepair(c, ciFactKey(dd, cmd.headSha, cmd.verdict), cmd.headSha, { attempts: [], patch: { ci: 'green', ciHeadSha: cmd.headSha }, evidence: ev });
+      }
       if (dd.ci === cmd.verdict && dd.ciHeadSha === cmd.headSha) return c.stale('already_recorded');
       // Running only withdraws a red on this head; with no red here there is nothing to withdraw.
       if (cmd.verdict === 'running' && !(dd.ci === 'red' && dd.ciHeadSha === cmd.headSha)) return c.stale('already_recorded');
@@ -2046,6 +2069,20 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
 }
 
+/**
+ * 295486ba: a CI repair attempt cancelled while still queued, with nothing local: no agent
+ * claimed it (a claim moves the row to `running`), so no work was done and nothing is lost.
+ * Only a cancel says so; the reaper's `lost` end of a queued row keeps counting.
+ */
+function cancelledUnstarted(cmd: Extract<Command, { type: 'AttemptEnded' }>, a: AttemptSnapshot): boolean {
+  return cmd.cancelled === true && a.family === 'ci' && a.status === 'queued' && cmd.outcome !== 'success'
+    && cmd.commitCount === 0 && !cmd.localHeadSha && a.reportedShas.length === 0;
+}
+
+function skipUnstarted(a: AttemptSnapshot): AttemptOp {
+  return { op: 'update', attemptId: a.id, whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } };
+}
+
 function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
   const d = c.d!;
   const key = `end:${cmd.workerId}`;
@@ -2054,6 +2091,7 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
   const unbound = (): Decision => {
     const a = c.attempt(cmd.attemptId);
     if (!a || !OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_bound');
+    if (cancelledUnstarted(cmd, a)) return c.stale('attempt_not_bound', { rounds: [], attempts: [skipUnstarted(a)] });
     return c.stale('attempt_not_bound', { rounds: [], attempts: [{
       op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'],
       set: { status: 'ended', ended: true, ...(a.outcome ? {} : { outcome: cmd.outcome === 'success' ? 'unproven' : 'failed' }), ...(cmd.localHeadSha ? { appendReportedSha: cmd.localHeadSha } : {}) },
@@ -2131,6 +2169,17 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'],
     set: { status: 'ended', outcome, ended: true, ...(pushed ? { pushedHeadSha: pushed } : {}), ...(L ? { appendReportedSha: L } : {}) },
   });
+
+  // 295486ba: a CI repair whose task was cancelled before anyone claimed it did no work. It is
+  // skipped (spends nothing, §5.7 rule 1's dispatch never ran) and the repair ends without filing
+  // the next one: the cancel was someone deciding this fix should not run (on #5021 the PR's own
+  // builder was fixing CI). The red reading stays; "Fix CI" or a new red head starts one again.
+  if (d.state === 'REPAIRING' && cancelledUnstarted(cmd, a)) {
+    return resumeAfterRepair(c, key, d.currentHeadSha ?? a.boundHeadSha ?? '', {
+      attempts: [skipUnstarted(a)], patch: {},
+      evidence: { ...evidence, attemptId: a.id, family: a.family, skipped: 'cancelled_before_start' },
+    });
+  }
 
   // §13.13 rule 4, verified no-op: a review fix that read the findings' condition as already absent
   // at the bound head and pushed nothing. The claim is evidence, never a resolution: the attempt ends

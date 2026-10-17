@@ -364,6 +364,12 @@ Rules:
    nothing provable on GitHub) is not a try at the fix, so up to
    `UNPROVEN_ATTEMPT_ALLOWANCE` of them per family do not spend the cap; past it they
    count, so an agent that always claims success still ends.
+   A second (295486ba): a `ci` attempt whose task is cancelled while the row is still
+   `queued` (nobody claimed it) with nothing local is `skipped`, not a failure. It did
+   no work, so it spends nothing, and the repair ends without filing the next attempt:
+   the cancel was someone deciding this fix should not run. The red reading stays, so
+   "Fix CI" or a new red head starts one again. A cancel after a claim, or the reaper's
+   `lost` end, still spends the attempt.
 2. **Infra requeues are not attempts.** A task requeued by the reaper, a budget wall,
    a mount gap or a provider failover keeps its own `infraRetryCount`/`retryCount`
    (today's behaviour, correct) and never touches a ledger; conversely an attempt row
@@ -373,7 +379,10 @@ Rules:
    task spawned on a CI-fix task does not inherit the CI count.
 4. **One 1-based view.** `attemptView(delivery, family) → {n, m}` is the only
    source for "attempt N of M" in the activity comment, task titles, Home chips and
-   `explain`. Today the comment shows the raw 0-based value while the title shows value
+   `explain`. One row's N is `attemptOrdinal`: its place among the family's
+   dispatched (not `skipped`) rows. `attempt_no` is the row's identity and a skipped
+   row also takes one, so it is never shown as N; it would read "4 of 3" past a
+   budget of three (295486ba). Today the comment shows the raw 0-based value while the title shows value
    plus one.
 5. **Manual retry.** "Fix CI", `apply-recommendation` and `retry-ci` are `trigger=human`
    attempts; they use the workspace's configured `maxCiRetries` like automatic ones

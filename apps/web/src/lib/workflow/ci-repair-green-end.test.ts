@@ -72,3 +72,13 @@ describe('attemptEnded: a CI repair that ended without a push', () => {
     expect(types()).toEqual(['AttemptEnded']);
   });
 });
+
+// 295486ba: a cancel says it is one, so the kernel can tell a CI fix nobody claimed from a run that stopped.
+describe('attemptEnded: a cancel is named on the command', () => {
+  test('cancelled: true reaches AttemptEnded; a run\'s end carries no flag', async () => {
+    green = false;
+    await attemptEnded({ task, workerId: 'cancel:t1', status: 'lost', cancelled: true, localHeadSha: null, commitCount: 0, source: 'cancel' }, deps);
+    await end('lost');
+    expect(commands.map((c) => [c.type, c.cancelled])).toEqual([['AttemptEnded', true], ['AttemptEnded', undefined]]);
+  });
+});

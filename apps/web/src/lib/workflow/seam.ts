@@ -452,6 +452,8 @@ export async function attemptEnded(p: {
   source: string;
   /** The task's own retry is queued (its retry count, not a ledger): an owner end with nothing local stays WORKING. */
   taskRetryBudgetLeft?: boolean;
+  /** 295486ba: the end is the task being cancelled; a CI repair nobody claimed then spends nothing. */
+  cancelled?: boolean;
   /**
    * A reviewer that completed but broke its output contract (§6.6): `prose_verdict`
    * (a verdict written as prose, never applied) or `no_verdict`. Absent = infra.
@@ -573,6 +575,7 @@ export async function attemptEnded(p: {
     live,
     ...(proof ? { proof } : {}),
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
+    ...(p.cancelled ? { cancelled: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
     ...(ci ? { ci } : {}),
