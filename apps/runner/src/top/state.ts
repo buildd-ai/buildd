@@ -1268,6 +1268,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   sibling_retry_open: 'a retry of it is already open',
   fix_not_needed: 'its fix is no longer needed',
   kernel_unavailable: 'the workflow control plane did not answer',
+  kernel_refused: 'the workflow control plane refused its fix claim',
   runner_capability: 'needs something this runner lacks',
   role_env_unsatisfied: 'its role needs settings this runner lacks',
   managed_concurrency: 'managed runs are at their limit',

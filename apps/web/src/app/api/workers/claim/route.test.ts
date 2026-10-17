@@ -9844,6 +9844,34 @@ describe('explicit taskId claims (organizer workflow)', () => {
     }
   });
 
+  it('T9 at claim: a control plane that refuses the claim (403, auth or reach) defers it as kernel_refused, not as an outage, and nothing is cancelled', async () => {
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    realResetKernelModeCache();
+    mockClaimKernelFix.mockReset();
+    mockClaimKernelFix.mockImplementation((t: any, c: any) => realClaimFix(t, {
+      ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: refusing },
+    }));
+    mockCancelSkippedTask.mockClear();
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) } as any);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValue([
+      task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+    ]);
+    try {
+      const data = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 1 } }))).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.deferrals).toEqual({ kernel_refused: 1 });
+      expect(sets.filter((v) => v.status === 'pending' && v.claimedBy === null)).toHaveLength(1);
+      expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+    } finally {
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockTasksFindMany.mockResolvedValue([]);
+      realResetKernelModeCache();
+    }
+  });
+
   it('a task with no kernel delivery never consults the kernel at claim', async () => {
     mockClaimKernelFix.mockReset();
     mockAuthenticateApiKey.mockResolvedValue(account());
