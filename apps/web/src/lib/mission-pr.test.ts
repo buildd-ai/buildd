@@ -41,6 +41,7 @@ let githubThrows: Record<string, string> = {};
 // §6 mission deliveries: recorded with the kernel through the epoch door.
 const mockRecordMissionPrMerged = mock(async (..._args: any[]) => ({ recorded: true, reason: 'merged' }));
 const mockBindMissionDeliveryPr = mock(async (_p: any) => {});
+const mockOpenMissionPrDelivery = mock(async (_p: any) => ({ owned: true }));
 let missionEpochRows: any[] = [];
 const realEpochs = await import('@buildd/workflow-kernel/delivery-epochs');
 mock.module('@/lib/workflow/delivery-ship', () => ({
@@ -51,6 +52,7 @@ mock.module('@/lib/workflow/delivery-ship', () => ({
 mock.module('@/lib/mission-epoch-door', () => ({
   recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
   bindMissionDeliveryPr: (p: any) => mockBindMissionDeliveryPr(p),
+  openMissionPrDelivery: (p: any) => mockOpenMissionPrDelivery(p),
   ensureMissionWritableBranch: async () => null,
   reconcileMissionDeliveries: async () => [],
 }));
@@ -242,6 +244,7 @@ function worker(over: Partial<Record<string, any>> = {}) {
 beforeEach(() => {
   mockRecordMissionPrMerged.mockClear();
   mockBindMissionDeliveryPr.mockClear();
+  mockOpenMissionPrDelivery.mockClear();
   missionEpochRows = [];
   visualState = passedVisual();
   visualStateThrows = false;
@@ -901,6 +904,19 @@ describe('openMissionIntegrationPr — owner state', () => {
     const r = await openMissionIntegrationPr(MISSION_ID);
 
     expect(r).toEqual({ ok: true, prNumber: 43, prUrl: 'pr-43', created: true });
+  });
+
+  it('asks the kernel for the PR\'s delivery as it opens, whatever the merge policy (#4686, §6)', async () => {
+    landedWork();
+    orphanWorkerRow = { id: 'w-orphan', taskId: 't-owner' };
+    githubResponses['/compare/'] = { ahead_by: 3 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls'] = { number: 43, html_url: 'pr-43', base: { ref: 'dev' } };
+
+    await openMissionIntegrationPr(MISSION_ID);
+
+    expect(mockOpenMissionPrDelivery).toHaveBeenCalledTimes(1);
+    expect(mockOpenMissionPrDelivery.mock.calls[0]![0]).toMatchObject({ prNumber: 43, ownerTaskId: 't-owner' });
   });
 
   it('does not open the mission PR while the surface audit is still pending', async () => {

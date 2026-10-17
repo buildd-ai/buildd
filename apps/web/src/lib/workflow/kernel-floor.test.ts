@@ -4,7 +4,8 @@
  * in own mode, nothing in shadow or on another host; each step isolated.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
+import { REVIEW_DISPATCH_BACKOFF_MS, REVIEW_DISPATCH_RETRIES } from '@buildd/workflow-kernel/handlers/review';
+import { KERNEL_FLOOR_PERIOD_MS, kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
 import { setKernelHost } from './kernel-host';
 
 afterEach(() => setKernelHost('web'));
@@ -61,6 +62,16 @@ describe('the treadmill cooldown', () => {
     const { LANDING_CYCLE_COOLDOWN_MS } = await import('@/lib/pr-landing-sweep');
     const { TREADMILL_COOLDOWN_MS } = await import('./kernel-floor');
     expect(TREADMILL_COOLDOWN_MS).toBe(LANDING_CYCLE_COOLDOWN_MS);
+  });
+});
+
+// a81a100f: a review dispatch that cannot file a reviewer is re-queued with a backoff of n x
+// REVIEW_DISPATCH_BACKOFF_MS. Nothing wakes a drain for it, so on a quiet PR the floor runs each
+// retry. The spec's bound (review_unavailable within about two floor ticks) holds only while every
+// retry is due before the next tick.
+describe('review dispatch retries', () => {
+  it('each retry is due before the next floor tick', () => {
+    for (let n = 1; n <= REVIEW_DISPATCH_RETRIES; n++) expect(n * REVIEW_DISPATCH_BACKOFF_MS).toBeLessThan(KERNEL_FLOOR_PERIOD_MS);
   });
 });
 

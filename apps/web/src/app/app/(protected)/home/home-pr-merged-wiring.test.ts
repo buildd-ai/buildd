@@ -39,7 +39,7 @@ describe('Home open-PR reads honour a merge recorded on any row of the PR', () =
   });
 
   it('the stat strip "PRs in CI" read', () => {
-    const block = blockAfter(fleet, '.select({ prNumber: workers.prNumber, taskTitle: tasks.title, taskLabel: tasks.label })', '.limit(');
+    const block = blockAfter(fleet, '.select({ taskId: workers.taskId, prUrl: workers.prUrl, prNumber: workers.prNumber, taskTitle: tasks.title, taskLabel: tasks.label })', '.limit(');
     expect(block).toContain("inArray(workers.prLifecycleStatus, ['pr_open', 'ci_running'])");
     expect(block).toContain('noRowOfPrMerged()');
   });
