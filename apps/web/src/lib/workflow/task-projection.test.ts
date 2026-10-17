@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
+import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -147,5 +147,22 @@ describe('AC-1 slice 3: the owner end projection', () => {
     expect(t).toContain("WHEN (SELECT evidence->>'outcome' FROM rec) = 'success' THEN 'completed'");
     expect(t).toContain('od.owner_task_id = tk.id');
     expect(t).toContain('RETURNING tk.status');
+  });
+});
+
+describe('attempt rows (review of #5049, round 2)', () => {
+  test('isAttemptRowSql excludes the placeholder runners; a NULL runner is an attempt', () => {
+    const { sql: t, params } = render(isAttemptRowSql('nw'));
+    expect(t).toBe('(nw.runner IS NULL OR nw.runner NOT IN ($1::text, $2::text, $3::text))');
+    expect(params).toEqual(['system', 'external', 'openclaw']);
+    expect(render(endingWorkerIsCurrentSql('w1')).sql).toContain('nw.task_id = tk.id AND (nw.runner IS NULL OR nw.runner NOT IN');
+  });
+
+  test('isAttemptRow mirrors it', () => {
+    expect(isAttemptRow({ runner: 'external' })).toBe(false);
+    expect(isAttemptRow({ runner: 'system' })).toBe(false);
+    expect(isAttemptRow({ runner: 'mcp' })).toBe(true);
+    expect(isAttemptRow({ runner: 'runner-1' })).toBe(true);
+    expect(isAttemptRow({ runner: null })).toBe(true);
   });
 });

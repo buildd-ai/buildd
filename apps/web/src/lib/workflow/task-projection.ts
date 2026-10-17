@@ -24,6 +24,7 @@ import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
 
 import type { MergeTaskTransition } from '@/lib/pr-merged-work';
 import type { ApplyDecision } from './commands';
+import { NON_RUNNER_EXECUTOR_IDS } from '@/lib/executor';
 
 const terminal = sql.join(TERMINAL_PR_LIFECYCLE.map((s) => sql`${s}::text`), sql`, `);
 
@@ -165,9 +166,10 @@ const open = sql.join(OWNER_OPEN_STATUSES.map((s) => sql`${s}::text`), sql`, `);
 const tkCols = { id: sql`tk.id`, workspaceId: sql`tk.workspace_id`, status: sql`tk.status` };
 
 /**
- * The ending worker is the task's current attempt: its latest worker row, and not older than the
- * task's `claimed_at` (a claim stamps it before inserting the new worker row, so an older row is the
- * previous attempt's while a re-claim is in flight; same rule and skew as `ownerAttemptEndOf`).
+ * The ending worker is the task's current attempt: no newer attempt row (`isAttemptRowSql`) on the
+ * task, and not older than the task's `claimed_at` (a claim stamps it from the database clock
+ * before inserting the new worker row, so an older row is the previous attempt's while a re-claim
+ * is in flight; same rule and skew as `ownerAttemptEndOf`).
  * An end that lands late (a parked re-send, a slow door) after its task was requeued and claimed
  * again belongs to the attempt before, so it must not settle the new one. Compared as text: a
  * reaper end with no worker row names a synthetic id, which matches nothing.
@@ -176,9 +178,22 @@ export function endingWorkerIsCurrentSql(workerId: string): SQL {
   return sql`EXISTS (SELECT 1 FROM workers ew
       WHERE ew.id::text = ${workerId}::text AND ew.task_id = tk.id
         AND (tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
-        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id
+        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id AND ${isAttemptRowSql('nw')}
           AND (nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id))))`;
 }
+
+/**
+ * A worker row that is an attempt: one a claim made. Placeholder rows no runner executed
+ * (`NON_RUNNER_EXECUTOR_IDS`: the sibling row a second PR of a running worker gets in
+ * worker-pr-slot.ts, mission and review bookkeeping rows) are never the task's current attempt.
+ */
+export function isAttemptRowSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`(${a}.runner IS NULL OR ${a}.runner NOT IN (${sql.join(NON_RUNNER_EXECUTOR_IDS.map((r) => sql`${r}::text`), sql`, `)}))`;
+}
+
+/** The JS side of `isAttemptRowSql`, for a worker row already read. */
+export const isAttemptRow = (w: { runner?: string | null }): boolean => !w.runner || !NON_RUNNER_EXECUTOR_IDS.includes(w.runner);
 
 /** The worker an end names, from its idempotency key (`end:<workerId>`, reducer.ts). */
 const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ? key.slice(4) : null);

@@ -17,12 +17,13 @@ import { afterEach, describe, expect, mock, setDefaultTimeout, test } from 'bun:
 import { createHash } from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
-import { q } from './harness';
+import { confinedRunnerEnvironment, q, seedTask } from './harness';
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
 mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
 
 const workersRoute = await import('../../src/app/api/workers/[id]/route');
+const claimRoute = await import('../../src/app/api/workers/claim/route');
 const { transitionSql } = await import('../../src/lib/workflow/kernel');
 
 setDefaultTimeout(30_000);
@@ -288,5 +289,100 @@ describe('the worker PATCH leaves an owner\'s status to the projection', () => {
     expect(res.status).toBe(200);
     expect(await status(pr)).toBe('completed');
     expect(await endCount(pr)).toBe(0);
+  });
+});
+
+// ── Review of #5049, round 2 ─────────────────────────────────────────────────
+
+/** The sibling row worker-pr-slot.ts inserts when a running worker opens a second PR. */
+async function siblingRow(pr: OpenedPr, o: { minutesAgo?: number } = {}): Promise<string> {
+  const ago = o.minutesAgo ?? 0;
+  const [r] = await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url, created_at, updated_at)
+    VALUES (${w!.workspaceId}::uuid, ${pr.ownerTaskId}::uuid, 'w · PR #9', 'external', 'second-pr', 'completed', ${pr.prNumber + 1000},
+      ${`https://github.com/${w!.repo}/pull/${pr.prNumber + 1000}`}, now() - make_interval(mins => ${ago}::int), now() - make_interval(mins => ${ago}::int))
+    RETURNING id`);
+  return r.id;
+}
+
+describe('a placeholder worker row is never the current attempt', () => {
+  test('A: a second PR\'s sibling row, then the owner\'s genuine completed PATCH: the task completes', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/sibling-done', files: { 'src/a.ts': 'export const a = 30;\n' } });
+    await setTask(pr, 'assigned');
+    await siblingRow(pr);
+    const res = await patchWorker(pr, { status: 'completed', summary: 'done', commitCount: 1, lastCommitSha: pr.head });
+    expect(res.status).toBe(200);
+    expect((await w.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect(await status(pr)).toBe('completed');
+  });
+
+  test('B: the same with a genuine failed end: the task fails, and the floor never turns it completed', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/sibling-failed', files: { 'src/a.ts': 'export const a = 31;\n' } });
+    await setTask(pr, 'assigned');
+    await siblingRow(pr);
+    const res = await patchWorker(pr, { status: 'failed', error: 'red' });
+    expect(res.status).toBe(200);
+    expect(await status(pr)).toBe('failed');
+    await w.floor(pr);
+    expect(await status(pr)).toBe('failed');
+  });
+
+  test('B (floor): past WORKING, the real attempt failed and a newer sibling says completed: the floor projects failed', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/sibling-floor', files: { 'src/a.ts': 'export const a = 32;\n' } });
+    // An older control plane applied the real attempt's failed end without projecting it.
+    await q(sql`UPDATE workers SET status = 'failed' WHERE id = ${pr.workerId}::uuid`);
+    await end(pr, { status: 'failed' });
+    expect((await w.delivery(pr)).state).not.toBe('WORKING');
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() - interval '60 minutes' WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`UPDATE workers SET status = 'failed', created_at = now() - interval '50 minutes', updated_at = now() - interval '40 minutes' WHERE id = ${pr.workerId}::uuid`);
+    await siblingRow(pr, { minutesAgo: 30 });
+    await w.floor(pr);
+    expect(await status(pr)).toBe('failed');
+  });
+
+  test('C: past WORKING, a re-claimed attempt still running (with its own sibling row): the floor leaves the task', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/sibling-running', files: { 'src/a.ts': 'export const a = 33;\n' } });
+    await w.handOn(pr);
+    await q(sql`UPDATE workers SET created_at = now() - interval '60 minutes', updated_at = now() - interval '50 minutes' WHERE id = ${pr.workerId}::uuid`);
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() - interval '45 minutes' WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, created_at, updated_at)
+      VALUES (${w.workspaceId}::uuid, ${pr.ownerTaskId}::uuid, 'w2', 'test', ${pr.branch}, 'running', now() - interval '44 minutes', now() - interval '30 minutes')`);
+    await siblingRow(pr, { minutesAgo: 25 });
+    await w.floor(pr);
+    expect(await status(pr)).toBe('assigned');
+  });
+});
+
+describe('claimed_at is on the database clock', () => {
+  test('D: a real claim stamps claimed_at no later than the worker row it inserts, so the attempt\'s end projects', async () => {
+    w = await world();
+    const [ws] = await q<{ team_id: string }>(sql`SELECT team_id FROM workspaces WHERE id = ${w.workspaceId}::uuid`);
+    const account = await serviceKey(ws.team_id);
+    await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${w.workspaceId}::uuid`);
+    const taskId = await seedTask(w.workspaceId, { title: 'claim clock' });
+    const req = new NextRequest('http://localhost/api/workers/claim', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${account.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ runner: `r-${Date.now()}`, maxTasks: 1, workspaceId: w.workspaceId, taskId, environment: confinedRunnerEnvironment() }),
+    });
+    // The web host's clock runs 30 s ahead of the database's.
+    const RealDate = Date;
+    const SKEW = 30_000;
+    class AheadDate extends RealDate {
+      constructor(...a: unknown[]) { if (a.length) super(...(a as [number])); else super(RealDate.now() + SKEW); }
+      static now() { return RealDate.now() + SKEW; }
+    }
+    globalThis.Date = AheadDate as unknown as DateConstructor;
+    let res: Response;
+    try { res = await claimRoute.POST(req as never); } finally { globalThis.Date = RealDate; }
+    const body = await res.json() as { workers?: unknown[] };
+    expect(`${res.status} ${body.workers?.length ? 'claimed' : JSON.stringify(body)}`).toBe('200 claimed');
+    const [row] = await q<{ ok: boolean; claimed: boolean }>(sql`
+      SELECT t.claimed_at IS NOT NULL AS claimed, t.claimed_at <= wk.created_at AS ok
+      FROM tasks t JOIN workers wk ON wk.task_id = t.id WHERE t.id = ${taskId}::uuid`);
+    expect(row).toEqual({ claimed: true, ok: true });
   });
 });

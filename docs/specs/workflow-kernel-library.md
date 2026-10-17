@@ -1329,7 +1329,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   moves only an open task (`assigned`, legacy `in_progress`), so a cancel, a
   requeue to `pending`, or a status another writer already settled is kept,
   and only for the task's current attempt: the ending worker must be the
-  task's latest worker row and not older than its `claimed_at`, so an end
+  task's latest attempt row (placeholder rows no runner executed, such as the
+  sibling row a second PR gets, do not count) and not older than its
+  `claimed_at`, which the claim stamps from the database clock, so an end
   that lands late (a parked re-send, a slow door) after the task was requeued
   and claimed again never settles the new attempt. It carries
   `notKernelMergedTaskSql`. An owner end that applies nothing (a duplicate, a
@@ -1337,7 +1339,8 @@ column outside the kernel; S3 and S4 remove or route each one.
   `end:<workerId>` wins, else the end that was sent. The floor's re-sent end
   therefore settles a task that stranded `assigned`, and for a delivery
   already past `WORKING` (an end applied by an older control plane that did
-  not project) the floor projects the settled latest worker's end itself.
+  not project) the floor projects the settled latest attempt's end itself,
+  never while an attempt on the task is still live.
   The worker PATCH is the first family behind it: for the plain end of a
   kernel owner attempt (no retry or loop hold, no contract or loop failure)
   its completion statement writes result, loop and context but not status.

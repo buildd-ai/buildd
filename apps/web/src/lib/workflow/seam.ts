@@ -44,7 +44,8 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
+import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
+import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
@@ -308,11 +309,16 @@ export async function projectOwnerEnd(
 async function settleOwnerTask(p: { ownerTaskId: string; deliveryId: string }, deps: SeamDeps): Promise<'completed' | 'failed' | null> {
   const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, claimedAt: true } });
   if (!task || (task.status !== 'assigned' && task.status !== 'in_progress')) return null;
-  const latest = await db.query.workers.findFirst({
+  const rows = await db.query.workers.findMany({
     where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
-    columns: { id: true, status: true, createdAt: true, updatedAt: true },
-    orderBy: sqlOrderBy([desc(workers.createdAt)]),
+    columns: { id: true, runner: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
   });
+  // Only attempt rows: a placeholder (a second PR's sibling row) is no attempt and no end.
+  const attempts = rows.filter(isAttemptRow);
+  // A live attempt is still running the task: nothing to settle.
+  if (attempts.some((r) => !isTerminalWorkerStatus(r.status))) return null;
+  const latest = attempts[0];
   const end = latest ? ownerAttemptEndOf(task, latest) : null;
   if (!latest || !end) return null;
   return projectOwnerEnd({ deliveryId: p.deliveryId, taskId: p.ownerTaskId, workerId: latest.id, status: end }, deps.exec);
