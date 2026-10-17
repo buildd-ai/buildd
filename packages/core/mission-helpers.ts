@@ -8,7 +8,7 @@ import {
   looksLikeMissionIntegrationBranch,
   missionIntegrationBase,
 } from './mission-integration';
-import { isSurfaceAuditTask, isSurfaceFixTask, isTrunkRefreshTask } from './surface-audit';
+import { isSurfaceAuditTask, isMissionAuditTask, isSurfaceFixTask, isTrunkRefreshTask } from './surface-audit';
 import { countDistinctPrs, deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
 export type { DerivedMetric } from './derived-metric';
 
@@ -911,8 +911,8 @@ const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed',
  * that is not the auto-appended `[surface audit]` check. The criterion fails
  * while any such task is open; surfaces naming what holds it use this too.
  */
-export function isNoOpenTasksCandidate(task: Parameters<typeof isDeliverableTask>[0]): boolean {
-  return isDeliverableTask(task) && !isSurfaceAuditTask(task.title ?? '');
+export function isNoOpenTasksCandidate(task: Parameters<typeof isDeliverableTask>[0] & { roleSlug?: string | null }): boolean {
+  return isDeliverableTask(task) && !isMissionAuditTask(task);
 }
 
 /**

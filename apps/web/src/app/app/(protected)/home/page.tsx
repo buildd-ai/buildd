@@ -56,6 +56,7 @@ import { parsePrParam, prSheetSignInHref } from './pr-sheet';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
+import { loadRunnerOnlineByWorkspace } from '@/lib/runner-heartbeats';
 import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 
 export const dynamic = 'force-dynamic';
@@ -616,11 +617,12 @@ export default async function HomePage({
           }));
 
           const nowMs = Date.now();
+          const runnerOnlineByWorkspace = await loadRunnerOnlineByWorkspace(lifecycleMissions.filter(m => (m.tasks ?? []).some(t => t.status === 'pending')).map(m => m.workspaceId as string | null).filter((w): w is string => !!w));
           const summaries = new Map<string, MissionCardSummary>();
           for (const m of lifecycleMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
               now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
-              visualReview: visualReviews.get(m.id) ?? null,
+              visualReview: visualReviews.get(m.id) ?? null, runnerOnlineByWorkspace,
             }));
           }
           missions = allMissions.map(m => ({

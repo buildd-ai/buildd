@@ -1,10 +1,11 @@
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, accounts, teamMembers, workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { accountWorkspaces, accounts, teamMembers, workerHeartbeats, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach';
 import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
+  isRunnerOnline,
   isSharedRunner,
   mountAllowlistEnforcedFrom,
   selectRelevantRunnerAccounts,
@@ -159,6 +160,32 @@ export async function loadRunnerHeartbeats(workerRows: readonly RunnerWorkerLike
   } catch {
     return [];
   }
+}
+
+/**
+ * Whether a runner able to claim each workspace's work has heartbeated inside
+ * the online window, by the claim rule (`loadBrowserRunnerHeartbeats`), never
+ * the deprecated `workerHeartbeats.workspaceIds`. A workspace whose lookup
+ * failed is absent from the map: unknown reads as "no claim", never as "no
+ * runner".
+ */
+export async function loadRunnerOnlineByWorkspace(workspaceIds: readonly string[], now: number = Date.now()): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  const ids = [...new Set(workspaceIds)];
+  if (ids.length === 0) return out;
+  try {
+    const rows = await db.query.workspaces.findMany({
+      where: sqlWhere(inArray(workspaces.id, ids)),
+      columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
+    });
+    await Promise.all(rows.map(async ws => {
+      const hbs = await loadBrowserRunnerHeartbeats(ws as Parameters<typeof loadBrowserRunnerHeartbeats>[0], now);
+      if (hbs) out.set(ws.id, hbs.some(h => h.workspaceIds.includes(ws.id) && isRunnerOnline(h.lastHeartbeatAt, now)));
+    }));
+  } catch (err) {
+    console.error('[runner-presence] lookup failed:', err);
+  }
+  return out;
 }
 
 /**

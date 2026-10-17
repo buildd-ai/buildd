@@ -8,6 +8,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: Symbol('accounts'),
   accountWorkspaces: Symbol('accountWorkspaces'),
   teamMembers: Symbol('teamMembers'),
+  workspaces: Symbol('workspaces'),
   workerHeartbeats: Symbol('workerHeartbeats'),
   workers: Symbol('workers'),
 }));

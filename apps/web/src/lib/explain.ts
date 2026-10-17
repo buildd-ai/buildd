@@ -50,7 +50,7 @@ import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
 import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
@@ -58,7 +58,7 @@ import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { coordinationGateDetail, coordinationLink, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
 import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
-import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
+import { loadBrowserRunnerHeartbeats, loadRunnerOnlineByWorkspace } from './runner-heartbeats';
 import { browserRunnerOnline } from './visual-audit-runner';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
@@ -257,6 +257,12 @@ async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null,
   } catch {
     return false;
   }
+}
+
+/** `false` only when the lookup succeeded and no runner can claim here; unknown and local-session missions stay undefined. */
+async function runnerOnlineFor(rows: LoadedTask[], workspaceId: string | null, local: boolean): Promise<boolean | undefined> {
+  if (local || !workspaceId || !rows.some(t => t.status === 'pending')) return undefined;
+  return (await loadRunnerOnlineByWorkspace([workspaceId])).get(workspaceId);
 }
 
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
@@ -507,7 +513,7 @@ async function viewForMission(missionId: string): Promise<{
   // the canonical state only then, so every other explain stays one query lighter.
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
-  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
+  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isMissionAuditTask(t));
   const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
     ? await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
@@ -581,7 +587,9 @@ async function viewForMission(missionId: string): Promise<{
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
   const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
+  const runnerOnline = await runnerOnlineFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const input: MissionStateInput = {
+    runnerOnline,
     status: String(m.status),
     isHeld: m.isHeld === true,
     armedAt: m.armedAt ?? null,
@@ -604,7 +612,7 @@ async function viewForMission(missionId: string): Promise<{
     openTasks: openTasks.map(t => ({
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
-      surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+      surfaceAudit: isMissionAuditTask(t),
       holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
       missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
@@ -969,6 +977,7 @@ async function viewForTask(taskId: string): Promise<{
   const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
   const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, ownDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
 
+  const runnerOnline = await runnerOnlineFor(family, task.workspaceId, executor === 'local');
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
@@ -979,6 +988,7 @@ async function viewForTask(taskId: string): Promise<{
       : 'active',
     openAttempt,
     isHeld: false,
+    runnerOnline,
     executor,
     activeAgents,
     health,
