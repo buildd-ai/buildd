@@ -8,6 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ApplyDecision, Command, Decision, LivePr } from './commands';
 import {
+  attemptOrdinal,
   attemptView,
   deliveryProof,
   headCoverage,
@@ -2524,5 +2525,122 @@ describe('b6cfdbb9: a close or a merge names the queued work it makes moot', () 
     const merged = live('H1', { state: 'closed', merged: true, mergedAt: '2026-10-06T01:00:00Z', mergeCommitSha: 'M1' });
     const dec = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'] }), [], [A({ family: 'ci', taskId: 'ci1' })]), { type: 'PrMerged', actor: 'webhook', live: merged }));
     expect(cancelPayload(dec)).toEqual({ mergeCommitSha: 'M1', reason: 'merged', taskIds: ['ci1'] });
+  });
+});
+
+// Task 295486ba: a person cancelled CI-fix tasks that never started (the PR's own builder was
+// fixing CI); the cancel arrived as a lost end, so each one spent the budget, the next was
+// filed as "CI fix 4 of 3", and the delivery stayed ESCALATED(ci_exhausted) on a green head.
+describe('295486ba: a cancelled CI fix that never started spends nothing; a green head clears ci_exhausted', () => {
+  const ci = (o: Partial<AttemptSnapshot> = {}) => A({ id: 'c3', family: 'ci', attemptNo: 3, triggerReason: 'sig', taskId: 'cit3', status: 'queued', ...o });
+  const history = [A({ id: 'c1', family: 'ci', attemptNo: 1, status: 'ended', outcome: 'failed' }), A({ id: 'c2', family: 'ci', attemptNo: 2, status: 'skipped', outcome: 'noop' })];
+  const repairing = (a: AttemptSnapshot, d: Partial<DeliverySnapshot> = {}, rounds: RoundSnapshot[] = []) =>
+    V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: a.id, ci: 'red', ciHeadSha: 'H1', ...d }), rounds, [...history, a]);
+  const cancelEnd = (v: KernelView, attemptId = 'c3', o: Partial<Extract<Command, { type: 'AttemptEnded' }>> = {}) => run(v, {
+    type: 'AttemptEnded', actor: 'cancel', workerId: 'cancel:cit3', attemptId, outcome: 'lost', cancelled: true, localHeadSha: null, commitCount: 0, live: live('H1'), ...o,
+  });
+  const inserts = (dec: ApplyDecision) => dec.attempts.filter((op) => op.op === 'insert');
+
+  test('a bound CI fix cancelled before it was claimed is skipped and the delivery leaves the repair', () => {
+    const dec = applied(cancelEnd(repairing(ci())));
+    expect(dec.attempts).toContainEqual(expect.objectContaining({ op: 'update', attemptId: 'c3', set: expect.objectContaining({ status: 'skipped', outcome: 'noop' }) }));
+    expect(inserts(dec)).toEqual([]);
+    expect(effectKinds(dec)).not.toContain('dispatch_ci_fix');
+    expect(dec.toState).not.toBe('REPAIRING');
+    expect(dec.patch).toMatchObject({ boundAttemptId: null });
+  });
+
+  test('on an approved head the cancel resumes at APPROVED; the CI reading stays red', () => {
+    const dec = applied(cancelEnd(repairing(ci(), { approvedHeads: ['H1'], approvalBasis: 'verdict' })));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.ci).toBeUndefined();
+  });
+
+  test('the cancel spends nothing: a later red reading still has budget left', () => {
+    const after = V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+      [...history, ci({ status: 'skipped', outcome: 'noop' })]);
+    const dec = applied(run(after, { type: 'CiFailedObserved', actor: 'human:u', trigger: 'human', headSha: 'H1', signature: 'sig', maxAttempts: 3 }));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(inserts(dec)[0]).toMatchObject({ attemptNo: 4, maxAttempts: 3 });
+  });
+
+  test('a CI fix that was claimed and then cancelled did run: it spends its attempt as before', () => {
+    const dec = applied(cancelEnd(repairing(ci({ status: 'running' }))));
+    expect(dec.attempts).toContainEqual(expect.objectContaining({ op: 'update', attemptId: 'c3', set: expect.objectContaining({ status: 'ended', outcome: 'failed' }) }));
+  });
+
+  test('an end that is not a cancel (the reaper) still fails a queued row', () => {
+    const dec = applied(cancelEnd(repairing(ci()), 'c3', { cancelled: undefined }));
+    expect(dec.attempts).toContainEqual(expect.objectContaining({ op: 'update', attemptId: 'c3', set: expect.objectContaining({ status: 'ended', outcome: 'failed' }) }));
+  });
+
+  test('a cancel with commits behind it is not "never started"', () => {
+    const dec = applied(cancelEnd(repairing(ci()), 'c3', { commitCount: 2 }));
+    expect(dec.attempts).not.toContainEqual(expect.objectContaining({ set: expect.objectContaining({ status: 'skipped' }) }));
+  });
+
+  test('a cancelled unstarted CI fix the delivery has moved past is recorded skipped, not failed', () => {
+    const v = V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], [...history, ci()]);
+    const dec = cancelEnd(v);
+    expect(dec.result).toBe('stale');
+    expect((dec as { record?: { attempts: unknown[] } }).record?.attempts).toEqual([
+      expect.objectContaining({ op: 'update', attemptId: 'c3', set: expect.objectContaining({ status: 'skipped', outcome: 'noop' }) }),
+    ]);
+  });
+
+  test('"attempt N of M" counts the attempts that ran: a skipped row takes no number', () => {
+    const rows = [...history, ci({ status: 'ended', outcome: 'failed' }), A({ id: 'c4', family: 'ci', attemptNo: 4, status: 'queued' })];
+    expect(rows.map((a) => attemptOrdinal(rows, a))).toEqual([1, null, 2, 3]);
+    // Every dispatch the reducer files is numbered within its budget.
+    const dec = applied(run(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c3' }), [], [...history, ci({ status: 'running' })]),
+      { type: 'AttemptEnded', actor: 'runner', workerId: 'w3', attemptId: 'c3', outcome: 'failed', localHeadSha: null, commitCount: 0, live: live('H1') }));
+    const row = inserts(dec)[0] as AttemptSnapshot & { op: 'insert' };
+    const after = [...history, ci({ status: 'ended', outcome: 'failed' }), { ...row, reportedShas: [], outcome: null }];
+    expect(attemptOrdinal(after, after.at(-1)!)).toBeLessThanOrEqual(row.maxAttempts);
+  });
+
+  describe('a green reading on the current head clears ci_exhausted', () => {
+    const exhausted = (d: Partial<DeliverySnapshot> = {}, rounds: RoundSnapshot[] = []) =>
+      V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted', ci: 'red', ciHeadSha: 'H1', currentRound: rounds.length, ...d }), rounds,
+        [A({ id: 'c1', family: 'ci', attemptNo: 1, status: 'ended', outcome: 'failed' }), A({ id: 'c2', family: 'ci', attemptNo: 2, status: 'ended', outcome: 'failed' }), A({ id: 'c3', family: 'ci', attemptNo: 3, status: 'ended', outcome: 'failed' })]);
+    const reading = (verdict: 'green' | 'red' | 'running', headSha = 'H1'): Command => ({
+      type: 'CiObserved', actor: 'webhook:ci_reading', headSha, verdict,
+      liveChecks: { complete: verdict !== 'running', failing: verdict === 'red' ? ['unit'] : [] }, ...(verdict === 'green' ? { allPassing: true } : {}),
+    });
+    const approve = R({ id: 'r1', round: 1, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+
+    test('an approved head goes back to APPROVED, ready to land', () => {
+      const dec = applied(run(exhausted({ approvedHeads: ['H1'], approvalBasis: 'verdict' }, [approve]), reading('green')));
+      expect({ to: dec.toState, why: dec.patch.stateReason, ci: dec.patch.ci }).toEqual({ to: 'APPROVED', why: null, ci: 'green' });
+    });
+
+    test('a head with no verdict goes to review', () => {
+      const dec = applied(run(exhausted({ currentHeadSha: 'H2' }), reading('green', 'H2')));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(effectKinds(dec)).toContain('dispatch_review');
+    });
+
+    test('a spent review budget under it stays with the person (2ded4e88): the reason becomes the review budget', () => {
+      const decided3 = R({ id: 'r3', round: 3, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+      const dec = applied(run(exhausted({ resumeState: 'ESCALATED', currentRound: 3 }, [decided3]), reading('green')));
+      expect({ to: dec.toState, why: dec.patch.stateReason, resume: dec.patch.resumeState }).toEqual({ to: 'ESCALATED', why: 'review_exhausted', resume: null });
+      expect(effectKinds(dec)).not.toContain('dispatch_review');
+    });
+
+    test('red or running readings leave the escalation as it is', () => {
+      for (const verdict of ['red', 'running'] as const) {
+        const dec = run(exhausted({ ci: verdict === 'running' ? 'red' : null, ciHeadSha: verdict === 'running' ? 'H1' : null }), reading(verdict));
+        if (dec.result === 'apply') expect({ to: dec.toState, why: dec.patch.stateReason }).toMatchObject({ to: 'ESCALATED' });
+      }
+    });
+
+    test('green on another head says nothing', () => {
+      expectResult(run(exhausted(), reading('green', 'H0')), 'stale', 'head_not_current');
+    });
+
+    test('other escalations are untouched by a green reading', () => {
+      const dec = applied(run(exhausted({ stateReason: 'landing_needs_human' }), reading('green')));
+      expect({ to: dec.toState, why: dec.patch.stateReason }).toEqual({ to: 'ESCALATED', why: undefined });
+    });
   });
 });

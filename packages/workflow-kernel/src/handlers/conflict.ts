@@ -22,6 +22,7 @@ import { acquireLaneOn, laneOutcome, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME 
 import { githubOf, type ClaimedEffect, type GithubFactReader, type KernelPorts } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
+import { attemptOrdinal } from '../reducer';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
@@ -200,7 +201,8 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
       lineage: { deliveryId: b.d.id, attemptId: b.attempt.id, parentTaskId: b.d.ownerTaskId },
       dedupeKey: `conflict_fix:${b.attempt.id}`,
       detail: {
-        repairKind, family: b.attempt.family, attemptNo: b.attempt.attemptNo, maxAttempts: b.attempt.maxAttempts, firstAtHead,
+        // "attempt N of M" counts dispatched attempts (§5.7 rule 4, 295486ba).
+        repairKind, family: b.attempt.family, attemptNo: attemptOrdinal(view0.attempts, b.attempt) ?? b.attempt.attemptNo, maxAttempts: b.attempt.maxAttempts, firstAtHead,
         headRef: b.live.headRef ?? null, refusal: e.payload.refusal ?? null, repairDetail: e.payload.detail ?? null,
       },
     });

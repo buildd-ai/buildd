@@ -28,14 +28,14 @@ export function lineageDisplayStatus(opts: {
 
 export interface LineageWorkerRow<W> {
   worker: W;
-  /** "attempt 2 · CI fix"; null when the task never needed a retry. */
+  /** "CI fix 1"; null when the task never needed a retry. */
   attemptLabel: string | null;
 }
 
 /**
  * Every worker that worked this task's PR: the task's own, then each CI-retry
  * attempt's (in attempt order), newest first. Attempt numbers follow "How it
- * landed": the task's own work is attempt 1, the Nth retry is attempt N+1.
+ * landed": the task's own work is the first run, the Nth retry is CI fix N.
  */
 export function lineageWorkerHistory<W extends { id: string; createdAt: Date }>(
   own: readonly W[],
@@ -43,9 +43,9 @@ export function lineageWorkerHistory<W extends { id: string; createdAt: Date }>(
 ): Array<LineageWorkerRow<W>> {
   // Same numbering as the page's lineage: only retries that got a worker count.
   const worked = attempts.filter(a => a.workers.length > 0);
-  const rows: Array<LineageWorkerRow<W>> = own.map(worker => ({ worker, attemptLabel: worked.length > 0 ? 'attempt 1' : null }));
+  const rows: Array<LineageWorkerRow<W>> = own.map(worker => ({ worker, attemptLabel: worked.length > 0 ? 'first run' : null }));
   worked.forEach((a, i) => {
-    for (const worker of a.workers) rows.push({ worker, attemptLabel: `attempt ${i + 2} · CI fix` });
+    for (const worker of a.workers) rows.push({ worker, attemptLabel: `CI fix ${i + 1}` });
   });
   const seen = new Set<string>();
   // Newest first by (createdAt, id): rows created in the same instant keep one

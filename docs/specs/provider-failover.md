@@ -233,8 +233,18 @@ dispatched onto a provider that is itself walled.
 - A reset quoted in an IANA zone ("resets 12pm (America/New_York)") is read in
   that zone (`extractResetTime`). Refusing it sent the pause to the full
   session-window fallback, hours past the real reset.
-- `seat_key` is a hash of the runner id (`runnerSeatKey`), never a credential.
-- A claim reads shared pauses plus only the pauses keyed to its own runner. A
+- The limit belongs to the login, and runners can share one (two processes
+  reading one `~/.claude`). A runner on its machine's `claude login` reports
+  `claudeLoginId` on the claim and the worker PATCH: a one-way hash it computes
+  locally of the CLI profile's account id (`claudeLoginIdentity`,
+  `apps/runner/src/host-seat.ts`), never the account id, a token or anything
+  read from the credentials file. A runner-scoped wall is then keyed
+  `login:<hash>` (`claudeLoginSeatKey`) and holds every runner on that login.
+- With no login identity the key is a hash of the runner id (`runnerSeatKey`),
+  never a credential. That covers `CLAUDE_CODE_OAUTH_TOKEN`, whose account is
+  not known offline, `CLAUDE_CONFIG_DIR`, a missing profile and older runners.
+- A claim reads shared pauses plus only the pauses keyed to its own login or
+  its own runner (`callerSeatKeys`). A
   caller with no seat key (the client's default id, a cloud run) reads every
   pause, seat-scoped ones included. Interactive sessions stay exempt from both.
 - A runner-scoped wall re-queues the task with no `start_at` floor, no
@@ -262,6 +272,11 @@ dispatched onto a provider that is itself walled.
   is shared.
 - AC-27: GIVEN "resets 12pm (America/New_York)" reported at 10:10 New York
   time THEN the pause lifts at 12:00 New York time, not five hours later.
+- AC-28: GIVEN a Claude pause keyed to login identity L WHEN two runners that
+  both report `claudeLoginId` L claim THEN both are deferred with wall kind
+  `runner_seat`, AND WHEN a runner reporting another identity claims THEN it is
+  claimed. GIVEN a run that reports no identity THEN its wall is keyed to its
+  runner id, as before.
 
 ### A flip to Codex only where Codex auth will exist
 
