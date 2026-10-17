@@ -712,6 +712,16 @@ export class BuilddClient {
     return data.workspaces || [];
   }
 
+  /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
+  async getExplain(kind: 'mission' | 'task', id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/explain?${kind}Id=${encodeURIComponent(id)}`); } catch { return null; }
+  }
+
+  /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
+  async getMission(id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}`); } catch { return null; }
+  }
+
   async getWorkspaceConfig(workspaceId: string): Promise<{
     gitConfig?: {
       defaultBranch: string;
