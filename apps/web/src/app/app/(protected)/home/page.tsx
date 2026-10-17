@@ -3,7 +3,7 @@ import { isOpenAsk } from '@/lib/open-ask';
 import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { readGithubApproval } from '@/lib/github-approval';
+import { readGithubApprovalCached, loadGithubApprovals, GITHUB_APPROVAL_CONCURRENCY } from '@/lib/github-approval';
 import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
 import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
@@ -856,9 +856,9 @@ export default async function HomePage({
             const humanReviewByTaskId = new Map<string, HumanPrReview>();
             const githubApprovalByWorkerId = new Map<string, import('@/lib/reviewer-gate').GithubApprovalFacts>();
             const installationByRepo = new Map<string, Promise<number | null>>();
-            // Bounded batches avoid an unbounded fan-out on large Home inboxes.
-            for (let offset = 0; offset < openPrWorkers.length; offset += 8) {
-              await Promise.all(openPrWorkers.slice(offset, offset + 8).map(async w => {
+            // One bounded pass (no unbounded fan-out on large inboxes), served
+            // from a short cache bound to the worker's head; see github-approval.ts.
+            await loadGithubApprovals(openPrWorkers, GITHUB_APPROVAL_CONCURRENCY, async w => {
                 const repo = repoFullNameFromPrUrl(w.prUrl);
                 if (!repo || !w.prNumber) return;
                 try {
@@ -869,13 +869,12 @@ export default async function HomePage({
                   }
                   const installationId = await installationByRepo.get(repo);
                   if (!installationId) return;
-                  githubApprovalByWorkerId.set(w.id, await readGithubApproval(installationId, repo, w.prNumber));
+                  githubApprovalByWorkerId.set(w.id, await readGithubApprovalCached(installationId, repo, w.prNumber, { workerSha: w.lastCommitSha ?? null }));
                 } catch {
                   // Unknown approval must never erase a canonical human handoff.
                   console.warn('[home] GitHub approval state unavailable');
                 }
-              }));
-            }
+            });
             // Landing's own record per PR (marker + handoff), read as one thing:
             // the platform-owned reading must come from the same data landPr writes.
             const landingStateByTaskId = new Map<string, { landing: unknown; handoff: unknown }>();

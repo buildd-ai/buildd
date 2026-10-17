@@ -75,6 +75,12 @@ describe('builddLandingRails', () => {
     expect(await r.evaluate(D, P())).toEqual({ passed: false, reasons: ['two task PRs still open on the integration branch'] });
   });
 
+  test('#4909: a lasting mission-PR hold (a refresh on a branch it was not filed for) is a lasting rail, escalated once instead of retried', async () => {
+    const reason = 'This refresh PR now targets `dev`, not the mission branch it was filed for (`mission/x`).';
+    const { r } = rails(async () => ({ ok: true }), async () => ({ blocks: true, reason, lasting: true }));
+    expect(await r.evaluate(D, P())).toEqual({ passed: false, reasons: [reason], lasting: true });
+  });
+
   test('fail closed: no installation, or a workspace that cannot be read, refuses', async () => {
     const none = builddLandingRails({ safety: (async () => ({ ok: true })) as never, repoFor: async () => null, load: async () => ctx, missionGate: async () => ({ blocks: false }) });
     expect((await none.evaluate(D, P())).passed).toBe(false);
