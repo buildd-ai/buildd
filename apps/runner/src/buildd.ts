@@ -212,7 +212,7 @@ export class BuilddClient {
     return data;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -249,6 +249,12 @@ export class BuilddClient {
     // workspaces when no specific workspaceId is targeted (the autonomous poll).
     if (claimAcrossAccessible && !workspaceId) {
       body.claimAcrossAccessible = true;
+    }
+    // A person chose this task for this runner (`c` in top, or a task aimed
+    // at it): the server lets it past the account-wide worker count, since
+    // this runner only claims into a free slot of its own.
+    if (opts.byPerson) {
+      body.requestedByPerson = true;
     }
     // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
     // is sent verbatim so the server can refuse a value it does not know
