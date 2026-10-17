@@ -2063,6 +2063,21 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(g.work.cancelled.map((x) => x.taskId), [fixTask], 'exactly the moot fix is cancelled');
       eq(g.work.cancelledPending.filter((x) => x.role === 'fix'), [], 'no role-wide cancel');
 
+      // a81a100f: a mechanical refresh has no task, so a head that leaves it behind cancels nothing,
+      // never every pending conflict fix of the delivery.
+      const m = await new Delivery(host, 118).open();
+      await m.approvedAt('H1');
+      applied(await m.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 }), 'REPAIRING', 'a behind refresh');
+      eq((await m.view()).attempts.map((a) => pick(a, ['mode', 'taskId'])), [{ mode: 'mechanical', taskId: null }], 'mechanical, no task');
+      applied(await m.push('H2', { attribution: { descendsFromBound: false } }), 'AWAITING_REVIEW', 'a rebase the refresh cannot land on');
+      const mc = (await host.effects(m.deliveryId)).find((e) => e.kind === 'cancel_open_attempts' && e.payload.reason === 'head_moved')!;
+      eq(mc.payload.taskIds, [], 'it names no task');
+      const gm = fakePorts(host);
+      gm.github.setPr(m.repo, m.prNumber, m.live('H2'));
+      await drainKernel(host, m, gm.ports);
+      eq((await host.effects(m.deliveryId)).filter((e) => e.kind === 'cancel_open_attempts' && e.payload.reason === 'head_moved').map((e) => e.outcome), ['ok:cancelled_0'], 'nothing cancelled');
+      eq(gm.work.cancelledPending.filter((x) => x.role === 'conflict_fix'), [], 'no role-wide cancel');
+
       // attestComposition found a novel delta but started no round for it: the open round still gets its reviewer.
       const c = await new Delivery(host, 88).open();
       applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'pushed');
