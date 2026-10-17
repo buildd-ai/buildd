@@ -233,6 +233,9 @@ describe('AC-12: the control plane unreachable', () => {
   });
 });
 
+/** Each test waits out real door budgets (the control plane down), more than once: slow CI runners need room. */
+const AC35_TIMEOUT_MS = 30_000;
+
 describe('AC-35: a door command the control plane never answered lands once it recovers, exactly once', () => {
   /** A PR whose owner is still working, set up in shadow; then own mode for the act, with a short door budget. */
   async function working(branch: string) {
@@ -240,7 +243,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     w = await world();
     const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 5;\n' } });
     process.env.EXECUTION_MODE = 'own';
-    process.env.KERNEL_DOOR_BUDGET_MS = '1200';
+    process.env.KERNEL_DOOR_BUDGET_MS = '800';
     resetKernelModeCache();
     return pr;
   }
@@ -296,7 +299,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     const again = await submitKernelCommand('attempt_ended', { ...ownerEnd(pr), workspaceId: w!.workspaceId }, { principal: runner, idempotencyKey: key });
     expect(again.replayed).toBe(true);
     expect(await countOf(pr, 'AttemptEnded')).toBe(1);
-  });
+  }, AC35_TIMEOUT_MS);
 
   test('GitHub\'s one green while the control plane is down: the web host\'s floor re-submits it with the same key once it answers, and it is recorded once', async () => {
     const pr = await working('feat/park-green');
@@ -326,7 +329,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied', attempt_count: 2 });
     expect(await floorPass([key], 'web')).toMatchObject({ claimed: 0 });
     expect(await countOf(pr, 'CiObserved')).toBe(1);
-  });
+  }, AC35_TIMEOUT_MS);
 
   test('applied there but the answer was lost (unknown): parked as unknown, and the ledger\'s word settles it without applying it twice', async () => {
     const pr = await working('feat/park-unknown');
@@ -348,7 +351,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(cp.calls.filter((c) => c.op === 'attempt_ended')).toEqual([]);
     expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'replayed:applied' });
     expect(await countOf(pr, 'AttemptEnded')).toBe(1);
-  });
+  }, AC35_TIMEOUT_MS);
 
   test('an old green re-sent after a newer head is answered as for another head and settled, never recorded for the new one', async () => {
     const pr = await working('feat/park-stale-green');
@@ -376,7 +379,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ done: 1, dead: 0 });
     expect(await countOf(pr, 'CiObserved')).toBe(before);
     expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'answered' });
-  });
+  }, AC35_TIMEOUT_MS);
 });
 
 describe('AC-10: the drain and the floor on the control plane, with the web app absent', () => {
