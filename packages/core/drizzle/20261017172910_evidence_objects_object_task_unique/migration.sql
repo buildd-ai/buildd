@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "evidence_objects_object_task_unique" ON "evidence_objects" ("object_key","task_id");

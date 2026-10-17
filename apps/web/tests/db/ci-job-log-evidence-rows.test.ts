@@ -114,7 +114,7 @@ describe('the migration that makes it one row per (object, task)', () => {
     }
   };
 
-  test('keeps the furthest-progressed row of each duplicate set, then the unique index goes on', async () => {
+  test('keeps the furthest-progressed row of each duplicate set, then builds the unique index, in one migration', async () => {
     await q(sql`DROP INDEX IF EXISTS evidence_objects_object_task_unique`);
     try {
       const c = await seedCapture();
@@ -135,14 +135,13 @@ describe('the migration that makes it one row per (object, task)', () => {
       await ins({ ...rootRow, objectKey: `${rootRow.objectKey}.2` }, 'failed', 'skipped', 7, '1 hour');
 
       await run('evidence_objects_one_row_per_object_task');
-      await run('evidence_objects_object_task_unique');
 
       const rows = await q<{ task_id: string; object_key: string; bytes: string }>(sql`
         SELECT task_id, object_key, bytes FROM evidence_objects WHERE workspace_id = ${c.workspaceId}::uuid ORDER BY bytes`);
       expect(rows.map((r) => r.bytes)).toEqual(['1', '5', '7']);
 
-      // Running the dedupe again deletes nothing.
-      await run('evidence_objects_one_row_per_object_task');
+      // Running the dedupe again deletes nothing (only the dedupe: the index already exists).
+      await db.execute(sql.raw(migration('evidence_objects_one_row_per_object_task').split('--> statement-breakpoint')[0]!));
       expect(await q(sql`SELECT 1 FROM evidence_objects WHERE workspace_id = ${c.workspaceId}::uuid`)).toHaveLength(3);
       // And the index now refuses a second row for the same object and task.
       await expect(ins(retryRow, 'stored', 'queued', 8, '0 hours')).rejects.toThrow();

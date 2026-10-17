@@ -1,5 +1,5 @@
--- One evidence_objects row per (object_key, task_id), ahead of the unique index
--- the next migration adds. A CI job log capture used to read then write, so two
+-- One evidence_objects row per (object_key, task_id), before the unique index
+-- at the end of this file is built. A CI job log capture used to read then write, so two
 -- captures of one object that overlapped could each insert a row. Keep the row
 -- furthest along (indexed, then queued, then stored), newest first among equals,
 -- and delete the rest. Scout rows (task_id NULL) are never duplicates of
@@ -16,4 +16,5 @@ USING (
   FROM "evidence_objects"
   WHERE "task_id" IS NOT NULL
 ) ranked
-WHERE e."id" = ranked."id" AND ranked.rn > 1;
+WHERE e."id" = ranked."id" AND ranked.rn > 1;--> statement-breakpoint
+CREATE UNIQUE INDEX "evidence_objects_object_task_unique" ON "evidence_objects" ("object_key","task_id");
