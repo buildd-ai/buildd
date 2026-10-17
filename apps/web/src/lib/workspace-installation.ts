@@ -118,6 +118,25 @@ export async function installationIdForRepo(
 }
 
 /**
+ * `installationIdForRepo`, for a command of `teamId`'s: the installation that covers
+ * the repo, only when it belongs to that team (`installationBelongsToTeam`), so each
+ * command acts only through its own team's installation. `notTeamOwned` when one
+ * covers the repo but belongs elsewhere: the caller refuses rather than falling back
+ * to some other installation for that repo.
+ */
+export async function teamInstallationIdForRepo(
+  repoFullName: string,
+  teamId: string,
+): Promise<{ installationId: number | null; notTeamOwned?: true }> {
+  const installationId = await installationIdForRepo(repoFullName);
+  if (!installationId) return { installationId: null };
+  const { installationBelongsToTeam } = await import('@/lib/github-installation-access');
+  return (await installationBelongsToTeam(installationId, teamId))
+    ? { installationId }
+    : { installationId: null, notTeamOwned: true };
+}
+
+/**
  * The repo a workspace is about, preferring the linked `github_repos` row over
  * the free-text `workspaces.repo` column.
  *

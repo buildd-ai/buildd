@@ -9,20 +9,27 @@
  *    the workspace's, and only for a repo inside the workspace's or one of its
  *    missions' repo scope (scope is read only for these, so a command on the
  *    workspace's own repo costs one parallel read).
+ *
+ * Either way the command acts only through its own team's installation: one resolved
+ * from the repo is used only when it belongs to the workspace's team
+ * (`installationBelongsToTeam`, lib/github-installation-access.ts), else the command
+ * is refused. The workspace's own linked installation is the team's by that same rule.
  */
 import { and, eq, isNotNull, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 
 export type InstallationResolution =
   | { installationId: number }
-  | { refused: 'repo_out_of_scope' | 'no_installation' };
+  | { refused: 'repo_out_of_scope' | 'no_installation' | 'installation_not_team_owned' };
 
 export interface InstallationLookups {
   /** The workspace's own repo and installation (linked repo first, as `pickWorkspaceRepoIdentity`). */
-  workspace: (workspaceId: string) => Promise<{ fullName: string | null; installationId: number | null }>;
+  workspace: (workspaceId: string) => Promise<{ teamId: string | null; fullName: string | null; installationId: number | null }>;
   /** The installation that covers this repo (`installationIdForRepo`). */
   forRepo: (repoFullName: string) => Promise<number | null>;
   /** Whether a repo other than the workspace's own is in the workspace's or its missions' repo scope. */
   inScope: (workspaceId: string, repoFullName: string) => Promise<boolean>;
+  /** Whether an installation belongs to this team (`installationBelongsToTeam`). */
+  ownedByTeam: (installationId: number, teamId: string) => Promise<boolean>;
 }
 
 const same = (a: string | null | undefined, b: string) => !!a && a.toLowerCase() === b.toLowerCase();
@@ -36,7 +43,12 @@ export async function expectedInstallation(
   const own = same(ws.fullName, repoFullName);
   if (!own && !(await lookups.inScope(workspaceId, repoFullName))) return { refused: 'repo_out_of_scope' };
   const installationId = own ? (ws.installationId ?? forRepo) : (forRepo ?? ws.installationId);
-  return installationId ? { installationId } : { refused: 'no_installation' };
+  if (!installationId) return { refused: 'no_installation' };
+  // The workspace's own link needs no second read; one found through the repo must be the team's.
+  if (installationId !== ws.installationId && !(ws.teamId && await lookups.ownedByTeam(installationId, ws.teamId))) {
+    return { refused: 'installation_not_team_owned' };
+  }
+  return { installationId };
 }
 
 // ── Defaults (Postgres) ─────────────────────────────────────────────────────
@@ -48,11 +60,11 @@ async function workspaceIdentity(workspaceId: string) {
   const { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } = await import('@/lib/workspace-installation');
   const ws = await db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, workspaceId)),
-    columns: { id: true, repo: true },
+    columns: { id: true, teamId: true, repo: true },
     with: WORKSPACE_INSTALLATION_WITH,
   });
   const identity = pickWorkspaceRepoIdentity(ws);
-  return { fullName: identity.fullName, installationId: identity.installationId };
+  return { teamId: ws?.teamId ?? null, fullName: identity.fullName, installationId: identity.installationId };
 }
 
 async function forRepo(repoFullName: string) {
@@ -100,4 +112,8 @@ export async function repoInScope(workspaceId: string, repoFullName: string): Pr
   return hits.some((rows) => rows.length > 0);
 }
 
-const defaultLookups: InstallationLookups = { workspace: workspaceIdentity, forRepo, inScope: repoInScope };
+async function ownedByTeam(installationId: number, teamId: string) {
+  return (await import('@/lib/github-installation-access')).installationBelongsToTeam(installationId, teamId);
+}
+
+const defaultLookups: InstallationLookups = { workspace: workspaceIdentity, forRepo, inScope: repoInScope, ownedByTeam };

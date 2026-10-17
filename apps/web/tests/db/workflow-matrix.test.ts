@@ -166,9 +166,14 @@ const realDispatch = await import('../../src/lib/dispatch-authority');
 mock.module('../../src/lib/dispatch-authority', () => ({ ...realDispatch, announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 const realScope = await import('../../src/lib/pr-scope-reconcile-trigger');
 mock.module('../../src/lib/pr-scope-reconcile-trigger', () => ({ ...realScope, schedulePrScopeReconcile: () => {} }));
-// Supersession reads find the installation for a PR's repo; every repo here is the fake one.
+// Supersession reads find the installation for a PR's repo; every repo here is the fake one,
+// under the workspace's own team's installation.
 const realInstallation = await import('../../src/lib/workspace-installation');
-mock.module('../../src/lib/workspace-installation', () => ({ ...realInstallation, installationIdForRepo: async () => 1 }));
+mock.module('../../src/lib/workspace-installation', () => ({
+  ...realInstallation,
+  installationIdForRepo: async () => 1,
+  teamInstallationIdForRepo: async () => ({ installationId: 1 }),
+}));
 const realReviewRequest = await import('../../src/lib/pr-review-request');
 mock.module('../../src/lib/pr-review-request', () => ({ ...realReviewRequest, listWorkspaceRoles: async () => [{ slug: 'reviewer' }] }));
 const realAutoMerge = await import('../../src/lib/auto-merge');
