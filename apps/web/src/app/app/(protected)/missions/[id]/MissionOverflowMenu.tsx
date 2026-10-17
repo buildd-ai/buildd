@@ -1,5 +1,6 @@
 'use client';
 
+import type { MissionStartState } from '@/lib/mission-start-state';
 import { useState, type ReactNode } from 'react';
 import SideSheet from '@/components/SideSheet';
 import MissionSettings, { type CompletionDecisionInfo } from './MissionSettings';
@@ -16,6 +17,8 @@ interface Props {
   hasSchedule: boolean;
   orchestrationMode?: 'auto' | 'manual';
   isHeld: boolean;
+  /** A held mission: not started, or paused after it ran. */
+  startState?: MissionStartState | null;
   displayState: MissionDisplayState;
   hasPrimaryAction?: boolean;
   executor?: 'runner' | 'local' | null;

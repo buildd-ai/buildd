@@ -24,6 +24,8 @@ mock.module('next/navigation', () => ({
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: TaskActionZone } = await import('./TaskActionZone');
+const { getGateReasonSubtitle } = await import('@/lib/task-actions');
+type GateRefusal = import('@/lib/task-actions').GateRefusal;
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -123,13 +125,15 @@ describe('TaskActionZone — inline Force start', () => {
     ['capability gate', { gateReason: 'capability_mismatch', canForce: true, blockClass: 'capability', error: 'No credential' }],
     ['workspace cap', { gateReason: 'workspace_cap_reached', canForce: true, blockClass: 'policy', error: 'Workspace is full' }],
     ['not forceable', { gateReason: 'subject_dead', canForce: false, error: 'Subject closed' }],
-  ])('%s shows the error and no Force start', async (_name, body) => {
+  ])('%s shows one reason and no Force start', async (_name, body) => {
     stubFetch({ status: 422, body });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
     expect(button('Force start')).toBeUndefined();
-    expect(container.textContent).toContain(body.error as string);
+    // The gate's own line, never the server's message beside it.
+    expect(container.textContent).toContain(getGateReasonSubtitle(body as GateRefusal));
+    if (body.gateReason !== 'subject_dead') expect(container.textContent).not.toContain(body.error as string);
     expect(calls.some(c => c.url === '/api/workers/active')).toBe(false);
   });
 
@@ -145,7 +149,7 @@ describe('TaskActionZone — inline Force start', () => {
     await mount({ workspaceId: '' });
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(button('Force start')).toBeDefined();
+    expect(button('Start task')).toBeDefined();
     expect(calls.some(c => c.url === '/api/workers/active')).toBe(false);
   });
 
@@ -154,8 +158,29 @@ describe('TaskActionZone — inline Force start', () => {
     await mount({ roleSlug: 'visual-auditor' });
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(container.textContent).toContain('No runners online');
-    expect(container.textContent).toContain('browser-capable runner');
+    expect(container.textContent).toContain('No runner is online');
+    expect(container.textContent).toContain('runner with a browser');
+  });
+
+  it('a task in a mission that has not started: one reason, Start task and Cancel, no internals', async () => {
+    stubFetch({ status: 422, body: {
+      gateReason: 'mission_held', missionStartState: 'not_started', canForce: true, blockClass: 'policy',
+      error: 'Task is blocked: its mission is not started. Arm the mission or use forceOverride to bypass.',
+    } }, [{ lastUpdated: new Date().toISOString(), workspaceIds: ['ws1'] }]);
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    const panel = container.querySelector('[data-testid="task-start-refusal"]')!;
+    const text = panel.textContent!;
+    expect(text).toContain('Mission not started');
+    expect(text.split('Mission not started')).toHaveLength(2);
+    expect(text).not.toMatch(/held|forceOverride|online|poll|last seen|approv/i);
+    expect(button('Start task')).toBeDefined();
+    expect(button('Cancel')).toBeDefined();
+    expect(button('Force start')).toBeUndefined();
+    await act(async () => { button('Start task')!.click(); });
+    await flush();
+    expect(startCalls().filter(c => (c.body as { forceOverride?: boolean })?.forceOverride === true)).toHaveLength(1);
   });
 });
 

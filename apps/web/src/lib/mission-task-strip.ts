@@ -85,7 +85,7 @@ export function stripCounts(states: Iterable<StripState>, weight: (i: number) =>
 /** The header's words for the buckets: "open" is everything workable that has not failed. */
 export function stripCountsLabel(c: StripCounts): string {
   const open = c.open + c.active;
-  return [open > 0 ? `${open} open` : null, c.failed > 0 ? `${c.failed} failed` : null, c.held > 0 ? `${c.held} held` : null]
+  return [open > 0 ? `${open} open` : null, c.failed > 0 ? `${c.failed} failed` : null, c.held > 0 ? `${c.held} waiting` : null]
     .filter(Boolean).join(' · ');
 }
 

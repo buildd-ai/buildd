@@ -47,6 +47,7 @@ import {
   type GateRefusal,
   type TaskWaiting,
   getGateReasonSubtitle,
+  getGateBypassLabel,
   getGateReasonTitle,
   otherBackendOf,
   backendDisplayName,
@@ -448,8 +449,8 @@ export default function TaskActionZone({
             </div>
           </div>
           {start.forced && start.status !== 'accepted' && <RailsRemaining rails={start.forced.railsRemaining} />}
-          {start.status === 'queued' && start.fleet && (
-            <p className={`border border-border-default bg-surface-3 p-2 font-mono text-eyebrow ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
+          {start.status === 'queued' && formatFleetStatus(start.fleet, roleSlug) && (
+            <p className="font-mono text-eyebrow text-status-warning">
               {formatFleetStatus(start.fleet, roleSlug)}
             </p>
           )}
@@ -478,9 +479,6 @@ export default function TaskActionZone({
             <p className="font-mono text-eyebrow text-text-muted">
               {getGateReasonSubtitle(refusal, { blockingCount: refusal.blockingDeps?.length })}
             </p>
-            {refusal.error && refusal.error !== getGateReasonSubtitle(refusal) && (
-              <p className="mt-1 font-mono text-eyebrow text-text-secondary">{refusal.error}</p>
-            )}
             {refusal.gateReason === 'unmerged_dep_pr' && (refusal.blockingDeps?.length ?? 0) > 0 && (
               <ul className="mt-2 space-y-1">
                 {refusal.blockingDeps!.map((dep, i) => (
@@ -493,8 +491,8 @@ export default function TaskActionZone({
                 ))}
               </ul>
             )}
-            {canOfferForce(refusal) && start.fleet && (
-              <p className="mt-2 border border-border-default bg-surface-3 p-2 font-mono text-eyebrow text-text-muted">
+            {canOfferForce(refusal) && formatFleetStatus(start.fleet, roleSlug) && (
+              <p className="mt-2 font-mono text-eyebrow text-text-muted">
                 {formatFleetStatus(start.fleet, roleSlug)}
               </p>
             )}
@@ -531,7 +529,7 @@ export default function TaskActionZone({
                 disabled={starting}
                 className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
-                {start.pending === 'force' ? 'Force starting…' : refusal.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start'}
+                {start.pending === 'force' ? 'Starting…' : getGateBypassLabel(refusal)}
               </button>
             )}
             <button type="button" onClick={start.dismiss} disabled={starting} className={QUIET_BTN}>

@@ -103,7 +103,7 @@ const LEGEND: ReadonlyArray<{ tone: StripTone; label: string }> = [
   { tone: 'active', label: 'active' },
   { tone: 'error', label: 'failed' },
   { tone: 'open', label: 'open' },
-  { tone: 'held', label: 'held' },
+  { tone: 'held', label: 'waiting' },
 ];
 
 export function PhaseBarLegend() {

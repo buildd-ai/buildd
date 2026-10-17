@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions } from '@buildd/core/db/schema';
 import { BYPASS_HELD_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { missionStartState, type MissionStartState } from '@/lib/mission-start-state';
 
 /**
  * Context key set by /api/tasks/[id]/start when forceOverride=true and the task
@@ -209,9 +210,18 @@ export async function isTaskNotHeldOrLocal(taskId: string): Promise<boolean> {
  * invoking this helper.
  */
 export async function checkMissionHeld(missionId: string): Promise<boolean> {
+  return (await checkMissionStartState(missionId)) !== null;
+}
+
+/**
+ * The same check, saying which held mission it is for the person refused:
+ * never started, or paused after it ran (lib/mission-start-state.ts). Null
+ * when the mission is not held.
+ */
+export async function checkMissionStartState(missionId: string): Promise<MissionStartState | null> {
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(and(eq(missions.id, missionId), eq(missions.isHeld, true))),
-    columns: { id: true },
+    columns: { id: true, armedAt: true },
   });
-  return !!mission;
+  return mission ? missionStartState({ isHeld: true, armedAt: mission.armedAt ?? null }) : null;
 }

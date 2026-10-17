@@ -313,7 +313,7 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
         {/* Before Build the track has no current step, so the state word says where it stands. */}
         {STEP_OF[state] < 0 && <StatePill state={state} label={DELIVERY_KIND[row.delivery.kind].label} variant="plain" data-testid="delivery-state" />}
         <Lifecycle state={state} repairs={rounds} />
-        {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot held</span>}
+        {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot in use</span>}
       </span>
       <span className="col-span-2 text-meta text-text-secondary">{row.line}</span>
     </>

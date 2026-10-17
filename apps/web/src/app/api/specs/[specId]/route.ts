@@ -4,6 +4,7 @@ import { specCaller } from '@/lib/specs/caller';
 import { reviseSpecSection } from '@/lib/specs/section-revise';
 import { formatHints } from '@/lib/specs/format-hints';
 import { resolveSpecShortId, SHORT_ID } from '@/lib/specs/short-id';
+import { specNotFound } from '@/lib/specs/copy';
 
 type Ctx = { params: Promise<{ specId: string }> };
 
@@ -27,7 +28,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     }
   }
   const r = await getSpec(caller, specId, { revision });
-  return r.ok ? NextResponse.json(r.view) : NextResponse.json({ error: r.error }, { status: r.status });
+  if (r.ok) return NextResponse.json(r.view);
+  // Not readable: point at a copy the caller can read, or say how one is made (lib/specs/copy.ts).
+  if (r.status === 404 && r.error === 'Spec not found') {
+    const nf = await specNotFound(caller, specId);
+    return NextResponse.json({ error: nf.error, code: nf.code }, { status: 404 });
+  }
+  return NextResponse.json({ error: r.error }, { status: r.status });
 }
 
 /**

@@ -13,6 +13,7 @@
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
 import type { TaskFailureKind } from './task-failure-kind';
 import type { ForceChecklistItem, WaitingKind, WaitingReason } from '@buildd/core/waiting-reason';
+import { MISSION_START_COPY, type MissionStartState } from './mission-start-state';
 
 export interface GateRefusal {
   gateReason: string;
@@ -30,6 +31,10 @@ export interface GateRefusal {
   cap?: number;
   queuePosition?: number;
   missingConnectors?: string[];
+  /** connector_routing_mismatch: the connectors the role needs and cannot reach. */
+  connectorFailures?: Array<{ connectorName: string }>;
+  /** mission_held: whether the mission never started or was paused. */
+  missionStartState?: MissionStartState;
   alternativeRole?: string;
   /** unmerged_dep_pr: the PRs holding the task. */
   blockingDeps?: Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>;
@@ -303,6 +308,22 @@ export function canOfferForce(refusal: Pick<GateRefusal, 'canForce' | 'blockClas
   return !!refusal?.canForce && refusal.blockClass !== 'capability' && refusal.gateReason !== 'workspace_cap_reached';
 }
 
+/** A mission_held refusal's copy; a server that predates the state meant never started. */
+function missionStartCopyOf(refusal: GateRefusal) {
+  return MISSION_START_COPY[refusal.missionStartState ?? 'not_started'];
+}
+
+/**
+ * The label of the button that starts a refused task past its gate. A task in
+ * a mission that has not started (or is paused) is simply started on its own;
+ * the other gates name what they skip.
+ */
+export function getGateBypassLabel(refusal: GateRefusal): string {
+  if (refusal.gateReason === 'mission_held') return missionStartCopyOf(refusal).taskAction;
+  if (refusal.gateReason === 'deferred_start') return 'Start now anyway';
+  return 'Force start';
+}
+
 export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = {}): string {
   switch (refusal.gateReason) {
     case 'deferred_start':
@@ -310,7 +331,7 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
     case 'unmerged_dep_pr':
       return 'Blocked: dependency PR not merged';
     case 'mission_held':
-      return 'Blocked: parent mission is held';
+      return missionStartCopyOf(refusal).taskTitle;
     case 'mission_local':
       return 'Runs from a local session';
     case 'subject_dead':
@@ -341,13 +362,15 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
       return `The following ${n === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${n === 1 ? 'it merges' : 'they merge'}.`;
     }
     case 'mission_held':
-      return 'The parent mission is held. Workers claim none of its tasks until you arm the mission. "Force start" bypasses the hold for this task only.';
+      return missionStartCopyOf(refusal).taskReason;
     case 'mission_local':
       return 'This mission runs in a local session, so runners leave its tasks for that session to claim. "Force start" hands this task to a runner instead.';
     case 'mission_budget_exhausted':
       return 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.';
-    case 'connector_routing_mismatch':
-      return `This agent requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
+    case 'connector_routing_mismatch': {
+      const missing = refusal.missingConnectors?.length ? refusal.missingConnectors : refusal.connectorFailures?.map(f => f.connectorName);
+      return `This agent requires connectors that are not available in this workspace.${missing?.length ? ` Missing: ${missing.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
+    }
     case 'capability_mismatch':
       return 'The configured backend has no server credentials. Switch to an available backend to start this task.';
     case 'entitlement_blocked':
@@ -393,27 +416,14 @@ export async function fetchRunnerFleet(workspaceId: string): Promise<RunnerFleet
 }
 
 /**
- * Format runner fleet status for display in a gate refusal.
+ * The one runner fact a person needs in a task dialog: that none is online, so
+ * the task starts when one connects. Counts and check-in times are operator
+ * diagnostics (Settings → Runners, Health), never shown here; with a runner
+ * online this says nothing.
  */
 export function formatFleetStatus(fleet: RunnerFleetStatus | null, roleSlug?: string | null): string {
-  if (!fleet) return '';
-  if (fleet.count === 0) {
-    let msg = 'No runners online. The task starts when a runner connects.';
-    if (roleSlug === 'visual-auditor') {
-      msg += ' This agent requires a browser-capable runner.';
-    }
-    return msg;
-  }
-  let msg = `${fleet.count} runner${fleet.count !== 1 ? 's' : ''} online`;
-  if (fleet.lastSeenSecs !== null) {
-    const ago = fleet.lastSeenSecs < 60
-      ? `${fleet.lastSeenSecs}s ago`
-      : `${Math.floor(fleet.lastSeenSecs / 60)}m ago`;
-    msg += `, last seen ${ago}`;
-  }
-  msg += '. If the runner is mid-task, it claims this task on its next poll.';
-  if (roleSlug === 'visual-auditor') {
-    msg += ' This agent requires a browser-capable runner.';
-  }
-  return msg;
+  if (!fleet || fleet.count > 0) return '';
+  return roleSlug === 'visual-auditor'
+    ? 'No runner is online. It starts when a runner with a browser connects.'
+    : 'No runner is online. It starts when one connects.';
 }
