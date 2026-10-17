@@ -22,10 +22,12 @@ import {
   detectHostPlatform,
   buildIsolationRecord,
   claudeSessionSandbox,
+  decideConfinementRestart,
+  isolationModeLabel,
   type HostProbeDeps,
   type IsolationProbeInputs,
 } from '../../src/isolation-probe';
-import { isIsolationRecordCurrent } from '@buildd/shared';
+import { decideTaskIsolation, isIsolationRecordCurrent } from '@buildd/shared';
 
 const T0 = '2026-10-17T00:00:00.000Z';
 const T1 = '2026-10-17T00:00:05.000Z';
@@ -229,5 +231,43 @@ describe('claudeSessionSandbox (R-6, AC-6)', () => {
   it('forces the sandbox and the scrub off only where Claude has no confinement', () => {
     const rec = buildIsolationRecord(inputs({ bwrap: { ok: false, reason: 'userns_sysctl_denied' } }));
     expect(claudeSessionSandbox(rec.claude, configured)).toEqual({ sandbox: { enabled: false }, disableEnvScrub: true });
+  });
+});
+
+describe('reduced-confinement opt-in in the record (R-5)', () => {
+  it('records the operator opt-in, absent reading as not opted in', () => {
+    expect(buildIsolationRecord(inputs({})).reducedOptIn).toBe(false);
+    expect(buildIsolationRecord(inputs({ reducedOptIn: true })).reducedOptIn).toBe(true);
+  });
+});
+
+describe('isolationModeLabel (R-5: the run records its effective mode)', () => {
+  it('names the mechanism for an enforced run and says REDUCED with the cause otherwise', () => {
+    const confined = buildIsolationRecord(inputs({}));
+    const enforced = decideTaskIsolation({ requirement: 'protected', record: confined, backend: 'claude', codexMode: 'workspace-write' });
+    expect(enforced.ok && isolationModeLabel(enforced, 'claude', 'linux')).toBe('isolation: protected, Claude confined by bubblewrap');
+
+    const denied = buildIsolationRecord(inputs({ bwrap: { ok: false, reason: 'bwrap_missing' }, reducedOptIn: true }));
+    const reduced = decideTaskIsolation({ requirement: 'trusted_local', record: denied, backend: 'codex', codexMode: 'read-only' });
+    expect(reduced.ok && isolationModeLabel(reduced, 'codex', 'linux')).toMatch(/trusted_local, Codex runs REDUCED \(unconfined: bubblewrap is not installed/);
+  });
+});
+
+describe('decideConfinementRestart (R-7, AC-7)', () => {
+  const denied = (reducedOptIn: boolean) => buildIsolationRecord(inputs({ bwrap: { ok: false, reason: 'probe_exec_failed' }, reducedOptIn }));
+
+  it('never restarts a protected task with less confinement, opt-in or not', () => {
+    for (const optIn of [false, true]) {
+      const v = decideConfinementRestart(decideTaskIsolation({ requirement: 'protected', record: denied(optIn), backend: 'claude', codexMode: 'workspace-write' }), 'claude');
+      expect(v.restart).toBe(false);
+      expect(!v.restart && v.error).toMatch(/protected task is not restarted with less confinement/);
+    }
+  });
+
+  it('restarts a trusted_local task only with the opt-in, labelled as a degradation', () => {
+    const without = decideConfinementRestart(decideTaskIsolation({ requirement: 'trusted_local', record: denied(false), backend: 'claude', codexMode: 'workspace-write' }), 'claude');
+    expect(without.restart).toBe(false);
+    const withOptIn = decideConfinementRestart(decideTaskIsolation({ requirement: 'trusted_local', record: denied(true), backend: 'claude', codexMode: 'workspace-write' }), 'claude');
+    expect(withOptIn.restart && withOptIn.label).toMatch(/^isolation degraded:/);
   });
 });

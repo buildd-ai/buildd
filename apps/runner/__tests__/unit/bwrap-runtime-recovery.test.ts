@@ -25,6 +25,8 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 let queryCallCount = 0;
 // What the mocked Claude bwrap probe answers (false = this host cannot confine Claude).
 let bwrapProbeOk = true;
+// Runs as the first query aborts: what a mid-run bwrap denial does to the runner.
+let onFirstAbort: (() => void) | null = null;
 let queryAbortFirstCall = false;
 // Captures the sessionId from each query() call so tests can assert no reuse.
 const capturedSessionIds: string[] = [];
@@ -40,7 +42,10 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
       [Symbol.asyncIterator]() {
         return {
           async next() {
-            if (shouldAbort) throw new Error('Request was aborted.');
+            if (shouldAbort) {
+              onFirstAbort?.();
+              throw new Error('Request was aborted.');
+            }
             return { value: undefined, done: true };
           },
         };
@@ -273,6 +278,7 @@ describe('bwrap runtime recovery', () => {
     // even when other test files have already set _bwrapSupported=false.
     __resetBwrapSupportForTest();
     bwrapProbeOk = true;
+    onFirstAbort = null;
     queryCallCount = 0;
     queryAbortFirstCall = false;
     capturedSessionIds.length = 0;
@@ -350,7 +356,13 @@ describe('bwrap runtime recovery', () => {
   function trustedLocalOnDeniedHost() {
     process.env.BUILDD_ALLOW_REDUCED_ISOLATION = '1';
     bwrapProbeOk = false;
+    __resetBwrapSupportForTest();
     return makeTask({ isolation: { requirement: 'trusted_local', source: 'workspace', mode: 'reduced' } });
+  }
+  function denyMidRun(worker: LocalWorker) {
+    worker.bwrapRetryPending = true;
+    bwrapProbeOk = false;
+    __resetBwrapSupportForTest();
   }
   const failedCalls = () => mockUpdateWorker.mock.calls.filter((args: any[]) => args[0] && args[1]?.status === 'failed');
 
@@ -417,11 +429,8 @@ describe('bwrap runtime recovery', () => {
     const task = makeTask({ isolation: { requirement: 'protected', source: 'default', mode: 'enforced' } });
     // The session starts confined; then Claude's own bwrap is denied mid-run
     // and the runtime flips the probe, as handleMessage does.
-    const run = (manager as any).startSession(worker, getTestWorkspace(), task);
-    worker.bwrapRetryPending = true;
-    bwrapProbeOk = false;
-    __resetBwrapSupportForTest();
-    await run;
+    onFirstAbort = () => denyMidRun(worker);
+    await (manager as any).startSession(worker, getTestWorkspace(), task);
 
     expect(queryCallCount).toBe(1);
     expect(failedCalls()).toHaveLength(1);
@@ -434,11 +443,8 @@ describe('bwrap runtime recovery', () => {
     process.env.BUILDD_ALLOW_REDUCED_ISOLATION = '1';
     manager = new WorkerManager(makeConfig());
     const worker = makeWorker({ id: 'w-bwrap-unstamped' });
-    const run = (manager as any).startSession(worker, getTestWorkspace(), makeTask());
-    worker.bwrapRetryPending = true;
-    bwrapProbeOk = false;
-    __resetBwrapSupportForTest();
-    await run;
+    onFirstAbort = () => denyMidRun(worker);
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
     expect(queryCallCount).toBe(1);
     expect(failedCalls()).toHaveLength(1);
   });

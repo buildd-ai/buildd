@@ -138,6 +138,15 @@ describe('runnerIsolationDetail: plain-word runner detail (R-10)', () => {
     expect(runnerIsolationDetail(runner({ isolation: record('darwin', seatbelt) })).filesystem).toBeNull();
   });
 
+  it('keeps a reduced-isolation opt-in on a runner only its operator uses out of Problems, and says why in detail (R-5)', () => {
+    const rec = { ...record('linux', none('bwrap_missing')), reducedOptIn: true };
+    expect(isolationProblem(runner({ shared: false, isolation: rec }), PENDING)).toBeNull();
+    expect(runnerIsolationDetail(runner({ shared: false, isolation: rec })).allowed).toMatch(/chose to run their own trusted tasks/);
+    // On a shared runner the opt-in is not a reason to stay quiet.
+    expect(isolationProblem(runner({ shared: true, isolation: rec }), IDLE)?.title).toBe('laptop: not sandboxed');
+    expect(runnerIsolationDetail(runner({ shared: true, isolation: rec })).allowed).toBeNull();
+  });
+
   it('says why policy allows an opt-out on a runner only its operator uses', () => {
     const d = runnerIsolationDetail(runner({ shared: false, isolation: record('linux', none('opt_out')) }));
     expect(d.allowed).toMatch(/only its operator/);

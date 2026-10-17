@@ -5,10 +5,12 @@
  *
  * Client-safe: imported by HealthClient, so no DB (see runner-heartbeats-shared).
  *
- * Policy here is the spec's default until per-task requirements exist: every
- * task needs protection, and the only reduced mode a runner can choose is its
- * operator's opt-out (BUILDD_DISABLE_SANDBOX), which policy allows on a runner
- * nobody else's tasks run on.
+ * Policy (@buildd/shared isolation-policy): a runner without confinement
+ * gets no protected task, so losing it is a Problem. Reduced confinement is
+ * allowed only where its operator chose it (the BUILDD_DISABLE_SANDBOX opt-out,
+ * or the BUILDD_ALLOW_REDUCED_ISOLATION opt-in for trusted local work) on a
+ * runner nobody else's tasks run on. "Protected work pending" still reads any
+ * pending task: Health does not resolve each task's requirement.
  */
 
 import {
@@ -70,8 +72,9 @@ export function isolationProblem(
   if (rec) {
     if (rec.claude.mechanism !== 'none') return null;
     const reason = rec.claude.reason ?? 'backend_probe_failed';
+    // The operator chose reduced confinement on a runner only they use.
+    if (!hb.shared && (reason === 'opt_out' || rec.reducedOptIn === true)) return null;
     if (reason === 'opt_out') {
-      if (!hb.shared) return null;
       return {
         title: `${name}: sandbox turned off`,
         detail: "Its operator turned the sandbox off, and other people's tasks run on this runner.",
@@ -79,13 +82,13 @@ export function isolationProblem(
     }
     return {
       title: `${name}: not sandboxed`,
-      detail: `${sentence(plainCause(reason, rec.platform))}, so tasks run without a sandbox. ${FIXER}`,
+      detail: `${sentence(plainCause(reason, rec.platform))}, so tasks that need a sandbox wait for another runner. ${FIXER}`,
     };
   }
   if (hb.sandboxEnabled === false) {
     return {
       title: `${name}: not sandboxed`,
-      detail: `The sandbox check failed, so tasks run without a sandbox. ${FIXER}`,
+      detail: `The sandbox check failed, and this runner is too old to say why; it takes no tasks until it is updated. ${FIXER}`,
     };
   }
   return null;
@@ -182,6 +185,8 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     steps.push(...isolationRemediation(reason, rec.platform));
     if (reason === 'opt_out' && !hb.shared) {
       allowed = "Allowed: only its operator's own tasks run on this runner.";
+    } else if (rec.reducedOptIn === true && !hb.shared) {
+      allowed = "Allowed: its operator chose to run their own trusted tasks without a sandbox here. Tasks that need one go to another runner.";
     }
   }
   if (usesBwrap && !hb.mountAllowlistEnforced) {
