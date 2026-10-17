@@ -449,6 +449,20 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     expect(dispatched.filter((x) => x.kind === 'review').map((x) => x.head)).toEqual(['H1', 'H2']);
   });
 
+  test('a fix that rebased and force-pushed (new head does not descend from the bound head) arms the delta re-review at completion', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = {};
+    const workerId = await seedWorker(fix.taskId, { status: 'completed' });
+    await attemptEnded({ task: t, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    expect((await loadView({ deliveryId })).delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2' });
+    expect(dispatched.filter((x) => x.kind === 'review').map((x) => x.head)).toEqual(['H1', 'H2']);
+  });
+
   test('00d288fd: a reviewer from outside the rounds approves while the owner works; the owner\'s end applies it, no second review', async () => {
     const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress' });
     const prNumber = prSeq++;
