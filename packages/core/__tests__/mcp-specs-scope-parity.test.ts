@@ -27,7 +27,7 @@ const BASE: Record<string, unknown> = {
   title: 'Checkout', body: 'R-1: x', scope: 'feature', workspaceId: WS, parentSpecId: OTHER,
   relatedSpecId: OTHER, relation: 'depends_on', criterionId: 'R-1', criterionIds: ['R-1'], verdict: 'pass',
   headSha: 'a'.repeat(40), section: 'R-1', text: 'a comment', reason: 'a reason given', ref: 'main', path: 'docs/specs/x.md',
-  specIds: [SPEC], name: 'mock.png', kind: 'reference',
+  specIds: [SPEC], name: 'mock.png', kind: 'reference', targetWorkspaceId: OTHER,
   repo: 'o/r', sha: 'a'.repeat(40), area: 'Checkout', importId: OTHER, artifactId: OTHER, supersededBy: OTHER,
 };
 

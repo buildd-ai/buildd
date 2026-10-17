@@ -18,6 +18,7 @@ import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
 import { actionResultText, createKeyDecoder, handleKey, type Effect, type Key } from './keys';
 import { renderFrame } from './render';
+import { NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, runTalk, talkContext, talkWorkspaceId, type TalkLaunch, type TalkPayload } from './talk';
 import { eventChangesQueue, initialState, reduce, type TopEvent, type TopState } from './state';
 
 export const EXIT_NO_RUNNER = 1;
@@ -62,6 +63,11 @@ export interface RunTopOptions {
   env?: Record<string, string | undefined>;
   hostname?: string;
   openUrl?: (url: string) => void;
+  /** Seams for the talk session (tests): the login probe and the session itself. */
+  talk?: {
+    loggedIn?: () => Promise<boolean>;
+    run?: (launch: Extract<TalkLaunch, { ok: true }>) => Promise<number>;
+  };
   /** Register process-level exit hooks (off in tests). */
   processHooks?: boolean;
 }
@@ -107,9 +113,13 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     term.stdout.write(LEAVE_SCREEN);
   };
 
+  // While a talk session owns the terminal, nothing is drawn or read here.
+  let suspended = false;
+  let talking = false;
+
   const draw = () => {
     renderTimer = null;
-    if (restored) return;
+    if (restored || suspended) return;
     const cols = Math.max(40, term.stdout.columns ?? 80);
     const rows = Math.max(10, term.stdout.rows ?? 24);
     const lines = renderFrame(state, { cols, rows, now: Date.now(), palette });
@@ -211,6 +221,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const runEffect = async (effect: Effect) => {
     if (effect.type === 'quit') { finish(0); return; }
     if (effect.type === 'refreshQueue') { await refreshQueue(); return; }
+    if (effect.type === 'talk') { await talk(effect); return; }
     if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
       // The runner's page is where its workspaces are set (R-20).
@@ -246,6 +257,62 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
     dispatch({ type: 'status', status: actionResultText(effect, result) });
     if (effect.type === 'claim' || effect.type === 'hold' || effect.type === 'slots') queueChanged();
+  };
+
+  // `s`: an interactive claude session about a mission or task (talk.ts). It
+  // runs on this machine's own claude login and shares its limits; a hold does
+  // not stop it. With $TMUX set it opens beside top; otherwise top steps aside.
+  const talk = async (effect: Extract<Effect, { type: 'talk' }>) => {
+    const say = (text: string, tone: 'ok' | 'error' | 'info' = 'error') => dispatch({ type: 'status', status: { text, tone } });
+    if (talking) { say('A Claude session is already open.'); return; }
+    talking = true;
+    try {
+      if (!(await (opts.talk?.loggedIn ?? claudeLoggedIn)())) { say(NOT_LOGGED_IN); return; }
+      const target = { kind: effect.kind, id: effect.id, title: effect.title };
+      const r = await client.post('/api/talk-context', { kind: effect.kind, id: effect.id, workspaceId: talkWorkspaceId(state, target, Date.now()) });
+      const payload = r.body as (TalkPayload & { error?: string }) | null;
+      if (r.status !== 200 || !payload) { say(`Could not open Claude: ${payload?.error ?? 'the runner did not answer'}`); return; }
+      const launch = buildTalkLaunch({
+        context: talkContext(state, target, payload, Date.now()),
+        loggedIn: true,
+        cwd: payload.cwd,
+        server: payload.server || state.runner.builddServer || 'https://buildd.dev',
+        apiKey: payload.apiKey,
+        mcpConfigPath: '',
+        env: opts.env ?? process.env,
+      });
+      if (!launch.ok) { say(launch.message); return; }
+      const run = opts.talk?.run ?? runTalk;
+      if (launch.mode === 'tmux') {
+        say('Claude is open in a split pane.', 'info');
+        await run(launch);
+        say('Claude closed.', 'info');
+        return;
+      }
+      suspended = true;
+      if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+      term.stdin.off?.('data', onData);
+      try { term.stdin.setRawMode?.(false); } catch { /* not a tty any more */ }
+      term.stdin.pause?.();
+      term.stdout.write(LEAVE_SCREEN);
+      try {
+        await run(launch);
+      } finally {
+        term.stdout.write(ENTER_SCREEN);
+        term.stdin.setRawMode?.(true);
+        term.stdin.on('data', onData);
+        term.stdin.resume?.();
+        suspended = false;
+        say('Back from Claude.', 'info');
+        void refreshTasks();
+        void refreshMissions();
+      }
+    } catch (err: any) {
+      suspended = false;
+      say(`Could not open Claude: ${err?.message ?? err}`);
+    } finally {
+      talking = false;
+    }
   };
 
   // ── terminal ────────────────────────────────────────────────────────────

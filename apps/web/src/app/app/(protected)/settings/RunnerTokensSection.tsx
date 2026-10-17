@@ -271,7 +271,10 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                 </div>
 
                                 {hasWarning && (
-                                  <p className="text-xs text-status-warning">No workspace linked. This token can&apos;t claim or create tasks.</p>
+                                  <p className="text-xs text-status-warning">
+                                    {/* Admins manage token scope, where "claim" is the precise term; a member reads what the runner can do. */}
+                                    {canAdmin ? 'No workspace linked. This token can\'t claim or create tasks.' : 'No workspace linked. This runner can\'t start or create tasks.'}
+                                  </p>
                                 )}
 
                                 <HostRunnerToggle

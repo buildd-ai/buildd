@@ -28,6 +28,7 @@ import { missionTaskAnchorId, missionTaskHref, taskPageHref, type MissionOrigin 
 import { deriveWorkKind } from '@/lib/task-presentation';
 import { PULSE_STATE_LABEL, PULSE_TOKEN_TEXT } from './MissionPulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
+import { statusPill } from '@/components/ui/states';
 
 /**
  * `scroll-margin-top` equal to `MISSION_MASTHEAD_FOLDED_PX`, so a focused row lands just
@@ -246,7 +247,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
                 href={taskPageHref({ taskId: a.id, missionId })}
                 className="flex min-h-11 items-center gap-2 font-mono text-[11px] text-text-secondary hover:text-text-primary"
               >
-                <span className="shrink-0 text-text-muted">{a.status}</span>
+                <span className="shrink-0 text-text-muted">{statusPill(a.status).label}</span>
                 <span className="min-w-0 truncate">{a.title}</span>
               </a>
             </li>

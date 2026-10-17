@@ -44,7 +44,18 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
 
   const [spec] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision })
     .from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!spec || spec.workspaceId !== workspaceId) return { ok: false, status: 404, error: 'context.specSource.specId: spec not found in this workspace' };
+  if (!spec || spec.workspaceId !== workspaceId) {
+    // Another workspace's spec is never pinned across (lib/specs/copy.ts): name
+    // this workspace's copy of it if there is one, else how to make one.
+    const { findSpecCopy, COPY_RECOVERY } = await import('./copy');
+    const copy = await findSpecCopy(workspaceId, specId);
+    const from = copy?.metadata?.copied_from;
+    return {
+      ok: false, status: 404, error: copy && from
+        ? `context.specSource.specId: spec not found in this workspace; its copy here is ${copy.id} (copied from revision ${from.revision}, sha256 ${from.contentHash}). Pin that spec id.`
+        : `context.specSource.specId: spec not found in this workspace. ${COPY_RECOVERY}`,
+    };
+  }
 
   // Which revision: the one named, else the approved one, else the head
   // (building ahead of approval, §20 R-36).
