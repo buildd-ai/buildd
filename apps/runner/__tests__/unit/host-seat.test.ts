@@ -6,6 +6,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
+import { createServer, connect, type AddressInfo } from 'net';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH, buildAgentBaseEnv } from '../../src/agent-env';
 import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-env';
@@ -53,7 +54,8 @@ function setupFakeSecurity(): FakeSecuritySetup {
   // Create fake `security` script that:
   // - Logs each invocation with timestamp and args
   // - Can be controlled via file markers (expire-cache for delay)
-  // - Sleeps 100ms if expire-cache marker exists (simulates slow refresh after cache expiry)
+  // - Sleeps 200ms if expire-cache marker exists (simulates slow refresh after cache expiry)
+  // - Exits 1 once if fail-next marker exists (the login went away between checks)
   const securityScript = join(binDir, 'security');
   writeFileSync(securityScript, `#!/bin/bash
 # Fake security binary for testing keychain async behavior
@@ -61,8 +63,14 @@ echo "$(date -Iseconds) $@" >> "${invocationLog}"
 
 # If expire-cache marker exists, sleep to simulate slow refresh
 if [ -f "${tmpBase}/expire-cache" ]; then
-  sleep 0.1
+  sleep 0.2
   rm -f "${tmpBase}/expire-cache"
+fi
+
+# If fail-next marker exists, report the login as gone (exit 1) once
+if [ -f "${tmpBase}/fail-next" ]; then
+  rm -f "${tmpBase}/fail-next"
+  exit 1
 fi
 
 # Simulate find-generic-password success (exit 0)
@@ -438,38 +446,45 @@ describe('async keychain checks: never block on event loop', () => {
   });
 
   test('socket stays responsive while fake security is slow (event loop not blocked)', async () => {
-    const { resetCaches, fakeSecurityPath, invocationLog } = setupFakeSecurity();
+    const { resetCaches, fakeSecurityPath } = setupFakeSecurity();
+    const server = createServer(socket => socket.end('pong'));
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
+    const { port } = server.address() as AddressInfo;
+    let ticks = 0;
+    const interval = setInterval(() => { ticks++; }, 10);
 
     try {
       resetCaches();
 
-      // Signal fake security to sleep on next call (100ms)
+      // Signal fake security to sleep on next call (200ms)
       writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
 
-      // Start a slow keychain refresh
-      const refreshPromise = defaultMacKeychainHasLoginAsync();
+      // Start a slow keychain check; a sync spawn would freeze timers and sockets until it returns
+      let settled = false;
+      const refreshPromise = defaultMacKeychainHasLoginAsync().then(v => { settled = true; return v; });
 
-      // While the refresh is running (sleeping), verify we can do sync I/O and timers
-      await new Promise(r => setTimeout(r, 20));
+      // A local socket round-trip is answered while the check is still running
+      const reply = await new Promise<string>((resolve, reject) => {
+        const client = connect(port, '127.0.0.1');
+        let data = '';
+        client.on('data', d => { data += d; });
+        client.on('end', () => resolve(data));
+        client.on('error', reject);
+      });
+      expect(reply).toBe('pong');
+      expect(settled).toBe(false);
 
-      const socketStart = Date.now();
-      // Synchronous operation that would fail/hang if event loop was blocked
-      const canWrite = () => {
-        try {
-          writeFileSync(join(fakeSecurityPath, 'socket-test'), 'ok');
-          return true;
-        } catch { return false; }
-      };
-      expect(canWrite()).toBe(true);
-      const socketElapsed = Date.now() - socketStart;
-
-      // Socket operation should be fast (not blocked waiting for security)
-      expect(socketElapsed).toBeLessThan(50);
+      // Timers keep ticking while the check is still running
+      await new Promise(r => setTimeout(r, 60));
+      expect(settled).toBe(false);
+      expect(ticks).toBeGreaterThanOrEqual(3);
 
       // Let refresh finish
       const result = await refreshPromise;
       expect(result).toBe(true);
     } finally {
+      clearInterval(interval);
+      await new Promise(r => server.close(() => r(undefined)));
       cleanupFakeSecurity();
     }
   });
@@ -484,25 +499,29 @@ describe('async keychain checks: never block on event loop', () => {
       const first = await defaultMacKeychainHasLoginAsync();
       expect(first).toBe(true);
 
-      // Force refresh by expiring cache and signaling slow response
+      // Force a slow refresh that finds the login gone, so stale and fresh values differ
       expireKeychainCache();
       writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
+      writeFileSync(join(fakeSecurityPath, 'fail-next'), Date.now().toString());
 
-      // Start refresh
-      const refreshStart = defaultMacKeychainHasLoginAsync();
+      // Start refresh: the caller gets the stale value immediately
+      const refreshStart = await defaultMacKeychainHasLoginAsync();
+      expect(refreshStart).toBe(true);
       await new Promise(r => setTimeout(r, 20));
 
       // Get stale value while refresh is in flight
       const stale = await defaultMacKeychainHasLoginAsync();
       expect(stale).toBe(true);
 
-      // Wait for refresh to complete
-      await refreshStart;
-      await new Promise(r => setTimeout(r, 120));
-
-      // After refresh, cache should be updated with fresh value
-      const fresh = await defaultMacKeychainHasLoginAsync();
-      expect(fresh).toBe(true);
+      // After the refresh settles, the cache serves its result, not the stale value
+      const deadline = Date.now() + 2000;
+      let fresh = true;
+      while (fresh && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 20));
+        fresh = await defaultMacKeychainHasLoginAsync();
+      }
+      expect(fresh).toBe(false);
+      expect(readInvocationLog(invocationLog).length).toBe(2);
     } finally {
       cleanupFakeSecurity();
     }
