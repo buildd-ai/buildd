@@ -2,7 +2,7 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-10-17
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
@@ -626,7 +626,16 @@ recorded as such, never as an approval.
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
   notified, with the rail named on `buildd/landing`. The status is written only
   when GitHub does not already show it, and re-checked after writing so the
-  newest version wins across drains.
+  newest version wins across drains. The mission-PR hold is a rail too, and
+  lasting when only a person or a new fact changes it: a refresh on a branch it
+  was not filed for, or a task PR on a shipped delivery with no current one to
+  move to. A door that reads such a hold hands a kernel-owned PR to the kernel
+  anyway, so the merge-time rails escalate it once; it never merges it on a
+  legacy arm, and the sweep stops asking once the delivery is `ESCALATED`.
+  Every door and the rails ask the hold of the task the PR was opened for,
+  never a repair attempt pushing to it (`deliveryOwnerTask`): an attempt carries
+  none of a refresh's context, which is how the sweep passed #4909 while the
+  merge-time rails refused it on every pass.
 - Release doors hold, never fail or throw, when a kernel-owned PR is not landed
   yet or the control plane does not answer; a PR the kernel does not own never
   reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
@@ -660,6 +669,15 @@ recorded as such, never as an approval.
 - AC-16 (failure): GIVEN the release executor merging a release PR WHEN its
   head moved after verification THEN the merge is refused, not merged
   unpinned.
+- AC-31 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
+  lasting WHEN the sweep or any door asks to land it THEN the delivery is
+  `ESCALATED(landing_needs_human)` once with the hold named, nothing merges,
+  and the sweep does not request landing again for that head; a CI-fix
+  attempt's worker on the PR gets the same answer as its owner.
+
+| AC | Test |
+| --- | --- |
+| Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
 
@@ -909,7 +927,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
   longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the
   mission and `create_pr` ask for a writable epoch first. A task filed under an
   earlier epoch is claimed onto the writable branch (`isPriorEpochBranch` at the
-  claim); a refresh keeps the branch it was filed for.
+  claim); a refresh keeps the branch it was filed for. That branch is recorded
+  once at filing (`context.refreshBranch`) and a requeue never rewrites a
+  refresh's `baseBranch` (`requeueBranchContext`). A refresh filed before
+  either, whose `baseBranch` a requeue overwrote with its own head, is judged by
+  where its PR is based: the writable delivery's branch, never trunk
+  (`refreshFiledFor`).
 - Compatibility: a mission that predates epochs is adopted on its first epoch
   command, from its recorded mission PR (`adoptionOf`): no PR, or an open one, is
   epoch 1 open; a merged PR with no work left is epoch 1 merged and retired; a
@@ -984,6 +1007,10 @@ later work and nothing refreshes or re-ships a branch that already landed.
   refresh task is filed (the ecea17f3 sequence).
 - AC-22: GIVEN a refresh builder whose branch already contains trunk WHEN it
   completes THEN completion succeeds with the ancestry evidence and no PR.
+- AC-32: GIVEN a refresh whose task was requeued after an infra failure WHEN
+  any door asks whether its PR may land THEN the branch it was filed for is
+  the mission branch, never its own head, and a refresh retargeted to trunk is
+  still refused.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
@@ -994,6 +1021,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Criterion AC-32 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |

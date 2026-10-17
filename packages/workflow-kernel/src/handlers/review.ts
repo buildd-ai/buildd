@@ -431,7 +431,10 @@ export async function escalateReviewExhaustion(ports: KernelPorts, e: ClaimedEff
   const current = rounds.find((r) => r.round === d.currentRound);
   const out: ReviewOutput = current ? await need(ports, 'reviews', e.kind).output(current) : {};
   // A fix ledger spent before the rounds were (T8, 67d34094) says so; otherwise the rounds ran out.
-  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts` : `after ${d.currentRound} review rounds`;
+  // A held delivery reopened (79649a80) is the same spent budget coming back to the person.
+  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts`
+    : e.payload.reopened === true ? `reopened after ${d.currentRound} review rounds; the review budget is still spent`
+    : `after ${d.currentRound} review rounds`;
   const outcome = await need(ports, 'escalate', e.kind).exhausted(d, {
     family: 'review_fix', headSha: d.currentHeadSha, attempts: Number(e.payload.attempts ?? d.currentRound), max: Number(e.payload.max ?? d.maxRounds),
     title: 'Review fix attempts exhausted', detail, note: out.feedback ?? null,
