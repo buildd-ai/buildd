@@ -1,6 +1,7 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
 import type { RunnerHold } from './runner-hold';
+import type { RunnerIsolationRecord } from './runner-isolation';
 import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
@@ -1359,6 +1360,13 @@ export interface WorkerEnvironment {
    * dashboard shows it as on hold instead of idle.
    */
   hold?: RunnerHold | null;
+  /**
+   * The confinement this runner can apply, per backend and mode, from this
+   * process's own probe (./runner-isolation). Absent on runner builds that
+   * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
+   * whose cause is unknown.
+   */
+  isolation?: RunnerIsolationRecord;
 }
 
 export interface RunnerUpdateCanaryReport {

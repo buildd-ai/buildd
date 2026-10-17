@@ -11,7 +11,7 @@
  * is DB-free and already bundled into client components.)
  */
 
-import { RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
+import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
 
 export interface RunnerHeartbeat {
   id: string;
@@ -36,6 +36,12 @@ export interface RunnerHeartbeat {
    * the only signal that isolation is actually being enforced.
    */
   mountAllowlistEnforced: boolean;
+  /**
+   * The confinement per backend and mode, with the cause when there is none
+   * (heartbeat `environment.isolation`). Null on runner builds that predate
+   * it: then only `sandboxEnabled` is known, and its cause is not.
+   */
+  isolation: RunnerIsolationRecord | null;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */
@@ -66,26 +72,58 @@ export interface SandboxPosture {
 /**
  * What the Health page should say about a runner's sandbox.
  *
- * Green means enforced — bwrap works AND the mount allowlist is on. A host with
- * bwrap installed but the allowlist off is the worst case for a green badge: it
- * looks confined and is not, so it reports as a warning instead.
+ * Read from the runner's isolation record when it sends one, so the cause is
+ * the runner's own: the old boolean was false for four causes and this page
+ * called every one "user namespaces denied", every macOS host included.
+ *
+ * Green means enforced. On Linux that is bwrap AND the mount allowlist: a host
+ * with bwrap installed but the allowlist off is the worst case for a green
+ * badge, since it looks confined and is not. On macOS it is Seatbelt, which
+ * both CLIs use there; macOS has no outer mount allowlist to ask for.
  */
 export function deriveSandboxPosture(hb: {
   sandboxEnabled: boolean | null;
   mountAllowlistEnforced: boolean;
+  isolation?: RunnerIsolationRecord | null;
 }): SandboxPosture {
-  if (hb.sandboxEnabled === null) {
+  const rec = hb.isolation ?? null;
+  if (rec) {
+    if (!isIsolationRecordCurrent(rec)) {
+      return {
+        label: 'sandbox unknown',
+        tier: 'unknown',
+        detail: 'the isolation probe predates this runner process',
+      };
+    }
+    const claude = rec.claude;
+    // The verdict doctor and install.sh print for the same record (R-8).
+    const verdict = isolationVerdict(rec);
+    if (!verdict.confined) {
+      return {
+        label: verdict.reason === 'opt_out' ? 'sandbox disabled' : 'unsandboxed',
+        tier: 'warning',
+        detail: `${verdict.summary} · tasks run without isolation`,
+      };
+    }
+    if (claude.mechanism === 'seatbelt') {
+      return {
+        label: 'Seatbelt',
+        tier: 'success',
+        detail: 'macOS Seatbelt confines Codex, and Claude where the workspace enables its sandbox · macOS has no outer mount allowlist',
+      };
+    }
+    // bwrap: what is enforced depends on the mount allowlist, as below.
+  } else if (hb.sandboxEnabled === null) {
     return {
       label: 'sandbox unknown',
       tier: 'unknown',
-      detail: 'no bwrap probe reported yet',
+      detail: 'no isolation probe reported yet',
     };
-  }
-  if (hb.sandboxEnabled === false) {
+  } else if (hb.sandboxEnabled === false) {
     return {
       label: 'unsandboxed',
       tier: 'warning',
-      detail: 'user namespaces denied · tasks run without bwrap isolation',
+      detail: 'the sandbox probe failed · this runner version does not report why',
     };
   }
   if (!hb.mountAllowlistEnforced) {

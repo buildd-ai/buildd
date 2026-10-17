@@ -11,7 +11,7 @@ import {
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
-import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveLinkCondition } from './granted-links';
 
@@ -101,6 +101,7 @@ export async function getRunnerHeartbeats(
       // actually enforced; without this the dashboard could report kernel
       // capability only. See deriveSandboxPosture.
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
+      isolation: readIsolationRecord(hb.environment),
     }));
 }
 

@@ -74,6 +74,7 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { claudeSessionSandbox, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
@@ -106,7 +107,7 @@ import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTE
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyMachineLoginPolicy, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
-import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision, RunnerIsolationRecord } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import { heartbeatRunnerName, withRunnerName } from './runner-name';
 import {
@@ -232,7 +233,17 @@ export function __resetBwrapSupportForTest(): void {
   _bwrapSupported = null;
   _bwrapProbeAt = null;
   _mountIsolationBwrapSupported = null;
+  _isolationHost = null;
+  _seatbeltSupported = null;
+  _bwrapFailure = null;
 }
+// The isolation record's other inputs (./isolation-probe), cached per process
+// like the bwrap probe. A probe is this process's own: R-11 reads one older
+// than the process start as unknown.
+const PROCESS_STARTED_AT = processStartedAt();
+let _isolationHost: ReturnType<typeof detectHostPlatform> | null = null;
+let _seatbeltSupported: boolean | null = null;
+let _bwrapFailure: BwrapProbeFailure | null = null;
 // The pre-spawn model-auth check (host-seat.ts claudeModelAuthMissing).
 let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
 /**
@@ -258,6 +269,40 @@ export function isBwrapSupported(): boolean {
     }
   }
   return _bwrapSupported;
+}
+
+/**
+ * The confinement each backend can apply on this host (Living Spec "Runner
+ * isolation", R-2). Claude's sandbox, its env scrub and Codex's sandbox mode
+ * are decided from this, never from the bwrap boolean alone: on macOS bwrap is
+ * always absent and both CLIs confine with Seatbelt (R-6).
+ *
+ * Built fresh on each call from cached probes, so a runtime bwrap denial that
+ * flips isBwrapSupported() shows in the next heartbeat.
+ */
+export function getIsolationRecord(): RunnerIsolationRecord {
+  const bwrapOk = isBwrapSupported(); // runs and caches the probe, and sets its time
+  // The same function doctor and install.sh call (R-8), over this process's cached probes.
+  return probeIsolationRecord({
+    host: () => (_isolationHost ??= detectHostPlatform()),
+    optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
+    bwrap: (): BwrapProbeResult => {
+      if (bwrapOk) return { ok: true };
+      if (_bwrapFailure === null) _bwrapFailure = diagnoseClaudeBwrapFailure();
+      return { ok: false, reason: _bwrapFailure };
+    },
+    seatbelt: () => {
+      if (_seatbeltSupported === null) {
+        _seatbeltSupported = probeSeatbelt();
+        if (!_seatbeltSupported) console.log('[runner] macOS Seatbelt (sandbox-exec) did not start — Claude and Codex run unconfined');
+      }
+      return _seatbeltSupported;
+    },
+  }, {
+    probeAt: () => _bwrapProbeAt ?? new Date().toISOString(),
+    processStartedAt: PROCESS_STARTED_AT,
+    runnerVersion: RUNNER_VERSION,
+  });
 }
 
 /**
@@ -1223,6 +1268,8 @@ export class WorkerManager {
     env = withRunnerName(env, heartbeatRunnerName());
     // A person's hold (R-35): the server refuses broad claims and the dashboard shows it.
     if (!this.config.singleTask) env = withRunnerHold(env, currentRunnerHold());
+    // The confinement per backend and mode (R-3); the probe has run by now.
+    if (env && getBwrapProbeAt() !== null) env = { ...env, isolation: getIsolationRecord() };
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -1348,7 +1395,10 @@ export class WorkerManager {
         .filter(w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting')
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
-      const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
+      // The legacy boolean, for servers that predate environment.isolation:
+      // whether Claude is confined here, not whether bwrap is installed, so a
+      // macOS runner on Seatbelt no longer reads as "user namespaces denied".
+      const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
       const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
       if (viewerToken) {
         this.viewerToken = viewerToken;
@@ -4815,18 +4865,16 @@ export class WorkerManager {
         }
       }
 
-      // Build sandbox config from workspace config.
-      // If bwrap user namespaces are unavailable on this kernel, force sandbox
-      // disabled so Claude Code doesn't attempt bwrap and fail every Bash call.
-      const sandboxConfig = !isBwrapSupported()
-        ? { enabled: false }
-        : (gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined);
-
-      // Claude Code also uses bwrap for subprocess env scrubbing independently of the
-      // sandbox feature. When bwrap namespaces are unavailable, disable scrubbing too
-      // so shell commands don't fail with "No permissions to create a new namespace"
-      // even on tasks that have sandbox disabled.
-      if (!isBwrapSupported()) {
+      // Build sandbox config from workspace config, against the confinement
+      // Claude actually has on this host (Seatbelt on macOS, bwrap on Linux).
+      // Where it has none, force the sandbox off so Claude Code doesn't fail
+      // every Bash call trying to start it, and turn off the subprocess env
+      // scrub, which on Linux needs bwrap independently of the sandbox feature
+      // ("No permissions to create a new namespace"). The bwrap probe alone
+      // never decides this: on macOS it always fails and Seatbelt works.
+      const claudeSandbox = claudeSessionSandbox(getIsolationRecord().claude, gitConfig?.sandbox);
+      const sandboxConfig = claudeSandbox.sandbox;
+      if (claudeSandbox.disableEnvScrub) {
         cleanEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '0';
       }
 
@@ -5425,7 +5473,7 @@ export class WorkerManager {
         ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
-        bwrapSupported: isBwrapSupported(),
+        sandboxConfinement: getIsolationRecord().codex[taskSandboxMode ?? 'workspace-write'],
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling

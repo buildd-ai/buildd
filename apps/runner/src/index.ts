@@ -8,7 +8,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
-import { WorkerManager } from './workers';
+import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
@@ -148,6 +148,10 @@ if (process.argv.includes('--doctor')) {
   for (const c of report.checks) {
     const fixTag = c.fixable ? ` ${DIM}[fixable]${RESET}` : '';
     console.log(`  ${icon(c.status)} ${c.name}  ${DIM}${c.message}${RESET}${fixTag}`);
+    // The steps for what is wrong, e.g. the sandbox check's platform remediation.
+    if (c.status !== 'ok' && c.detail) {
+      for (const line of c.detail.split('\n')) console.log(`      ${DIM}${line}${RESET}`);
+    }
   }
   console.log(`\n  ${GREEN}${report.summary.ok} ok${RESET}  ${YELLOW}${report.summary.warn} warn${RESET}  ${RED}${report.summary.error} error${RESET}\n`);
 
@@ -2914,7 +2918,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
-      const report = withClaimHealthCheck(runDiagnostics());
+      // This process's own isolation record, the one its heartbeat carries.
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
       return Response.json(report, { headers: corsHeaders });
     }
 
@@ -2923,7 +2928,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       const report = runDiagnostics();
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = withClaimHealthCheck(runDiagnostics());
+      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
