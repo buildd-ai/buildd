@@ -83,6 +83,8 @@ export interface KernelOps {
    * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
    */
   attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
+  /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
+  observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -103,6 +105,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
     return s.attemptEnded(p);
   },
+  observe_ci_failure: (s, i) => s.observeCiFailure(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
