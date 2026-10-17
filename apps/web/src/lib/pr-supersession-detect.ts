@@ -753,8 +753,9 @@ export interface ClosedPrSweepResult {
  */
 export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 3): Promise<Array<{ id: string; prUrl: string | null }>> {
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
-  // Validate with strict ISO timestamp pattern and use string comparison (ISO strings sort correctly).
-  const lastAttempt = sql`(case when ${workers.supersessionScan}->>'lastAttemptAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' then ${workers.supersessionScan}->>'lastAttemptAt' else null end)`;
+  // Validate with pg_input_is_valid to ensure the timestamp is actually valid, not just formatted correctly.
+  // ISO strings sort correctly as text, so no cast needed.
+  const lastAttempt = sql`(case when pg_input_is_valid(${workers.supersessionScan}->>'lastAttemptAt', 'timestamptz') then ${workers.supersessionScan}->>'lastAttemptAt' else null end)`;
   return db
     .select({ id: workers.id, prUrl: workers.prUrl })
     .from(workers)
