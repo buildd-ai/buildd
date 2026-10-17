@@ -9,7 +9,13 @@ A Living Spec is governed intent stored in buildd: a body with immutable
 revisions, requirement ids (`R-n`, `AC-n`, `D-n`, `I-n`) parsed from it, and
 one revision a person approved. Work pins an approved revision and is judged
 against its criteria. Every call below is `buildd action=manage_specs` with
-the sub-action in `params.action`.
+the sub-action in `params.action`. On the group tools it is
+`buildd_artifacts` action `manage_specs`, listed on that tool's `More:` line.
+
+A read-only session (a `tasks:read` grant) can call the reads: `list`, `get`,
+`diff`, `read_ref`, `outcome`, `comments`, `attachments`, and `metadata`
+without `changes`. Every other sub-action needs write access and is refused
+with `requiredScope`.
 
 This is not the `spec-sync` skill. `spec-sync` keeps a repo's own spec files
 (`docs/SPEC.md`, `docs/specs/`) in step with the code. A Living Spec lives in

@@ -6,7 +6,7 @@ import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
 import { FLOW_WINDOWS } from '@/lib/insights-flow';
 import Link from 'next/link';
 import { ShippedChart } from '@/components/insights/ShippedChart';
-import { dayBars, formatTimeShare, shippingSentence, stallSentences, timeRows } from '@/components/insights/insights-summary';
+import { comparisonCaption, dayBars, formatTimeShare, shippingSentence, stallSentences, timeRows } from '@/components/insights/insights-summary';
 import { formatDuration } from '@/components/insights/flow-chart-model';
 import { countOf } from '@/lib/plural';
 import Segmented from '@/components/ui/Segmented';
@@ -36,8 +36,9 @@ export function InsightsClient({ series, window }: Props) {
           <section className="mt-5" data-testid="insights-shipping">
             <h2 className="section-label">Shipping</h2>
             <p className="mt-2 text-lede text-text-primary" data-testid="insights-shipping-sentence">{shippingSentence(series, window)}</p>
+            <p className="mt-1 text-meta text-text-muted" data-testid="insights-comparison-caption">{comparisonCaption(series, window)}</p>
             <div className="mt-4">
-              <ShippedChart days={dayBars(series, window)} previousLabel={window === '7d' ? 'Last week' : 'The 30 days before'} />
+              <ShippedChart days={dayBars(series, window)} previousLabel="Same weekday, a week earlier" />
             </div>
           </section>
 
@@ -54,12 +55,12 @@ export function InsightsClient({ series, window }: Props) {
                   <>
                     <div className="flex items-baseline justify-between gap-3">
                       <span className={`text-body ${r.ms > 0 ? 'text-text-primary' : 'text-text-muted'}`}>{r.label}</span>
-                      <span className="shrink-0 font-mono text-meta text-text-secondary">{r.ms > 0 ? `${formatDuration(r.ms)} · ${formatTimeShare(r.share)}` : '0h'}</span>
+                      <span className="shrink-0 font-mono text-meta text-text-secondary">{r.tasks > 0 ? `median ${formatDuration(r.medianMs)}` : 'none'}</span>
                     </div>
                     <div className="mt-1.5 h-2 bg-surface-3" aria-hidden>
                       <span className="block h-2" style={{ width: `${r.share * 100}%`, background: 'var(--flow-running)' }} />
                     </div>
-                    {r.tasks > 0 && <p className="mt-1 text-meta text-text-muted">{countOf(r.tasks, 'task')} ›</p>}
+                    {r.tasks > 0 && <p className="mt-1 text-meta text-text-muted">{countOf(r.tasks, 'task')} · 90th percentile {formatDuration(r.p90Ms)} · {formatDuration(r.ms)} in total across tasks, {formatTimeShare(r.share)} of task time ›</p>}
                   </>
                 );
                 return (
