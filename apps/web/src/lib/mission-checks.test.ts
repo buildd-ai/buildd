@@ -71,6 +71,19 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     expect(r.status).toBe('stale');
   });
 
+  it('a closed mission\'s pass on an earlier commit names both commits and never promises another check', () => {
+    // Regression: a completed, delivered mission read "Verify: out of date. It
+    // checks again" forever, because the scheduler files nothing for a closed mission.
+    const r = visualCheck(visual({
+      status: 'passed', staleEvidence: true, passedOnEarlierCommit: true, evidenceSha: '1111111aaaa',
+      blocksMerge: false, blocksCompletion: false, pendingVerification: false, nextActor: 'none',
+      branch: { headSha: '2222222bbbb', base: 'dev', integrationPr: { number: 9, stage: 'merged' }, postMergeRecovery: false },
+    }), opts);
+    expect(r).toMatchObject({ status: 'stale', state: 'passed on an earlier commit', actor: 'none' });
+    expect(r.detail).toBe('It passed on 1111111 before the mission completed. The delivered commit 2222222 was not checked again.');
+    expect(r.detail).not.toContain('checks again');
+  });
+
   it('no UI change, policy off, waiver and passed each read differently, and none of the first three reads passed', () => {
     const states = [
       visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), opts),
