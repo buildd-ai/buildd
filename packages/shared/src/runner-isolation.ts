@@ -109,3 +109,48 @@ export function isolationRemediation(reason: IsolationReason, platform: RunnerHo
       return [];
   }
 }
+
+/** What every surface says about a runner's isolation, read from its record (R-8). */
+export interface IsolationVerdict {
+  /** Claude has confinement on this host. Codex reads the same probe on every host today. */
+  confined: boolean;
+  mechanism: IsolationMechanism;
+  /** Present exactly when `confined` is false. */
+  reason: IsolationReason | null;
+  /** One line: the mechanism, or the cause in plain words. */
+  summary: string;
+  /** isolationRemediation for the cause; empty when confined. */
+  remediation: string[];
+}
+
+const MECHANISM_TEXT: Record<Exclude<IsolationMechanism, 'none'>, string> = {
+  seatbelt: 'macOS Seatbelt',
+  bwrap: 'bubblewrap',
+  landlock: 'Landlock',
+};
+
+/**
+ * The one verdict `install.sh`, `buildd doctor` and Health give for a host
+ * (R-8, AC-8). Health, doctor and the installer differ in layout only: the
+ * cause and the steps are these.
+ */
+export function isolationVerdict(record: RunnerIsolationRecord): IsolationVerdict {
+  const { claude, platform } = record;
+  if (claude.mechanism !== 'none') {
+    return {
+      confined: true,
+      mechanism: claude.mechanism,
+      reason: null,
+      summary: `${MECHANISM_TEXT[claude.mechanism]} confines Claude and Codex on this host`,
+      remediation: [],
+    };
+  }
+  const reason = claude.reason ?? 'backend_probe_failed';
+  return {
+    confined: false,
+    mechanism: 'none',
+    reason,
+    summary: isolationReasonText(reason, platform),
+    remediation: isolationRemediation(reason, platform),
+  };
+}

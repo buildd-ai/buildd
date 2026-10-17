@@ -11,7 +11,7 @@
  * is DB-free and already bundled into client components.)
  */
 
-import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationReasonText, type RunnerIsolationRecord } from '@buildd/shared';
+import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
 
 export interface RunnerHeartbeat {
   id: string;
@@ -96,12 +96,13 @@ export function deriveSandboxPosture(hb: {
       };
     }
     const claude = rec.claude;
-    if (claude.mechanism === 'none') {
-      const reason = claude.reason ?? 'backend_probe_failed';
+    // The verdict doctor and install.sh print for the same record (R-8).
+    const verdict = isolationVerdict(rec);
+    if (!verdict.confined) {
       return {
-        label: reason === 'opt_out' ? 'sandbox disabled' : 'unsandboxed',
+        label: verdict.reason === 'opt_out' ? 'sandbox disabled' : 'unsandboxed',
         tier: 'warning',
-        detail: `${isolationReasonText(reason, rec.platform)} · tasks run without isolation`,
+        detail: `${verdict.summary} · tasks run without isolation`,
       };
     }
     if (claude.mechanism === 'seatbelt') {

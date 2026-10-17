@@ -74,7 +74,7 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
-import { buildIsolationRecord, claudeSessionSandbox, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, probeSeatbelt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
+import { claudeSessionSandbox, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
@@ -240,7 +240,7 @@ export function __resetBwrapSupportForTest(): void {
 // The isolation record's other inputs (./isolation-probe), cached per process
 // like the bwrap probe. A probe is this process's own: R-11 reads one older
 // than the process start as unknown.
-const PROCESS_STARTED_AT = new Date(Date.now() - process.uptime() * 1000).toISOString();
+const PROCESS_STARTED_AT = processStartedAt();
 let _isolationHost: ReturnType<typeof detectHostPlatform> | null = null;
 let _seatbeltSupported: boolean | null = null;
 let _bwrapFailure: BwrapProbeFailure | null = null;
@@ -282,30 +282,24 @@ export function isBwrapSupported(): boolean {
  */
 export function getIsolationRecord(): RunnerIsolationRecord {
   const bwrapOk = isBwrapSupported(); // runs and caches the probe, and sets its time
-  if (_isolationHost === null) _isolationHost = detectHostPlatform();
-  const optOut = process.env.BUILDD_DISABLE_SANDBOX === '1';
-  let bwrap: BwrapProbeResult | null = null;
-  let seatbelt: boolean | null = null;
-  if (!optOut && _isolationHost.platform === 'darwin') {
-    if (_seatbeltSupported === null) {
-      _seatbeltSupported = probeSeatbelt();
-      if (!_seatbeltSupported) console.log('[runner] macOS Seatbelt (sandbox-exec) did not start — Claude and Codex run unconfined');
-    }
-    seatbelt = _seatbeltSupported;
-  } else if (!optOut && _isolationHost.platform !== 'other') {
-    if (bwrapOk) {
-      bwrap = { ok: true };
-    } else {
+  // The same function doctor and install.sh call (R-8), over this process's cached probes.
+  return probeIsolationRecord({
+    host: () => (_isolationHost ??= detectHostPlatform()),
+    optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
+    bwrap: (): BwrapProbeResult => {
+      if (bwrapOk) return { ok: true };
       if (_bwrapFailure === null) _bwrapFailure = diagnoseClaudeBwrapFailure();
-      bwrap = { ok: false, reason: _bwrapFailure };
-    }
-  }
-  return buildIsolationRecord({
-    host: _isolationHost,
-    optOut,
-    bwrap,
-    seatbelt,
-    probeAt: _bwrapProbeAt ?? new Date().toISOString(),
+      return { ok: false, reason: _bwrapFailure };
+    },
+    seatbelt: () => {
+      if (_seatbeltSupported === null) {
+        _seatbeltSupported = probeSeatbelt();
+        if (!_seatbeltSupported) console.log('[runner] macOS Seatbelt (sandbox-exec) did not start — Claude and Codex run unconfined');
+      }
+      return _seatbeltSupported;
+    },
+  }, {
+    probeAt: () => _bwrapProbeAt ?? new Date().toISOString(),
     processStartedAt: PROCESS_STARTED_AT,
     runnerVersion: RUNNER_VERSION,
   });

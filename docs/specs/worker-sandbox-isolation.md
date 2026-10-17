@@ -354,7 +354,8 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 - Capability probes: `apps/runner/src/env-scan.ts`: `probeBwrapNamespaces()`,
   `checkBwrapSupport()`, `checkBwrapMountIsolationSupport()`, capability
   advertisement in `scanEnvironment()`; operator check:
-  `apps/runner/src/doctor.ts`: `checkBwrap()`
+  `apps/runner/src/doctor.ts`: `checkIsolation()`, which prints the verdict of
+  `apps/runner/src/isolation-check.ts` (also run by `install.sh`)
 - Detection patterns: `apps/runner/src/error-trace-scanner.ts`
   (`bwrap_namespace_denied`, `sandbox_mount_gap`, `extractMountGapPath()`,
   `isMountGapCandidate()`)
@@ -450,14 +451,16 @@ it is recognisable rather than discovered.
    heartbeat is `isBwrapSupported()` — kernel capability — not whether the mount
    allowlist is active. Since R-13 is default-off, a runner can display
    "sandbox ok" while running agents with no outer namespace at all. Similarly
-   `checkBwrap()` in `doctor.ts` returns status **ok** with "bwrap not
-   installed — sandboxing disabled (expected)". That doctor message is still
-   true today. Nothing in CI asserts these two surfaces
+   doctor's bwrap check returned status **ok** with "bwrap not installed —
+   sandboxing disabled (expected)". Nothing in CI asserts these two surfaces
    agree with `isMountAllowlistEnabled()`.
 
    Closed here: the `sandbox:mount-allowlist` capability is advertised only when the opt-in is set AND the probe passes, and a derived posture drives the badge. Green now means enforced; bwrap-present-allowlist-off renders `mounts unrestricted` as a warning. Still open by choice: the Health problems panel does not COUNT a degraded runner, because with the allowlist default-off that would flag every runner today.
 
-7. **No host prerequisite is installed or checked at install time.**
+7. **FIXED (checked, not installed)** — **No host prerequisite is installed or checked at install time.**
+   `install.sh` and `doctor` now print the runtime's own isolation verdict and
+   the operator's steps (spec "Runner isolation" R-8); neither installs
+   bubblewrap or changes a host setting. What follows is the original finding.
    `apps/runner/install.sh` never mentions bubblewrap; the only mentions in the
    repo are the probe, the e2e suite, and the design doc. A fresh runner is
    unsandboxed by default and nothing during installation says so.

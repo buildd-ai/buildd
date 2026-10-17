@@ -209,3 +209,56 @@ export function claudeSessionSandbox<T extends { enabled?: boolean }>(
   if (!isConfined(claude)) return { sandbox: { enabled: false }, disableEnvScrub: true };
   return { sandbox: configured?.enabled ? configured : undefined, disableEnvScrub: false };
 }
+
+/** The host checks behind a record, injectable so every surface reads one fixture. */
+export interface IsolationProbes {
+  host(): { platform: RunnerHostPlatform; evidence: string[] };
+  /** BUILDD_DISABLE_SANDBOX=1. */
+  optOut(): boolean;
+  /** Claude's inner-sandbox bwrap probe, with the cause when it fails. */
+  bwrap(): BwrapProbeResult;
+  /** The darwin Seatbelt probe. */
+  seatbelt(): boolean;
+}
+
+/** The probes, run for real and uncached. The runtime caches its own (workers.ts). */
+export const realIsolationProbes: IsolationProbes = {
+  host: () => detectHostPlatform(),
+  optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
+  bwrap: () => probeBwrapNamespacesDetailed(CLAUDE_INNER_SANDBOX_UNSHARE, true),
+  seatbelt: probeSeatbelt,
+};
+
+/**
+ * R-8: the one capability function. The runtime (workers.ts getIsolationRecord,
+ * whose record the heartbeat carries), `buildd doctor` and install.sh (through
+ * isolation-check.ts) all build their record here, so one host gets one
+ * verdict. Runs only the probe the host needs: Seatbelt on darwin, bwrap on
+ * Linux, none on an opt-out or an unsupported platform. Probes only: nothing
+ * here changes a host setting.
+ */
+export function probeIsolationRecord(
+  probes: IsolationProbes,
+  meta: Pick<IsolationProbeInputs, 'processStartedAt' | 'runnerVersion'> & { probeAt?: () => string },
+): RunnerIsolationRecord {
+  const host = probes.host();
+  const optOut = probes.optOut();
+  let bwrap: BwrapProbeResult | null = null;
+  let seatbelt: boolean | null = null;
+  if (!optOut && host.platform === 'darwin') seatbelt = probes.seatbelt();
+  else if (!optOut && host.platform !== 'other') bwrap = probes.bwrap();
+  return buildIsolationRecord({
+    host,
+    optOut,
+    bwrap,
+    seatbelt,
+    probeAt: meta.probeAt?.() ?? new Date().toISOString(),
+    processStartedAt: meta.processStartedAt,
+    runnerVersion: meta.runnerVersion,
+  });
+}
+
+/** When this process started, the R-11 lower bound for its own probe. */
+export function processStartedAt(): string {
+  return new Date(Date.now() - process.uptime() * 1000).toISOString();
+}

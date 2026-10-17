@@ -11,7 +11,8 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync, readFileSync, copyFileSync, truncateSync } from 'fs';
 import { basename, join } from 'path';
 import { resolveBuilddHome } from './buildd-home';
-import { checkBwrapSupport } from './env-scan';
+import { isolationCheck, probeThisHost } from './isolation-check';
+import type { RunnerIsolationRecord } from '@buildd/shared';
 import {
   parseWorktreeList,
   isRunnerWorktreePath,
@@ -414,20 +415,13 @@ export function checkStaleWorktrees(): CheckResult {
   };
 }
 
-function checkBwrap(): CheckResult {
-  try {
-    execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
-  } catch {
-    return { name: 'bwrap', status: 'ok', message: 'bwrap not installed — sandboxing disabled (expected)' };
-  }
-  if (checkBwrapSupport()) {
-    return { name: 'bwrap', status: 'ok', message: 'bwrap user namespaces supported' };
-  }
-  return {
-    name: 'bwrap',
-    status: 'warn',
-    message: 'bwrap installed but namespace creation failed (user/pid/net — check kernel.unprivileged_userns_clone, seccomp, or AppArmor) — runner will force sandbox + subprocess scrubbing disabled',
-  };
+/**
+ * The runtime's isolation verdict for this host (R-8): the same record and
+ * text as the heartbeat and Health. The in-process callers pass the runner's
+ * own record, so a runtime bwrap denial shows here too.
+ */
+export function checkIsolation(record?: RunnerIsolationRecord): CheckResult {
+  return isolationCheck(record ?? probeThisHost());
 }
 
 function checkScreenSession(): CheckResult {
@@ -814,7 +808,7 @@ const fixMap: Record<string, (check: CheckResult) => FixResult> = {
 
 // --- Main doctor function ---
 
-export function runDiagnostics(): DoctorReport {
+export function runDiagnostics(opts: { isolation?: RunnerIsolationRecord } = {}): DoctorReport {
   const checks = [
     checkRunnerProcess(),
     checkConfig(),
@@ -822,7 +816,7 @@ export function runDiagnostics(): DoctorReport {
     checkGitDirty(),
     checkGitUntracked(),
     checkBunInstall(),
-    checkBwrap(),
+    checkIsolation(opts.isolation),
     checkScreenSession(),
     checkRunnerLog(),
     checkDiskUsage(),
