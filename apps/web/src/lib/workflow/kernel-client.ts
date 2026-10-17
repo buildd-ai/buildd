@@ -525,9 +525,36 @@ export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: Doo
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
-/** T4 from the web host: the attempt's end, applied where the kernel is hosted (AC-9). */
-export const attemptEnded = (p: Omit<KernelOps['attempt_ended']['input'], 'workspaceId'>, c: DoorCall) =>
-  door('attempt_ended', { ...p, workspaceId: p.task.workspaceId }, c);
+/**
+ * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
+ * (`unknown op "<op>"`), which a control plane on an older build answers before it reads anything.
+ * Nothing was applied there. Any other refusal (auth, reach, a malformed input) is not this.
+ */
+export function refusedAsUnknownOp(err: unknown, op: KernelOp): boolean {
+  if (!(err instanceof KernelCommandRefusedError) || err.status !== 400) return false;
+  const { code, error } = err.body;
+  return code === 'bad_request' && typeof error === 'string' && error.startsWith(`unknown op ${JSON.stringify(op)}`);
+}
+
+/**
+ * T4 from the web host: the attempt's end, applied where the kernel is hosted (AC-9).
+ *
+ * Release skew: Vercel and the control-plane Worker deploy separately, so for a few minutes the web
+ * host can run this against a control plane that predates `attempt_ended`. That control plane refuses
+ * the op as unknown and applies nothing, and a repair's or a review's end has no other backstop. Only
+ * then the web host applies it itself, as it does in shadow, and says so loudly. Every other refusal
+ * stays a refusal.
+ */
+export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_ended']['result']> {
+  const input = { ...p, workspaceId: p.task.workspaceId };
+  try {
+    return await door('attempt_ended', input, c);
+  } catch (err) {
+    if (!refusedAsUnknownOp(err, 'attempt_ended')) throw err;
+    console.error(`[workflow] SKEW: the control plane does not know attempt_ended (an older build); applying task ${p.task.id}'s attempt end on the ${(c.deps?.host ?? kernelHost)()} host instead. This should stop once the control plane is on this release.`);
+    return (c.deps?.run ?? runKernelOp)('attempt_ended', input);
+  }
+}
 
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {

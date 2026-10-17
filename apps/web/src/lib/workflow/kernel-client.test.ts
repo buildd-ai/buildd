@@ -442,6 +442,40 @@ describe('T4 is a door too (AC-9): an attempt\'s end from the web host', () => {
     expect(l.ran).toEqual(['attempt_ended']);
   });
 
+  it('release skew: a control plane that does not know the op (it predates it) refused it, so the web host applies it itself', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    let sent = 0;
+    // What an older control plane answers for an op it does not know: commandProblem's refusal, verbatim.
+    const { commandProblem } = await import('./command-api');
+    const why = commandProblem({ v: 1, op: 'attempt_ended_from_the_future', idempotencyKey: 'k-00000001', principal, input: { workspaceId: WS } })!;
+    expect(why).toBe('unknown op "attempt_ended_from_the_future"');
+    const older = (async () => { sent++; return Response.json({ v: 1, code: 'bad_request', error: why.replace('attempt_ended_from_the_future', 'attempt_ended') }, { status: 400 }); }) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(sent).toBe(1);
+    expect(l.ran).toEqual(['attempt_ended']);
+    expect(String(errors[0])).toContain('SKEW');
+  });
+
+  it('release skew only: any other refusal (forbidden, a malformed input) stays a refusal and nothing runs here', async () => {
+    const { attemptEnded, refusedAsUnknownOp } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'account does not reach this workspace'], [400, 'bad_request', 'input.workspaceId must be a uuid'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(refusedAsUnknownOp(err, 'attempt_ended')).toBe(false);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
   it('the host applies an end only for a task of the workspace the reach check judged', async () => {
     const { runKernelOp } = await import('./command-api');
     const OTHER = '44444444-4444-4444-8444-444444444444';

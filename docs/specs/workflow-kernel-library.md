@@ -346,7 +346,11 @@ the control plane, authenticated as the caller).
     workspace), and `attempt_ended` (T4: an attempt's end as the worker
     PATCH, the reaper, a cancel or a reviewer takeover reports it; the
     task's workspace rides on the input for the reach check, and the host
-    refuses an end whose task is in another workspace). The same
+    refuses an end whose task is in another workspace; during a release, a
+    control plane that predates the op refuses it as an unknown op and
+    applies nothing, and only then the web host applies the end itself and
+    logs it loudly, so a repair's or review's end is never lost; any other
+    refusal stays a refusal). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
