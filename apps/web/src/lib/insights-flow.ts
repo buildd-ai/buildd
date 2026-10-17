@@ -153,7 +153,16 @@ export interface FlowTask {
 export interface FlowDay { start: number; end: number; shipped: number; lost: number }
 
 /** One row of "What slowed work down?": time inside the window, and how many tasks spent any. */
-export interface FlowTimeRow { category: TimeCategory; ms: number; tasks: number; longestMs: number }
+export interface FlowTimeRow {
+  category: TimeCategory;
+  /** Cumulative across every affected task: a detail, never a headline. */
+  ms: number;
+  tasks: number;
+  longestMs: number;
+  /** Per affected task (each counted once, however many times it waited). */
+  medianMs: number;
+  p90Ms: number;
+}
 
 export interface FlowBucket {
   start: number;
@@ -180,7 +189,12 @@ export interface FlowHeadline {
   lostTasks: number;
   /** Releases that reached production in the window. */
   releases: number;
-  /** Median of first agent start to production, over tasks shipped in the window. */
+  /**
+   * Median of first agent start to production, over tasks shipped in the window.
+   * Start is the task's first worker start (queue wait before it excluded; retries
+   * included); production is the first healthy/degraded release carrying it, or its
+   * merge where the workspace tracks no releases. One value per task, not per PR.
+   */
   medianStartToProdMs: number | null;
 }
 
@@ -198,8 +212,8 @@ export interface FlowSeries {
   days: FlowDay[];
   /** Where task time went inside the window, in display order. */
   time: FlowTimeRow[];
-  /** The same counts for the window before, when the read reached back that far. */
-  previous?: { shippedTasks: number; lostTasks: number; days: FlowDay[] } | null;
+  /** The same counts for the window before (the span immediately preceding `window`), when the read reached back that far. */
+  previous?: { window?: { from: number; to: number }; shippedTasks: number; lostTasks: number; days: FlowDay[] } | null;
 }
 
 export const UNASSIGNED_ROLE = 'general-purpose';
@@ -218,6 +232,13 @@ export { MAX_UNENDED_RUN_MS };
 
 function overlap(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+}
+
+/** Nearest-rank percentile (0..1); null when empty. */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
 }
 
 function median(values: number[]): number | null {
@@ -318,6 +339,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   const timeTotals = emptySplit();
   const timeTasks = emptySplit();
   const timeLongest = emptySplit();
+  const timeEach: Record<TimeCategory, number[]> = Object.fromEntries(TIME_CATEGORIES.map(c => [c, [] as number[]])) as Record<TimeCategory, number[]>;
 
   for (const [key, rows] of groups) {
     rows.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
@@ -383,6 +405,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       timeTotals[c] += time[c];
       timeTasks[c]++;
       timeLongest[c] = Math.max(timeLongest[c], time[c]);
+      timeEach[c].push(time[c]);
     }
 
     const agentHours = runs.reduce((h, i) => h + (i.to - i.from), 0) / HOUR;
@@ -442,7 +465,8 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   }
 
   const settled = shippedHours + lostHours;
-  const shippedTasks = tasks.filter(t => t.shippedAt != null && t.shippedAt >= window.from && t.shippedAt < window.to).length;
+  const inWin = (t: number | null) => t != null && t >= window.from && t < window.to;
+  const shippedTasks = tasks.filter(t => inWin(t.shippedAt)).length;
   return {
     window,
     bucketMs,
@@ -467,12 +491,12 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       inFlightHours,
       otherHours,
       shippedTasks,
-      lostTasks: tasks.filter(t => t.lostAt != null).length,
+      lostTasks: tasks.filter(t => inWin(t.lostAt)).length,
       releases: windowReleases.filter(r => SHIPPED_RELEASE_STATES.has(r.state)).length,
       medianStartToProdMs: median(startToProd),
     },
     days,
-    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category] })),
+    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category], medianMs: median(timeEach[category]) ?? 0, p90Ms: percentile(timeEach[category], 0.9) ?? 0 })),
   };
 }
 
