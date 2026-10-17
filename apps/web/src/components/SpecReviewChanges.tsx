@@ -41,8 +41,11 @@ const Words = ({ text }: { text: string }) => <span className="whitespace-pre-li
 function Row({ kind, label, children }: { kind: string; label: string; children?: ReactNode }) {
   return (
     <li className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5.5rem_6.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-change" data-kind={kind}>
-      <span className="text-meta text-text-muted">{KIND[kind as ChangeLine['kind']] ?? kind}</span>
-      <span className="font-mono text-meta font-semibold text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-change-id">{label}</span>
+      {/* One line on a phone (kind, id), two columns from md. */}
+      <div className="flex items-baseline gap-2 md:contents">
+        <span className="text-meta text-text-muted">{KIND[kind as ChangeLine['kind']] ?? kind}</span>
+        <span className="font-mono text-meta font-semibold text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-change-id">{label}</span>
+      </div>
       <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
     </li>
   );
@@ -81,6 +84,7 @@ function AddedRange({ line }: { line: Extract<ChangeLine, { kind: 'added-range' 
   const [open, setOpen] = useState(false);
   return (
     <li className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-change" data-kind="added-range">
+      <div className="flex min-w-0 items-baseline gap-2 md:contents">
       <span className="text-meta text-text-muted">Added</span>
       <div className="min-w-0">
         <button
@@ -103,6 +107,7 @@ function AddedRange({ line }: { line: Extract<ChangeLine, { kind: 'added-range' 
             ))}
           </ul>
         ) : null}
+      </div>
       </div>
     </li>
   );
@@ -142,7 +147,7 @@ export default function SpecReviewChanges({ summary, lines, otherText, mismatch 
         {otherText.length ? (
           <ul className="mt-1 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-review-other">
             {otherText.map((o) => (
-              <li key={`${o.kind}:${o.section}`} className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-other-row">
+              <li key={`${o.kind}:${o.section}`} className="flex items-baseline gap-2 py-2 md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-other-row">
                 <span className="text-meta text-text-muted">{OTHER[o.kind]}</span>
                 <span className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]"><Heading path={o.section} /></span>
               </li>
