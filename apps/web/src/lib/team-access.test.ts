@@ -3,17 +3,17 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 // Mock only the db layer — let real schema + drizzle-orm load. Mocking those
 // globally (bun's mock.module is process-wide) would shadow exports other
 // co-running test files import. getUserTeamIds → db.query.teamMembers.findMany;
-// getUserDefaultTeamId → db.query.teams.findFirst (slug = personal-{userId}).
+// getUserDefaultTeamId → db.query.teams.findFirst (teams.personal_user_id = userId).
 const mockTeamMembersFindMany = mock(() => [] as any[]);
 const mockTeamMembersFindFirst = mock(() => null as any);
 const mockTeamsFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
-// The default-team pick reads the user's teams (id, slug, timezone) in one
+// The default-team pick reads the user's teams (id, personalUserId, timezone) in one
 // query. Derived from mockTeamsFindFirst — which the tests already use to say
 // "this is the personal team" — so each case states the personal team once.
 const mockTeamsFindMany = mock(async () => {
   const personal = await mockTeamsFindFirst();
-  return personal ? [{ id: personal.id, slug: 'personal-user-1', timezone: personal.timezone ?? null }] : [];
+  return personal ? [{ id: personal.id, personalUserId: 'user-1', timezone: personal.timezone ?? null }] : [];
 });
 
 // React cache() is per request, and a no-op outside a server render — so by
@@ -167,7 +167,7 @@ describe('resolveActiveTeamId', () => {
   });
 
   it('prefers personal team over first team when personal team exists (no cookie)', async () => {
-    // getUserTeamIds now includes the personal team via slug fallback, so
+    // getUserTeamIds includes the personal team via its marker, so
     // resolveActiveTeamId will find it in teamIds and prefer it.
     mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'A' }]);
     mockTeamsFindFirst.mockResolvedValue({ id: 'P' }); // personal team is P
@@ -410,7 +410,7 @@ describe('resolveAccountTeamIds — an API key resolves to exactly its own team'
     // A member of the key's team who also belongs to other teams.
     mockTeamMembersFindFirst.mockResolvedValue({ userId: 'someone' });
     mockTeamMembersFindMany.mockResolvedValue([{ teamId: 'key-team' }, { teamId: 'other-team' }]);
-    mockTeamsFindFirst.mockResolvedValue({ id: 'key-team', slug: 'personal-someone' });
+    mockTeamsFindFirst.mockResolvedValue({ id: 'key-team', personalUserId: 'someone' });
   });
 
   it("returns only the key account's team, not a member's other teams", async () => {
@@ -445,13 +445,19 @@ describe('getUserTeamRole', () => {
 
   it("treats the user's own personal team as owner when no membership row exists", async () => {
     mockTeamMembersFindFirst.mockResolvedValue(null);
-    mockTeamsFindFirst.mockResolvedValue({ id: 'team-p', slug: 'personal-user-1' });
+    mockTeamsFindFirst.mockResolvedValue({ id: 'team-p', personalUserId: 'user-1' });
     expect(await getUserTeamRole('user-1', 'team-p')).toBe('owner');
   });
 
   it('returns null for a team the user does not belong to', async () => {
     mockTeamMembersFindFirst.mockResolvedValue(null);
-    mockTeamsFindFirst.mockResolvedValue({ id: 'team-x', slug: 'personal-someone-else' });
+    mockTeamsFindFirst.mockResolvedValue({ id: 'team-x', personalUserId: 'someone-else' });
     expect(await getUserTeamRole('user-1', 'team-x')).toBeNull();
+  });
+
+  it('a personal- slug alone does not make the team owned', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(null);
+    mockTeamsFindFirst.mockResolvedValue({ id: 'team-s', slug: 'personal-user-1', personalUserId: null });
+    expect(await getUserTeamRole('user-1', 'team-s')).toBeNull();
   });
 });

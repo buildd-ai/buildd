@@ -5,7 +5,8 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(true as any));
 const mockWorkspacesFindFirst = mock(() => null as any);
-const mockInstallationsFindFirst = mock(() => null as any);
+const mockInstallationsFindMany = mock(() => [] as any);
+const mockBelongsToTeam = mock((_installationId: number, _teamId: string) => Promise.resolve(false));
 const mockIsGitHubAppConfigured = mock(() => true);
 const mockGithubApi = mock((_installationId: number, _path: string, _opts?: any) =>
   Promise.resolve({
@@ -31,6 +32,7 @@ const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: mockBelongsToTeam }));
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   isGitHubAppConfigured: mockIsGitHubAppConfigured,
@@ -40,7 +42,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaces: { findFirst: mockWorkspacesFindFirst },
-      githubInstallations: { findFirst: mockInstallationsFindFirst },
+      githubInstallations: { findMany: mockInstallationsFindMany },
     },
     insert: () => ({ values: mockInsertValues }),
     update: () => ({ set: mockUpdateSet }),
@@ -49,6 +51,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -76,7 +79,10 @@ describe('POST /api/workspaces/[id]/create-repo', () => {
     mockAuthenticateApiKey.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockWorkspacesFindFirst.mockReset();
-    mockInstallationsFindFirst.mockReset();
+    mockInstallationsFindMany.mockReset();
+    mockInstallationsFindMany.mockResolvedValue([]);
+    mockBelongsToTeam.mockReset();
+    mockBelongsToTeam.mockResolvedValue(false);
     mockIsGitHubAppConfigured.mockReset();
     mockGithubApi.mockReset();
     mockReturning.mockReset();
@@ -180,8 +186,27 @@ describe('POST /api/workspaces/[id]/create-repo', () => {
   it('returns 422 when workspace has no linked installation and no org match', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubInstallationId: null });
-    mockInstallationsFindFirst.mockResolvedValue(null);
     const res = await POST(postReq({ name: 'new-repo', org: 'ghost-org' }), { params });
     expect(res.status).toBe(422);
+  });
+
+  it('an installation on the org that is not one of the workspace\'s team\'s is not used', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', githubInstallationId: null });
+    mockInstallationsFindMany.mockResolvedValue([{ id: 'inst-x', installationId: 99, accountLogin: 'acme', accountType: 'Organization', suspendedAt: null }]);
+    mockBelongsToTeam.mockResolvedValue(false);
+    const res = await POST(postReq({ name: 'new-repo', org: 'acme' }), { params });
+    expect(res.status).toBe(422);
+    expect(mockBelongsToTeam).toHaveBeenCalledWith(99, 'team-1');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('the team\'s own installation on the org is used', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', githubInstallationId: null });
+    mockInstallationsFindMany.mockResolvedValue([{ id: 'inst-1', installationId: 1234, accountLogin: 'acme', accountType: 'Organization', suspendedAt: null }]);
+    mockBelongsToTeam.mockResolvedValue(true);
+    await POST(postReq({ name: 'new-repo', org: 'acme' }), { params });
+    expect(mockGithubApi.mock.calls[0][0]).toBe(1234);
   });
 });

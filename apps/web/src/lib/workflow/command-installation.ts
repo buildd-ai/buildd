@@ -23,8 +23,11 @@ export type InstallationResolution =
   | { refused: 'repo_out_of_scope' | 'no_installation' | 'installation_not_team_owned' };
 
 export interface InstallationLookups {
-  /** The workspace's own repo and installation (linked repo first, as `pickWorkspaceRepoIdentity`). */
-  workspace: (workspaceId: string) => Promise<{ teamId: string | null; fullName: string | null; installationId: number | null }>;
+  /**
+   * The workspace's own repo and installation (linked repo first, as `pickWorkspaceRepoIdentity`).
+   * `linked: false` when the repo comes only from the free-text `workspaces.repo` column.
+   */
+  workspace: (workspaceId: string) => Promise<{ teamId: string | null; fullName: string | null; installationId: number | null; linked?: boolean }>;
   /** The installation that covers this repo (`installationIdForRepo`). */
   forRepo: (repoFullName: string) => Promise<number | null>;
   /** Whether a repo other than the workspace's own is linked to a workspace of one of its missions. */
@@ -43,10 +46,13 @@ export async function expectedInstallation(
   const [ws, forRepo] = await Promise.all([lookups.workspace(workspaceId), lookups.forRepo(repoFullName)]);
   const own = same(ws.fullName, repoFullName);
   if (!own && !(await lookups.inScope(workspaceId, repoFullName))) return { refused: 'repo_out_of_scope' };
-  const installationId = own ? (ws.installationId ?? forRepo) : (forRepo ?? ws.installationId);
+  // A repo named only in the free-text column is no link: it acts only through the installation
+  // that covers it, and only when that one is the team's.
+  const textOnly = own && ws.linked === false;
+  const installationId = textOnly ? forRepo : own ? (ws.installationId ?? forRepo) : (forRepo ?? ws.installationId);
   if (!installationId) return { refused: 'no_installation' };
   // The workspace's own link needs no second read; one found through the repo must be the team's.
-  if (installationId !== ws.installationId && !(ws.teamId && await lookups.ownedByTeam(installationId, ws.teamId))) {
+  if ((textOnly || installationId !== ws.installationId) && !(ws.teamId && await lookups.ownedByTeam(installationId, ws.teamId))) {
     return { refused: 'installation_not_team_owned' };
   }
   return { installationId };
@@ -65,16 +71,18 @@ async function workspaceIdentity(workspaceId: string) {
     with: WORKSPACE_INSTALLATION_WITH,
   });
   const identity = pickWorkspaceRepoIdentity(ws);
-  return { teamId: ws?.teamId ?? null, fullName: identity.fullName, installationId: identity.installationId };
+  return { teamId: ws?.teamId ?? null, fullName: identity.fullName, installationId: identity.installationId, linked: identity.source === 'github_repo' };
 }
 
+// Unscoped on purpose: `expectedInstallation` checks the answer with `ownedByTeam` itself and
+// refuses with `installation_not_team_owned`, a reason the control plane reports by name.
 async function forRepo(repoFullName: string) {
   return (await import('@/lib/workspace-installation')).installationIdForRepo(repoFullName);
 }
 
 /**
  * In scope: the repo is linked (`github_repos`, through `workspaces.github_repo_id`) to a workspace
- * of a mission with a task in this workspace. Scope comes from the team's own repo links only, never
+ * of this workspace's team, of a mission with a task in this workspace. Scope comes from the team's own repo links only, never
  * from a PR URL recorded on a worker row or the free-text `workspaces.repo` column. A PR buildd opens
  * or adopts through the GitHub App is always in its own workspace's linked repo
  * (`ensureRepoAccessForPr`, `pr.adopt`, `task-pr-attach.ts`), so this covers those too.
@@ -96,6 +104,8 @@ export async function repoInScope(workspaceId: string, repoFullName: string): Pr
     .innerJoin(githubRepos, eq(githubRepos.id, workspaces.githubRepoId))
     .where(and(
       anyOf(workspaces.id, db.selectDistinct({ id: tasks.workspaceId }).from(tasks).where(anyOf(tasks.missionId, missionIds))),
+      // Only the team's own workspaces, whatever a mission row holds.
+      sql`${workspaces.teamId} = (SELECT w0.team_id FROM workspaces w0 WHERE w0.id = ${workspaceId}::uuid)`,
       sql`${normalizedRepoSql(githubRepos.fullName)} = ${repo}`,
     ))
     .limit(1);

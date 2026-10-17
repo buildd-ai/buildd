@@ -25,9 +25,9 @@ const { createRoot } = await import('react-dom/client');
 const { default: YourTeams } = await import('./YourTeams');
 
 const TEAMS = [
-  { id: 'team-personal', name: 'Me', slug: 'personal-me', role: 'owner', memberCount: 1, ownerCount: 1 },
-  { id: 'team-acme', name: 'Acme', slug: 'acme', role: 'member', memberCount: 4, ownerCount: 1 },
-  { id: 'team-solo', name: 'Solo Owner', slug: 'solo', role: 'owner', memberCount: 3, ownerCount: 1 },
+  { id: 'team-personal', name: 'Me', slug: 'personal-me', personalUserId: 'user-1', role: 'owner', memberCount: 1, ownerCount: 1 },
+  { id: 'team-acme', name: 'Acme', slug: 'acme', personalUserId: null, role: 'member', memberCount: 4, ownerCount: 1 },
+  { id: 'team-solo', name: 'Solo Owner', slug: 'solo', personalUserId: null, role: 'owner', memberCount: 3, ownerCount: 1 },
 ];
 
 let host: HTMLElement;

@@ -2528,6 +2528,25 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    // Task 38ed99bc: the dispatch-time "CI fix N of M" activity entry reads detail.attemptNo, so the
+    // kernel must hand the host the dispatched count, not the ledger row's own number.
+    name: '38ed99bc: a CI fix filed behind a skipped row carries its dispatched count, so its activity entry never reads past the budget',
+    async run(host) {
+      const s = await new Delivery(host, 125).open();
+      await s.approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
+      const first = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.fixEnded(first.id, { outcome: 'lost', cancelled: true, taskId: undefined, workerId: `cancel:${first.id}` }), 'APPROVED', 'cancelled before it started');
+      applied(await s.ciRed('H1', { trigger: 'human', actor: 'human:u' }), 'REPAIRING', 'Fix CI files the next fix');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const next = (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => b.attemptNo - a.attemptNo)[0];
+      eq(next.attemptNo, 2, 'the ledger row is number 2');
+      eq(f.work.filed.filter((w) => w.role === 'ci_fix').at(-1)!.detail?.attemptNo, 1, 'but it is CI fix 1');
+    },
+  },
+  {
     name: 'delta approval (58c8961e): carried deltas are capped together, measured from the last full review',
     async run(host) {
       const s = await (await new Delivery(host, 96).open()).approvedAt('H1');
