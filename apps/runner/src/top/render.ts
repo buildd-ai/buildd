@@ -11,7 +11,7 @@ import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
 import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
+  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
   NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
@@ -240,13 +240,21 @@ function leftWidth(cols: number): number {
   return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
 }
 
+/** A fold row's words: "Delivered this week · 4", or "Delivered · 4" where that does not fit. */
+function foldTitle(m: MissionRow, room: number): string {
+  const full = `${m.title} · ${m.fold!.count}`;
+  return textWidth(full) <= room ? full : `Delivered · ${m.fold!.count}`;
+}
+
 /**
  * The missions pane (R-24): a heading row per team, then that team's open
- * missions (building and verifying first, then on hold), then the ones
- * delivered in the last 7 days, dimmed. A second, dimmed line carries "local
- * session" or "delivered Oct 14"; when the pane is too short those lines go
- * first (except the selected mission's), then the pane scrolls to keep the
- * selected mission in view.
+ * missions (building and verifying first, then on hold), then one dimmed
+ * "Delivered this week · N" row. Opened, it lists the missions delivered in
+ * the last 7 days under it, dimmed, each with its day on its own row ("Oct
+ * 14"), so a full pane cannot drop the day. A second, dimmed line carries
+ * "local session"; when the pane is too short those lines go first (except
+ * the selected mission's), then the pane scrolls to keep the selected
+ * mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
   const hasTeams = missions.some(m => m.team !== null);
@@ -258,6 +266,12 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
         lines.push(m.team === null ? ' '.repeat(lw) : p.fg('muted', fit(' ' + m.team, lw)));
       }
       const isCurrent = m.key === current.key;
+      if (m.fold) {
+        const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', isCurrent ? '▸' : ' ')} ${p.fg('muted', fit(foldTitle(m, lw - 4), lw - 4))} `;
+        if (isCurrent) selected = lines.length;
+        lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+        return;
+      }
       const delivered = m.deliveredAt !== undefined;
       // Done over total always (R-31), with the stage word beside it (R-18).
       // The title gives way first; only when it would vanish does the stage
@@ -265,14 +279,15 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       const tally = m.key === NO_MISSION || m.total > 0 ? `${m.done}/${m.total}` : '';
       const stage = missionStageWord(m);
       const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? 'on hold' : '');
-      const count = delivered ? '' : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
+      const count = delivered ? deliveredDay(m.deliveredAt!) : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
       const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
       const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
       if (isCurrent) selected = lines.length;
       lines.push(isCurrent && focused ? p.selectedBg(line) : line);
-      const meta = missionMeta(m);
+      // A delivered mission's day is on its row already.
+      const meta = delivered ? null : missionMeta(m);
       if (meta && (withMeta || isCurrent)) lines.push(p.fg('muted', fit('   ' + meta, lw)));
     });
     // Without team headings the pane keeps its MISSIONS label.
@@ -292,7 +307,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
   const lw = leftWidth(cols);
   const rw = cols - lw - 1;
-  const missions = missionRows(state, now);
+  const missions = missionList(state, now);
   const mission = currentMission(state, now);
   const rows = taskRows(state, now);
   const sel = selectedRow(state, now);
@@ -310,7 +325,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const ws = currentWorkspace(state);
   const meta = missionMeta(mission);
   const status = mission.deliveredAt !== undefined && meta ? ` · ${meta}` : missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : meta ? ` · ${meta}` : '';
-  const heading = (ws ? `${ws.name} · ` : '') + mission.title + status + filterNote;
+  const heading = (ws ? `${ws.name} · ` : '') + (mission.fold ? `${mission.title} · ${mission.fold.count}` : mission.title + status) + filterNote;
   const titleW = rw - textWidth(counts) - 1;
   // One space always separates a cut heading from the counts (R-21).
   right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
@@ -335,8 +350,9 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
     }
   }
   if (rows.length === 0) {
-    const empty = state.filter ? ' Nothing matches the filter.'
+    const empty = mission.fold ? ` Delivered in the last 7 days. ${mission.fold.open ? '⏎ or Esc folds them.' : '⏎ lists them.'}`
       : mission.deliveredAt !== undefined ? ` Delivered ${deliveredDay(mission.deliveredAt)}. Its finished work is not listed here.`
+      : state.filter ? ' Nothing matches the filter.'
       : mission.local ? ' A person runs this mission from their own session.'
       : ' Nothing here yet. Work this runner takes shows up as it happens.';
     lines.push({ text: p.fg('muted', fit(empty, rw)) });
@@ -462,7 +478,7 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
 
 const HELP_KEYS: Array<[string, string]> = [
   ['↑↓ j k', 'move; ← → switch between missions and tasks'],
-  ['⏎', 'open a task: plan, milestones, tool calls'],
+  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them'],
   ['a', 'answer the question an agent is asking'],
   ['m', 'send a message to a running agent'],
   ['p', 'pause a running agent'],
@@ -473,7 +489,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['o', 'open the task on buildd'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
-  ['/', 'filter by title; esc clears it'],
+  ['/', 'filter missions and tasks by title, delivered ones too; esc clears it'],
   ['q', 'quit (the runner keeps running)'],
 ];
 

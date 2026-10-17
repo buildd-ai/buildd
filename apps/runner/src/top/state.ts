@@ -170,6 +170,8 @@ export interface TopState {
   missionCursor: number;
   rowCursor: number;
   filter: string;
+  /** Fold rows (`fold:<team>`) a person opened with Enter (R-24); kept while top runs. */
+  unfolded: string[];
   mode: Mode;
   status: StatusLine | null;
 }
@@ -218,6 +220,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
     missionCursor: 0,
     rowCursor: 0,
     filter: '',
+    unfolded: [],
     mode: { kind: 'list' },
     status: null,
   };
@@ -613,6 +616,17 @@ export interface MissionRow {
   held: boolean;
   /** Delivered: when, in ms; it is listed for 7 days after. */
   deliveredAt?: number;
+  /** Set on a team's "Delivered this week" row (R-24): how many it holds, and whether they are listed under it. */
+  fold?: { count: number; open: boolean };
+}
+
+/** The key of a team's "Delivered this week" row. */
+export function foldKey(team: string | null): string {
+  return `fold:${team ?? ''}`;
+}
+
+export function isFoldKey(key: string | null | undefined): boolean {
+  return !!key && key.startsWith('fold:');
 }
 
 /** Delivered missions stay listed this long (R-24). */
@@ -737,9 +751,44 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
   return rows;
 }
 
+/**
+ * The rows the missions pane lists (R-24): each team's open missions, then one
+ * "Delivered this week" row folding the ones delivered in the last 7 days.
+ * An opened fold lists them under it, newest first; so does a fold holding the
+ * selected mission (`--mission`, or the cursor). While `/` filters, missions
+ * whose title or a task's title matches are listed, delivered ones on their
+ * own rows, with no fold row.
+ */
+export function missionList(state: TopState, now: number = Date.now()): MissionRow[] {
+  const rows = missionRows(state, now);
+  if (state.filter) {
+    const withTask = new Set(relevantTasks(state, workerByTask(state)).filter(t => matchesFilter(t.title, state.filter)).map(t => t.missionId || NO_MISSION));
+    return rows.filter(r => r.key === NO_MISSION || matchesFilter(r.title, state.filter) || withTask.has(r.key));
+  }
+  const sel = state.selectedMission;
+  const isSelected = (r: MissionRow) => !!sel && (r.key === sel || r.key.startsWith(sel));
+  const out: MissionRow[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const team = rows[i].team;
+    const group: MissionRow[] = [];
+    // `(no mission)` closes the list on its own, never inside a team's fold.
+    while (i < rows.length && rows[i].team === team && rows[i].key !== NO_MISSION) group.push(rows[i++]);
+    if (group.length === 0) { out.push(rows[i++]); continue; }
+    const done = group.filter(r => r.deliveredAt !== undefined);
+    out.push(...group.filter(r => r.deliveredAt === undefined));
+    if (done.length === 0) continue;
+    const key = foldKey(team);
+    const open = state.unfolded.includes(key) || done.some(isSelected);
+    out.push({ ...emptyRow(key, 'Delivered this week'), team, fold: { count: done.length, open } });
+    if (open) out.push(...done);
+  }
+  return out;
+}
+
 /** The mission the right pane shows: the selection if it still exists, else the first. */
 export function currentMission(state: TopState, now: number = Date.now()): MissionRow {
-  const rows = missionRows(state, now);
+  const rows = missionList(state, now);
   if (state.selectedMission) {
     const hit = rows.find(r => r.key === state.selectedMission) ?? rows.find(r => r.key.startsWith(state.selectedMission!));
     if (hit) return hit;
@@ -1194,8 +1243,10 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   const done: TaskRow[] = [];
   const holds = providerHolds(state, now);
 
+  // A mission found by its own name lists all its work (R-24).
+  const missionHit = !!state.filter && mission.key !== NO_MISSION && !mission.fold && matchesFilter(mission.title, state.filter);
   for (const t of tasks) {
-    if (!matchesFilter(t.title, state.filter)) continue;
+    if (!missionHit && !matchesFilter(t.title, state.filter)) continue;
     const w = workers.get(t.id);
     const role = roleLabel(t.roleSlug);
     const base = { taskId: t.id, title: t.title || w?.taskTitle || t.id.slice(0, 8), role };

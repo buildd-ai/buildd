@@ -281,6 +281,34 @@ export interface HoldCommandDeps {
   now?: () => number;
   probe?: (socketPath: string) => Promise<SocketProbe>;
   post?: (path: string, body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>;
+  /** Where "waiting for the runner" goes (default stderr). */
+  waitNotice?: (line: string) => void;
+  /** How long the runner may take before that line shows (default 2s). */
+  waitNoticeAfterMs?: number;
+}
+
+/**
+ * How long `buildd hold` / `stop` / `resume` wait for the runner on the socket.
+ * A runner busy starting or finishing agents can take several seconds to
+ * answer; 5s failed a live runner with "Nothing stopped" (task 7d42431c).
+ */
+export const RUNNER_SOCKET_TIMEOUT_MS = 25_000;
+
+const WAIT_NOTICE = 'Waiting for the runner on this machine to answer (it is busy)...';
+
+/** Run `fn`; if it has not settled after a moment, say once that we are waiting. */
+function waitingNotifier(deps: HoldCommandDeps): <T>(fn: () => Promise<T>) => Promise<T> {
+  let said = false;
+  const notice = deps.waitNotice ?? ((line: string) => { process.stderr.write(`${line}\n`); });
+  const afterMs = deps.waitNoticeAfterMs ?? 2_000;
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    const t = said ? null : setTimeout(() => { if (!said) { said = true; notice(WAIT_NOTICE); } }, afterMs);
+    try {
+      return await fn();
+    } finally {
+      if (t) clearTimeout(t);
+    }
+  };
 }
 
 export interface HoldCommandResult {
@@ -295,7 +323,7 @@ async function socketPost(socketPath: string, path: string, body: Record<string,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5_000),
+    signal: AbortSignal.timeout(RUNNER_SOCKET_TIMEOUT_MS),
   } as RequestInit);
   const text = await res.text();
   let parsed: unknown = text;
@@ -339,9 +367,10 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
   if (probe.state !== 'live') return saveLocally('No runner is running on this machine.');
 
   const post = deps.post ?? ((path: string, body: Record<string, unknown>) => socketPost(deps.socketPath, path, body));
+  const waiting = waitingNotifier(deps);
   let res: { status: number; body: unknown };
   try {
-    res = cmd.kind === 'hold' ? await post('/api/hold', forMs ? { forMs } : {}) : await post('/api/resume', {});
+    res = await waiting(() => cmd.kind === 'hold' ? post('/api/hold', forMs ? { forMs } : {}) : post('/api/resume', {}));
   } catch (err) {
     return { code: 1, stdout: '', stderr: `The runner on this machine did not answer (${(err as Error)?.message ?? err}). Nothing changed.` };
   }
@@ -366,7 +395,7 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
 interface LiveAgent { id: string; title: string; status: string; paused: boolean }
 
 async function socketGet(socketPath: string, path: string): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`http://localhost${path}`, { unix: socketPath, signal: AbortSignal.timeout(5_000) } as RequestInit);
+  const res = await fetch(`http://localhost${path}`, { unix: socketPath, signal: AbortSignal.timeout(RUNNER_SOCKET_TIMEOUT_MS) } as RequestInit);
   const text = await res.text();
   try { return { status: res.status, body: JSON.parse(text) }; } catch { return { status: res.status, body: text }; }
 }
@@ -464,7 +493,7 @@ export async function runStopCommand(cmd: { yes: boolean; abort?: boolean }, dep
   }
   const post = deps.post ?? ((path: string, body: Record<string, unknown>) => socketPost(deps.socketPath, path, body));
 
-  const agents = await listAgents(deps);
+  const agents = await waitingNotifier(deps)(() => listAgents(deps));
   if ('error' in agents) return { code: 1, stdout: '', stderr: `${agents.error} Nothing stopped.` };
   // A pause stops a working agent at its next safe point; one already paused or
   // parked on a question has no session running to pause. --abort ends all of them.

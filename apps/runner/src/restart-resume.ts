@@ -33,7 +33,7 @@ import { join } from 'path';
 import type { LocalWorker } from './types';
 import { gitArgsAsync } from './git-async';
 import { stableCodexHomePath } from './codex-auth';
-import { stableCodexHomeIsolatedPath } from './isolation-paths';
+import { isolatedClaudeConfigDirPath, stableCodexHomeIsolatedPath } from './isolation-paths';
 
 // ── the grace ───────────────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ export interface ResumeProbe {
   /** The worktree directory still exists. */
   worktreeExists(path: string): boolean;
   /** Claude: a transcript for this session id under one of the config dirs. */
-  claudeSessionExists(sessionId: string): boolean;
+  claudeSessionExists(sessionId: string, worker?: Pick<LocalWorker, 'id' | 'workspaceId'>): boolean;
   /** Codex: a rollout for this thread under the worker's stable CODEX_HOME. */
   codexThreadExists(worker: Pick<LocalWorker, 'id' | 'workspaceId'>, threadId: string): boolean;
 }
@@ -109,7 +109,14 @@ export function fsResumeProbe(opts: { workspaceIsolationRoot?: string; env?: Rec
   const dirs = claudeConfigDirs(opts.env);
   return {
     worktreeExists: (p) => { try { return fs.existsSync(p); } catch { return false; } },
-    claudeSessionExists: (id) => claudeTranscriptExists(dirs, id),
+    claudeSessionExists: (id, w) => {
+      // A worker on a per-worker config dir (workspace isolation) keeps its
+      // transcript there, at a path fixed by workspace and worker id.
+      const own = opts.workspaceIsolationRoot && w?.workspaceId
+        ? [isolatedClaudeConfigDirPath(w.workspaceId, w.id, opts.workspaceIsolationRoot)]
+        : [];
+      return claudeTranscriptExists([...own, ...dirs], id);
+    },
     codexThreadExists: (w, threadId) => {
       const homes = [stableCodexHomePath(w.id)];
       if (opts.workspaceIsolationRoot && w.workspaceId) homes.push(stableCodexHomeIsolatedPath(w.workspaceId, w.id, opts.workspaceIsolationRoot));
@@ -134,7 +141,7 @@ export function decideRestore(
     else if (!probe.codexThreadExists(worker, worker.codexThreadId)) missing.push('its Codex thread');
   } else if (!worker.sessionId) {
     missing.push('its session id');
-  } else if (!probe.claudeSessionExists(worker.sessionId)) {
+  } else if (!probe.claudeSessionExists(worker.sessionId, worker)) {
     missing.push('its session file');
   }
   return missing.length === 0 ? { kind: 'continue' } : { kind: 'new_attempt', missing };
@@ -215,6 +222,8 @@ export async function commitShutdownCheckpoint(
 
 /** How long a stop waits for the credential broker to release its leases (they expire by TTL anyway). */
 export const BROKER_RELEASE_MS = 3_000;
+/** Kept free of the deadline after the broker release, so the exit is the runner's own. */
+export const BROKER_RELEASE_MARGIN_MS = 500;
 
 export interface ShutdownSignalDeps {
   /** Pause the agents; resolves when done (or it gave up). */
@@ -287,13 +296,22 @@ export function installRunnerShutdown(deps: RunnerShutdownDeps): (signal: NodeJS
   const releaseMs = deps.brokerReleaseMs ?? BROKER_RELEASE_MS;
   return installShutdownSignals({
     pause: async () => {
+      const startedAt = Date.now();
       try {
         await deps.pauseAgents();
       } finally {
-        await Promise.race([
-          deps.releaseBroker().catch((err) => log(`[shutdown] broker release failed: ${err instanceof Error ? err.message : String(err)}`)),
-          new Promise(r => setTimeout(r, releaseMs)),
-        ]);
+        // The release gets what the deadline has left, never more than
+        // brokerReleaseMs: the pause steps alone can use most of the deadline.
+        const left = (deps.deadlineMs ?? SHUTDOWN_DEADLINE_MS) - (Date.now() - startedAt) - BROKER_RELEASE_MARGIN_MS;
+        const budget = Math.min(releaseMs, left);
+        if (budget > 0) {
+          await Promise.race([
+            deps.releaseBroker().catch((err) => log(`[shutdown] broker release failed: ${err instanceof Error ? err.message : String(err)}`)),
+            new Promise(r => setTimeout(r, budget)),
+          ]);
+        } else {
+          log('[shutdown] no time left to release broker leases (they expire by TTL)');
+        }
       }
     },
     exit: deps.exit,

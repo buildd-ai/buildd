@@ -1027,14 +1027,7 @@ export class WorkerManager {
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
         }
-        // Idle runners pick up full knowledge-ingest jobs (fire-and-forget;
-        // the poller serializes itself and never throws).
-        if (active === 0 && !this.config.singleTask) {
-          this.knowledgeIngestPoller.poll().catch(() => {});
-          // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
-          this.scoutHostPoller.poll().catch(() => {});
-          this.modelProbePoller.poll().catch(() => {});
-        }
+        this.pollIdleJobs(active);
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
       // Liveness ping: a pure "I'm alive" heartbeat every 60s, separate from the
@@ -1250,6 +1243,19 @@ export class WorkerManager {
   }
 
   // Send heartbeat to server announcing this runner instance is alive and ready
+  /**
+   * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
+   * probes (fire-and-forget; each poller serializes itself and never throws).
+   * None starts while a person holds this runner: "nothing new starts" (R-32).
+   */
+  private pollIdleJobs(active: number): void {
+    if (active !== 0 || this.config.singleTask || claimsHeldByPerson()) return;
+    this.knowledgeIngestPoller.poll().catch(() => {});
+    // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+    this.scoutHostPoller.poll().catch(() => {});
+    this.modelProbePoller.poll().catch(() => {});
+  }
+
   private async sendHeartbeat() {
     try {
       // A paused worker holds no slot (pause.ts); a question still does.
@@ -1565,6 +1571,8 @@ export class WorkerManager {
       worker.pauseRequestedAt = Date.now();
       worker.currentAction = 'Pausing after the current step';
       this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      // Persisted: a SIGKILL before the tool ends must still read as a person's pause.
+      try { storeSaveWorker(worker); } catch { /* the next save covers it */ }
       this.emit({ type: 'worker_update', worker });
       const timer = setInterval(() => {
         if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
@@ -1720,6 +1728,25 @@ export class WorkerManager {
     if (this.shuttingDown || this.config?.singleTask) return out;
     const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause' && !!w.resumeOnStart);
     for (const w of due) {
+      // One continue per worker at a time: a hold lifting while the startup
+      // pass still waits on the server must not send the carry-on twice.
+      if (this.continuing.has(w.id)) continue;
+      this.continuing.add(w.id);
+      try {
+        await this.continueRestoredAgent(w, out);
+      } finally {
+        this.continuing.delete(w.id);
+      }
+    }
+    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
+    return out;
+  }
+
+  /** Workers continueRestoredAgents is continuing right now. */
+  private continuing = new Set<string>();
+
+  private async continueRestoredAgent(w: LocalWorker, out: { continued: string[]; held: string[]; ended: string[] }): Promise<void> {
+    {
       let res: any = null;
       try {
         res = await this.buildd.updateWorker(w.id, {
@@ -1739,17 +1766,17 @@ export class WorkerManager {
         storeSaveWorker(w);
         this.emit({ type: 'worker_update', worker: w });
         out.ended.push(w.id);
-        continue;
+        return;
       }
+      // The other pass may have continued it while the server was answering.
+      if (w.status !== 'waiting' || !w.resumeOnStart) return;
       if (claimsHeldByPerson()) {
         out.held.push(w.id);
-        continue;
+        return;
       }
       console.log(`[Worker ${w.id}] Continuing in its own session after the restart`);
       if (await this.sendMessage(w.id, RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
     }
-    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
-    return out;
   }
 
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */

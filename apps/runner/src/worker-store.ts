@@ -54,6 +54,8 @@ const PERSISTED_FIELDS = [
   // Paused by the runner (a service stop, or a crash it recovered from): the
   // next start continues it in its own session (restart-resume.ts).
   'resumeOnStart',
+  // A pause a person asked for while a tool ran: after a kill it stays theirs.
+  'pauseRequestedAt',
   // So a resume after a runner restart keeps the model the session ran on.
   'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
@@ -299,6 +301,7 @@ export function loadAllWorkers(): LocalWorker[] {
         sessionId: data.sessionId as string | undefined,
         codexThreadId: data.codexThreadId as string | undefined,
         waitingFor: data.waitingFor as LocalWorker['waitingFor'],
+        ...(typeof data.pauseRequestedAt === 'number' ? { pauseRequestedAt: data.pauseRequestedAt } : {}),
         ...(data.resumeOnStart === 'shutdown' || data.resumeOnStart === 'crash' ? { resumeOnStart: data.resumeOnStart } : {}),
         messages: (data.messages as LocalWorker['messages']) || [],
         milestones: (data.milestones as LocalWorker['milestones']) || [],

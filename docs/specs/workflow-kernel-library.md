@@ -802,8 +802,8 @@ push, refresh, completion or owner change can make it disappear.
   calls an open reviewer a review, never "Fix 0 of 3".
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
-  proof is §9's "L unknown" rule (the head moved off the bound head and
-  descends from it), only when nothing local can be lost: a completed end or
+  proof is §9's "L unknown" rule (the head moved off the bound head; a
+  rebase and force-push does not descend from it, so ancestry is not asked), only when nothing local can be lost: a completed end or
   one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
   round (T27, re-queued twice with a backoff, then `review_unavailable`)
   instead of leaving it open with nobody on it.
