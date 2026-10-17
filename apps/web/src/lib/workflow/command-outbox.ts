@@ -65,8 +65,12 @@ export const shouldPark = (op: KernelOp): boolean => PARK_ON_UNAVAILABLE[op] ===
 
 /** Re-submissions before a parked command is given up (`dead`, logged): two days of hourly floors. */
 export const PARKED_MAX_ATTEMPTS = 48;
-/** How long a pass holds a row it is re-submitting. */
-export const PARKED_LEASE_MS = 2 * 60_000;
+/**
+ * How long a pass holds the rows it took. A pass works them one after another, so the lease covers a
+ * whole worst-case pass (every row waiting out a web-host re-submission's budget) with room to spare:
+ * a second pass never takes a row over while the first is still re-submitting it.
+ */
+export const PARKED_LEASE_MS = 10 * 60_000;
 /** Rows one pass takes. Sequential: a control plane that is still down stops the pass at the first. */
 export const PARKED_BATCH = 20;
 /** A web-host re-submission's budget (the control plane answers a parked command in one request); never more than a door's. */
@@ -93,7 +97,7 @@ export interface CommandOutbox {
   /** Answered: done, with what the answer said. Only for the pass that holds the row. */
   settle(row: ParkedRow, outcome: string): Promise<boolean>;
   /** Not answered (or not yet): due again after `delayMs`. */
-  retry(row: ParkedRow, p: { error: string; delayMs: number; priorUnknown?: boolean }): Promise<boolean>;
+  retry(row: ParkedRow, p: { error: string; delayMs: number; priorUnknown?: boolean; refund?: boolean }): Promise<boolean>;
   /** Given up: `dead`, with why. */
   bury(row: ParkedRow, error: string): Promise<boolean>;
   /** Drops settled and given-up rows past retention. */
@@ -144,7 +148,8 @@ WHERE ${held(row)} RETURNING 1 AS ok`));
       const rows = rowsOf(await exec(sql`-- workflow:command_park_retry
 UPDATE workflow_command_outbox SET lease_until = NULL, last_error = ${p.error.slice(0, 2000)}::text,
   not_before = now() + make_interval(secs => ${delaySecs}::double precision),
-  prior_unknown = prior_unknown OR ${p.priorUnknown === true}::boolean, updated_at = now()
+  prior_unknown = prior_unknown OR ${p.priorUnknown === true}::boolean,
+  attempt_count = attempt_count - ${p.refund === true ? 1 : 0}::int, updated_at = now()
 WHERE ${held(row)} RETURNING 1 AS ok`));
       return rows.length > 0;
     },
@@ -257,18 +262,20 @@ export async function drainParkedCommands(deps: ParkedDrainDeps = {}): Promise<P
   summary.claimed = rows.length;
   let stopped: string | null = null;
 
-  const later = async (row: ParkedRow, error: string, o: { priorUnknown?: boolean; delayMs?: number } = {}) => {
-    if (row.attempt >= PARKED_MAX_ATTEMPTS) {
+  const later = async (row: ParkedRow, error: string, o: { priorUnknown?: boolean; delayMs?: number; refund?: boolean } = {}) => {
+    if (!o.refund && row.attempt >= PARKED_MAX_ATTEMPTS) {
       console.error(`[workflow] parked ${row.op} ${row.key} given up after ${row.attempt} attempts: ${error}`);
       if (await outbox.bury(row, error)) summary.dead++;
       return;
     }
-    if (await outbox.retry(row, { error, delayMs: o.delayMs ?? parkedRetryDelayMs(row.attempt), priorUnknown: o.priorUnknown })) summary.retried++;
+    if (await outbox.retry(row, { error, delayMs: o.delayMs ?? parkedRetryDelayMs(row.attempt), priorUnknown: o.priorUnknown, refund: o.refund })) summary.retried++;
   };
 
   for (const row of rows) {
     try {
-      if (stopped) { await later(row, stopped, { delayMs: parkedRetryDelayMs(1) }); continue; }
+      // Not sent at all: the attempt this pass took is given back, so a row waiting behind an outage
+      // is never given up for attempts it did not make.
+      if (stopped) { await later(row, stopped, { delayMs: parkedRetryDelayMs(1), refund: true }); continue; }
       // The ledger first: a command that did run there is settled as it ran, whatever this host is.
       const led = await ledger.read(row.key);
       if (led?.status === 'done') {

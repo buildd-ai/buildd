@@ -5,7 +5,7 @@
  * apps/web/tests/db/kernel-command-host.test.ts.
  */
 import { describe, expect, it } from 'bun:test';
-import { drainParkedCommands, outcomeOf, PARKED_MAX_ATTEMPTS, parkedRetryDelayMs, resubmitOnControlPlane, type CommandOutbox, type ParkedRow, type Resubmitted } from './command-outbox';
+import { drainParkedCommands, outcomeOf, PARKED_BATCH, PARKED_LEASE_MS, PARKED_MAX_ATTEMPTS, PARKED_SUBMIT_BUDGET_MS, parkedRetryDelayMs, resubmitOnControlPlane, type CommandOutbox, type ParkedRow, type Resubmitted } from './command-outbox';
 import type { CommandLedger, LedgerRow } from './command-ledger';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -19,7 +19,7 @@ function fakes(rows: ParkedRow[], ledgerRows: Record<string, Partial<LedgerRow>>
     park: async () => true,
     claimDue: async () => rows,
     settle: async (r, outcome) => { log.push(`settle ${r.key} ${outcome}`); return true; },
-    retry: async (r, p) => { log.push(`retry ${r.key}${p.priorUnknown ? ' unknown' : ''}`); return true; },
+    retry: async (r, p) => { log.push(`retry ${r.key}${p.priorUnknown ? ' unknown' : ''}${p.refund ? ' refund' : ''}`); return true; },
     bury: async (r, error) => { log.push(`bury ${r.key} ${error}`); return true; },
     prune: async () => 0,
   };
@@ -43,8 +43,16 @@ describe('the drain pass', () => {
     const sent: string[] = [];
     const s = await drainParkedCommands({ ...f, host: () => 'web', resubmit: async (r) => { sent.push(r.key); return { kind: 'unanswered', error: 'unreachable', unreachable: true }; } });
     expect(sent).toEqual(['k-a']);
-    expect(f.log).toEqual(['retry k-a', 'retry k-b', 'retry k-c']);
+    // The unsent rows get their attempt back, even one already at the cap: they are never given up for it.
+    expect(f.log).toEqual(['retry k-a', 'retry k-b refund', 'retry k-c refund']);
     expect(s).toMatchObject({ retried: 3, done: 0 });
+    const capped = fakes([row('k-a'), row('k-b', { attempt: PARKED_MAX_ATTEMPTS })]);
+    await drainParkedCommands({ ...capped, host: () => 'web', resubmit: async () => ({ kind: 'unanswered', error: 'unreachable', unreachable: true }) });
+    expect(capped.log).toEqual(['retry k-a', 'retry k-b refund']);
+  });
+
+  it('a pass\'s lease outlasts its worst case, so a second pass never takes a row over mid-flight', () => {
+    expect(PARKED_LEASE_MS).toBeGreaterThan(PARKED_BATCH * PARKED_SUBMIT_BUDGET_MS * 2);
   });
 
   it('a refusal is given up (asking again cannot change it); attempts past the cap are given up too', async () => {
