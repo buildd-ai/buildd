@@ -187,13 +187,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
-const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
+const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['s talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
