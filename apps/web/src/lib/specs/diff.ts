@@ -3,7 +3,7 @@ import { specRevisions, specs } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { outlineOf } from '@buildd/core/artifact-read';
 import { isUuid } from '@/lib/uuid';
-import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { getArtifactRevisions } from '@/lib/artifact-revisions';
 import { recordArtifactRead } from '@/lib/artifact-reads';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
@@ -208,17 +208,26 @@ function compute(from: string, to: string): Computed {
   return { identical: false, sections, only: false, hunks, diff: out.join('\n'), omittedLines: omitted };
 }
 
-export function diffSpecBodies(from: string, to: string): SpecBodyDiff {
-  const c = compute(from, to);
+const asBodyDiff = (c: Computed): SpecBodyDiff => {
   if (c.identical) return { identical: true, sections: [], diff: '', omittedLines: 0 };
   if (c.only) return { identical: false, sections: [], diff: '(only blank lines or trailing whitespace changed)', omittedLines: 0 };
   return { identical: false, sections: c.sections, diff: c.diff, omittedLines: c.omittedLines };
+};
+const asHunks = (c: Computed): SpecBodyHunks => (c.identical || c.only ? { hunks: [], omittedLines: 0 } : { hunks: c.hunks, omittedLines: c.omittedLines });
+
+export function diffSpecBodies(from: string, to: string): SpecBodyDiff {
+  return asBodyDiff(compute(from, to));
 }
 
 /** diffSpecBodies as numbered rows, for the approval page. */
 export function diffSpecHunks(from: string, to: string): SpecBodyHunks {
+  return asHunks(compute(from, to));
+}
+
+/** Both at once, from one pass over the bodies. */
+export function diffSpecBodiesWithHunks(from: string, to: string): SpecBodyDiff & SpecBodyHunks {
   const c = compute(from, to);
-  return c.identical || c.only ? { hunks: [], omittedLines: 0 } : { hunks: c.hunks, omittedLines: c.omittedLines };
+  return { ...asBodyDiff(c), hunks: asHunks(c).hunks };
 }
 
 export interface SpecRevisionDiff extends SpecBodyDiff {
@@ -241,6 +250,16 @@ export async function diffSpecRevisions(caller: SpecCaller, specId: string, opts
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
+  return diffSpecRowRevisions(caller, spec, opts);
+}
+
+/**
+ * diffSpecRevisions for a spec row the caller already read and already
+ * checked `reach` on: the spec page passes its own, rather than paying for
+ * both again on every diff it shows.
+ */
+export async function diffSpecRowRevisions(caller: SpecCaller, spec: typeof specs.$inferSelect, opts: { from?: number; to?: number; rows?: boolean } = {}): Promise<{ ok: true; diff: SpecRevisionDiff } | SpecError> {
+  const specId = spec.id;
   const to = opts.to ?? spec.headRevision;
   const from = opts.from ?? (spec.approvedRevision ?? to - 1);
   if (from < 1) return fail(400, `Revision ${to} is the first revision: name a revision to compare it with`);
@@ -248,18 +267,21 @@ export async function diffSpecRevisions(caller: SpecCaller, specId: string, opts
   const byN = new Map(rows.map((r) => [r.revision, r]));
   for (const n of [from, to]) if (!byN.has(n)) return fail(404, `Spec has no revision ${n}`);
 
+  // Both bodies in one read.
+  const read = await getArtifactRevisions(spec.bodyArtifactId, [from, to].map((n) => byN.get(n)!.artifactRevision));
   const bodies: string[] = [];
   for (const n of [from, to]) {
     const rev = byN.get(n)!;
-    const body = await getArtifactRevision(spec.bodyArtifactId, rev.artifactRevision);
+    const body = read.get(rev.artifactRevision);
     if (!body || typeof body.content !== 'string' || body.contentHash !== rev.contentHash) {
       return fail(409, `The body of revision ${n} is missing or does not match its hash`);
     }
     bodies.push(body.content);
   }
 
-  const d = diffSpecBodies(bodies[0], bodies[1]);
-  const numbered = opts.rows ? diffSpecHunks(bodies[0], bodies[1]) : null;
+  // One pass computes both the text diff and its rows.
+  const numbered = opts.rows ? diffSpecBodiesWithHunks(bodies[0], bodies[1]) : null;
+  const d: SpecBodyDiff = numbered ?? diffSpecBodies(bodies[0], bodies[1]);
   const account = caller.kind === 'account' ? caller.account : null;
   for (const [i, n] of [from, to].entries()) {
     recordArtifactRead({

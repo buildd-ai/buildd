@@ -34,6 +34,8 @@ async function person(teamId: string, role: 'owner' | 'admin' | 'member') {
 const user = (userId: string) => ({ kind: 'user' as const, userId });
 
 let nextPr = 100;
+/** The files at the fake base commit. */
+const TREE = ['apps/web/src/lib/widget.test.ts', 'docs/specs/release-flow.md'];
 /** A repo name per run, so a re-run against the same database never finds an earlier run's PR. */
 const GH = `acme/app-${rand()}`;
 /** A fake GitHub: the base branch, docs/specs as the repo has it, and a record of every write. */
@@ -60,13 +62,18 @@ function fakeGitHub(opts: { specFiles?: Record<string, string>; private?: boolea
     if (method === 'GET' && path === `/repos/${GH}`) return { default_branch: 'dev', private: opts.private ?? true };
     if (method === 'GET' && path === `/repos/${GH}/git/ref/heads/dev`) return { object: { sha: 'base000' } };
     if (method === 'GET' && path === `/repos/${GH}/git/commits/base000`) return { tree: { sha: 'tree000' } };
+    if (path === '/graphql' && String(body?.query ?? '').includes('defaultBranchRef')) return { data: { repository: { defaultBranchRef: { target: { oid: 'base000' } } } } };
+    if (path === '/graphql' && String(body?.query ?? '').includes('qualifiedName')) return { data: { repository: { ref: { target: { oid: 'base000' } } } } };
     if (path === '/graphql') {
-      return { data: { repository: {
+      // The pre-approval checks ask whether each path a copy names exists, as p0, p1, ... at the base commit.
+      const probes = Object.fromEntries(Object.entries(body?.variables ?? {}).filter(([k]) => /^p\d+$/.test(k))
+        .map(([k, v]) => [k, TREE.includes(String(v).replace(/^base000:/, '')) ? { __typename: 'Blob' } : null]));
+      return { data: { repository: { ...probes,
         specs: { entries: Object.entries(specFiles).map(([name, text]) => ({ name, type: 'blob', object: { text } })) },
         script: { text: checkSpecs },
       } } };
     }
-    if (method === 'GET' && path.startsWith(`/repos/${GH}/git/trees/base000`)) return { truncated: false, tree: [{ path: 'apps/web/src/lib/widget.test.ts' }, { path: 'docs/specs/release-flow.md' }] };
+    if (method === 'GET' && path.startsWith(`/repos/${GH}/git/trees/base000`)) return { truncated: false, tree: TREE.map((p) => ({ path: p })) };
     if (method === 'POST' && path === `/repos/${GH}/git/trees`) return { sha: `tree${calls.length}` };
     if (method === 'POST' && path === `/repos/${GH}/git/commits`) { commits++; return { sha: `gen${commits}` }; }
     if (method === 'PATCH' && path.startsWith(`/repos/${GH}/git/refs/heads/`)) {
@@ -368,6 +375,33 @@ describe('repo checks before approval (R-34, AC-96)', () => {
     expect(p.state === 'ran' && p.checks.map((c) => [c.name, c.ok])).toEqual([['specs:lint', true], ['public-docs:check', true], ['no-prod-data', true]]);
     const r = await reviseSpecDraft(user(member), spec.id, { expectedVersion: 1, body: `${BODY}\nMore.\n` });
     expect(r.ok).toBe(true);
+  });
+
+  test('two GitHub calls, never the whole tree, and the same base commit is read once (R-9)', async () => {
+    const gh = fakeGitHub();
+    const spec = await filedSpec(wsOn, { body: `${BODY}\n## Code surface\n\n- \`apps/web/src/lib/widget.test.ts\`\n- \`apps/web/src/lib/gone.ts\`\n` });
+    const p = await repoCopy.repoCopyPreflight(spec, 1, gh.deps);
+    if (p.state !== 'ran') throw new Error(`preflight did not run: ${p.state}`);
+    expect(gh.calls.map((c) => c.path)).toEqual(['/graphql', '/graphql']);
+    const lint = p.checks.find((c) => c.name === 'specs:lint')!;
+    expect(lint.messages).toContain('code surface path does not exist: apps/web/src/lib/gone.ts');
+    expect(lint.messages.join('\n')).not.toContain('widget.test.ts');
+    expect(lint.note).toBeUndefined();
+
+    const again = await repoCopy.repoCopyPreflight(spec, 1, gh.deps);
+    expect(again).toEqual(p);
+    // Only the base commit was asked for again.
+    expect(gh.calls.length).toBe(3);
+  });
+
+  test('a GitHub that does not answer in time is a note, not a wait', async () => {
+    const gh = fakeGitHub();
+    const spec = await filedSpec(wsOn);
+    const t0 = Date.now();
+    const p = await repoCopy.repoCopyPreflight(spec, 1, { ...gh.deps, api: () => new Promise(() => {}), timeoutMs: 50 });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    if (p.state !== 'ran') throw new Error(`preflight did not run: ${p.state}`);
+    expect(p.checks.find((c) => c.name === 'specs:lint')!.note).toContain('GitHub could not be read');
   });
 
   test('off in a workspace that has not opted in', async () => {

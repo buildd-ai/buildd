@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { artifactRevisions, artifacts } from '@buildd/core/db/schema';
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { specIdForBodyArtifact } from './specs/body-guard';
 
 /**
@@ -35,6 +35,24 @@ export async function getArtifactRevision(artifactId: string, revision: number):
     .where(and(eq(artifactRevisions.artifactId, artifactId), eq(artifactRevisions.revision, revision)))
     .limit(1);
   return row ?? null;
+}
+
+/** Several revisions of one artifact in one statement, by revision number; a missing one is absent from the map. */
+export async function getArtifactRevisions(artifactId: string, revisions: readonly number[]): Promise<Map<number, ArtifactRevision>> {
+  if (!revisions.length) return new Map();
+  const rows = await db
+    .select({
+      revision: artifactRevisions.revision,
+      content: artifactRevisions.content,
+      storageKey: artifactRevisions.storageKey,
+      contentHash: artifactRevisions.contentHash,
+      sizeBytes: artifactRevisions.sizeBytes,
+      author: artifactRevisions.author,
+      createdAt: artifactRevisions.createdAt,
+    })
+    .from(artifactRevisions)
+    .where(and(eq(artifactRevisions.artifactId, artifactId), inArray(artifactRevisions.revision, [...new Set(revisions)])));
+  return new Map(rows.map((r) => [r.revision, r]));
 }
 
 export type WriteArtifactBodyResult =
