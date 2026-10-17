@@ -34,6 +34,7 @@ import {
 } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { teamInstallationIdForOwner } from '@/lib/workspace-installation';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import {
   RELEASE_INVARIANT_CUTOFF,
@@ -142,14 +143,9 @@ export async function checkRemoteRef(
  * URL, and splitting it on '/' yields `https:` — which matches no installation,
  * so every caller silently skipped its check. Normalize first.
  */
-async function resolveInstallationIdForOwner(owner: string): Promise<number | null> {
-  if (!owner) return null;
-  const rows = await db
-    .select({ installationId: githubInstallations.installationId })
-    .from(githubInstallations)
-    .where(eq(githubInstallations.accountLogin, owner))
-    .limit(1);
-  return rows[0]?.installationId ?? null;
+async function resolveInstallationIdForOwner(owner: string, teamId: string | null | undefined): Promise<number | null> {
+  // Only the workspace's own team's installation on that account.
+  return teamInstallationIdForOwner(owner, teamId);
 }
 
 /** Why a wanted ref went unchecked — surfaced in the report, never swallowed. */
@@ -518,10 +514,11 @@ export async function loadInvariantSnapshot(
   ].filter(Boolean))];
   const workspaceRepo = new Map<string, string | null>();
   const workspaceRepoFk = new Map<string, string>();
+  const workspaceTeam = new Map<string, string | null>();
   if (workspaceIds.length > 0) {
     const rows = (await db.query.workspaces.findMany({
       where: sqlWhere(inArray(workspaces.id, workspaceIds)),
-      columns: { id: true, repo: true, githubRepoId: true, gitConfig: true },
+      columns: { id: true, teamId: true, repo: true, githubRepoId: true, gitConfig: true },
     })) as Array<Record<string, any>>;
     for (const ws of rows) {
       const cfg = asRecord(ws.gitConfig);
@@ -533,6 +530,7 @@ export async function loadInvariantSnapshot(
         new Set(declared.length > 0 ? declared : FALLBACK_TRUNK),
       );
       workspaceRepo.set(ws.id, ws.repo ?? null);
+      workspaceTeam.set(ws.id, ws.teamId ?? null);
       if (ws.githubRepoId) workspaceRepoFk.set(ws.id, ws.githubRepoId);
     }
   }
@@ -589,10 +587,11 @@ export async function loadInvariantSnapshot(
     let installationId: number | null =
       fk && fk.fullName.toLowerCase() === repo.toLowerCase() ? fk.installationId : null;
     if (!installationId) {
-      const cacheKey = owner.toLowerCase();
+      const teamId = workspaceTeam.get(workspaceId) ?? null;
+      const cacheKey = `${teamId}:${owner.toLowerCase()}`;
       let cached = ownerInstallation.get(cacheKey);
       if (cached === undefined) {
-        cached = await resolveInstallationIdForOwner(owner).catch(() => null);
+        cached = await resolveInstallationIdForOwner(owner, teamId).catch(() => null);
         ownerInstallation.set(cacheKey, cached);
       }
       installationId = cached;

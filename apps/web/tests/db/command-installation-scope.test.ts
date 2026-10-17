@@ -81,7 +81,7 @@ describe('the repo scope of a workspace', () => {
     const org = `org${uniq()}`;
     const inst = await installation(org);
     const w = await linkedWorkspace(`${org}/web`, inst);
-    const sibling = await linkedWorkspace(`${org}/Api`, inst);
+    const sibling = await teamWorkspace(w.teamId, `${org}/Api`, inst);
     const missionId = await seedMission(w.teamId, w.workspaceId);
     await seedTask(w.workspaceId, { missionId });
     const siblingTask = await seedTask(sibling.workspaceId, { missionId });
@@ -98,12 +98,54 @@ describe('the repo scope of a workspace', () => {
     const org = `org${uniq()}`;
     const inst = await installation(org);
     const w = await linkedWorkspace(`${org}/web`, inst);
-    const sibling = await linkedWorkspace(null);
-    await q(sql`UPDATE workspaces SET repo = ${`https://github.com/${org}/api`} WHERE id = ${sibling.workspaceId}::uuid`);
+    await repo(inst, `${org}/api`);
+    const [sib] = await q<{ id: string }>(sql`
+      INSERT INTO workspaces (name, team_id, repo) VALUES (${`w-${uniq()}`}, ${w.teamId}::uuid, ${`https://github.com/${org}/api`}) RETURNING id`);
+    const sibling = { workspaceId: sib.id };
     const missionId = await seedMission(w.teamId, w.workspaceId);
     await seedTask(w.workspaceId, { missionId });
     await seedTask(sibling.workspaceId, { missionId });
     expect(await repoInScope(w.workspaceId, `${org}/api`)).toBe(false);
+  }, 30_000);
+});
+
+describe('scope stays inside the team', () => {
+  test('a mission row that also holds another team\'s workspace does not put that workspace\'s repo in scope', async () => {
+    const org = `org${uniq()}`;
+    const foreign = `foreign${uniq()}`;
+    const w = await linkedWorkspace(`${org}/web`, await installation(org));
+    const otherTeam = await linkedWorkspace(`${foreign}/api`, await installation(foreign));
+    const missionId = await seedMission(w.teamId, w.workspaceId);
+    await seedTask(w.workspaceId, { missionId });
+    // A legacy row: a task of another team's workspace on this team's mission.
+    await seedTask(otherTeam.workspaceId, { missionId });
+    expect(await repoInScope(w.workspaceId, `${foreign}/api`)).toBe(false);
+    expect(await expectedInstallation(w.workspaceId, `${foreign}/api`)).toEqual({ refused: 'repo_out_of_scope' });
+  }, 30_000);
+
+  test('a workspace known only by its free-text repo acts through an installation only when it is the team\'s', async () => {
+    const org = `org${uniq()}`;
+    const foreign = `foreign${uniq()}`;
+    // The team's own: a member installed it, and github_repos lists the repo under it.
+    const w = await linkedWorkspace(null);
+    const own = await installation(org, { installedBy: await member(w.teamId) });
+    await repo(own, `${org}/web`);
+    await q(sql`UPDATE workspaces SET repo = ${`https://github.com/${org}/web`}, github_installation_id = ${own.rowId}::uuid WHERE id = ${w.workspaceId}::uuid`);
+    expect(await expectedInstallation(w.workspaceId, `${org}/web`)).toEqual({ installationId: own.installationId });
+
+    // Another team's repo named in the free-text column: refused, whatever pointer the workspace carries.
+    const v = await linkedWorkspace(null);
+    const otherTeam = await linkedWorkspace(`${foreign}/app`, await installation(foreign));
+    void otherTeam;
+    const vOwn = await installation(`v${uniq()}`, { installedBy: await member(v.teamId) });
+    await q(sql`UPDATE workspaces SET repo = ${`https://github.com/${foreign}/app`}, github_installation_id = ${vOwn.rowId}::uuid WHERE id = ${v.workspaceId}::uuid`);
+    expect(await expectedInstallation(v.workspaceId, `${foreign}/app`)).toEqual({ refused: 'installation_not_team_owned' });
+    // Named in free text but listed under no installation: nothing to act through.
+    const u = await linkedWorkspace(null);
+    const uOwn = await installation(`u${uniq()}`, { installedBy: await member(u.teamId) });
+    await q(sql`UPDATE workspaces SET repo = ${`nobody${uniq()}/x`}, github_installation_id = ${uOwn.rowId}::uuid WHERE id = ${u.workspaceId}::uuid`);
+    const [{ repo: uRepo }] = await q<{ repo: string }>(sql`SELECT repo FROM workspaces WHERE id = ${u.workspaceId}::uuid`);
+    expect(await expectedInstallation(u.workspaceId, uRepo)).toEqual({ refused: 'no_installation' });
   }, 30_000);
 });
 

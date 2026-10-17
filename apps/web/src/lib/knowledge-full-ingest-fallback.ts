@@ -29,7 +29,7 @@
 import { createHash } from 'crypto';
 import { and, asc, eq, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, knowledgeIngestJobs } from '@buildd/core/db/schema';
+import { knowledgeIngestJobs } from '@buildd/core/db/schema';
 import {
   classifyIngestCorpus,
   shouldIngestFile,
@@ -105,7 +105,8 @@ export interface FallbackStore {
 export interface FallbackDeps {
   store: FallbackStore;
   github: (installationId: number, path: string) => Promise<any>;
-  installationIdForRepo: (repo: string) => Promise<number>;
+  /** The job's workspace's own team's installation covering the repo; throws when there is none. */
+  installationIdForRepo: (repo: string, workspaceId: string) => Promise<number>;
   ingestBatch: (workspaceId: string, files: IngestBatchFile[]) => Promise<IngestBatchResult>;
   /** Prune chunks not refreshed since the run began; returns the count. */
   sweep: (workspaceId: string, since: Date) => Promise<number>;
@@ -278,7 +279,7 @@ export async function runFullIngestFallbackTick(
 
     let progress: FallbackProgress | null = prior;
     try {
-      const installationId = await deps.installationIdForRepo(claimed.repo).catch(err => {
+      const installationId = await deps.installationIdForRepo(claimed.repo, claimed.workspaceId).catch(err => {
         throw new FatalFallbackError(err instanceof Error ? err.message : String(err));
       });
       const sha = progress?.sha ?? (await resolveSha(deps, installationId, claimed));
@@ -449,14 +450,15 @@ export const drizzleFallbackStore: FallbackStore = {
   },
 };
 
-async function installationIdForRepo(repo: string): Promise<number> {
-  const rows = await db
-    .select({ installationId: githubInstallations.installationId })
-    .from(githubRepos)
-    .innerJoin(githubInstallations, eq(githubRepos.installationId, githubInstallations.id))
-    .where(eq(githubRepos.fullName, repo));
-  if (rows.length === 0) throw new Error(`no GitHub installation bound for repo ${repo}`);
-  return rows[0].installationId;
+async function installationIdForRepo(repo: string, workspaceId: string): Promise<number> {
+  const { createTeamInstallationResolver } = await import('@/lib/workspace-installation');
+  const picked = await createTeamInstallationResolver().forWorkspace(repo, workspaceId);
+  if (!picked.installationId) {
+    throw new Error(picked.reason === 'installation_not_team_owned'
+      ? `the GitHub installation covering ${repo} is not this workspace's team's`
+      : `no GitHub installation bound for repo ${repo}`);
+  }
+  return picked.installationId;
 }
 
 /** Production dependencies. Lazy imports keep this module light to load. */

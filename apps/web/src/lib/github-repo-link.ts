@@ -119,7 +119,7 @@ export async function syncInstallationRepos(installation: {
         UNION
         SELECT t.id
           FROM teams t
-          JOIN github_installations i4 ON t.slug = 'personal-' || i4.installed_by_user_id::text
+          JOIN github_installations i4 ON t.personal_user_id = i4.installed_by_user_id
          WHERE i4.id = ${installation.id}::uuid
       )
       AND (

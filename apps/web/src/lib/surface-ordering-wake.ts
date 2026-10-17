@@ -16,7 +16,7 @@ import { githubApi } from '@/lib/github';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
-import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
@@ -44,11 +44,14 @@ export async function resolveOpenWorkerPr(workspaceId: string, prNumber: number)
   const identity = pickWorkspaceRepoIdentity(workspace);
   const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
   if (!repo) return { skip: 'no_repo' as const };
-  const installationId =
-    (repo === identity.fullName ? identity.installationId : null)
-    ?? (await installationIdForRepo(repo).catch(() => null))
-    ?? identity.installationId;
-  if (!installationId) return { skip: 'no_installation' as const };
+  // Only the workspace's own team's installation.
+  const picked = await createTeamInstallationResolver().resolve(
+    repo,
+    { teamId: workspace.teamId, fullName: identity.fullName, installationId: identity.installationId },
+    { fallbackToWorkspace: true },
+  );
+  if (picked.installationId === null) return { skip: picked.reason };
+  const installationId = picked.installationId;
   return { skip: null, worker, workspace, repo, installationId };
 }
 

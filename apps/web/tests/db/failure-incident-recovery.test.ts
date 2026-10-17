@@ -42,7 +42,11 @@ mock.module('../../src/lib/github', () => ({
   },
 }));
 const realInstallation = await import('../../src/lib/workspace-installation');
-mock.module('../../src/lib/workspace-installation', () => ({ ...realInstallation, installationIdForRepo: async () => 1 }));
+mock.module('../../src/lib/workspace-installation', () => ({
+  ...realInstallation,
+  installationIdForRepo: async () => 1,
+  createTeamInstallationResolver: () => ({ resolve: async () => ({ installationId: 1 }), forWorkspace: async () => ({ installationId: 1 }) }),
+}));
 const emitted: Array<{ type: string; prNumber?: number }> = [];
 mock.module('../../src/lib/core-emit', () => ({ emit: async (e: { type: string; prNumber?: number }) => { emitted.push(e); } }));
 

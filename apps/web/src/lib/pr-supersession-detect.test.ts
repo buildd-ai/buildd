@@ -67,7 +67,7 @@ mock.module('@/lib/github', () => ({
   }),
 }));
 mock.module('@/lib/workspace-installation', () => ({
-  installationIdForRepo: mock(() => Promise.resolve(1)),
+  createTeamInstallationResolver: () => ({ forWorkspace: async () => ({ installationId: 1 }) }),
 }));
 mock.module('@/lib/pr-supersession', () => ({
   recordPrSupersession: mock((p: any) => { recordCalls.push(p); return Promise.resolve(recordResult); }),

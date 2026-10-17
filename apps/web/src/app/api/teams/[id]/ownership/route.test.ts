@@ -13,7 +13,7 @@ const TARGET = '22222222-2222-4222-8222-222222222222';
 const STRANGER = '33333333-3333-4333-8333-333333333333';
 
 let memberships: Record<string, { role: string } | undefined> = {};
-let team: { slug: string } | undefined;
+let team: { slug: string; personalUserId?: string | null } | undefined;
 let batches: Array<Array<{ set: any; where: any }>> = [];
 // What each statement in the batch returns (rows it updated).
 let batchResult: unknown[][] = [];
@@ -84,7 +84,7 @@ function transfer(body: unknown) {
 
 beforeEach(() => {
   memberships = {};
-  team = { slug: 'acme' };
+  team = { slug: 'acme', personalUserId: null };
   batches = [];
   batchResult = [[{ userId: TARGET }], [{ userId: 'caller' }]];
   clamps.length = 0;
@@ -184,7 +184,7 @@ describe('POST /api/teams/[id]/ownership', () => {
   });
 
   it('400s on a personal team', async () => {
-    team = { slug: 'personal-caller' };
+    team = { slug: 'personal-caller', personalUserId: 'caller' };
     memberships.caller = { role: 'owner' };
     memberships[TARGET] = { role: 'member' };
     expect((await transfer({ userId: TARGET })).status).toBe(400);

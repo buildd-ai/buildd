@@ -16,7 +16,7 @@ import {
 const USER = 'user-1';
 const NOW = new Date('2026-06-01T12:00:00Z');
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
-const team = (id: string, role: string, slug = id) => ({ id, name: `Name ${id}`, slug, role, memberCount: 1 });
+const team = (id: string, role: string, personalUserId: string | null = null) => ({ id, name: `Name ${id}`, slug: id, personalUserId, role, memberCount: 1 });
 const ws = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, teamId: 't1', gitConfig: null, webhookConfig: null, ...extra });
 
 function build(workspaces: ReturnType<typeof ws>[], activity = new Map()) {
@@ -104,7 +104,7 @@ describe('buildWorkspaceRows: permissions', () => {
   it('counts the personal team as administered, and no move with a single admin team', () => {
     const { rows } = buildWorkspaceRows({
       userId: USER,
-      teams: [team('p', 'member', `personal-${USER}`), team('t3', 'member')],
+      teams: [team('p', 'member', USER), team('t3', 'member')],
       workspaces: [ws('w1', { teamId: 'p' })] as never,
       activity: new Map(),
     });

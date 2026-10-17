@@ -98,7 +98,8 @@ export type SweepSkipReason =
   | 'human_tier'
   | 'not_approved'
   | 'no_repo'
-  | 'no_installation';
+  | 'no_installation'
+  | 'installation_not_team_owned';
 
 export type TargetResolution = { ok: true; target: LandingTarget } | { ok: false; skip: SweepSkipReason };
 

@@ -5,6 +5,7 @@ import Credentials from 'next-auth/providers/credentials';
 import { db } from '@buildd/core/db';
 import { users, accounts, accountWorkspaces, workspaces, teams, teamMembers, teamInvitations } from '@buildd/core/db/schema';
 import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
+import { personalTeamSlug } from '@/lib/personal-team';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
@@ -151,7 +152,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           .insert(teams)
           .values({
             name: `${user.name || user.email}'s Team`,
-            slug: `personal-${newUser.id}`,
+            slug: personalTeamSlug(newUser.id),
+            // What marks it personal; the slug never does (lib/personal-team).
+            personalUserId: newUser.id,
           })
           .returning();
 
