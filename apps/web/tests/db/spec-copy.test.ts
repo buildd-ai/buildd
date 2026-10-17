@@ -166,7 +166,7 @@ describe('failure', () => {
   test('bad input, the same workspace, and a retired source are refused and write nothing', async () => {
     const specId = await sourceSpec();
     const before = await count(dest);
-    expect(await copySpecToWorkspace(P(), specId, { targetWorkspaceId: 'buildd-admin' })).toMatchObject({ ok: false, status: 400 });
+    expect(await copySpecToWorkspace(P(), specId, { targetWorkspaceId: 'other-workspace' })).toMatchObject({ ok: false, status: 400 });
     expect(await copySpecToWorkspace(P(), specId, { targetWorkspaceId: source })).toMatchObject({ ok: false, status: 400 });
     expect(await copySpecToWorkspace(P(), specId, { targetWorkspaceId: dest, revision: 0 })).toMatchObject({ ok: false, status: 400 });
     await q(sql`UPDATE specs SET status = 'retired' WHERE id = ${specId}::uuid`);

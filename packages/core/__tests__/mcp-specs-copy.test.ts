@@ -55,16 +55,16 @@ describe('manage_specs copy', () => {
   });
 
   it('a destination named by workspace name resolves among the listed workspaces', async () => {
-    api.mockResolvedValueOnce({ workspaces: [{ id: WS, name: 'buildd' }, { id: DEST, name: 'buildd-admin' }] });
+    api.mockResolvedValueOnce({ workspaces: [{ id: WS, name: 'buildd' }, { id: DEST, name: 'other-workspace' }] });
     api.mockResolvedValueOnce(reply());
-    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'copy', specId: SPEC, targetWorkspaceId: 'buildd-admin' }, ctx());
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'copy', specId: SPEC, targetWorkspaceId: 'other-workspace' }, ctx());
     expect(api.mock.calls[0][0]).toBe('/api/workspaces');
     expect(JSON.parse(api.mock.calls[1][1].body).targetWorkspaceId).toBe(DEST);
   });
 
   it('a task token naming another workspace is refused by name, never resolved to its own workspace', async () => {
     api.mockRejectedValueOnce(new Error('API error: 401 - {"error":"Unauthorized"}'));
-    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'copy', specId: SPEC, targetWorkspaceId: 'buildd-admin' }, ctx());
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'copy', specId: SPEC, targetWorkspaceId: 'other-workspace' }, ctx());
     expect(r.isError).toBe(true);
     expect(out(r)).toContain('spec_copy_destination');
     expect(api).toHaveBeenCalledTimes(1);
