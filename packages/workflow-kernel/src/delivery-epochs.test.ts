@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  shippedEpochOf, unsettledEpochs,
+  shippedEpochOf, unsettledEpochs, deliveryBranchFinished, finishedBranchWhy,
   adoptionOf, classifySettlement, epochBranchName, epochCompletionHold, isPriorEpochBranch, pendingEpochSteps,
   reduceMissionEpochs, writableEpoch, type MissionEpochCommand, type MissionEpochView,
 } from './delivery-epochs';
@@ -350,5 +350,79 @@ describe('review round 3', () => {
     expect(epochCompletionHold(h.view(), () => 0)).toMatchObject({ holds: true, reason: 'unsettled' });
     expect(h.run({ ...base, type: 'Retired', epochId: e1!.id }).reason).toBe('settlement_held');
     expect(pendingEpochSteps(h.view()).map((s) => s.step)).not.toContain('retire');
+  });
+});
+
+// Task fbc93ebd (kernel audit F6): an integration PR closed unmerged does not by
+// itself retire its branch, so a refresh onto it can still be valid. These are
+// the only ways a delivery branch is finished.
+describe('deliveryBranchFinished', () => {
+  const closed = { prClosedUnmerged: true, supersededBy: null, containedInTrunk: null, successorOpen: false };
+  function openWithPr(pr = 40) {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    h.run({ ...base, type: 'PrBound', prNumber: pr, repoFullName: 'o/r', ownerTaskId: 'o', headRef: ROOT });
+    return h;
+  }
+
+  it('a completed or archived mission finishes every branch it has', () => {
+    const h = openWithPr();
+    h.setTerminal(true);
+    expect(deliveryBranchFinished(h.view(), h.view().epochs[0]!)).toEqual({ finished: true, reason: 'mission_terminal', satisfiedByPr: null });
+  });
+
+  it('a delivery that reached trunk is finished, and so is a retired one', () => {
+    const h = openWithPr(40);
+    h.setWork({ unfinishedTasks: 0, openTaskPrs: 0 });
+    h.run(merged(40));
+    expect(deliveryBranchFinished(h.view(), h.view().epochs[0]!)).toEqual({ finished: true, reason: 'shipped', satisfiedByPr: 40 });
+    const e1 = h.view().epochs[0]!;
+    h.run({ ...base, type: 'Settled', epochId: e1.id, settlement: { settled: [], held: [], satisfiedByPr: 40 } });
+    h.run({ ...base, type: 'Retired', epochId: e1.id });
+    expect(deliveryBranchFinished(h.view(), h.view().epochs[0]!)).toEqual({ finished: true, reason: 'retired', satisfiedByPr: 40 });
+  });
+
+  it('a merged record that an adopted re-cut still uses is not finished: the live branch is', () => {
+    const h = harness({ work: { unfinishedTasks: 1, openTaskPrs: 0 }, legacyPr: { prNumber: 7, repoFullName: 'o/r', ownerTaskId: 't', state: 'merged', mergedAt: AT } });
+    h.run({ ...base, type: 'Adopt' });
+    const [e1] = h.view().epochs;
+    expect(deliveryBranchFinished(h.view(), e1!)).toEqual({ finished: false, reason: 'branch_reused' });
+  });
+
+  it('closing the integration PR alone does not finish the branch', () => {
+    const h = openWithPr();
+    const e = h.view().epochs[0]!;
+    expect(deliveryBranchFinished(h.view(), e, closed)).toEqual({ finished: false, reason: 'closed_work_unaccounted' });
+    expect(deliveryBranchFinished(h.view(), e, { ...closed, containedInTrunk: false })).toEqual({ finished: false, reason: 'closed_work_unaccounted' });
+    expect(deliveryBranchFinished(h.view(), e, { ...closed, prClosedUnmerged: false, supersededBy: 61 })).toEqual({ finished: false, reason: 'delivery_pr_live' });
+    expect(deliveryBranchFinished(h.view(), e)).toEqual({ finished: false, reason: 'delivery_pr_live' });
+  });
+
+  it('a closed integration PR whose work landed elsewhere, or is already in trunk, finishes the branch', () => {
+    const h = openWithPr(40);
+    const e = h.view().epochs[0]!;
+    expect(deliveryBranchFinished(h.view(), e, { ...closed, supersededBy: 61 })).toEqual({ finished: true, reason: 'superseded', satisfiedByPr: 61 });
+    expect(deliveryBranchFinished(h.view(), e, { ...closed, containedInTrunk: true })).toEqual({ finished: true, reason: 'contained_in_trunk', satisfiedByPr: null });
+  });
+
+  it('a successor PR from the same branch keeps it live, whatever the closed one says', () => {
+    const h = openWithPr(40);
+    const e = h.view().epochs[0]!;
+    expect(deliveryBranchFinished(h.view(), e, { ...closed, supersededBy: 61, successorOpen: true })).toEqual({ finished: false, reason: 'successor_open' });
+  });
+
+  it('a delivery with no PR yet is not finished', () => {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    expect(deliveryBranchFinished(h.view(), h.view().epochs[0]!, closed)).toEqual({ finished: false, reason: 'no_delivery_pr' });
+  });
+
+  it('says why in words', () => {
+    expect(finishedBranchWhy({ finished: true, reason: 'superseded', satisfiedByPr: 61 }, { prNumber: 40, trunk: 'dev' }))
+      .toBe('its PR #40 closed without merging and its work landed in #61');
+    expect(finishedBranchWhy({ finished: true, reason: 'contained_in_trunk', satisfiedByPr: null }, { prNumber: 40, trunk: 'dev' }))
+      .toBe('its PR #40 closed without merging and everything on it is already in `dev`');
+    expect(finishedBranchWhy({ finished: true, reason: 'mission_terminal', satisfiedByPr: null }, { prNumber: null, trunk: 'dev' }))
+      .toBe('the mission is closed');
   });
 });
