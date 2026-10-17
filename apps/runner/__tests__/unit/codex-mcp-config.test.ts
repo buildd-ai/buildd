@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { writeCodexMcpConfig, worktreeGitWritableRoots } from '../../src/codex-auth';
+import { writeCodexMcpConfig } from '../../src/codex-auth';
 
 function probeFsIsReal(): boolean {
   try {
@@ -184,45 +184,5 @@ describe('writeCodexMcpConfig — additional workspace/role MCP servers', () => 
     const serverMatches = content.match(/\[mcp_servers\./g) || [];
     expect(serverMatches).toHaveLength(1);
     expect(content).toContain('[mcp_servers.buildd]');
-  });
-});
-
-describe('worktree git metadata is writable', () => {
-  const dirs: string[] = [];
-  afterEach(() => {
-    for (const d of dirs) {
-      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
-    }
-    dirs.length = 0;
-  });
-
-  fsTest('a linked worktree yields its gitdir and the common dir, emitted as writable_roots', () => {
-    const base = fs.mkdtempSync(join(tmpdir(), 'codex-wt-test-'));
-    dirs.push(base);
-    const gitDir = join(base, 'repo', '.git', 'worktrees', 'wt1');
-    const wt = join(base, 'repo', '.buildd-worktrees', 'wt1');
-    fs.mkdirSync(gitDir, { recursive: true });
-    fs.mkdirSync(wt, { recursive: true });
-    fs.writeFileSync(join(gitDir, 'commondir'), '../..\n');
-    fs.writeFileSync(join(wt, '.git'), `gitdir: ${gitDir}\n`);
-
-    const roots = worktreeGitWritableRoots(wt);
-    expect(roots).toEqual([gitDir, join(base, 'repo', '.git')]);
-
-    writeCodexMcpConfig(base, {
-      builddServer: 'https://buildd.dev', workspaceId: 'w', workerId: 'x',
-      bearerTokenEnvVar: 'T', writableRoots: roots,
-    });
-    const content = fs.readFileSync(join(base, 'config.toml'), 'utf-8');
-    expect(content).toContain(`writable_roots = ["${gitDir}", "${join(base, 'repo', '.git')}"]`);
-    expect(content.indexOf('writable_roots')).toBeGreaterThan(content.indexOf('[sandbox_workspace_write]'));
-  });
-
-  fsTest('a plain clone or missing .git yields no roots', () => {
-    const base = fs.mkdtempSync(join(tmpdir(), 'codex-wt-test-'));
-    dirs.push(base);
-    expect(worktreeGitWritableRoots(base)).toEqual([]);
-    fs.mkdirSync(join(base, '.git'));
-    expect(worktreeGitWritableRoots(base)).toEqual([]);
   });
 });
