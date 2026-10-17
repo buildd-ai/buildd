@@ -26,3 +26,30 @@ exports[`teams and missions (R-23, R-24) 80x24: the filter line, team headings, 
 ────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
 `;
+
+exports[`teams and loose tasks (R-2, R-3) 80x24: loose tasks show a "(no mission)" row in each team group 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Acme                 │ (no mission)                      0 running · 2 waiting 
+ ▸ (no mission)   0/2 │─────────────────────────────────────────────────────────
+ Initech              │ WAITING                                                 
+   (no mission)   1/1 │›○ CI fix attempt                   another runner has it
+                      │ ○ friction task 1                  not tried yet        
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;

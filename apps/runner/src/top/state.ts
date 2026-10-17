@@ -202,6 +202,10 @@ export interface ClaimOutcome {
 
 export const NO_MISSION = '(none)';
 
+export function isLooseMissionRow(key: string): boolean {
+  return key.startsWith(NO_MISSION + ':');
+}
+
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
     runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, hold: null, routes: [], routeProblems: [] },
@@ -677,6 +681,7 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
   const workers = workerByTask(state);
   const map = new Map<string, MissionRow>();
   const serverCounts = new Map<string, { done: number; total: number }>();
+  const looseTasks = new Map<string, TopTask[]>();
   for (const t of relevantTasks(state, workers)) {
     const key = t.missionId || NO_MISSION;
     let row = map.get(key);
@@ -693,6 +698,12 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     if (t.mission?.isHeld) row.held = true;
     if (t.mission?.executor === 'local') row.local = true;
     row.workspaceId ??= taskWorkspaceId(t);
+    // Track loose tasks separately by workspace/team
+    if (key === NO_MISSION) {
+      const wsId = taskWorkspaceId(t) ?? '';
+      if (!looseTasks.has(wsId)) looseTasks.set(wsId, []);
+      looseTasks.get(wsId)!.push(t);
+    }
   }
   // The list holds active tasks and only a day of finished ones, so the local
   // tally undercounts a long mission; the server's count wins when it sent one.
@@ -738,6 +749,35 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     row.team = w && teamKey(w) ? teamName(w) : null;
   }
 
+  // Create per-team "(no mission)" rows for loose tasks (when any exist)
+  const looseTasksByTeam = new Map<string | null, TopTask[]>();
+  for (const tasks of looseTasks.values()) {
+    for (const t of tasks) {
+      const wsId = taskWorkspaceId(t);
+      const w = wsId ? wsById.get(wsId) : undefined;
+      const team = (w && teamKey(w) ? teamName(w) : null);
+      if (!looseTasksByTeam.has(team)) looseTasksByTeam.set(team, []);
+      looseTasksByTeam.get(team)!.push(t);
+    }
+  }
+  // Replace global NO_MISSION row with per-team rows only if there are loose tasks
+  if (looseTasksByTeam.size > 0 && map.has(NO_MISSION)) {
+    const globalNoMission = map.get(NO_MISSION)!;
+    map.delete(NO_MISSION);
+    for (const [team, tasks] of looseTasksByTeam) {
+      const key = `${NO_MISSION}:${team ?? ''}`;
+      const row = emptyRow(key, '(no mission)');
+      row.team = team;
+      for (const t of tasks) {
+        row.total++;
+        if (t.status === 'completed') row.done++;
+        const w = workers.get(t.id);
+        if (w && (BUSY.includes(w.status) || w.status === 'waiting')) row.running++;
+      }
+      map.set(key, row);
+    }
+  }
+
   const rank = (r: MissionRow) => (r.deliveredAt !== undefined ? 2 : r.held || r.stage?.step === 'on_hold' ? 1 : 0);
   const teamRank = (r: MissionRow) => (r.team === null ? Number.MAX_SAFE_INTEGER : teamOrder.get(r.team) ?? Number.MAX_SAFE_INTEGER - 1);
   const rows = [...map.values()].filter(r => r.key !== NO_MISSION);
@@ -746,8 +786,12 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     || rank(a) - rank(b)
     || (rank(a) === 2 ? (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0) : (b.running > 0 ? 1 : 0) - (a.running > 0 ? 1 : 0))
     || a.title.localeCompare(b.title));
-  // `(no mission)` is always there, last, so loose tasks have a home.
+  // Append NO_MISSION row (either global or per-team rows) at the end
   rows.push(map.get(NO_MISSION) ?? emptyRow(NO_MISSION, '(no mission)'));
+  // Also append per-team loose mission rows
+  for (const [key, row] of map) {
+    if (isLooseMissionRow(key)) rows.push(row);
+  }
   return rows;
 }
 
@@ -763,7 +807,7 @@ export function missionList(state: TopState, now: number = Date.now()): MissionR
   const rows = missionRows(state, now);
   if (state.filter) {
     const withTask = new Set(relevantTasks(state, workerByTask(state)).filter(t => matchesFilter(t.title, state.filter)).map(t => t.missionId || NO_MISSION));
-    return rows.filter(r => r.key === NO_MISSION || matchesFilter(r.title, state.filter) || withTask.has(r.key));
+    return rows.filter(r => r.key === NO_MISSION || isLooseMissionRow(r.key) || matchesFilter(r.title, state.filter) || withTask.has(r.key));
   }
   const sel = state.selectedMission;
   const isSelected = (r: MissionRow) => !!sel && (r.key === sel || r.key.startsWith(sel));
@@ -772,7 +816,8 @@ export function missionList(state: TopState, now: number = Date.now()): MissionR
   while (i < rows.length) {
     const team = rows[i].team;
     const group: MissionRow[] = [];
-    // `(no mission)` closes the list on its own, never inside a team's fold.
+    // `(no mission)` row closes the list on its own, never inside a team's fold.
+    // But loose mission rows (with team) are part of the team group.
     while (i < rows.length && rows[i].team === team && rows[i].key !== NO_MISSION) group.push(rows[i++]);
     if (group.length === 0) { out.push(rows[i++]); continue; }
     const done = group.filter(r => r.deliveredAt !== undefined);
@@ -1237,7 +1282,17 @@ export function matchesFilter(title: string, filter: string): boolean {
 export function taskRows(state: TopState, now: number): TaskRow[] {
   const workers = workerByTask(state);
   const mission = currentMission(state, now);
-  const tasks = relevantTasks(state, workers).filter(t => (t.missionId || NO_MISSION) === mission.key);
+  // Match loose tasks against their team-specific "(no mission)" row
+  const taskKey = (t: TopTask, wsById: Map<string, TopWorkspace>, teamName: Map<string, string | null>) => {
+    if (t.missionId) return t.missionId;
+    const wsId = taskWorkspaceId(t);
+    const w = wsId ? wsById.get(wsId) : undefined;
+    const team = (w && teamKey(w) ? (teamName.get(w.id) ?? null) : null);
+    return `${NO_MISSION}:${team ?? ''}`;
+  };
+  const wsById = new Map(workspaceList(state).map(w => [w.id, w]));
+  const teamMap = new Map(workspaceList(state).map(w => [w.id, (w && teamKey(w) ? teamName(w) : null)]));
+  const tasks = relevantTasks(state, workers).filter(t => taskKey(t, wsById, teamMap) === mission.key);
   const running: TaskRow[] = [];
   const waiting: TaskRow[] = [];
   const done: TaskRow[] = [];

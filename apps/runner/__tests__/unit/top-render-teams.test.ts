@@ -107,3 +107,35 @@ describe('teams and missions (R-23, R-24)', () => {
     expect(stripAnsi(frame(teamed(), 80, 24)[23])).toContain('t team');
   });
 });
+
+describe('teams and loose tasks (R-2, R-3)', () => {
+  test('80x24: loose tasks show a "(no mission)" row in each team group', () => {
+    let s = reduce(fixtureState(), { type: 'tasks', tasks: [] });
+    s = reduce(s, { type: 'workers', workers: [] });
+    s = reduce(s, { type: 'workspaces', workspaces: [
+      { id: 'ws-1', name: 'alpha', teamId: 'team-a', teamName: 'Acme' },
+      { id: 'ws-2', name: 'bravo', teamId: 'team-b', teamName: 'Initech' },
+    ] });
+    // Add loose tasks in each workspace (belonging to different teams)
+    s = reduce(s, { type: 'tasks', tasks: [
+      { id: 't-loose-1', title: 'CI fix attempt', status: 'in_progress', missionId: null, workspaceId: 'ws-1' },
+      { id: 't-loose-2', title: 'friction task 1', status: 'pending', missionId: null, workspaceId: 'ws-1' },
+      { id: 't-loose-3', title: 'friction task 2', status: 'completed', missionId: null, workspaceId: 'ws-2' },
+    ] });
+    s = reduce(s, { type: 'workers', workers: [] });
+    s = reduce(s, { type: 'missions', missions: [] });
+    const lines = frame(s, 80, 24);
+    expectExactSize(lines, 80, 24);
+    const t = text(lines);
+    // Each team should show a "(no mission)" row
+    expect(t).toMatch(/^ Acme/m);
+    expect(t).toMatch(/^ Initech/m);
+    expect(t).toContain('(no mission)');
+    // The "(no mission)" row should show per-team done/total counts
+    // Acme: 2 tasks (1 in_progress, 1 pending), 0 done
+    // Initech: 1 task (completed), 1 done
+    expect(t).toContain('(no mission)   0/2');  // Acme
+    expect(t).toContain('(no mission)   1/1');  // Initech
+    expect(t).toMatchSnapshot();
+  });
+});
