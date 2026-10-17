@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  buildEscalationGateState,
   escalationFingerprint,
   escalationRule,
   resolveEscalationAnswer,
@@ -293,5 +294,24 @@ describe('mergePolicy.dataMigrations: the reviewer decides data migrations', () 
     const off = dataHandoff();
     expect(escalationFingerprint({ ...off, agentReviewsDataMigrations: false })).toBe(escalationFingerprint(off));
     expect(escalationFingerprint({ ...off, agentReviewsDataMigrations: true })).not.toBe(escalationFingerprint(off));
+  });
+});
+
+describe('buildEscalationGateState: review_exhausted tells what the rounds did', () => {
+  const why = (s: EscalationSubject) => ((buildEscalationGateState(s).pr as { why: string }).why);
+
+  it('never approved', () => {
+    const w = why(base({ why: 'review_exhausted', reviewHistory: 'Review budget spent without an approval' }));
+    expect(w).toContain('without an approval');
+  });
+
+  it('approved, then a later change was refused: does not say "without an approval"', () => {
+    const w = why(base({ why: 'review_exhausted', reviewHistory: 'Approved twice, then a later change was refused' }));
+    expect(w).toContain('approved twice, then a later change was refused');
+    expect(w).not.toContain('without an approval');
+  });
+
+  it('with no history, keeps the generic wording', () => {
+    expect(why(base({ why: 'review_exhausted' }))).toBe('review rounds ran out without an approval');
   });
 });
