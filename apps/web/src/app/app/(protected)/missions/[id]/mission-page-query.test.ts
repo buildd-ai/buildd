@@ -110,9 +110,9 @@ describe('visual review shots query', () => {
     expect(text).toMatch(/"artifacts"\."mission_id" = \$\d+/);
     expect(text).toMatch(/"artifacts"\."type" = \$\d+/);
     expect(text).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
-    expect(q.params).toEqual(['mission-1', 'screenshot', 'mission-1', 'visual-auditor']);
-    // AND, not OR: every clause must hold.
-    expect(text).not.toContain(' or ');
+    expect(q.params).toEqual(['mission-1', 'screenshot', 'mission-1', 'visual-auditor', '[surface audit] %']);
+    // AND at the top: every clause must hold; the only OR is the audit identity (role or title prefix).
+    expect(text.replace(/ and \("t"\.role_slug = \$4 or "t"\.title like \$5\)/, '')).not.toContain(' or ');
   });
 
   // Evidence is the auditor's alone: a screenshot another worker on the
@@ -121,7 +121,7 @@ describe('visual review shots query', () => {
     const q = dialect.sqlToQuery(missionVisualShotsWhere('mission-1'));
     const text = q.sql.replace(/\s+/g, ' ');
     expect(text).toMatch(
-      /"artifacts"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = \$3 and "t"\."role_slug" = \$4\)/,
+      /"artifacts"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = \$3 and \("t"\.role_slug = \$4 or "t"\.title like \$5\)\)/,
     );
     expect(q.params[3]).toBe('visual-auditor');
   });

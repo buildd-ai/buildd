@@ -59,9 +59,11 @@ describe('shot query scoping (rendered SQL)', () => {
     expect(shots.sql).toContain('"artifacts"."type" = $');
     expect(shots.sql).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
     expect(shots.sql).toContain('"artifacts"."worker_id" in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = $');
-    expect(shots.sql).toContain(`and ("t".role_slug = 'visual-auditor' or "t".title like '[surface audit] %')`);
+    expect(shots.sql).toContain('and ("t".role_slug = $');
     expect(shots.params).toContain(MISSION);
     expect(shots.params).toContain('screenshot');
+    expect(shots.params).toContain('visual-auditor');
+    expect(shots.params).toContain('[surface audit] %');
     // The worker's task comes with the row, so a shot's round never depends on a worker limit.
     expect(shots.sql).toContain('left join "workers" on "workers"."id" = "artifacts"."worker_id"');
     expect(shots.sql).toContain('order by "artifacts"."created_at" desc');
