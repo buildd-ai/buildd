@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
+import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
@@ -69,17 +70,15 @@ const EMPTY: HomeFleetData = {
 };
 
 /**
- * The runners a team's fleet is made of: fresh heartbeats scoped to the team's
- * accounts or its workspaces. Home's fleet panel and the mission Lanes band
- * both read this (then `fleetCapacity`), so their capacity is one number.
+ * The runners a team's fleet is made of: fresh heartbeats of the team's own
+ * accounts or of accounts linked to its workspaces (`fleetHeartbeatScope`).
+ * Home's fleet panel, Settings → Runners, Health › Runners and the mission
+ * Lanes band all read this (then `fleetCapacity`), so their capacity is one number.
  */
 export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetHeartbeatRow[]> {
   const { teamId, wsIds, now } = input;
-  if (wsIds.length === 0 && !teamId) return [];
-  const wsArray = sql`array[${sql.join(wsIds.map(id => sql`${id}`), sql`, `)}]::text[]`;
-  const teamAccountIds = teamId
-    ? db.select({ id: accounts.id }).from(accounts).where(eq(accounts.teamId, teamId))
-    : null;
+  const scope = fleetHeartbeatScope({ teamId, wsIds });
+  if (!scope) return [];
   const rows = await db
     .select({
       id: workerHeartbeats.id,
@@ -94,10 +93,7 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
     .from(workerHeartbeats)
     .where(and(
       gt(workerHeartbeats.lastHeartbeatAt, new Date(now - RUNNER_STALE_CUTOFF_MS)),
-      or(
-        wsIds.length > 0 ? sql`${workerHeartbeats.workspaceIds} ?| ${wsArray}` : undefined,
-        teamAccountIds ? inArray(workerHeartbeats.accountId, teamAccountIds) : undefined,
-      ),
+      scope,
     ));
   return rows as FleetHeartbeatRow[];
 }

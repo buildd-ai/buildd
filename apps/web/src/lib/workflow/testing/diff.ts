@@ -9,6 +9,8 @@
  * decisions and are not compared.
  */
 
+import { ROUND_TRIGGERS } from '@buildd/workflow-kernel';
+
 type J = Record<string, unknown>;
 
 export interface StepDecision {
@@ -108,6 +110,24 @@ function sameDecision(recorded: StepDecision, replayed: StepDecision): boolean {
 }
 
 export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
+  {
+    // a90fc99b (#4245, spec §13.7 item 9): a treadmill cycle the landing sweep restarts after
+    // the cooldown is Buildd's wait, not a page, so only the final cycle notifies a person.
+    // Before cycles every treadmill escalation notified; a recording from then is cycle 1. On a
+    // cycle-1, non-final escalation the replay may carry exactly the recorded
+    // `notify:…:treadmill:<head>` landing_needs_human effect it no longer enqueues, and nothing
+    // else. Runs before the #4072 rule, which strips the cycle this one reads.
+    id: 'treadmill notifies only on the final cycle (a90fc99b #4245, spec §13.7 item 9)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      if (!p || p.command !== 'ConflictObserved' || !p.idempotencyKey.endsWith(':treadmill') || p.toState !== 'ESCALATED' || !sameDecision(recorded, replayed)) return null;
+      if (!isObj(p.evidence) || p.evidence.treadmill !== true || p.evidence.cycle !== 1 || 'finalCycle' in p.evidence) return null;
+      const replayedKeys = new Set(replayed.effects.map((e) => e.dedupeKey));
+      const missing = recorded.effects.filter((e) => e.kind === 'notify' && /^notify:[^:]+:treadmill:[^:]+$/.test(e.dedupeKey)
+        && isObj(e.payload) && e.payload.event === 'landing_needs_human' && !replayedKeys.has(e.dedupeKey));
+      return missing.length === 1 ? { ...replayed, effects: [...replayed.effects, missing[0]] } : null;
+    },
+  },
   {
     // #4072 (S15 cycles): a spent treadmill's ESCALATED(landing_needs_human) evidence
     // carries `treadmill: true` and the cycle number (spec §13.7 item 9). Before it
@@ -263,6 +283,157 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
       const evidence = Object.fromEntries(Object.entries(p.evidence).filter(([k]) => !keys.includes(k)));
       return { ...replayed, transition: { ...p, evidence } };
     },
+  },
+  {
+    // #4911 (workflow-state-kernel.md §8.3a): every round records why it started, and
+    // dispatch_review carries that `trigger`. A recording from before carries none: on the
+    // same decision the replay may drop exactly that key, holding a known trigger, from
+    // exactly the dispatch_review payloads whose recorded payload lacks it.
+    id: 'round trigger on dispatch_review (#4911, workflow-state-kernel.md §8.3a)',
+    apply(recorded, replayed) {
+      if (!sameDecision(recorded, replayed)) return null;
+      const rec = new Map(recorded.effects.map((e) => [e.dedupeKey, e]));
+      let changed = false;
+      const effects = replayed.effects.map((e) => {
+        const was = rec.get(e.dedupeKey);
+        if (e.kind !== 'dispatch_review' || !isObj(e.payload) || !was || was.kind !== 'dispatch_review' || !isObj(was.payload)) return e;
+        if ('trigger' in was.payload || !(ROUND_TRIGGERS as readonly unknown[]).includes(e.payload.trigger)) return e;
+        const { trigger: _t, ...rest } = e.payload;
+        changed = true;
+        return { ...e, payload: rest };
+      });
+      return changed ? { ...replayed, effects } : null;
+    },
+  },
+  {
+    // #4911 (workflow-state-kernel.md §8.3a): a round after a reviewer's approval is a delta
+    // review only when the delta was read and is small; otherwise it is a full review, with
+    // the eligibility answer in its scope. Before, every round after an approval at another
+    // head was a delta review, and no delta was read. The replay reads none either, so the
+    // answer is the unread one (`eligible: false`, no `fromHeadSha`, no size): on the same
+    // decision, a recorded `delta` round with no scope may stand for exactly that full round.
+    id: 'full review after an approval unless the delta is read (#4911, workflow-state-kernel.md §8.3a)',
+    apply(recorded, replayed) {
+      if (!sameDecision(recorded, replayed)) return null;
+      const rec = new Map(recorded.effects.map((e) => [e.dedupeKey, e]));
+      const unread = (s: unknown): boolean => {
+        if (!isObj(s) || Object.keys(s).join() !== 'deltaApproval' || !isObj(s.deltaApproval)) return false;
+        const a = s.deltaApproval;
+        return a.eligible === false && a.fromHeadSha === null && Object.keys(a).every((k) => ['eligible', 'reason', 'fromHeadSha'].includes(k));
+      };
+      let changed = false;
+      const effects = replayed.effects.map((e) => {
+        const was = rec.get(e.dedupeKey);
+        if (e.kind !== 'dispatch_review' || !isObj(e.payload) || !was || was.kind !== 'dispatch_review' || !isObj(was.payload)) return e;
+        if (was.payload.kind !== 'delta' || was.payload.scope != null || e.payload.kind !== 'full' || !unread(e.payload.scope)) return e;
+        changed = true;
+        return { ...e, payload: { ...e.payload, kind: 'delta', scope: null } };
+      });
+      return changed ? { ...replayed, effects } : null;
+    },
+  },
+  {
+    // #4368 (S15, workflow-state-kernel.md §13.7): a behind refresh records the freshness
+    // verdict it went ahead on. A recording from before read no base delta, and neither does
+    // the replay, so the verdict is the unread one: on the same decision the replay may drop
+    // exactly `freshness: { tolerated: false, cause: 'unread' }` from a ConflictObserved.
+    id: 'behind refresh freshness evidence (#4368, workflow-state-kernel.md §13.7 S15)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      const r = recorded.transition;
+      if (!p || !r || p.command !== 'ConflictObserved' || !sameDecision(recorded, replayed) || !isObj(p.evidence) || !isObj(r.evidence)) return null;
+      if ('freshness' in r.evidence || canonical(p.evidence.freshness) !== canonical({ tolerated: false, cause: 'unread' })) return null;
+      const { freshness: _f, ...evidence } = p.evidence;
+      return { ...replayed, transition: { ...p, evidence } };
+    },
+  },
+  {
+    // S5 (#4815, workflow-kernel-library.md §5): a review budget spent with requested changes
+    // still open names them on the escalate_exhaustion effect (`findings`). A recording from
+    // before findings existed carries none: on the same decision the replay may drop exactly
+    // that key from exactly those effects, when the recorded payload lacks it.
+    id: 'findings on escalate_exhaustion (S5 #4815, workflow-kernel-library.md §5)',
+    apply(recorded, replayed) {
+      if (!sameDecision(recorded, replayed)) return null;
+      const rec = new Map(recorded.effects.map((e) => [e.dedupeKey, e]));
+      let changed = false;
+      const effects = replayed.effects.map((e) => {
+        const was = rec.get(e.dedupeKey);
+        if (e.kind !== 'escalate_exhaustion' || !isObj(e.payload) || !Array.isArray(e.payload.findings) || !was || !isObj(was.payload) || 'findings' in was.payload) return e;
+        const { findings: _f, ...rest } = e.payload;
+        changed = true;
+        return { ...e, payload: rest };
+      });
+      return changed ? { ...replayed, effects } : null;
+    },
+  },
+];
+
+/**
+ * A recorded decision the current kernel makes differently ON PURPOSE, where the
+ * difference is the decision itself (another to-state), so no evolution may
+ * rewrite it. The delivery stops there as `incomplete`, naming the change: never
+ * identical, never tolerated, and never silently a divergence the corpus keeps
+ * failing on. Each names the PR that changed it; the shape on both sides must be exact.
+ */
+export interface SupersededDecision {
+  id: string;
+  /** `before` is the replayed delivery as the step found it (the same as the recording's, every earlier step having matched). */
+  matches(recorded: StepDecision, replayed: StepDecision, before: { state: string; stateReason: string | null } | null): boolean;
+}
+
+export const SUPERSEDED_DECISIONS: SupersededDecision[] = [
+  {
+    // abe42d1b (#4169, spec §9 / §6.9): a fix that ended successfully with nothing local
+    // reported and no commits is proven by the push attributed to it mid-attempt, so the
+    // kernel starts the next round instead of parking in AWAITING_PUSH(local_head_unknown).
+    id: 'a successful fix is proven by its own attributed push (abe42d1b #4169, spec §9)',
+    matches(recorded, replayed) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      if (!r || !p || r.command !== 'AttemptEnded' || p.command !== 'AttemptEnded' || r.idempotencyKey !== p.idempotencyKey) return false;
+      if (r.fromState !== 'FIXING' || p.fromState !== 'FIXING' || r.toState !== 'AWAITING_PUSH' || p.toState !== 'AWAITING_REVIEW') return false;
+      const e = r.evidence;
+      const pe = p.evidence;
+      return isObj(e) && isObj(pe) && e.outcome === 'success' && (e.commitCount ?? 0) === 0 && e.localHeadSha == null
+        && isObj(e.proof) && e.proof.reason === 'local_head_unknown' && isObj(pe.proof) && pe.proof.holds === true;
+    },
+  },
+  {
+    // 2ded4e88 (#4910, spec T5): a spent review budget is final. A push after a
+    // review_exhausted escalation used to queue another round; now the head is only recorded
+    // and the delivery stays with the person until a person acts.
+    id: 'a spent review budget is not re-armed by a push (2ded4e88 #4910, spec T5)',
+    matches(recorded, replayed, before) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      if (!r || !p || r.command !== 'HeadObserved' || p.command !== 'HeadObserved' || r.idempotencyKey !== p.idempotencyKey) return false;
+      if (before?.state !== 'ESCALATED' || before.stateReason !== 'review_exhausted') return false;
+      return r.fromState === 'ESCALATED' && r.toState === 'AWAITING_REVIEW' && p.fromState === 'ESCALATED' && p.toState === 'ESCALATED'
+        && !replayed.effects.some((e) => e.kind === 'dispatch_review');
+    },
+  },
+];
+
+/**
+ * A recorded command the current kernel refuses ON PURPOSE because the input itself
+ * is retired, not because it decides differently: no later step can be judged
+ * against a state the current code never reaches, so the delivery stops there as
+ * `incomplete`, naming the change, never as identical and never as a divergence.
+ * Each names the PR that retired the input; the shape must be exact.
+ */
+export interface RetiredInput {
+  id: string;
+  matches(t: { command: string; actor: string; bypass: J | null }): boolean;
+}
+
+export const RETIRED_INPUTS: RetiredInput[] = [
+  {
+    // #4189: a forced review request is a person's call (T5 `force_requires_human`), and the
+    // route stopped writing the anonymous actor `force` for one. A recording from before has
+    // that actor, which says nothing about who asked, so the forced round cannot be rebuilt.
+    id: 'anonymous forced review request (#4189, T5 force_requires_human)',
+    matches: (t) => t.command === 'ReviewRequested' && t.actor === 'force' && t.bypass?.forced === true,
   },
 ];
 

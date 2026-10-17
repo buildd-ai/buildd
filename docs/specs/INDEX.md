@@ -71,13 +71,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
-- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-15
+- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-10-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-15
+- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-17
   A mission touching UI surfaces MUST receive a dependent surface audit and enforce its visual review policy before shipping.
 - [Organizer Context](./organizer-context.md) · @max — verified 2026-10-15
   Organizer prompts MUST include prior work and bounded current workspace context while degrading safely on retrieval failure.
@@ -230,7 +230,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Context: a runner already uses its machine's own Claude login when the claim brings no credential (`host-seat.ts`), and its own `codex login` for Codex tasks (`decideCodexSeat`).
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-14
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-17
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-13
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.

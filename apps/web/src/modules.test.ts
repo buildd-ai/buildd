@@ -92,6 +92,7 @@ describe('composition root', () => {
       'missions:settle-surface-intents',
       'reviews:merge-review-telemetry',
       'reviews:supersession-detect-on-close',
+      'reviews:supersession-rescan-on-merge',
       'reviews:supersession-reconcile-on-close',
       'reviews:dead-pr-shutdown',
       // A closed blocker is a recovery moment (failure-incident-recovery §12(a)).

@@ -243,24 +243,14 @@ describe('filingFacts', () => {
 });
 
 describe('SpecIndex cards', () => {
-  it('lists the waiting revisions first for a reader who approves, each with its Review link', () => {
+  it('says a revision waits once, on the spec\'s own row, with no panel or count in the summary', () => {
     render([
       area('a1', 'Runners'), approved('f1', 'a1', { title: 'Pools', approvedRevision: 2, headRevision: 3 }), approved('f2', 'a1'),
       draft('u1', null),
     ], undefined, undefined, true, true);
-    const card = q('[data-testid="spec-index-waiting-card"]')!;
-    expect(card.querySelector('h2')!.textContent).toBe('Waiting for your approval');
-    const link = card.querySelector('[data-testid="spec-index-review"]')!;
-    expect(link.getAttribute('href')).toBe('/app/specs/f1?review=1');
-    expect(link.textContent).toBe('Review revision 3');
-    expect(card.textContent).toContain('Pools');
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('3 specs in 1 area, 1 unfiled. 1 waits for your approval.');
-  });
-
-  it('a reader who cannot approve gets no waiting card, and the line says it neutrally', () => {
-    render([area('a1', 'Runners'), approved('f1', 'a1', { headRevision: 2 }), approved('f2', 'a1', { headRevision: 2 })]);
     expect(q('[data-testid="spec-index-waiting-card"]')).toBeNull();
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('2 specs in 1 area. 2 wait for approval.');
+    expect(qa('[data-testid="spec-index-waiting"]')).toHaveLength(1);
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('3 specs in 1 area, 1 unfiled.');
   });
 
   it('AC-82: a failing outcome counts as failing on its area card, in words beside the bar', () => {
@@ -353,5 +343,40 @@ describe('titleLines', () => {
     expect(titleLines('Scaling a recipe by servings')).toEqual(['Scaling a recipe by', 'servings']);
     expect(titleLines('Metric and imperial switch for the pantry shelves')).toEqual(['Metric and imperial', 'switch for the pantry…']);
     expect(titleLines('Supercalifragilisticexpialidocious')).toEqual(['Supercalifragilistice…']);
+  });
+});
+
+describe('SpecIndex cluster map (R-37)', () => {
+  const specs = [area('a', 'Alpha'), area('b', 'Beta'), ...many('a', 3), draft('b-0', 'b'), spec('loose-1'), spec('loose-2')];
+
+  it('shows a block per area, sized by count, with dots for unfiled specs', () => {
+    render(specs);
+    const blocks = qa('[data-testid="spec-cluster-block"]');
+    expect(blocks.map((b) => b.getAttribute('data-count'))).toEqual(['3', '1']);
+    expect(qa('[data-testid="spec-cluster-dot"]').length).toBe(2);
+  });
+
+  it('tapping a block filters the outline to that area; tapping again clears it', () => {
+    render(specs);
+    const block = () => q('[data-testid="spec-cluster-block"][data-area-id="b"]') as HTMLElement;
+    act(() => block().click());
+    expect(qa('[data-testid="spec-index-area"]').map((a) => a.getAttribute('data-area-id'))).toEqual(['b']);
+    expect(q('[data-testid="spec-index-unfiled"]')).toBeNull();
+    act(() => block().click());
+    expect(qa('[data-testid="spec-index-area"]').length).toBe(2);
+    expect(q('[data-testid="spec-index-unfiled"]')).not.toBeNull();
+  });
+
+  it('tapping Unfiled shows only the unfiled card', () => {
+    render(specs);
+    act(() => (q('[data-testid="spec-cluster-unfiled"]') as HTMLElement).click());
+    expect(qa('[data-testid="spec-index-area"]').length).toBe(0);
+    expect(q('[data-testid="spec-index-unfiled"]')).not.toBeNull();
+  });
+
+  it('with one area there is no map, only the line', () => {
+    render([area('a', 'Alpha'), ...many('a', 2)]);
+    expect(q('[data-testid="spec-cluster-map"]')).toBeNull();
+    expect(q('[data-testid="spec-index-line"]')).not.toBeNull();
   });
 });

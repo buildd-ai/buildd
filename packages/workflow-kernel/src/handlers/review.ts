@@ -421,8 +421,25 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
     });
     return { outcome: 'ok:cancelled' };
   }
-  // Merge / close cancellations: the legacy supersession rules still run them.
-  return { outcome: 'skipped:legacy_owns' };
+  if (reason === 'closed' || reason === 'merged') {
+    // b6cfdbb9: the close (T18) or merge (T17) names the tasks it made moot. The legacy reconciler
+    // skips a kernel-owned PR, so this is the only place they end; before, a repair queued when the
+    // PR closed stayed pending on a PR that no longer existed. `cancel` touches only an unstarted task.
+    const work = need(ports, 'work', e.kind);
+    const why = reason === 'closed' ? 'the PR was closed without merging' : 'the PR was merged';
+    const ids = Array.isArray(e.payload.taskIds) ? (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    for (const id of ids) await work.cancel(id, why);
+    // A repair not yet linked to its task: that role's unstarted tasks, but only while the PR is
+    // still where this effect left it (a reopen since may have filed new ones).
+    const roles = Array.isArray(e.payload.unlinkedRoles) ? (e.payload.unlinkedRoles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    let n = 0;
+    if (roles.length && d.state === (reason === 'closed' ? 'CLOSED_UNMERGED' : 'MERGED')) {
+      for (const role of roles) n += await work.cancelPending({ deliveryId: d.id, role, ...superseded(why) });
+    }
+    return { outcome: `ok:cancelled_${ids.length + n}` };
+  }
+  // A close or merge recorded before b6cfdbb9 carries no reason: nothing named, nothing to do.
+  return { outcome: 'skipped:no_reason' };
 }
 
 /** `escalate_exhaustion` for family `review_fix`: the rounds, or the fix ledger, ran out. */
@@ -431,7 +448,10 @@ export async function escalateReviewExhaustion(ports: KernelPorts, e: ClaimedEff
   const current = rounds.find((r) => r.round === d.currentRound);
   const out: ReviewOutput = current ? await need(ports, 'reviews', e.kind).output(current) : {};
   // A fix ledger spent before the rounds were (T8, 67d34094) says so; otherwise the rounds ran out.
-  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts` : `after ${d.currentRound} review rounds`;
+  // A held delivery reopened (79649a80) is the same spent budget coming back to the person.
+  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts`
+    : e.payload.reopened === true ? `reopened after ${d.currentRound} review rounds; the review budget is still spent`
+    : `after ${d.currentRound} review rounds`;
   const outcome = await need(ports, 'escalate', e.kind).exhausted(d, {
     family: 'review_fix', headSha: d.currentHeadSha, attempts: Number(e.payload.attempts ?? d.currentRound), max: Number(e.payload.max ?? d.maxRounds),
     title: 'Review fix attempts exhausted', detail, note: out.feedback ?? null,
