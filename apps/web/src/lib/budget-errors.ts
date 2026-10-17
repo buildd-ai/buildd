@@ -47,6 +47,17 @@ export type { ParseResetTimeOptions } from '@buildd/core/reset-time';
  */
 export { isBudgetExhaustionError, isSessionBudgetCapError } from '@buildd/core/budget-error-classifier';
 
+/**
+ * True when a worker error says the backend's own credential was rejected as
+ * expired or invalid (a Codex login past its expiry, a revoked token), rather
+ * than a usage wall or a failure of the task. Such a backend cannot take work
+ * until a person re-authenticates it, so failover must not route there.
+ */
+export function isCredentialExpiredError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return /(token|credential|login|session|auth\w*)[^.\n]{0,40}\b(has |have |is |was )?(expired|revoked|invalid)\b|\b(expired|invalid|revoked)\b[^.\n]{0,30}\b(token|credential|login|api key)|invalid_grant|refresh_token_(expired|reused|invalidated)|\b401\b[^.\n]{0,40}unauthori[sz]ed|please (log ?in|sign in) again/i.test(error);
+}
+
 /** A timestamp as it can arrive from the driver, the API, or code. */
 type TimestampLike = Date | string | number | null | undefined;
 

@@ -38,7 +38,7 @@ import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/b
 import { combineCostBasis, costBasisWrite, parseCostBasis, type CostBasis } from '@buildd/core/cost-basis';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
-import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
+import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
@@ -2990,6 +2990,27 @@ export async function PATCH(
       await wakeTask(worker.taskId, 'task.requeued');
     }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
+  }
+
+  // A Codex run the provider rejected as expired/invalid: pause Codex for the
+  // team (reason 'auth') so budget failover stops routing tasks to a login that
+  // cannot run them. The pause lapses after a day; a re-authenticated login is
+  // picked up then (or sooner when the claim route sees a fresh credential).
+  if (status === 'failed' && !isBudgetError && worker.taskId && isCredentialExpiredError(error)) {
+    const authTask = await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
+      columns: { context: true, workspaceId: true, backend: true },
+      with: { workspace: { columns: { teamId: true } } },
+    });
+    if (claimedBackendOf(authTask?.backend, authTask?.context) === 'codex') {
+      await recordBackendPause({
+        backend: 'codex',
+        scope: { teamId: (authTask?.workspace as any)?.teamId, accountId: account.id, workspaceId: authTask?.workspaceId },
+        resetsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        reason: 'auth',
+        sourceWorkerId: id,
+      });
+    }
   }
 
   if (isBudgetError && worker.taskId) {
