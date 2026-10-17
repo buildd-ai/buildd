@@ -432,6 +432,7 @@ describe('allCheckSuitesPassed with a superseded run', () => {
       const u = String(url);
       if (u.includes('access_tokens')) return jsonResponse(201, { token: 't', expires_at: new Date(Date.now() + 3.6e6).toISOString() });
       if (u.includes('/check-suites')) return jsonResponse(200, { check_suites: [failedSuite, greenSuite] });
+      if (u.includes('/actions/runs')) return jsonResponse(200, { total_count: 2, workflow_runs: [{ workflow_id: 7, check_suite_id: 1 }, { workflow_id: 7, check_suite_id: 2 }] });
       return jsonResponse(200, { total_count: 2, check_runs: [run(10, 1, 'failure'), run(11, 2, 'success')] });
     }) as unknown as typeof fetch;
     try {
