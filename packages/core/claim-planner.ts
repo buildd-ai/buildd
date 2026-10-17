@@ -29,7 +29,7 @@
 
 import { PARALLELISM_PRESSURE_FLOOR } from './oauth-budget';
 import type { ReadoutVerdict } from './orchestration-promotion';
-import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL, stripTrailingSep } from './path-overlap';
+import { hasConcretePathManifest, intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, stripTrailingSep } from './path-overlap';
 
 /**
  * Daily-budget share at or above which the planner treats the account as under
@@ -163,6 +163,14 @@ export interface ClaimPlanInput {
   thresholds: PlannerThresholds | null;
   /** Stored overlap answers keyed by `overlapPairKey`. */
   overlapAnswers?: Record<string, OverlapAnswer>;
+  /**
+   * Overlap policy: does a concrete overlap on these shared (scope-prefixed)
+   * paths keep two nodes apart? Absent = every concrete overlap does. A
+   * concrete overlap it answers false for is no edge at all: both run, and
+   * the merge settles it. Lease overlaps ask it too; the claim route answers
+   * true for every lease in a workspace that enforces path claims.
+   */
+  overlapHolds?: (sharedPaths: string[], kind: 'lease' | 'open_pr' | 'path') => boolean;
 }
 
 // ── Output ───────────────────────────────────────────────────────────────────
@@ -325,13 +333,17 @@ function compareScores(x: ScoreParts & { id: string }, y: ScoreParts & { id: str
 }
 
 /** The hard edge between a candidate and another node, or null. Candidate-first. */
-function hardEdgeBetween(c: Node, o: Node): HardEdgeKind | null {
+function hardEdgeBetween(c: Node, o: Node, holds?: ClaimPlanInput['overlapHolds']): HardEdgeKind | null {
   if (o.ownerTaskId === c.id) return null;
   if (o.inFlight && c.candidate?.exemptFrom?.includes(o.id)) return null;
   if (c.scope.concrete && o.scope.concrete && pathsOverlap(c.scope.concrete, o.scope.concrete)) {
-    if (o.inFlight?.kind === 'lease') return 'lease_overlap';
-    if (o.inFlight?.kind === 'open_pr') return 'open_pr_overlap';
-    return 'path_overlap';
+    const kind = o.inFlight?.kind === 'lease' ? 'lease' : o.inFlight?.kind === 'open_pr' ? 'open_pr' : 'path';
+    const shared = [...new Set([...intersectPaths(c.scope.concrete, o.scope.concrete), ...intersectPaths(o.scope.concrete, c.scope.concrete)])];
+    if (!holds || holds(shared, kind)) {
+      if (kind === 'lease') return 'lease_overlap';
+      if (kind === 'open_pr') return 'open_pr_overlap';
+      return 'path_overlap';
+    }
   }
   for (const s of c.surfaces) if (o.surfaces.has(s)) return 'serialized_surface';
   if (
@@ -409,7 +421,7 @@ export function planClaimBatch(input: ClaimPlanInput): ClaimPlan {
       hardEdges.push({ a: c.id, b: up, kind: 'depends_on' });
     }
     for (const f of inFlight) {
-      const kind = hardEdgeBetween(c, f);
+      const kind = hardEdgeBetween(c, f, input.overlapHolds);
       if (kind) {
         addHard(c.id, f.id, kind);
         hardEdges.push({ a: c.id, b: f.id, kind });
@@ -420,7 +432,7 @@ export function planClaimBatch(input: ClaimPlanInput): ClaimPlan {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i].node;
       const b = candidates[j].node;
-      const kind = hardEdgeBetween(a, b);
+      const kind = hardEdgeBetween(a, b, input.overlapHolds);
       if (!kind) continue;
       if (!hardTo.get(a.id)?.has(b.id)) addHard(a.id, b.id, kind);
       if (!hardTo.get(b.id)?.has(a.id)) addHard(b.id, a.id, kind);
