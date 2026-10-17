@@ -33,8 +33,9 @@ describe('reviewSummaryOf (AC-24)', () => {
       ],
       findings: [F(), F({ id: 'r1:1', status: 'addressed' }), F({ id: 'r1:2', status: 'resolved' }), F({ id: 'r2:0', required: false })],
     })!;
-    expect(s).toEqual({ rounds: 2, latestRound: 2, latestVerdict: 'request_changes', inFlight: false, openFindings: 3, totalFindings: 4 });
-    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · 3 open findings');
+    expect(s).toEqual({ rounds: 2, latestRound: 2, latestVerdict: 'request_changes', inFlight: false, openFindings: 3, addressedFindings: 1, totalFindings: 4 });
+    // c1d66a6a: one of them has a fix pushed since (addressed), waiting for a review to verify it.
+    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · 3 open findings, 1 with a fix waiting for a re-review');
   });
 
   test('a round in flight is counted; the verdict is the newest decided one', () => {

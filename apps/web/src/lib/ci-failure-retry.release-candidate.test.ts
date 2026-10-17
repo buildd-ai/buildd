@@ -103,8 +103,11 @@ mock.module('@/lib/ci-red-queue', () => ({
 // Workflow kernel door (lib/workflow/seam.ts; real-SQL cases in tests/db/workflow-matrix.test.ts).
 const gateEvents: any[] = [];
 let kernelSeen: any = { handled: false };
-const mockObserveCiFailure = mock(async (_p: any) => kernelSeen);
+const mockObserveCiFailure = mock(async (_p: any, _c?: any) => kernelSeen);
 mock.module('@/lib/workflow/seam', () => ({ observeCiFailure: mockObserveCiFailure }));
+// T10 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeCiFailure: mockObserveCiFailure }));
 mock.module('@/lib/policy-overrides', () => ({ policyValue: () => 3, POLICY_DEFAULTS: { maxCiRetries: 3 } }));
 
 const { retryCiFailureForPr } = await import('./ci-failure-retry');

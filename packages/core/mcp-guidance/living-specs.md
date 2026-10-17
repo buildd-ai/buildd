@@ -13,8 +13,8 @@ the sub-action in `params.action`. On the group tools it is
 `buildd_artifacts` action `manage_specs`, listed on that tool's `More:` line.
 
 A read-only session (a `tasks:read` grant) can call the reads: `list`, `get`,
-`diff`, `read_ref`, `outcome`, `comments`, `attachments`, and `metadata`
-without `changes`. Every other sub-action needs write access and is refused
+`diff`, `history`, `read_ref`, `outcome`, `comments`, `attachments`, and
+`metadata` without `changes`. Every other sub-action needs write access and is refused
 with `requiredScope`.
 
 This is not the `spec-sync` skill. `spec-sync` keeps a repo's own spec files
@@ -295,10 +295,29 @@ changed it recorded.
 ## Reading changes
 
 `buildd action=manage_specs params={ action: "diff", specId, from, to }`
-lists sections added, removed and changed, then a capped line diff with a
-count of what it left out. `to` defaults to the head; `from` to the approved
-revision. Use it before asking a person to approve, and when a pinned task
-sees a newer approved revision.
+lists the criteria added, changed, removed, moved and replacing (by id, the
+changed words marked), the other text by section, and one line when the
+change summary names ids the list does not hold or misses ids it does. Then
+sections added, removed and changed, and a capped line diff with a count of
+what it left out. `to` defaults to the head; `from` to the approved revision.
+Use it before asking a person to approve, and when a pinned task sees a newer
+approved revision.
+
+## Criteria have a history
+
+Each criterion is kept per revision with a hash of its words.
+
+- `buildd action=manage_specs params={ action: "history", specId, criterionId }`
+  lists every revision in which its words changed, with the change summary,
+  who wrote it and whether that wording was approved.
+- A verdict counts only for the words it judged: after a revision changes a
+  criterion, an older pass reads "passed an earlier wording".
+- An id is never reused. A revise that gives a retired id new words is
+  refused, naming the revision that retired it: pick the next free id.
+- A criterion that replaces others says so on a line under it:
+  `replaces: R-26` (or `replaces: R-26, R-27`). Review lists it as replacing
+  them, and its history continues theirs. Write the summary with the ids it
+  changes: Review checks the summary's ids against the change list.
 
 ## Comments
 

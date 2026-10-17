@@ -147,10 +147,11 @@ describe('parseResetTime', () => {
   // The old extraction regex captured the timezone into group 2 and then never
   // passed it anywhere, so a non-UTC reset would have been silently read as UTC.
   // Refusing to guess is the safe move: the caller falls back to now + 5h.
-  it('refuses to guess when the timezone is not UTC', () => {
+  it('refuses to guess at an abbreviation, but reads an IANA zone in that zone', () => {
     const now = new Date('2026-08-15T08:00:00Z');
     expect(parseResetTime('11:10am', { now, timezone: 'PST' })).toBeNull();
-    expect(parseResetTime('11:10am', { now, timezone: 'America/New_York' })).toBeNull();
+    // Refusing this one sent a noon reset to the 5h fallback (spec "A runner", R-9).
+    expect(parseResetTime('11:10am', { now, timezone: 'America/New_York' })?.toISOString()).toBe('2026-08-15T15:10:00.000Z');
   });
 });
 
