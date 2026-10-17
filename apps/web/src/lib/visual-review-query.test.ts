@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
-import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE } from '@buildd/core/surface-audit';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/surface-audit';
 import {
   WORKSPACE_AWAITING_MISSIONS_LIMIT,
   visualReviewTasksQuery,
@@ -50,17 +51,22 @@ describe('one audit identity in SQL', () => {
   const ROLE = `"t".role_slug = $`;
   const TITLE = `"t".title like $`;
   it('every task-scoped audit predicate matches the role or the title prefix', () => {
-    const shots = visualReviewWorkersQuery(qb(), MISSION).toSQL().sql;
-    const awaiting = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL().sql;
-    for (const sql of [shots, awaiting]) {
+    const shotsQ = visualReviewWorkersQuery(qb(), MISSION).toSQL();
+    const awaitingQ = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL();
+    for (const { sql, params } of [shotsQ, awaitingQ]) {
       expect(sql).toContain(ROLE);
       expect(sql).toContain(TITLE);
+      // The bound values are the identity: the role slug and the title prefix.
+      expect(params).toContain(VISUAL_AUDITOR_ROLE_SLUG);
+      expect(params).toContain(`${SURFACE_AUDIT_TITLE_PREFIX}%`);
     }
-    expect(awaiting.split(TITLE).length - 1).toBe(2);
+    expect(awaitingQ.sql.split(TITLE).length - 1).toBe(2);
   });
   it('the audit context and summary projections cover a title-only audit', () => {
-    const { sql } = visualReviewTasksQuery(qb(), MISSION).toSQL();
+    const { sql, params } = visualReviewTasksQuery(qb(), MISSION).toSQL();
     expect(sql).toMatch(/case when \("tasks"\."role_slug" = \$\d+ or "tasks"\."title" like \$\d+\) then (jsonb_build_object|left)/);
+    expect(params).toContain(VISUAL_AUDITOR_ROLE_SLUG);
+    expect(params).toContain(`${SURFACE_AUDIT_TITLE_PREFIX}%`);
   });
 });
 
