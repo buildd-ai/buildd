@@ -13,6 +13,7 @@
  * model (lib/mission-list-card.ts), so a mission reads the same here as on the
  * Missions tab.
  */
+import { MISSION_START_COPY, type MissionStartState } from './start-gate';
 import { STATES } from '@/components/ui/states';
 import type { ListCardKind, ListPhase, ListQuestion, ListTone } from './mission-list-card';
 
@@ -58,6 +59,8 @@ export interface InitiativeMissionInput {
   /** The mission's phase bar and parked question, for the initiative page. */
   phases?: ListPhase[];
   inlineQuestion?: ListQuestion | null;
+  /** A held mission: not started, or paused after it ran. */
+  startState?: MissionStartState | null;
 }
 
 export interface InitiativeInput {
@@ -100,8 +103,9 @@ export interface InitiativeMissionLine {
   /** Empty for a done mission: its bar says nothing its n/N does not. */
   phases: ListPhase[];
   inlineQuestion: ListQuestion | null;
-  /** An open held mission: the page offers Arm on its line. */
+  /** An open held mission: the page offers Start (or Resume) on its line. */
   held: boolean;
+  startState: MissionStartState;
 }
 
 export interface InitiativeFact {
@@ -234,6 +238,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
       phases: isDone(m) ? [] : m.phases ?? [],
       inlineQuestion: isDone(m) ? null : m.inlineQuestion ?? null,
       held: isHeld(m),
+      startState: m.startState ?? 'not_started',
       ask: m.question
         ? { label: 'Answer', href: m.question.href }
         : m.ask && !isDone(m)
@@ -263,8 +268,10 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
       };
     }
     if (held.length > 0) {
-      facts.push({ key: 'held', text: `${held.length} ${plural(held.length, 'mission')} held`, href: held[0].href });
-      action ??= { kind: 'arm', label: 'Arm', href: held[0].href, missionId: held[0].id };
+      const states = new Set(held.map(m => m.startState ?? 'not_started'));
+      const word = states.size === 1 ? MISSION_START_COPY[[...states][0]].label.toLowerCase() : 'not started or paused';
+      facts.push({ key: 'held', text: `${held.length} ${plural(held.length, 'mission')} ${word}`, href: held[0].href });
+      action ??= { kind: 'arm', label: MISSION_START_COPY[held[0].startState ?? 'not_started'].action, href: held[0].href, missionId: held[0].id };
     }
     if (missions.length > 0 && done === missions.length) {
       facts.push({ key: 'all_done', text: missions.length === 1 ? 'Its mission is done' : `All ${missions.length} missions done`, href: null });

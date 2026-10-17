@@ -1,5 +1,6 @@
 'use client';
 
+import { MISSION_START_COPY, type MissionStartState } from '@/lib/start-gate';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -78,6 +79,8 @@ interface MissionSettingsProps {
   hasSchedule: boolean;
   orchestrationMode?: 'auto' | 'manual';
   isHeld: boolean;
+  /** A held mission: not started (Start mission) or paused (Resume mission). */
+  startState?: MissionStartState | null;
   displayState: MissionDisplayState;
   /**
    * True when the situation block above the fold is already offering the one
@@ -104,6 +107,7 @@ export default function MissionSettings({
   hasSchedule,
   orchestrationMode: initialOrchestrationMode = 'auto',
   isHeld: initialIsHeld,
+  startState = null,
   displayState,
   hasPrimaryAction = false,
   executor = null,
@@ -413,7 +417,7 @@ export default function MissionSettings({
           made a suggestion. ── */}
       {mayOfferPrimary && (
         <>
-          {/* Held: Arm mission is the only meaningful action */}
+          {/* Not started or paused: starting (or resuming) it is the only meaningful action */}
           {isHeld && (
             <button
               onClick={handleArm}
@@ -430,7 +434,7 @@ export default function MissionSettings({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
                 </svg>
               )}
-              {modeLoading ? 'Arming…' : 'Arm mission'}
+              {modeLoading ? MISSION_START_COPY[startState ?? 'not_started'].actionPending : MISSION_START_COPY[startState ?? 'not_started'].action}
             </button>
           )}
 

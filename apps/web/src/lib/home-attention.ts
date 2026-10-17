@@ -1,4 +1,5 @@
 import type { ActionQueueItem } from './action-queue';
+import { MISSION_START_COPY } from './start-gate';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSummary';
 import type { StrandCta } from './mission-list-card';
@@ -249,7 +250,8 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   }
   for (const m of held) {
     const key = `mission:${m.id}`;
-    if (!items.has(key)) items.set(key, { key, kind: 'held', label: 'held', tone: 'warning', title: m.title, sentence: 'The work is ready for you to start.', meta: `${m.ready} ready`, href: m.href, actionType: 'start', owner: 'human', held: m });
+    const copy = MISSION_START_COPY[m.startState ?? 'not_started'];
+    if (!items.has(key)) items.set(key, { key, kind: 'held', label: copy.label.toLowerCase(), tone: 'warning', title: m.title, sentence: m.startState === 'paused' ? 'The work is ready for you to resume.' : 'The work is ready for you to start.', meta: `${m.ready} ready`, href: m.href, actionType: 'start', owner: 'human', held: m });
   }
   return collapseSystemic([...items.values()]);
 }

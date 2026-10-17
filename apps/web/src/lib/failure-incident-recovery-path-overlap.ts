@@ -201,7 +201,7 @@ function judgeSubject(
         kind: 'decide',
         decision: {
           ...fallbackDecision([s.taskId], b),
-          question: `Buildd's fix for ${what} finished, but task ${short(s.taskId)} is still held. Choose one.`,
+          question: `Buildd's fix for ${what} finished, but task ${short(s.taskId)} is still waiting. Choose one.`,
           ...(rule === 'spurious_overlap'
             ? { options: [{ capability: 'narrow_blocker_manifest' as const, label: `Narrow ${blockerLabel(b)} to its diff`, effect: 'Its declared files shrink to the ones it actually changes.' }, ...fallbackDecision([s.taskId], b).options], recommended: 'narrow_blocker_manifest' as const }
             : {}),

@@ -29,9 +29,7 @@ export type CopyRuleId =
   | 'object-pays'
   | 'conditional-policy'
   | 'trailing-filler'
-  | 'em-dash'
-  | 'failed-to'
-  | 'shouting-tag';
+  | 'em-dash';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -55,27 +53,6 @@ export const DUPLICATE_MIN_WORDS = 6;
 export const LONG_COPY_WORDS = 30;
 
 const re = (r: RegExp) => (t: string) => r.test(t);
-
-/** All-caps words that are names, not shouting. */
-export const ALLOWED_ACRONYMS = new Set([
-  'PR', 'CI', 'API', 'URL', 'UTC', 'ID', 'UI', 'CLI', 'MCP', 'SDK', 'SHA', 'JSON', 'HTTP', 'HTTPS', 'SSO', 'DNS',
-  'AWS', 'R2', 'AI', 'LLM', 'OS', 'PDF', 'CSV', 'SQL', 'DB', 'TTL', 'E2E', 'QA', 'SSH', 'IP', 'USD', 'GB', 'MB',
-  'KB', 'OK', 'JWT', 'PAT', 'YAML', 'HTML', 'CSS', 'GPU', 'CPU', 'RAM', 'ISO', 'UUID', 'DM', 'EU', 'US', 'UK',
-  'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS',
-]);
-
-/** Two or more ALL-CAPS words in a row, acronyms aside. Punctuation-only tokens (·, —) do not break a run. */
-function hasShoutingTag(t: string): boolean {
-  let run = 0;
-  for (const raw of t.split(/\s+/)) {
-    const word = raw.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
-    if (!/[A-Za-z0-9]/.test(raw)) continue;
-    const shouting = /^[A-Z][A-Z0-9]+$/.test(word) && /[A-Z]{2}/.test(word) && !ALLOWED_ACRONYMS.has(word);
-    run = shouting ? run + 1 : 0;
-    if (run >= 2) return true;
-  }
-  return false;
-}
 
 export const COPY_RULES: CopyRule[] = [
   {
@@ -207,22 +184,6 @@ export const COPY_RULES: CopyRule[] = [
     why: 'An em dash joins two thoughts the copy should have split or cut. Use a full stop or a colon, or render nothing for an unknown value.',
     bad: 'Runners \u2014 tokens and cloud.',
     good: 'Manage runner tokens and the cloud runner.',
-  },
-  {
-    id: 'failed-to',
-    name: 'Error says "Failed to" or "Something went wrong"',
-    test: re(/^failed to\b|^something went wrong\.?$/i),
-    why: 'An error names what could not be done and what to do next, in the voice of the rest of the app. "Failed to ..." is a log line and a bare "Something went wrong" says nothing.',
-    bad: 'Failed to update mission',
-    good: 'Could not save the mission. Try again.',
-  },
-  {
-    id: 'shouting-tag',
-    name: 'Shouting tag',
-    test: hasShoutingTag,
-    why: 'A run of capitals is a status badge shouting, not a sentence. Say it in sentence case. Acronyms (PR, CI, API, URL) are fine.',
-    bad: 'PR #12: BASE REWRITTEN · cherry-pick?',
-    good: 'The base branch was rewritten. Cherry-pick your commits onto it.',
   },
   {
     id: 'duplicate-explanation',

@@ -209,14 +209,14 @@ export function useTaskSummary(taskId: string, { workspaceId }: { workspaceId?: 
     const id = taskId;
     try {
       const res = await fetch(`/api/tasks/${id}/summary`);
-      if (!res.ok) throw new Error('Could not load the task.');
+      if (!res.ok) throw new Error('Failed to load task');
       const json = (await res.json()) as TaskPanelData;
       if (currentRef.current !== id) return;
       setData(json);
       setError(null);
     } catch (err) {
       if (currentRef.current !== id) return;
-      setError(err instanceof Error ? err.message : 'Could not load. Try again.');
+      setError(err instanceof Error ? err.message : 'Failed to load');
     } finally {
       if (currentRef.current === id) setLoading(false);
     }

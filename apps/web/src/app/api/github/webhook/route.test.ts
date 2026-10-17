@@ -7268,7 +7268,7 @@ describe('webhook → releases (characterization)', () => {
     const alert = mockNotifyTeamOf.mock.calls.find((c: any[]) => String(c[2]?.title).startsWith('Release workflow failed'));
     expect(alert).toBeDefined();
     expect(alert![0]).toEqual({ taskId: 't-81' });
-    expect(alert![2]).toMatchObject({ title: 'Release workflow failed: Release', url: 'https://github.com/test-org/test-repo/actions/runs/8181', priority: 1 });
+    expect(alert![2]).toMatchObject({ title: 'Release workflow failed — Release', url: 'https://github.com/test-org/test-repo/actions/runs/8181', priority: 1 });
   });
 
   it('a Path B failure is isolated: the webhook still answers 200', async () => {

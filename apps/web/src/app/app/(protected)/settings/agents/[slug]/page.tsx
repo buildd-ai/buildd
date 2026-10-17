@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { missionStartCopy } from '@/lib/start-gate';
 import { workspaceSkills, workers, tasks, missions, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, inArray, desc, sql, count } from 'drizzle-orm';
 import Link from 'next/link';
@@ -328,7 +329,7 @@ export default async function RoleProfilePage({
                   className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
                 >
                   <span className="truncate text-sm font-medium text-text-primary">{mission.title}</span>
-                  <TonePill tone={HEALTH_TONE[health]}>{HEALTH_DISPLAY[health].label}</TonePill>
+                  <TonePill tone={HEALTH_TONE[health]}>{(health === 'held' && missionStartCopy({ isHeld: true, armedAt: mission.armedAt ?? null })?.label) || HEALTH_DISPLAY[health].label}</TonePill>
                 </Link>
               );
             })}

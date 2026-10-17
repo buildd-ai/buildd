@@ -1359,6 +1359,11 @@ export const missions = pgTable('missions', {
   // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
   // (which controls organizer initiative) — held is purely about worker claim eligibility.
   isHeld: boolean('is_held').default(false).notNull(),
+  // When the start gate was first released (created armed, or armed later).
+  // Null on a held mission means it never started; set on a held one means a
+  // person held it again after it ran, so it reads as Paused, not Not started
+  // (lib/start-gate.ts). Never read by a claim gate.
+  armedAt: timestamp('armed_at', { withTimezone: true }),
   // Who executes the mission's tasks. 'runner' (default): background runners
   // auto-claim them. 'local': a person runs them from their own interactive
   // session — runners never auto-claim, but a verified interactive session may

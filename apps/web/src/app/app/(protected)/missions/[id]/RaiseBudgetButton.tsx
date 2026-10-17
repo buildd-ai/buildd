@@ -37,7 +37,7 @@ export default function RaiseBudgetButton({
         startTransition(() => router.refresh());
       } else {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Could not update the budget. Try again.');
+        setError(data.error || 'Failed to update budget');
       }
     } finally {
       setSaving(false);

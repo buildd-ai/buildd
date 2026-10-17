@@ -79,7 +79,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Could not update the task. Try again.');
+        throw new Error(data.error || 'Failed to update task');
       }
 
       onClose();

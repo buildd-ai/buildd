@@ -1215,10 +1215,10 @@ export async function escalateConflictExhaustion(
 
   // Fire Pushover regardless of mission membership
   void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
-    title: 'Conflict retries ran out',
-    message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed. It still has merge conflicts.\nResolve, close as superseded, or abandon.`,
+    title: `PR #${prNumber}: conflict retries exhausted`,
+    message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
-    urlTitle: `Task for PR #${prNumber}`,
+    urlTitle: 'View task',
     priority: 0,
   });
 
@@ -1288,10 +1288,10 @@ export async function escalateReviewerExhaustion(
   }
 
   void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
-    title: 'Reviewer fix attempts ran out',
-    message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed. A person needs to review it.`,
+    title: `PR #${prNumber}: reviewer retries exhausted`,
+    message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
-    urlTitle: `Task for PR #${prNumber}`,
+    urlTitle: 'View task',
     priority: 0,
   });
 
@@ -1372,10 +1372,10 @@ export async function escalateReviewContractFailure(params: {
   }
 
   void notifyTeamOf({ taskId: task.id, prNumber: prNumber ?? null }, 'needsAttention', {
-    title: 'The review never produced a verdict',
-    message: `${task.title}\nReviewer retries ran out with no verdict. A person needs to review it.`,
+    title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
+    message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,
-    urlTitle: prNumber ? `Task for PR #${prNumber}` : 'View task',
+    urlTitle: 'View task',
     priority: 0,
   });
 

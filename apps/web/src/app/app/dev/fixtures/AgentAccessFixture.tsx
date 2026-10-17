@@ -14,18 +14,17 @@ import type { AccessItem, AgentAccessReport } from '@/lib/agent-capabilities/acc
 const at = (h: number, m: number) => new Date(Date.UTC(2026, 9, 5, h, m)).toISOString();
 const item = (o: Partial<AccessItem>): AccessItem => ({
   at: at(16, 3), lastAt: at(16, 3), count: 1, capability: 'github.repo_grant', label: 'GitHub repo access',
-  decision: 'allowed', reason: null, target: 'acme/widget', expiresAt: null, workerId: 'w-1', source: 'grant', grantId: null, pending: false, ...o,
+  decision: 'allowed', reason: null, target: 'acme/widget', expiresAt: null, workerId: 'w-1', ...o,
 });
 
 const WITH_REFUSALS: AccessItem[] = [
-  item({ count: 3, lastAt: at(18, 3), expiresAt: at(19, 3), source: 'run' }),
-  item({ at: at(16, 3), capability: 'task_token.mint', label: 'buildd token', target: 'worker level', expiresAt: at(23, 59), source: 'run', count: 3, lastAt: at(18, 3) }),
-  item({ at: at(16, 30), capability: 'capability.request', label: 'Capability request', decision: 'refused', target: null, grantId: 'g-1', pending: true }),
+  item({ count: 3, lastAt: at(18, 3), expiresAt: at(19, 3) }),
+  item({ at: at(16, 3), capability: 'task_token.mint', label: 'buildd token', target: 'worker level', expiresAt: at(23, 59) }),
   item({ at: at(16, 41), capability: 'pr.create', label: 'Open PR', target: 'PR #42' }),
   item({ at: at(16, 55), capability: 'pr.merge', label: 'Merge PR', decision: 'refused', reason: 'the merge did not go through', target: 'PR #42' }),
   item({ at: at(16, 56), capability: 'pr.close', label: 'Close PR', decision: 'refused', reason: "not this task's PR", target: 'PR #38' }),
 ];
-const QUIET_ITEMS: AccessItem[] = [item({ count: 2, expiresAt: at(18, 3), source: 'run' }), item({ capability: 'pr.create', label: 'Open PR', target: 'PR #57' })];
+const QUIET_ITEMS: AccessItem[] = [item({ count: 2, expiresAt: at(18, 3) }), item({ capability: 'pr.create', label: 'Open PR', target: 'PR #57' })];
 
 const QUIET: AgentAccessReport = { windowHours: 24, granted: 41, adminGranted: 2, grantProblems: [], refusals: [], healthy: true };
 const BUSY: AgentAccessReport = {

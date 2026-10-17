@@ -57,7 +57,7 @@ export function refreshResultMessage(
 ): { type: 'success' | 'error'; text: string } {
   if (!ok) {
     const text = [data?.error, data?.detail].filter(Boolean).join(' ');
-    return { type: 'error', text: text || 'Could not refresh the token. Try again.' };
+    return { type: 'error', text: text || 'Failed to refresh token' };
   }
   if (data?.status === 'refreshed') return { type: 'success', text: 'Token refreshed.' };
   if (data?.status === 'locked') return { type: 'success', text: 'Token was refreshed recently.' };
@@ -566,7 +566,7 @@ function ProviderRoutingToggle({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabledBackends: next }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Could not update. Try again.');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to update');
       // The mask decides which backend each task effectively runs on, so a
       // toggle can create or clear stranded work. Recount.
       onRoutingChange?.();
@@ -579,7 +579,7 @@ function ProviderRoutingToggle({
       });
     } catch (e) {
       setEnabled(prev); // rollback optimistic update
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Could not update. Try again.' });
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' });
     } finally {
       setBusy(false);
     }
@@ -736,13 +736,13 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Could not save. Try again.');
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
       setValue('');
       setReplaceOpen(false);
       setMsg({ type: 'success', text: mode === 'api_key' ? 'API key saved.' : 'Setup token saved.' });
       await load();
     } catch (e) {
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Could not save. Try again.' });
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
     } finally {
       setBusy(false);
     }
@@ -758,7 +758,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
       setReplaceOpen(false);
       await load();
     } catch {
-      setMsg({ type: 'error', text: 'Could not remove it. Try again.' });
+      setMsg({ type: 'error', text: 'Failed to remove credential' });
     } finally {
       setBusy(false);
     }
@@ -782,7 +782,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
       }
       await load();
     } catch {
-      setMsg({ type: 'error', text: 'Could not verify it. Try again.' });
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
     } finally {
       setVerifying(false);
     }
@@ -981,14 +981,14 @@ function OpenAiApiKeyCard({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Could not save. Try again.');
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
       setValue('');
       setReplaceOpen(false);
       setMsg({ type: 'success', text: 'OpenAI API key saved.' });
       await load();
       onCredentialChange?.();
     } catch (e) {
-      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Could not save. Try again.' });
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
     } finally {
       setBusy(false);
     }
@@ -1005,7 +1005,7 @@ function OpenAiApiKeyCard({
       await load();
       onCredentialChange?.();
     } catch {
-      setMsg({ type: 'error', text: 'Could not remove the key. Try again.' });
+      setMsg({ type: 'error', text: 'Failed to remove key' });
     } finally {
       setBusy(false);
     }
@@ -1138,11 +1138,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     try {
       const res = await fetch(`${base}/oauth/start`, { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Could not start Claude login. Try again.' }); return; }
+      if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Failed to start Claude login' }); return; }
       setOauth({ authorizeUrl: data.authorizeUrl, verifier: data.verifier, state: data.state });
       window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer');
     } catch {
-      setMsg({ type: 'error', text: 'Could not start Claude login.' });
+      setMsg({ type: 'error', text: 'Failed to start Claude login' });
     } finally {
       setBusy(false);
     }
@@ -1165,7 +1165,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       setStatus(data);
       setMsg({ type: 'success', text: 'Claude connected.' });
     } catch {
-      setMsg({ type: 'error', text: 'Could not exchange the code. Try again.' });
+      setMsg({ type: 'error', text: 'Failed to exchange code' });
     } finally {
       setBusy(false);
     }
@@ -1179,7 +1179,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       const res = await fetch(`${base}${q}`);
       setStatus(res.ok ? await res.json() : null);
     } catch {
-      setMsg({ type: 'error', text: 'Could not load the account status.' });
+      setMsg({ type: 'error', text: 'Failed to load connected account status' });
     } finally {
       setLoading(false);
     }
@@ -1218,13 +1218,13 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         body: JSON.stringify({ credentialsJson: pasteValue, scope }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Could not connect. Try again.');
+      if (!res.ok) throw new Error(data.error ?? 'Failed to connect');
       setStatus(data);
       setPasteValue('');
       setPasteOpen(false);
       setMsg({ type: 'success', text: 'Claude account connected.' });
     } catch (e) {
-      setPasteError(e instanceof Error ? e.message : 'Could not connect. Try again.');
+      setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
       setBusy(false);
     }
@@ -1241,7 +1241,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       setMsg(refreshResultMessage(res.ok, data));
       if (res.ok && data?.status === 'refreshed') await load();
     } catch {
-      setMsg({ type: 'error', text: 'Could not refresh the token.' });
+      setMsg({ type: 'error', text: 'Failed to refresh token' });
     } finally {
       setBusy(false);
     }
@@ -1257,7 +1257,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       setStatus({ connected: false, expired: false, lastRefreshedAt: null, lastVerifiedAt: null, lastVerificationError: null, healthStatus: null, scope: null });
       setMsg({ type: 'success', text: 'Credential removed.' });
     } catch {
-      setMsg({ type: 'error', text: 'Could not remove it.' });
+      setMsg({ type: 'error', text: 'Failed to remove credential' });
     } finally {
       setBusy(false);
     }
@@ -1512,7 +1512,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       const res = await fetch(`${base}/device/start`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
-        setMsg({ type: 'error', text: data.error ?? 'Could not start device login. Try again.' });
+        setMsg({ type: 'error', text: data.error ?? 'Failed to start device login' });
         return;
       }
       setDevice({ userCode: data.userCode, verificationUri: data.verificationUri });
@@ -1520,7 +1520,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       devicePollRef.current = token;
       void pollDeviceLogin(data.deviceAuthId, data.userCode, data.interval ?? 5, token);
     } catch {
-      setMsg({ type: 'error', text: 'Could not start device login.' });
+      setMsg({ type: 'error', text: 'Failed to start device login' });
     } finally {
       setBusy(false);
     }
@@ -1569,7 +1569,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       const res = await fetch(`${base}${q}`);
       setStatus(res.ok ? await res.json() : null);
     } catch {
-      setMsg({ type: 'error', text: 'Could not load Codex status.' });
+      setMsg({ type: 'error', text: 'Failed to load Codex status' });
     } finally {
       setLoading(false);
     }
@@ -1608,14 +1608,14 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         body: JSON.stringify({ authJson: pasteValue, scope }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Could not connect. Try again.');
+      if (!res.ok) throw new Error(data.error ?? 'Failed to connect');
       setStatus(data);
       setPasteValue('');
       setPasteOpen(false);
       setMsg({ type: 'success', text: 'Codex credential connected.' });
       onCredentialChange?.();
     } catch (e) {
-      setPasteError(e instanceof Error ? e.message : 'Could not connect. Try again.');
+      setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
       setBusy(false);
     }
@@ -1632,7 +1632,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       setMsg(refreshResultMessage(res.ok, data));
       if (res.ok && data?.status === 'refreshed') await load();
     } catch {
-      setMsg({ type: 'error', text: 'Could not refresh the token.' });
+      setMsg({ type: 'error', text: 'Failed to refresh token' });
     } finally {
       setBusy(false);
     }
@@ -1649,7 +1649,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       else setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
       if (data.status) setStatus(data.status);
     } catch {
-      setMsg({ type: 'error', text: 'Could not verify it.' });
+      setMsg({ type: 'error', text: 'Failed to verify credential' });
     } finally {
       setBusy(false);
     }
@@ -1667,7 +1667,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       // Revoking can strand work that was fine a second ago — recount.
       onCredentialChange?.();
     } catch {
-      setMsg({ type: 'error', text: 'Could not remove it.' });
+      setMsg({ type: 'error', text: 'Failed to remove credential' });
     } finally {
       setBusy(false);
     }

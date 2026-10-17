@@ -145,7 +145,7 @@ export default async function MissionsPage({
   const rows: PortfolioRow[] = allMissions.map((obj) => {
     const delivery = projectMissionDelivery({
       id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
-      isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
+      isHeld: obj.isHeld ?? false, armedAt: obj.armedAt ?? null, integrationBranch: obj.integrationBranchEnabled === true,
       tasks: obj.tasks ?? [],
       ...missionDeliveryFacts(obj, visualReviews.get(obj.id), now),
     }, missionHelpers);

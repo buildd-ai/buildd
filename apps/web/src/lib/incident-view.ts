@@ -62,7 +62,7 @@ const CAUSE_TEXT: Record<string, string> = {
   'path_overlap.blocker_merged_unreleased': 'A change landed but still holds its files',
   'path_overlap.blocker_stuck': 'A task is waiting on a change that stopped moving',
   'path_overlap.cycle': 'Two pieces of work are waiting on each other',
-  'path_overlap.subject_exempt_violated': 'A task is held by the change it is meant to update',
+  'path_overlap.subject_exempt_violated': 'A task is blocked by the change it is meant to update',
   'path_overlap.spurious_overlap': 'A change claims files it does not touch',
 };
 

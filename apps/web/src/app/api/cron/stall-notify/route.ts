@@ -169,10 +169,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     // Send Pushover reminder
     const waitingMinutes = Math.round(waitingMs / 60000);
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: `A PR has waited ${waitingMinutes} minutes for review`,
+      title: `PR #${worker.prNumber} waiting ${waitingMinutes}m`,
       message: `PR #${worker.prNumber} on ${ws.repo ?? worker.workspaceId} has waited ${waitingMinutes} minutes for review`,
       url: worker.prUrl ?? undefined,
-      urlTitle: `PR #${worker.prNumber}`,
+      urlTitle: 'View PR',
     });
 
     // Record stall notification so we don't repeat within this window

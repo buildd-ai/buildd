@@ -35,8 +35,8 @@ describe('refreshResultMessage', () => {
     });
 
     it('falls back to a generic message when the body carries no usable text', () => {
-      expect(refreshResultMessage(false, {})).toEqual({ type: 'error', text: 'Could not refresh the token. Try again.' });
-      expect(refreshResultMessage(false, null)).toEqual({ type: 'error', text: 'Could not refresh the token. Try again.' });
+      expect(refreshResultMessage(false, {})).toEqual({ type: 'error', text: 'Failed to refresh token' });
+      expect(refreshResultMessage(false, null)).toEqual({ type: 'error', text: 'Failed to refresh token' });
     });
 
     it('ignores a success-shaped status on a failed response', () => {

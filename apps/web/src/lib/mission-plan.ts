@@ -15,6 +15,7 @@
  *   cadence. Under release-on-mission-completion it says that instead.
  * - Voice: "should" and "est."; never "late", because no deadline is committed.
  */
+import { MISSION_START_COPY, type MissionStartState } from './start-gate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { FLOW_AUDIT_WAIT_MS } from './flow-timeline';
 
@@ -51,6 +52,8 @@ export interface PlanMissionInput {
   workspaceId: string | null;
   /** From the escalation-gate verdict the list and Home read (delivery kind), never a rule of this page's own. */
   blocked: PlanBlock;
+  /** `blocked: 'held'`: not started, or paused after it ran. */
+  startState?: MissionStartState | null;
   dependsOnMissionId: string | null;
   tasks: PlanTask[];
 }
@@ -76,6 +79,8 @@ export interface PlanRow {
   /** If it runs long. */
   p80: number | null;
   noEstimate: NoEstimateReason | null;
+  /** `noEstimate: 'held'`: not started, or paused. */
+  startState?: MissionStartState | null;
   /** The open mission this one waits on. */
   afterId: string | null;
   afterTitle: string | null;
@@ -152,7 +157,7 @@ export function planMissions(inputs: readonly PlanMissionInput[], now: number, p
     };
 
     if (m.blocked === 'you') row.noEstimate = 'waiting_on_you';
-    else if (m.blocked === 'held') row.noEstimate = 'held';
+    else if (m.blocked === 'held') { row.noEstimate = 'held'; row.startState = m.startState ?? null; }
     else if (!m.tasks.some(schedulable)) row.noEstimate = 'landed';
     else if (!hasEstimate(m.tasks)) row.noEstimate = 'no_estimate';
     else if (dep && (dep.p50 == null || dep.p80 == null)) row.noEstimate = 'after_unknown';
@@ -332,7 +337,7 @@ export function planLede(rows: readonly PlanRow[], plans: ReadonlyMap<string, Re
 /** The right-hand column: `Fri → v0.302 · at risk`, `waiting on you`, `after Workflow kernel`. */
 export function planRowLabel(row: PlanRow, now: number): string {
   if (row.noEstimate === 'waiting_on_you') return 'waiting on you';
-  if (row.noEstimate === 'held') return 'held';
+  if (row.noEstimate === 'held') return MISSION_START_COPY[row.startState ?? 'not_started'].label.toLowerCase();
   const parts: string[] = [];
   const fit = row.fit;
   if (fit?.kind === 'on_completion') parts.push('ships on completion');

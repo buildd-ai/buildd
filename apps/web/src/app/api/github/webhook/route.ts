@@ -1427,11 +1427,11 @@ async function handleReleasePrCiFailure(
         .where(eq(tasks.id, task.id));
 
       void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-        title: `Release CI failed in ${repoFullName}`,
-        message: `CI is red on release PR #${pr.number}. Prod has not shipped.`,
+        title: `Release CI failed — ${repoFullName}#${pr.number}`,
+        message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
         priority: 1,
         url: prUrl || `https://github.com/${repoFullName}/pull/${pr.number}`,
-        urlTitle: `PR #${pr.number}`,
+        urlTitle: 'Open PR',
       });
       console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
       await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release CI failed', reason: releaseResult.error });

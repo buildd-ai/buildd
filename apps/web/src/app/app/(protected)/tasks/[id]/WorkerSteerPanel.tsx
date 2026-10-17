@@ -65,12 +65,12 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
     }
   }
 
-  const abort = () => post(`/api/workers/${workerId}/cmd`, { action: 'abort' }, 'Could not abort the worker. Try again.');
+  const abort = () => post(`/api/workers/${workerId}/cmd`, { action: 'abort' }, 'Failed to abort worker');
   // Pause keeps the session: Resume (answering the pause) continues it (lib/worker-pause.ts).
-  const pause = () => post(`/api/workers/${workerId}/pause`, {}, 'Could not pause the worker. Try again.');
+  const pause = () => post(`/api/workers/${workerId}/pause`, {}, 'Failed to pause');
   const canPause = status === 'running';
   // Same path and priority as the steer form: queued for this run's next turn.
-  const resend = (message: string) => post(`/api/workers/${workerId}/instruct`, { message, priority: 'urgent' }, 'Could not resend the message. Try again.');
+  const resend = (message: string) => post(`/api/workers/${workerId}/instruct`, { message, priority: 'urgent' }, 'Failed to resend');
 
   const undelivered = earlierRun
     ? earlierRun.history.filter(e => e.type === 'instruction' && messageDeliveryStatus(e, earlierRun.status).state === 'undelivered')
@@ -88,7 +88,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
   const release = () => post(
     `/api/workers/${workerId}/release-slot`,
     { reason: taskTerminal ? 'task already ended' : 'released from the task page' },
-    'Could not release the slot. Try again.',
+    'Failed to release slot',
   );
 
   if (isLocal) {

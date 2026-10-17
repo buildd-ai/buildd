@@ -280,13 +280,13 @@ export default function ObservationList({
         }),
       });
 
-      if (!res.ok) throw new Error('Could not update. Try again.');
+      if (!res.ok) throw new Error('Failed to update');
 
       // Refresh the list
       await fetchFiltered(typeFilter, search);
       cancelEditing();
     } catch {
-      setSaveError('Could not save the changes. Try again.');
+      setSaveError('Failed to save changes');
     } finally {
       setSaving(false);
     }

@@ -13,6 +13,7 @@
  * not `running` — the platform owns it (auto-merge evaluates on green), and the
  * owner can tell "an agent is typing" from "the checks are running".
  */
+import { MISSION_START_COPY, missionStartState, type MissionStartState } from './start-gate';
 import { activeWorkMs } from './mission-duration';
 import {
   deriveFeedPrState,
@@ -147,7 +148,7 @@ export interface MissionListCardModel {
     lastTickAt: string | null;
     lastSummary: string | null;
   } | null;
-  held: { ready: number; roles: string[]; since: string | null } | null;
+  held: { ready: number; roles: string[]; since: string | null; startState: MissionStartState } | null;
   /** `durationMs`: filed → completed. `activeMs`: wall time agents worked (`activeWorkMs`). */
   done: { prs: number; fixes: number; durationMs: number | null; activeMs: number | null; completedAt: string | null } | null;
 }
@@ -358,6 +359,8 @@ export function buildMissionListCard(
   // ── Kind + the one status word ──
   const needsYou = missionNeedsYou(summary.state) || counts.needsYou > 0;
   const strand = strandCtaFor(row.id, summary.state);
+  const startState = missionStartState({ isHeld: !!row.isHeld, armedAt: row.armedAt ?? null });
+  const startCopy = MISSION_START_COPY[startState ?? 'not_started'];
   let kind: ListCardKind;
   if (view.group === 'completed') kind = 'done';
   else if (isRecurring) kind = 'recurring';
@@ -368,12 +371,12 @@ export function buildMissionListCard(
 
   const status: MissionListCardModel['status'] = (() => {
     if (kind === 'done') return { label: 'Done', tone: 'success' };
-    if (kind === 'held') return { label: 'Held', tone: 'warning' };
+    if (kind === 'held') return { label: startCopy.label, tone: 'warning' };
     // Not LOCAL: nothing is happening, and nothing will until the owner acts.
     if (strand) return { label: 'Stranded', tone: 'warning' };
     if (needsYou) return { label: 'Waiting on you', tone: 'warning' };
     // A local mission is active work run from a person's session: LOCAL, in
-    // the running tone — never Held, and never Stalled for want of a runner.
+    // the running tone — never Not started, and never Stalled for want of a runner.
     if (kind === 'active' && row.executor === 'local') return { label: 'Local', tone: 'accent' };
     if (summary.liveWorkers > 0) return { label: 'Running', tone: 'accent' };
     if (kind === 'recurring') return { label: 'Idle', tone: 'muted' };
@@ -421,7 +424,7 @@ export function buildMissionListCard(
   if (kind === 'held') {
     const pending = ordered.filter(r => r.task.status === 'pending').map(r => r.task);
     const roles = [...new Set(pending.map(t => t.roleSlug).filter((s): s is string => !!s))];
-    held = { ready: pending.length, roles, since: isoOf(row.updatedAt ?? row.createdAt ?? null) };
+    held = { ready: pending.length, roles, since: isoOf(row.updatedAt ?? row.createdAt ?? null), startState: startState ?? 'not_started' };
   }
 
   // ── Done row ──

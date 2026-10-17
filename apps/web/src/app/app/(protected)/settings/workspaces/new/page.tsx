@@ -216,7 +216,7 @@ export default function NewWorkspacePage() {
         router.push(`/app/workspaces/${workspaceId}`);
         router.refresh();
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Could not create the workspace. Try again.');
+        setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
       } finally {
         setLoading(false);
       }
@@ -320,7 +320,7 @@ export default function NewWorkspacePage() {
       router.push(created?.id ? `/app/workspaces/${created.id}` : '/app/settings/workspaces');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Could not create the workspace.');
+      setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
     } finally {
       setLoading(false);
     }

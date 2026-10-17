@@ -182,7 +182,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     const ok = await requestBackendSwitch(taskId, backend);
     if (!ok) {
       setPending(null);
-      setError('Could not switch backend. Try again.');
+      setError('Failed to switch backend');
       setStatus('failed');
       return;
     }
@@ -199,7 +199,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     if (!res?.ok) {
       setPending(null);
       // The cap is a workspace admin setting (manage_workspace_settings).
-      setError(res?.status === 403 ? 'Raising the workspace limit needs a workspace admin.' : 'Could not update the workspace limit. Try again.');
+      setError(res?.status === 403 ? 'Raising the workspace limit needs a workspace admin.' : 'Failed to update workspace limit');
       setStatus('failed');
       return;
     }

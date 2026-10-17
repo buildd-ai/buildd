@@ -70,7 +70,9 @@ describe('planMissions: person-blocked missions', () => {
     const [row] = planMissions([mission('a', [task('t1')], { blocked: 'held' })], NOW);
     expect(row.p50).toBeNull();
     expect(row.noEstimate).toBe('held');
-    expect(planRowLabel(row, NOW)).toBe('held');
+    expect(planRowLabel(row, NOW)).toBe('not started');
+    const [paused] = planMissions([mission('b', [task('t1')], { blocked: 'held', startState: 'paused' })], NOW);
+    expect(planRowLabel(paused, NOW)).toBe('paused');
   });
 });
 

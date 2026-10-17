@@ -11,7 +11,7 @@ export default function GlobalError({
     <html lang="en">
       <body>
         <div style={{ padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
-          <h2>Could not load the app. Try again.</h2>
+          <h2>Something went wrong</h2>
           <p style={{ color: '#666', marginTop: '0.5rem' }}>
             {error.message || 'An unexpected error occurred.'}
           </p>

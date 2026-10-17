@@ -1467,10 +1467,10 @@ export async function escalateSupersession(
   }
 
   void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-    title: successorPrNumber ? 'A newer PR replaces this one. Close it?' : 'Its changes are already in the base branch. Close it?',
+    title: `PR #${prNumber}: SUPERSEDED · close?`,
     message: `${task.title}\nChanges appear to already be in base.${successorClause}\nClose or re-investigate.`,
     url: taskUrl,
-    urlTitle: `Task for PR #${prNumber}`,
+    urlTitle: 'View task',
     priority: 0,
   });
 
@@ -1547,10 +1547,10 @@ export async function escalateBaseRewrite(
   }
 
   void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-    title: 'The base branch was rewritten. Cherry-pick this PR onto it?',
+    title: `PR #${prNumber}: BASE REWRITTEN · cherry-pick?`,
     message: `${task.title}\nBase branch force-pushed (${oldSha}→${newSha}). Cherry-pick own commits onto fresh base.`,
     url: taskUrl,
-    urlTitle: `Task for PR #${prNumber}`,
+    urlTitle: 'View task',
     priority: 0,
   });
 

@@ -76,7 +76,7 @@ export function useAnswerSubmit(opts: {
       await onAnswered?.(result);
     } catch (err) {
       const failure: AnswerSubmitFailure = {
-        message: err instanceof Error ? err.message : 'Could not send the answer. Try again.',
+        message: err instanceof Error ? err.message : 'Failed to send answer',
         credentialRevoked: err instanceof AnswerSubmitError && err.credentialRevoked,
         stale: err instanceof AnswerSubmitError ? err.stale : null,
       };

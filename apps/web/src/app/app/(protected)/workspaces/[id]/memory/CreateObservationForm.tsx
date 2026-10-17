@@ -63,7 +63,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Could not create the observation. Try again.');
+        throw new Error(data.error || 'Failed to create observation');
       }
 
       // Reset form and close

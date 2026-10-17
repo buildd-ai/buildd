@@ -37,22 +37,7 @@ export interface AccessItem {
   target: string | null;
   expiresAt: string | null;
   workerId: string | null;
-  /**
-   * `run`: the run's own credentials, issued automatically when it starts and
-   * renewed while it lives (buildd token, repo access, model endpoint): ordinary
-   * authentication, nobody decided it. `grant`: everything a team policy or a
-   * person governs (a capability request, approval, denial, revocation, use)
-   * and the actions checked against the task (PRs, checks).
-   */
-  source: 'run' | 'grant';
-  /** The capability grant a `capability.*` row is about, when it names one. */
-  grantId: string | null;
-  /** A capability request still waiting on a person (decided in Needs You). */
-  pending: boolean;
 }
-
-/** Run credentials: issued by buildd to the run itself, never requested or approved. */
-const RUN_CREDENTIALS = new Set(['task_token.mint', 'github.repo_grant', 'model.endpoint', 'model.inference']);
 
 const LABEL: Record<string, string> = {
   'github.repo_grant': 'GitHub repo access',
@@ -100,8 +85,6 @@ export function reasonText(code: string | null | undefined): string | null {
   return REASON[code] ?? code.replace(/_/g, ' ');
 }
 
-const r0 = (row: CapabilityRow) => row.resource ?? '';
-
 function targetText(row: CapabilityRow, repoNames: ReadonlyMap<string, string>): string | null {
   const r = row.resource ?? '';
   if (r.startsWith('github_repo:')) return repoNames.get(r.slice('github_repo:'.length)) ?? 'linked repo';
@@ -141,14 +124,8 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
       target,
       expiresAt: row.expiresAt?.toISOString() ?? null,
       workerId: row.workerId,
-      source: RUN_CREDENTIALS.has(row.capability) ? 'run' : 'grant',
-      grantId: row.capability.startsWith('capability.') && r0(row).startsWith('grant:') ? r0(row).slice(6) : null,
-      pending: row.capability === 'capability.request' && (row.reasonCode ?? '').startsWith('pending_approval:'),
     });
   }
-  // A request stops waiting once a later row decides the same grant.
-  const decided = new Set(out.filter(i => i.grantId && ['capability.approve', 'capability.deny', 'capability.revoke'].includes(i.capability)).map(i => i.grantId));
-  for (const i of out) if (i.pending && i.grantId && decided.has(i.grantId)) i.pending = false;
   return out;
 }
 
