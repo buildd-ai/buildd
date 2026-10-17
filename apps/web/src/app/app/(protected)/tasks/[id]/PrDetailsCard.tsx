@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { latestRunPerName } from '@/lib/ci-verdict';
 import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
 import { StoredPrCard, type StoredPrFacts } from '@/components/task/StoredPrCard';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -67,11 +68,13 @@ export default async function PrDetailsCard({
     otherRefs.forEach((ref, i) => {
       const r = otherResults[i];
       const list = r?.status === 'fulfilled' && Array.isArray((r.value as any)?.check_runs) ? (r.value as any).check_runs : null;
-      if (list) runsByRef.set(ref, list.map(toRun));
+      if (list) runsByRef.set(ref, latestRunPerName(list).map(toRun));
     });
     const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
     const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
-    const checkRuns: any[] = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
+    // A run its re-run replaced on the same commit (a re-triggered gate) no longer speaks for it: the
+    // newest run per check name does, as GitHub's merge box and the landing door read it.
+    const checkRuns: any[] = Array.isArray(checksData?.check_runs) ? latestRunPerName(checksData.check_runs) : [];
     const isTerminal = (c: any) => c.status === 'completed';
     const isPassing = (c: any) => isTerminal(c) && (c.conclusion === 'success' || c.conclusion === 'skipped' || c.conclusion === 'neutral');
     const isFailing = (c: any) => isTerminal(c) && (c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled' || c.conclusion === 'action_required');

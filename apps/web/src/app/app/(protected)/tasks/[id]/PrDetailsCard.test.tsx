@@ -135,6 +135,33 @@ describe('PrDetailsCard', () => {
     expect(props.outcome.commits[1].runs).toEqual([{ name: 'unit', status: 'completed', conclusion: 'success', detailsUrl: null }]);
   });
 
+  it('a run its re-run replaced is not counted, on the head or an earlier commit (6900a317)', async () => {
+    // One gate triggered twice on the same commit: GitHub keeps the first run's failure beside the re-run.
+    const runs = [
+      { id: 1, name: 'build', status: 'completed', conclusion: 'success' },
+      { id: 2, name: 'check', status: 'completed', conclusion: 'failure' },
+      { id: 3, name: 'check', status: 'completed', conclusion: 'success' },
+      { id: 4, name: 'next build', status: 'in_progress', conclusion: null },
+    ];
+    githubResponses.set('/commits/oldsha1/check-runs', { check_runs: runs });
+    githubResponses.set('/commits/headsha2/check-runs', { check_runs: runs });
+    githubResponses.set('/pulls/7', { head: { sha: 'headsha2' } });
+    const outcome = {
+      totals: { add: 1, rem: 0, files: 1, commits: 2, attempts: 2, claimToMerge: null },
+      attempts: [{ add: 1, rem: 0, files: 1 }],
+      lineage: [],
+      commits: [
+        { attempt: 1, sha: 'oldsha1', ref: 'oldsha1', state: 'failed' as const, failure: null },
+        { attempt: 2, sha: 'headsha', ref: 'headsha2', state: 'running' as const, failure: null },
+      ],
+    };
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS, outcome }));
+    expect(props.ciChecks).toMatchObject({ total: 3, passed: 2, failed: 0, pending: 1 });
+    for (const c of props.outcome.commits) {
+      expect(c.runs.map((r: { name: string; conclusion: string | null }) => [r.name, r.conclusion])).toEqual([['build', 'success'], ['check', 'success'], ['next build', null]]);
+    }
+  });
+
   it('counts only the latest review per user', async () => {
     githubResponses.set('/pulls/7/reviews', [
       { user: { login: 'a' }, state: 'CHANGES_REQUESTED' },
