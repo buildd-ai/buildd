@@ -34,11 +34,11 @@ exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Buildd · next for this runner                  workspace    mission          est.  starts                              
 › 1 feat(runner): top says why nothing started  buildd       (no mission)     13m   now                                 
-  2 feat: recovery page, impact-ranked queue    buildd-admin (no mission)     -     now                                 
-  3 test: operator recovery end to end          buildd-admin (no mission)     -     now                                 
+  2 feat: recovery page, impact-ranked queue    acme-portal  (no mission)     -     now                                 
+  3 test: operator recovery end to end          acme-portal  (no mission)     -     now                                 
   4 fix(runner): hold --for ceiling             buildd       Runner terminal  9m    when #1 ends (same files)           
   5 refactor(schema): drop incident tables      buildd       Root causes      14m   after its dependency                
-  6 feat(insights): estimation dashboard        buildd-admin (no mission)     7m    now                                 
+  6 feat(insights): estimation dashboard        acme-portal  (no mission)     7m    now                                 
  Held, each on its own                                                                                                  
     fix(ci): dev is red                         buildd       rechecks the re… -     Wed 17:00                           
                                                                                                                         

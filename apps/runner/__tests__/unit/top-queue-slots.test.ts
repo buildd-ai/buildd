@@ -39,11 +39,11 @@ const QUEUE: RunnerQueueResponse = {
     teamId: 'team-b', teamName: 'Buildd', estimatesOn: true,
     queue: [
       task({ id: 'a0a0a0a0-0001', title: 'feat(runner): top says why nothing started', estimateMinutes: 13 }),
-      task({ id: 'a0a0a0a0-0002', title: 'feat: recovery page, impact-ranked queue', workspaceId: 'ws-admin', workspaceName: 'buildd-admin' }),
-      task({ id: 'a0a0a0a0-0003', title: 'test: operator recovery end to end', workspaceId: 'ws-admin', workspaceName: 'buildd-admin' }),
+      task({ id: 'a0a0a0a0-0002', title: 'feat: recovery page, impact-ranked queue', workspaceId: 'ws-admin', workspaceName: 'acme-portal' }),
+      task({ id: 'a0a0a0a0-0003', title: 'test: operator recovery end to end', workspaceId: 'ws-admin', workspaceName: 'acme-portal' }),
       task({ id: 'a0a0a0a0-0004', title: 'fix(runner): hold --for ceiling', missionId: 'm-rt', missionTitle: 'Runner terminal', estimateMinutes: 9 }),
       task({ id: 'a0a0a0a0-0005', title: 'refactor(schema): drop incident tables', missionId: 'm-rc', missionTitle: 'Root causes', dependsOn: ['b0b0b0b0-dep'], holds: ['deps_blocked'], estimateMinutes: 14 }),
-      task({ id: 'a0a0a0a0-0006', title: 'feat(insights): estimation dashboard', workspaceId: 'ws-admin', workspaceName: 'buildd-admin', estimateMinutes: 7 }),
+      task({ id: 'a0a0a0a0-0006', title: 'feat(insights): estimation dashboard', workspaceId: 'ws-admin', workspaceName: 'acme-portal', estimateMinutes: 7 }),
       task({ id: 'a0a0a0a0-0007', title: 'fix(ci): dev is red', backend: 'codex', holds: ['deferred'], holdUntil: iso(NOW + 26 * 3_600_000), holdCause: 'credential_probe' }),
     ],
     notForRunner: [],
@@ -57,7 +57,7 @@ function stateWith(slots: number, running: number, over: Partial<TopState> = {})
   s = reduce(s, { type: 'config', maxConcurrent: slots, builddServer: 'https://buildd.dev' });
   s = reduce(s, { type: 'workspaces', workspaces: [
     { id: 'ws-main', name: 'buildd', teamId: 'team-b', teamName: 'Buildd' },
-    { id: 'ws-admin', name: 'buildd-admin', teamId: 'team-b', teamName: 'Buildd' },
+    { id: 'ws-admin', name: 'acme-portal', teamId: 'team-b', teamName: 'Buildd' },
   ] });
   const workers: TopWorker[] = Array.from({ length: running }, (_, i) => ({
     id: `w-run-${i}`, taskId: `c0c0c0c0-0${i}`, taskTitle: `running work ${i + 1}`, status: 'working', startedAt: NOW - (10 + i) * MIN, currentAction: 'Edit a.ts',
