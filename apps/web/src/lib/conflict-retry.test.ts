@@ -114,8 +114,8 @@ const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => null as string 
 const realAuthority = await import('@/lib/workflow/authority');
 mock.module('@/lib/workflow/authority', () => ({ ...realAuthority, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any);
-const realSeam = await import('@/lib/workflow/seam');
-mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeConflict: mockObserveConflict }));
 
 // GitHub reads: by default every call fails (as with no credentials), so the
 // dispatch path degrades exactly as before; one test answers the PR read.
