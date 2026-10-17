@@ -85,13 +85,14 @@ describe('getUserWorkspaceIds', () => {
     expect(await getUserWorkspaceIds('user-1')).toEqual([]);
   });
 
-  it('keeps both arms of the scope: personal team by slug OR team membership', async () => {
+  it('keeps both arms of the scope: personal team by its marker OR team membership', async () => {
     await getUserWorkspaceIds('user-1');
     const { sql } = renderWhere();
     const normalized = sql.replace(/\s+/g, ' ').toLowerCase();
 
     // Arm 1 — the personal-team fallback for users with no team_members row.
-    expect(normalized).toContain('"teams"."slug"');
+    expect(normalized).toContain('"teams"."personal_user_id"');
+    expect(normalized).not.toContain('"teams"."slug"');
     expect(normalized).toContain('from "teams"');
     // Arm 2 — real team memberships.
     expect(normalized).toContain('"team_members"."user_id"');
@@ -109,14 +110,14 @@ describe('getUserWorkspaceIds', () => {
     const { sql, params } = renderWhere();
     expect(sql).not.toContain('user-1');
     expect(params).toContain("user-1' or true --");
-    expect(params).toContain("personal-user-1' or true --");
+    expect(params.every((p: unknown) => p === "user-1' or true --")).toBe(true);
   });
 
   it('scopes the personal-team arm to this user only', async () => {
     await getUserWorkspaceIds('user-1');
     const { params } = renderWhere();
-    // The slug convention is `personal-{userId}` — see getUserDefaultTeamId.
-    expect(params).toContain('personal-user-1');
-    expect(params).not.toContain('personal-user-2');
+    // Both arms are keyed on this user's id: the personal arm by
+    // teams.personal_user_id, never a personal- slug.
+    expect(params).toEqual(['user-1', 'user-1']);
   });
 });

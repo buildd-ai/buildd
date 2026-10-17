@@ -7,6 +7,7 @@ import { roleHas } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isPersonalTeam } from '@/lib/personal-team';
 
 /**
  * POST /api/teams/[id]/ownership { userId } — hand ownership to an existing
@@ -58,10 +59,10 @@ export async function POST(
 
     const team = await db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, teamId)),
-      columns: { slug: true },
+      columns: { personalUserId: true },
     });
     if (!team) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-    if (team.slug.startsWith('personal-')) {
+    if (isPersonalTeam(team)) {
       return NextResponse.json({ error: 'A personal team cannot change owner' }, { status: 400 });
     }
 

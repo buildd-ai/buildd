@@ -3,8 +3,8 @@ import { defaultTeamId, parseActiveTeamCookie } from './active-team-client';
 
 // Illustrative fixtures only.
 const teams = [
-  { id: 'team-personal', slug: 'personal-someone' },
-  { id: 'team-work', slug: 'work' },
+  { id: 'team-personal', personalUserId: 'someone' },
+  { id: 'team-work', personalUserId: null },
 ];
 
 describe('defaultTeamId', () => {
@@ -20,8 +20,16 @@ describe('defaultTeamId', () => {
     expect(defaultTeamId(teams, 'team-gone')).toBe('team-personal');
   });
 
+  it('a slug with the personal prefix does not make a team Personal', () => {
+    const slugOnly = [
+      { id: 'team-a', slug: 'personal-someone', personalUserId: null },
+      { id: 'team-b', personalUserId: 'someone' },
+    ];
+    expect(defaultTeamId(slugOnly, null)).toBe('team-b');
+  });
+
   it('falls back to the first team, then to empty', () => {
-    expect(defaultTeamId([{ id: 'only', slug: 'only' }], null)).toBe('only');
+    expect(defaultTeamId([{ id: 'only', personalUserId: null }], null)).toBe('only');
     expect(defaultTeamId([], 'team-work')).toBe('');
   });
 });

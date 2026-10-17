@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 // The real permissions module runs: membership rows come from teamMembers,
-// the personal team from teams (slug lookup).
+// the personal team from teams (teams.personal_user_id lookup).
 let memberships: { teamId: string; role: string }[] = [];
 let personalTeamId: string | null = null;
 
@@ -12,7 +12,7 @@ mock.module('@buildd/core/db', () => ({
       teams: {
         findFirst: async ({ where }: { where: { b: string } }) => {
           const value = where.b;
-          if (value.startsWith('personal-')) return personalTeamId ? { id: personalTeamId } : undefined;
+          if (value === 'u1') return personalTeamId ? { id: personalTeamId } : undefined;
           return undefined;
         },
       },
@@ -25,7 +25,7 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@buildd/core/db/schema', () => ({
   teamMembers: { userId: 'userId', teamId: 'teamId' },
-  teams: { id: 'id', slug: 'slug' },
+  teams: { id: 'id', slug: 'slug', personalUserId: 'personalUserId' },
 }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: async () => memberships.map(m => m.teamId) }));
 let currentUser: { id: string } | null = null;

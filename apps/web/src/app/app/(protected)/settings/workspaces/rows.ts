@@ -5,6 +5,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { resolveRunnerSize } from '@/lib/runner-size';
 import type { UserTeam } from '@/lib/team-access';
 import { roleHas, type Permission } from '@/lib/permission-registry';
+import { isPersonalTeamOf } from '@/lib/personal-team';
 import type { WorkspaceActivity } from '@/lib/workspace-activity';
 import type { WorkspaceDiffer, WorkspaceRow } from './list-groups';
 
@@ -29,7 +30,7 @@ export const WORKSPACE_DEFAULTS = {
 } as const;
 
 function teamsHolding(userId: string, teams: UserTeam[], permission: Permission): UserTeam[] {
-  return teams.filter((t) => roleHas(t.role, permission) || t.slug === `personal-${userId}`);
+  return teams.filter((t) => roleHas(t.role, permission) || isPersonalTeamOf(t, userId));
 }
 
 /**

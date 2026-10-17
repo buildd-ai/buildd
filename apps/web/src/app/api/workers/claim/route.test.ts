@@ -587,7 +587,7 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
   }),
 }));
 import { POST } from './route';
-import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
+import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
@@ -1312,7 +1312,7 @@ describe('POST /api/workers/claim', () => {
   // apply (lib/personal-workspace-links), so these prove the end-to-end rule.
   describe("fresh user's login token and their auto-created workspace", () => {
     const userId = 'user-fresh';
-    const personalTeam = { id: 'team-personal', slug: personalTeamSlug(userId) };
+    const personalTeam = { id: 'team-personal', personalUserId: userId };
     const myWorkspace = { id: 'ws-mine', teamId: 'team-personal', accessMode: 'restricted' };
     const pendingTask = () => ({
       id: 'task-1',

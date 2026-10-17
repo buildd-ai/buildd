@@ -57,7 +57,7 @@ export {
 
 /**
  * Every team the user belongs to, with their role in it. The user's personal
- * team (slug = personal-{userId}) counts as owned even without a teamMembers
+ * team (teams.personal_user_id) counts as owned even without a teamMembers
  * row, mirroring getUserTeamIds' fallback.
  *
  * Cached per-request via React cache() (primitive arg).
@@ -69,7 +69,7 @@ export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string
       columns: { teamId: true, role: true },
     }),
     db.query.teams.findFirst({
-      where: sqlWhere(eq(schema.teams.slug, `personal-${userId}`)),
+      where: sqlWhere(eq(schema.teams.personalUserId, userId)),
       columns: { id: true },
     }),
   ]);

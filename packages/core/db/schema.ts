@@ -36,6 +36,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
 
+  // Set on the one team created for a user at sign-up: that user's personal
+  // team. NULL = an ordinary team. This column, never the slug, is what marks
+  // a team as personal (apps/web/src/lib/personal-team.ts); the `personal-`
+  // slug prefix is reserved and refused on create and rename. Unique, so a
+  // user has at most one personal team.
+  personalUserId: uuid('personal_user_id').references(() => users.id, { onDelete: 'set null' }).unique('teams_personal_user_id_unique'),
+
   // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
   // teams that never set one behave exactly as before. Used for anything rendered to a
   // shared or external surface — PR activity comments, new schedule defaults, mission
