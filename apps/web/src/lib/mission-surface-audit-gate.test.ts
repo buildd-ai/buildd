@@ -326,6 +326,9 @@ describe('loadSurfaceAuditWaiver', () => {
 // each PR's file list from GitHub one PR after another, with nothing cached.
 describe('evaluateSurfaceAuditGate — PR file cache', () => {
   const RENDERING = [{ filename: UI_FILE, patch: '+<div className="x" />' }, { filename: 'packages/core/x.ts', patch: '+x' }];
+  const HEAD_A = 'a'.repeat(40);
+  const mergedDelivery = (prNumber: number, head: string | null = HEAD_A) =>
+    ({ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber, currentHeadSha: head, mergedAt: new Date('2026-10-01T00:00:00Z') });
 
   beforeEach(() => {
     waiverNotes = [];
@@ -337,55 +340,60 @@ describe('evaluateSurfaceAuditGate — PR file cache', () => {
     mockGithubApi.mockImplementation(async () => RENDERING);
   });
 
-  it('a second evaluation for the same head makes zero GitHub calls', async () => {
-    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'a'.repeat(40), mergedAt: null }];
+  it('a second evaluation of a merged PR makes zero GitHub calls', async () => {
+    deliveryRows = [mergedDelivery(10)];
     const first = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
     expect(first).toMatchObject({ required: true, source: 'diff', uiPaths: [UI_FILE] });
-    const callsAfterFirst = mockGithubApi.mock.calls.length;
-    expect(callsAfterFirst).toBe(1);
+    expect(mockGithubApi.mock.calls.length).toBe(1);
 
     const second = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
     expect(second).toEqual(first);
-    expect(mockGithubApi.mock.calls.length).toBe(callsAfterFirst);
+    expect(mockGithubApi.mock.calls.length).toBe(1);
   });
 
-  it('caches only the rendered-surface files, keyed by repo, PR and head', async () => {
-    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'b'.repeat(40), mergedAt: null }];
+  it('caches only the rendered-surface files of a merged PR, keyed by repo and PR', async () => {
+    deliveryRows = [mergedDelivery(10)];
     await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
     const keys = [...prFilesCache.keys()];
     expect(keys).toHaveLength(1);
     expect(keys[0]).toContain('acme/app');
     expect(keys[0]).toContain('10');
-    expect(keys[0]).toContain('b'.repeat(40));
     expect(prFilesCache.get(keys[0])).toEqual([{ path: UI_FILE, patch: '+<div className="x" />' }]);
   });
 
-  it('a new head is a new key: a push re-reads the diff', async () => {
-    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'c'.repeat(40), mergedAt: null }];
-    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
-    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'd'.repeat(40), mergedAt: null }];
-    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
-    expect(mockGithubApi.mock.calls.length).toBe(2);
-  });
-
-  it('a merged PR is cached even with no recorded head, and is never re-read', async () => {
+  it('a merged PR known only from its worker is cached too', async () => {
     const merged = builder(11, { workers: [{ prNumber: 11, mergedAt: new Date('2026-10-01T00:00:00Z') }] });
     await evaluateSurfaceAuditGate({ id: 'm1' }, [merged]);
-    expect(mockGithubApi.mock.calls.length).toBe(1);
     for (let i = 0; i < 3; i++) await evaluateSurfaceAuditGate({ id: 'm1' }, [merged]);
     expect(mockGithubApi.mock.calls.length).toBe(1);
   });
 
-  it('an open PR with no known head is read every time (nothing to key it on)', async () => {
-    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(12)]);
-    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(12)]);
-    expect(mockGithubApi.mock.calls.length).toBe(2);
+  // The recorded head can lag a push: an open PR is never served from the cache,
+  // or a commit that adds a UI file after the last observed head would be missed.
+  it('an open PR is read live: a push past the recorded head that adds a UI file is seen', async () => {
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: HEAD_A, mergedAt: null }];
+    mockGithubApi.mockImplementation(async () => [{ filename: 'packages/core/x.ts', patch: '+x' }]);
+    const before = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(before.required).toBe(false);
+
+    // GitHub head is now B with an extra UI file; the delivery still says A.
+    mockGithubApi.mockImplementation(async () => [{ filename: 'packages/core/x.ts', patch: '+x' }, ...RENDERING.slice(0, 1)]);
+    const after = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(after).toMatchObject({ required: true, source: 'diff', uiPaths: [UI_FILE] });
     expect(prFilesCache.size).toBe(0);
+  });
+
+  it('an open PR is not served from the cache even if an entry exists for its recorded head', async () => {
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: HEAD_A, mergedAt: null }];
+    for (const k of ['acme/app#10@merged', `acme/app#10@${HEAD_A}`]) prFilesCache.set(k, []);
+    const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(gate).toMatchObject({ required: true, uiPaths: [UI_FILE] });
+    expect(mockGithubApi.mock.calls.length).toBe(1);
   });
 
   it('a cache error fails open to a GitHub read', async () => {
     cacheFails = true;
-    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'e'.repeat(40), mergedAt: null }];
+    deliveryRows = [mergedDelivery(10)];
     const orig = console.error;
     console.error = () => {};
     try {
@@ -396,7 +404,7 @@ describe('evaluateSurfaceAuditGate — PR file cache', () => {
     }
   });
 
-  it('cache misses are fetched concurrently, with a bound', async () => {
+  it('live reads are fetched concurrently, with a bound', async () => {
     let inFlight = 0;
     let peak = 0;
     mockGithubApi.mockImplementation(async () => {
@@ -410,14 +418,11 @@ describe('evaluateSurfaceAuditGate — PR file cache', () => {
     await evaluateSurfaceAuditGate({ id: 'm1' }, builders);
     expect(mockGithubApi.mock.calls.length).toBe(12);
     expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(6);
+    expect(peak).toBeLessThanOrEqual(4);
   });
 
-  it('does not fetch patches it already has cached for one PR while reading another', async () => {
-    deliveryRows = [
-      { workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'f'.repeat(40), mergedAt: null },
-      { workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 13, currentHeadSha: '1'.repeat(40), mergedAt: null },
-    ];
+  it('only the uncached PR is read when a cached merged PR sits beside it', async () => {
+    deliveryRows = [mergedDelivery(10), mergedDelivery(13)];
     await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
     mockGithubApi.mockClear();
     await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10), builder(13, { id: 't-13' })]);

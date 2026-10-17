@@ -164,15 +164,15 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
   return out;
 }
 
-/** What is known about a PR's head without asking GitHub: the delivery's observed head, and whether it merged. */
-interface PrHead { headSha: string | null; merged: boolean }
+/** What is known about a PR without asking GitHub: whether it merged. */
+interface PrMergeState { merged: boolean }
 
 /**
- * The heads the workflow kernel has observed for these PRs, keyed `${workspaceId}#${repo}#${prNumber}`.
- * Empty on a read error: an unknown head only means the PR is read from GitHub uncached.
+ * Which of these PRs the workflow kernel recorded as merged, keyed `${workspaceId}#${repo}#${prNumber}`.
+ * Empty on a read error: the PR is then treated as open and read from GitHub uncached.
  */
-async function loadPrHeads(prs: Map<number, string>): Promise<Map<string, PrHead>> {
-  const out = new Map<string, PrHead>();
+async function loadPrMergeState(prs: Map<number, string>): Promise<Map<string, PrMergeState>> {
+  const out = new Map<string, PrMergeState>();
   if (prs.size === 0) return out;
   try {
     const rows = await db.query.workflowDeliveries.findMany({
@@ -180,38 +180,37 @@ async function loadPrHeads(prs: Map<number, string>): Promise<Map<string, PrHead
         inArray(workflowDeliveries.workspaceId, [...new Set(prs.values())]),
         inArray(workflowDeliveries.prNumber, [...prs.keys()]),
       )),
-      columns: { workspaceId: true, repoFullName: true, prNumber: true, currentHeadSha: true, mergedAt: true },
+      columns: { workspaceId: true, repoFullName: true, prNumber: true, mergedAt: true },
     });
     for (const r of rows) {
       if (r.prNumber == null) continue;
-      out.set(`${r.workspaceId}#${(r.repoFullName ?? '').toLowerCase()}#${r.prNumber}`, { headSha: r.currentHeadSha ?? null, merged: !!r.mergedAt });
+      out.set(`${r.workspaceId}#${(r.repoFullName ?? '').toLowerCase()}#${r.prNumber}`, { merged: !!r.mergedAt });
     }
   } catch (err) {
-    console.error('[surface-audit-gate] could not read PR heads (reading diffs uncached):', err);
+    console.error('[surface-audit-gate] could not read PR merge state (reading diffs uncached):', err);
   }
   return out;
 }
 
 /**
- * The cache key for a PR's file list, or null when it cannot be keyed. A PR's
- * files at one head never change, and a merged PR's never change at all, so
- * either is cached for good; an open PR with no observed head is not cached.
+ * The cache key for a PR's file list, or null when it must be read live. Only
+ * a merged PR is cached: its files can never change. An open PR is always read
+ * from GitHub, because the recorded head can lag a push, and serving the old
+ * head's files would hide a commit that adds a UI file (the gate under-reports).
  */
-function prFilesCacheKey(fullName: string, prNumber: number, head: PrHead): string | null {
-  if (head.headSha) return `${fullName}#${prNumber}@${head.headSha}`;
-  if (head.merged) return `${fullName}#${prNumber}@merged`;
-  return null;
+function prFilesCacheKey(fullName: string, prNumber: number, head: PrMergeState): string | null {
+  return head.merged ? `${fullName}#${prNumber}@merged` : null;
 }
 
 /**
  * The PR's rendered-surface files (the only ones the gate reads), from the
- * cache when the PR's head is known, else from GitHub. A cache error falls
+ * cache when the PR is merged, else from GitHub. A cache error falls
  * through to GitHub; a GitHub error propagates (the caller fails open).
  */
 async function renderedSurfaceFiles(
   repo: { installationId: number; fullName: string },
   prNumber: number,
-  head: PrHead,
+  head: PrMergeState,
 ): Promise<ImpactFile[]> {
   const key = prFilesCacheKey(repo.fullName, prNumber, head);
   if (key) {
@@ -293,16 +292,16 @@ export async function evaluateSurfaceAuditGate(
     if (typeof n === 'number' && w?.mergedAt) mergedByWorker.add(n);
   }
 
-  // Each PR's files come from the cache when its head is known (a merged PR's
-  // never change); only misses read GitHub, a few at a time.
+  // A merged PR's files come from the cache (they never change); open PRs and
+  // misses read GitHub, a few at a time.
   const checked = [...prs].slice(0, MAX_PRS_CHECKED);
   const workspaceIds = [...new Set(checked.map(([, ws]) => ws))];
-  const [repoList, heads] = await Promise.all([
+  const [repoList, mergeState] = await Promise.all([
     Promise.all(workspaceIds.map(ws => repoFor(ws).catch(err => {
       console.error('[surface-audit-gate] could not read the linked repo (not blocking on it):', err);
       return null;
     }))),
-    loadPrHeads(new Map(checked)),
+    loadPrMergeState(new Map(checked)),
   ]);
   const repos = new Map(workspaceIds.map((ws, i) => [ws, repoList[i]] as const));
 
@@ -312,8 +311,8 @@ export async function evaluateSurfaceAuditGate(
   const results = await mapBounded(checked, FETCH_CONCURRENCY, async ([prNumber, workspaceId]) => {
     const repo = repos.get(workspaceId);
     if (!repo) return null;
-    const observed = heads.get(`${workspaceId}#${repo.fullName.toLowerCase()}#${prNumber}`) ?? heads.get(`${workspaceId}##${prNumber}`);
-    const head: PrHead = { headSha: observed?.headSha ?? null, merged: !!observed?.merged || mergedByWorker.has(prNumber) };
+    const observed = mergeState.get(`${workspaceId}#${repo.fullName.toLowerCase()}#${prNumber}`) ?? mergeState.get(`${workspaceId}##${prNumber}`);
+    const head: PrMergeState = { merged: !!observed?.merged || mergedByWorker.has(prNumber) };
     try {
       return await renderedSurfaceFiles(repo, prNumber, head);
     } catch (err) {

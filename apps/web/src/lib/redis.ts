@@ -110,18 +110,18 @@ export async function invalidateCachedAccountWorkspaces(accountId: string): Prom
   await safe('del acct_ws', r => r.del(`buildd:acct_ws:${accountId}`), undefined);
 }
 
-// PR changed-file cache — key: buildd:pr_ui_files:v1:{repo}#{pr}@{head}, 30-day TTL.
-// A PR's file list at one head SHA (or after merge) never changes, so the TTL
-// only bounds storage. The value is the rendered-surface subset the surface
+// PR changed-file cache — key: buildd:pr_ui_files:v2:{repo}#{pr}@merged, 30-day TTL.
+// Merged PRs only: their file list never changes, so the TTL only bounds
+// storage. The value is the rendered-surface subset the surface
 // audit gate reads (paths + patches), not the whole diff.
 const PR_UI_FILES_TTL = 30 * 24 * 60 * 60;
 
 export async function getCachedPrUiFiles<T>(key: string): Promise<T | null> {
-  return safe('get pr_ui_files', r => r.get<T>(`buildd:pr_ui_files:v1:${key}`), null);
+  return safe('get pr_ui_files', r => r.get<T>(`buildd:pr_ui_files:v2:${key}`), null);
 }
 
 export async function setCachedPrUiFiles<T>(key: string, files: T, ttlSec = PR_UI_FILES_TTL): Promise<void> {
-  await safe('set pr_ui_files', r => r.setex(`buildd:pr_ui_files:v1:${key}`, ttlSec, files), undefined);
+  await safe('set pr_ui_files', r => r.setex(`buildd:pr_ui_files:v2:${key}`, ttlSec, files), undefined);
 }
 
 // ── Cron due-queues ─────────────────────────────────────────────────────────
