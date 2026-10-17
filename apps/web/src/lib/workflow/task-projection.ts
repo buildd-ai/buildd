@@ -81,24 +81,59 @@ export function mergeTaskTransitionOf(payload: unknown): { taskTransition: Merge
 }
 
 /**
+ * How long a finished worker row must sit unchanged before an end read from it counts while its
+ * task is still open. The worker PATCH reserves the terminal worker status in its own statement and
+ * only later decides on a requeue (an auto-retry to `pending`, which is no attempt end) or overrides
+ * a reported `completed` to `failed` (an output-contract miss). A read between those writes would
+ * send an end the PATCH is about to cover. Longer than the PATCH can run (the platform's function
+ * limit), and the floor is a backstop, so the wait costs a lost end only this much delay.
+ */
+export const OWNER_END_SETTLE_MS = 15 * 60_000;
+/**
+ * Clock allowance between `tasks.claimed_at` (stamped from the web host's clock when the claim
+ * request starts) and `workers.created_at` (the database's clock at the insert just after).
+ */
+export const CLAIM_CLOCK_SKEW_MS = 5_000;
+
+export interface OwnerEndTask { status: string | null | undefined; claimedAt?: Date | string | null }
+export interface OwnerEndWorker { status: string | null | undefined; createdAt?: Date | string | null; updatedAt?: Date | string | null }
+
+const ms = (v: Date | string | null | undefined): number | null => {
+  if (v == null) return null;
+  const t = (v instanceof Date ? v : new Date(v)).getTime();
+  return Number.isFinite(t) ? t : null;
+};
+
+/**
  * AC-1 slice 2 (workflow-kernel-library.md §9): whether the owner attempt has ended, read from its
  * latest worker row. `forwardOwnerEnd` and the floor use this, never `tasks.status` alone, so the
- * kernel can become the task-status writer without losing an end that never arrived: a task left
- * in progress whose worker finished still has its end found and re-sent.
+ * kernel can become the task-status writer without losing an end that never arrived. A running
+ * owner task holds `assigned` for its whole attempt (nothing writes `in_progress` any more), so an
+ * `assigned` task whose worker finished is exactly the end to recover.
  *
- * The task row is read for one thing only: a next attempt. A `pending` task has its own retry queued
- * (the worker PATCH sends no end then, `taskRetryCoversAttemptEnd`), and an `assigned` one is being
- * claimed for it (the claim sets `assigned` before it inserts the new worker row), so the next
- * attempt continues the delivery. A `cancelled` one sent its own end (task-cancel.ts). None of
- * these is an end to re-send.
+ *  - `pending`: the task's own retry is queued (the worker PATCH sends no end then,
+ *    `taskRetryCoversAttemptEnd`); `cancelled`: the cancel sent its own end. No end.
+ *  - A live (or superseded) latest worker: no end, whatever the task row says.
+ *  - `completed` / `failed` task: the PATCH has finished deciding; the worker's end counts now.
+ *  - Open task (`assigned`, legacy `in_progress`): the end counts only when the latest worker row
+ *    belongs to the current claim and has settled. The claim stamps `claimed_at` with `assigned`
+ *    and inserts the new worker row after, so a latest worker created before `claimed_at` is the
+ *    previous attempt's while the new claim is in flight. A worker row changed within
+ *    `OWNER_END_SETTLE_MS` may still be covered by the PATCH that wrote it (see above).
+ *
  * Answers the end's status, or null when there is none.
  */
-export function ownerAttemptEndOf(
-  taskStatus: string | null | undefined,
-  latestWorkerStatus: string | null | undefined,
-): 'completed' | 'failed' | null {
-  if (taskStatus === 'pending' || taskStatus === 'assigned' || taskStatus === 'cancelled') return null;
-  if (latestWorkerStatus === 'completed') return 'completed';
-  if (latestWorkerStatus === 'failed' || latestWorkerStatus === 'error') return 'failed';
-  return null;
+export function ownerAttemptEndOf(task: OwnerEndTask, worker: OwnerEndWorker, now: number = Date.now()): 'completed' | 'failed' | null {
+  if (task.status === 'pending' || task.status === 'cancelled') return null;
+  const end = worker.status === 'completed' ? 'completed'
+    : worker.status === 'failed' || worker.status === 'error' ? 'failed'
+      : null;
+  if (!end) return null;
+  if (task.status === 'completed' || task.status === 'failed') return end;
+  const claimed = ms(task.claimedAt);
+  const created = ms(worker.createdAt);
+  if (claimed != null && (created == null || created < claimed - CLAIM_CLOCK_SKEW_MS)) return null;
+  const changed = ms(worker.updatedAt);
+  if (changed == null || now - changed < OWNER_END_SETTLE_MS) return null;
+  return end;
 }

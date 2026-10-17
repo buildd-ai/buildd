@@ -1186,10 +1186,17 @@ column outside the kernel; S3 and S4 remove or route each one.
   one, fails CI, and a family moved behind the projection lowers its count.
   The kernel reads an owner attempt's end from its latest worker row, not
   from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
-  floor): a finished worker is an end even while the task is still in
-  progress, so an end that never arrived is re-sent. The task row only rules
-  out a next attempt (`pending`: its retry is queued; `assigned`: a claim is
-  starting one) and a cancel, which sends its own end.
+  floor): a finished worker is an end even while the task is still
+  `assigned` (the status a running owner task holds for its whole attempt),
+  so an end that never arrived is re-sent. `pending` (its retry is queued)
+  and `cancelled` (the cancel sent its own end) are never an end. On an
+  `assigned` task the end counts only for a worker row created at or after
+  `claimed_at` (the claim stamps it, then inserts the new worker row, so an
+  older row is the previous attempt's while a claim is in flight), and only
+  once that row has gone unchanged for `OWNER_END_SETTLE_MS`: the worker
+  PATCH writes the worker's terminal status before it decides on a retry
+  requeue, so an end read in between is not sent. A terminal task's end
+  counts at once.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,

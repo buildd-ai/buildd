@@ -324,7 +324,7 @@ const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope
  *    task. The test below pins that each still carries the predicate.
  *  - ATTEMPT: the end or requeue of a worker's own attempt. The kernel reads the end from the
  *    worker row (`ownerAttemptEndOf`: `forwardOwnerEnd` re-sends a finished worker's end even while
- *    the task is in progress; a requeue is deliberately not an attempt end), but nothing projects
+ *    the task is still assigned; a requeue is deliberately not an attempt end), but nothing projects
  *    the end back onto the task yet. Skipping these for a delivery-owned task would leave it in
  *    progress after its delivery moved on.
  *  - PERSON: a person's explicit act on the task (or an external tracker acting for one). Not a

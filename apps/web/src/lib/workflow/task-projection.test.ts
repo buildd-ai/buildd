@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf } from './task-projection';
+import { mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -50,25 +50,49 @@ describe('mergeTaskTransitionOf', () => {
 });
 
 describe('ownerAttemptEndOf (AC-1 slice 2): the end is read from the worker row', () => {
-  test('a finished worker is an end whatever the task row says, the task still in progress included', () => {
-    for (const task of ['in_progress', 'completed', 'failed']) {
-      expect(ownerAttemptEndOf(task, 'completed')).toBe('completed');
-      expect(ownerAttemptEndOf(task, 'failed')).toBe('failed');
-      expect(ownerAttemptEndOf(task, 'error')).toBe('failed');
-    }
+  const NOW = Date.parse('2026-10-17T12:00:00Z');
+  const ago = (m: number) => new Date(NOW - m * 60_000);
+  const settled = OWNER_END_SETTLE_MS / 60_000 + 1;
+  /** A running owner task: `assigned` for its whole attempt, claimed `claimedMin` minutes ago. */
+  const assigned = (claimedMin = settled + 10) => ({ status: 'assigned', claimedAt: ago(claimedMin) });
+  /** The claim's worker, created after the claim, last written `changedMin` minutes ago. */
+  const wk = (status: string, changedMin = settled, createdMin = settled + 5) => ({ status, createdAt: ago(createdMin), updatedAt: ago(changedMin) });
+
+  test('an assigned task whose worker of this claim finished and settled: the end counts', () => {
+    expect(ownerAttemptEndOf(assigned(), wk('completed'), NOW)).toBe('completed');
+    expect(ownerAttemptEndOf(assigned(), wk('failed'), NOW)).toBe('failed');
+    expect(ownerAttemptEndOf(assigned(), wk('error'), NOW)).toBe('failed');
+  });
+
+  test('assigned with claimedAt newer than the latest worker: a claim in flight, the old row is not its end', () => {
+    // The claim stamped claimed_at and assigned; its own worker row is not inserted yet.
+    const inFlight = { status: 'assigned', claimedAt: ago(settled) };
+    expect(ownerAttemptEndOf(inFlight, wk('failed', settled + 5, settled + 30), NOW)).toBeNull();
+    // Inside the clock allowance it is this claim's worker.
+    const justAfter = { status: 'assigned', claimedAt: new Date(ago(settled + 5).getTime() + CLAIM_CLOCK_SKEW_MS - 1) };
+    expect(ownerAttemptEndOf(justAfter, wk('completed', settled, settled + 5), NOW)).toBe('completed');
+  });
+
+  test('a worker row changed within the settle window: the PATCH that wrote it may still requeue (no end yet)', () => {
+    expect(ownerAttemptEndOf(assigned(), wk('failed', 0), NOW)).toBeNull();
+    expect(ownerAttemptEndOf(assigned(), wk('completed', settled - 2), NOW)).toBeNull();
+  });
+
+  test('a terminal task: the PATCH has decided, the end counts at once', () => {
+    expect(ownerAttemptEndOf({ status: 'completed', claimedAt: ago(1) }, wk('completed', 0, 0), NOW)).toBe('completed');
+    expect(ownerAttemptEndOf({ status: 'failed' }, wk('error', 0, 0), NOW)).toBe('failed');
   });
 
   test('a live worker is no end, even on a terminal task', () => {
-    for (const wk of ['idle', 'starting', 'running', 'waiting_input', 'paused', 'superseded', null]) {
-      expect(ownerAttemptEndOf('completed', wk)).toBeNull();
-      expect(ownerAttemptEndOf('in_progress', wk)).toBeNull();
+    for (const s of ['idle', 'starting', 'running', 'waiting_input', 'paused', 'superseded', null]) {
+      expect(ownerAttemptEndOf({ status: 'completed' }, wk(s as string), NOW)).toBeNull();
+      expect(ownerAttemptEndOf(assigned(), wk(s as string), NOW)).toBeNull();
     }
   });
 
-  test('a queued retry (pending), a claim in flight (assigned) or a cancel (its own end) is not an end to re-send', () => {
-    expect(ownerAttemptEndOf('pending', 'failed')).toBeNull();
-    expect(ownerAttemptEndOf('assigned', 'failed')).toBeNull();
-    expect(ownerAttemptEndOf('pending', 'completed')).toBeNull();
-    expect(ownerAttemptEndOf('cancelled', 'completed')).toBeNull();
+  test('a queued retry (pending) or a cancel (its own end) is not an end to re-send', () => {
+    expect(ownerAttemptEndOf({ status: 'pending' }, wk('failed'), NOW)).toBeNull();
+    expect(ownerAttemptEndOf({ status: 'pending' }, wk('completed'), NOW)).toBeNull();
+    expect(ownerAttemptEndOf({ status: 'cancelled' }, wk('completed'), NOW)).toBeNull();
   });
 });
