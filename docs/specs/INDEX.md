@@ -121,7 +121,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
 - [Worker Reclamation](./worker-reclamation.md) · @max — verified 2026-10-17
   Silent workers MUST be reclaimed with the correct timeout, exit cause and retry treatment.
-- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-15
+- [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-17
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
 ### surfaces (21)

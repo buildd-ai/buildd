@@ -1,4 +1,4 @@
-import { canonicalToolName } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -74,7 +74,7 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
-import { claudeSessionSandbox, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
+import { claudeSessionSandbox, decideConfinementRestart, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, isolationModeLabel, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
@@ -298,6 +298,7 @@ export function getIsolationRecord(): RunnerIsolationRecord {
       }
       return _seatbeltSupported;
     },
+    reducedOptIn: () => reducedIsolationOptedIn(process.env),
   }, {
     probeAt: () => _bwrapProbeAt ?? new Date().toISOString(),
     processStartedAt: PROCESS_STARTED_AT,
@@ -1256,6 +1257,15 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Environment as sent on a claim: the scan plus this process's isolation
+   * record, which the claim route decides each task's isolation against
+   * (Living Spec "Runner isolation", R-4). Runs the probes if they have not run.
+   */
+  private claimEnvironment(env: WorkerEnvironment | undefined): WorkerEnvironment | undefined {
+    return env ? { ...env, isolation: getIsolationRecord() } : env;
+  }
+
   /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
@@ -2020,7 +2030,7 @@ export class WorkerManager {
       this.lookingForWork = (this.lookingForWork || 0) + 1;
       this.emit({ type: 'claim_loop', looking: true });
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, withRunnerHold(this.environment, currentRunnerHold())));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold()))));
       } catch (err: any) {
         this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
@@ -2471,7 +2481,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment));
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment)));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -4267,6 +4277,19 @@ export class WorkerManager {
       if (missingModelAuth) {
         throw Object.assign(new Error(missingModelAuth), { modelAuthMissing: true });
       }
+      // Isolation (Living Spec "Runner isolation", R-4, R-5): the claim
+      // decided this against the record sent with it; decide again against
+      // the record as it is now, so a probe that flipped since (a mid-run
+      // bwrap denial on another task) never starts this one with less. A task
+      // with no stamp is held to protected. Refused = the attempt fails with
+      // the cause; it never runs reduced without the operator's opt-in.
+      const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
+      const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
+      if (!isolationDecision.ok) {
+        throw new Error(`Not started: ${isolationDecision.message}${isolationDecision.remedy.length > 0 ? ` ${isolationDecision.remedy.join(' ')}` : ''}`);
+      }
+      this.addMilestone(worker, { type: 'status', label: isolationModeLabel(isolationDecision, isolationBackend, getIsolationRecord().platform), ts: Date.now() });
+      sessionLog(worker.id, isolationDecision.mode === 'reduced' ? 'warn' : 'info', 'isolation_mode', `requirement=${isolationDecision.requirement} mode=${isolationDecision.mode} backend=${isolationBackend} mechanism=${isolationDecision.confinement.mechanism}`, task.id);
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
         console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
@@ -5475,6 +5498,8 @@ export class WorkerManager {
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
         sandboxConfinement: getIsolationRecord().codex[taskSandboxMode ?? 'workspace-write'],
+        // R-5: danger-full-access only for a run decided reduced above.
+        allowReducedConfinement: isolationDecision.mode === 'reduced',
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling
@@ -6195,6 +6220,23 @@ export class WorkerManager {
         subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
         backgroundAgentMs: failBgMs,
       };
+
+      // R-7: a mid-run confinement failure restarts with less only for a
+      // trusted_local task on an opted-in runner, as a recorded degradation.
+      // A protected task's attempt fails with the cause instead.
+      if (isAbortError && worker.bwrapRetryPending) {
+        const backendForRestart = (task.backend || 'claude') === 'codex' ? 'codex' as const : 'claude' as const;
+        const verdict = decideConfinementRestart(this.decideSessionIsolation(task, backendForRestart), backendForRestart);
+        if (verdict.restart) {
+          this.addMilestone(worker, { type: 'status', label: verdict.label, ts: Date.now() });
+          sessionLog(worker.id, 'warn', 'isolation_degraded', verdict.label, worker.taskId);
+        } else {
+          worker.bwrapRetryPending = false;
+          worker.error = verdict.error;
+          console.warn(`[Worker ${worker.id}] ${verdict.error}`);
+          this.addMilestone(worker, { type: 'status', label: 'isolation: confinement failed mid-run; attempt failed, not restarted reduced', ts: Date.now() });
+        }
+      }
 
       if (isAbortError && worker.bwrapRetryPending) {
         // bwrap namespace denied mid-run: sandbox is already disabled globally
@@ -7511,6 +7553,16 @@ export class WorkerManager {
       ts: Date.now(),
     });
     try { storeSaveWorker(holder); } catch { /* best effort */ }
+  }
+
+  /** R-4, R-5: the task's isolation requirement decided against this process's record now. */
+  private decideSessionIsolation(task: BuilddTask, backend: 'claude' | 'codex'): TaskIsolationDecision {
+    return decideTaskIsolation({
+      requirement: taskIsolationRequirement(task.context),
+      record: getIsolationRecord(),
+      backend,
+      codexMode: taskCodexSandboxMode(task.kind, task.context),
+    });
   }
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {

@@ -1,9 +1,10 @@
 /**
  * Regression test: Codex backend sandbox mode selection from the runner's isolation probe.
  *
- * When bwrap user namespaces are unavailable (Docker without seccomp=unconfined),
- * workspace-write mode fails. The backend must fall back to danger-full-access so
- * shell commands can run, and warn the operator to fix the container capability.
+ * When the host has no confinement for Codex, workspace-write and read-only both
+ * fail every command. The backend falls back to danger-full-access only for a
+ * run the runner decided reduced (trusted_local, operator opt-in), warning with
+ * the cause; anything else refuses to start (Living Spec "Runner isolation", AC-5).
  *
  * Run: bun test apps/runner/__tests__/unit/backends/codex-sandbox-bwrap.test.ts
  */
@@ -97,16 +98,31 @@ describe('CodexBackend sandbox mode — the confinement the runner probed for it
     expect(await modeFor({ sandboxMode: 'read-only', sandboxConfinement: SEATBELT })).toBe('read-only');
   });
 
-  test('falls back to danger-full-access only when the host has no confinement for Codex', async () => {
-    expect(await modeFor({ sandboxConfinement: DENIED })).toBe('danger-full-access');
+  // AC-5: an unconfined Codex never becomes danger-full-access unless the
+  // runner decided the run reduced (trusted_local + operator opt-in, R-5).
+  test('refuses to start an unconfined run that was not decided reduced, in either mode', async () => {
+    for (const sandboxMode of ['workspace-write', 'read-only']) {
+      mockStartThread.mockClear();
+      await expect(drain(new CodexBackend().runStreamed({ ...BASE_OPTS, sandboxMode, sandboxConfinement: DENIED } as any)))
+        .rejects.toThrow(/Not running with danger-full-access/);
+      expect(mockStartThread).not.toHaveBeenCalled();
+    }
   });
 
-  test('read-only mode also falls back when the host has no confinement', async () => {
+  test('falls back to danger-full-access only for a run decided reduced', async () => {
+    expect(await modeFor({ sandboxConfinement: DENIED, allowReducedConfinement: true })).toBe('danger-full-access');
+  });
+
+  test('read-only mode also falls back for a run decided reduced', async () => {
     // Codex's 'read-only' sandbox mode still needs the host mechanism to
     // enforce the restriction (it isn't a no-op passed straight to the CLI).
     // On a host where it can't start, staying on 'read-only' fails every
     // exec_command before it runs — the failure a reviewer task hit.
-    expect(await modeFor({ sandboxMode: 'read-only', sandboxConfinement: DENIED })).toBe('danger-full-access');
+    expect(await modeFor({ sandboxMode: 'read-only', sandboxConfinement: DENIED, allowReducedConfinement: true })).toBe('danger-full-access');
+  });
+
+  test('the opt-in never loosens a confined run', async () => {
+    expect(await modeFor({ sandboxConfinement: BWRAP, allowReducedConfinement: true })).toBe('workspace-write');
   });
 
   test('the fallback warning names the cause, not a container-only fix', async () => {
@@ -114,7 +130,7 @@ describe('CodexBackend sandbox mode — the confinement the runner probed for it
     const lines: string[] = [];
     console.warn = (...args: unknown[]) => { lines.push(args.join(' ')); };
     try {
-      await modeFor({ sandboxConfinement: DENIED });
+      await modeFor({ sandboxConfinement: DENIED, allowReducedConfinement: true });
     } finally {
       console.warn = warn;
     }

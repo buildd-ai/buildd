@@ -50,6 +50,12 @@ export interface RunnerIsolationRecord {
   /** When this runner process started; a probe older than this is not this process's (R-11). */
   processStartedAt: string;
   runnerVersion: string;
+  /**
+   * The runner operator opted in to running `trusted_local` work with reduced
+   * confinement (BUILDD_ALLOW_REDUCED_ISOLATION=1, or the BUILDD_DISABLE_SANDBOX
+   * opt-out). Absent or false: nothing runs reduced here (R-5, ./isolation-policy).
+   */
+  reducedOptIn?: boolean;
 }
 
 function isConfinement(v: unknown): v is BackendConfinement {

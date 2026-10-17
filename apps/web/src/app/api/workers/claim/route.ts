@@ -8,6 +8,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
 import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
@@ -77,6 +78,7 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
 import { describeExplicitDeferral } from './explicit-deferral';
+import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
@@ -1096,6 +1098,7 @@ export async function POST(req: NextRequest) {
     no_personal_credential: 0,
     provider_not_allowed: 0,
     tier_policy: 0,
+    isolation_unenforced: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1112,6 +1115,8 @@ export async function POST(req: NextRequest) {
   // Coding provider/payment-source policy (packages/core/coding-policy.ts), and
   // the tasks it pinned to the runner's own login (no server-held model credential).
   const loadCodingPolicyFor = codingPolicyLoader();
+  // Team sizes for the isolation policy's single-owner default, read once per team.
+  const teamSizeForIsolation = teamSizeLoader();
   const nativeSourceTasks = new Set<string>();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
@@ -2544,6 +2549,29 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Runner isolation (Living Spec "Runner isolation", R-4, R-5): a protected
+    // task goes only to a runner whose current probe confines its backend and
+    // mode; a trusted_local one may also go to a runner whose operator opted
+    // in to reduced confinement. Otherwise it stays queued with the cause. The
+    // backend is final here. A person's own session is not a runner buildd
+    // dispatches to: it confines (or not) on its own machine, unstamped.
+    let isolationStamp: TaskIsolationStamp | null = null;
+    if (!runsOnCallersSeat) {
+      const { decision, stamp } = await decideClaimIsolation({ task: task as any, environment: body.environment, teamSize: teamSizeForIsolation });
+      if (!decision.ok) {
+        deferTask(task, 'isolation_unenforced', {
+          code: decision.code,
+          requirement: decision.requirement,
+          backend: (task as any).backend ?? 'claude',
+          reason: decision.reason,
+          message: decision.message,
+          remedy: decision.remedy,
+        });
+        continue;
+      }
+      isolationStamp = stamp;
+    }
+
     // Coding provider policy: a restriction, not a redirect. The backend is
     // final here (failover and toggles ran above), so a failover target is
     // checked like a stored one. Denied ⇒ held with a structured error; it is
@@ -2648,6 +2676,9 @@ export async function POST(req: NextRequest) {
     // Claimed: it no longer waits on an entitlement.
     delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY];
+    // This claim's isolation decision, or none: a previous attempt's never carries over.
+    delete (patchedContext as Record<string, unknown>)[TASK_ISOLATION_CONTEXT_KEY];
+    if (isolationStamp) (patchedContext as Record<string, unknown>)[TASK_ISOLATION_CONTEXT_KEY] = isolationStamp;
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;

@@ -2,7 +2,7 @@
 title: Worker Sandbox Isolation
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 domain: runners
 surfaces: [apps/runner/src/bwrap-mount-allowlist.ts, apps/runner/src/workers.ts, apps/runner/src/env-scan.ts]
@@ -209,12 +209,18 @@ namespace, and the wrapper is wired for the Claude backend only.
   before any task starts. Both probes cache their result per process, so the
   answer cannot change mid-task except by the degradation path in §4.
 - **R-16**: Codex tasks receive no outer namespace. Their containment is the
-  Codex CLI's own `sandboxMode`, and `bwrapSupported: false` downgrades
-  `workspace-write` to `danger-full-access` with a warning
-  (`mapSandboxMode()` in `backends/codex-backend.ts`). The mapping itself is
-  owned by `docs/specs/codex-backend-spec.md` (its sandbox mode rule); what this spec asserts is
-  the consequence — on a namespace-denied host a Codex task runs with *no* write
-  isolation, and that is a visible warning, not a failure.
+  Codex CLI's own `sandboxMode`, checked against the runner's isolation record
+  for that mode (Living Spec "Runner isolation", d48cd541, R-4 to R-6). The
+  trust rule there decides what happens when the record says Codex has no
+  confinement: a `protected` task is never claimed by that runner, and is
+  never started there (`decideTaskIsolation` in
+  `packages/shared/src/isolation-policy.ts`); only a `trusted_local` task on a
+  runner whose operator opted in (`BUILDD_ALLOW_REDUCED_ISOLATION=1`, or
+  the opt-out of R-14) runs as `danger-full-access`, with a warning and an
+  `isolation: … REDUCED` milestone. `mapSandboxMode()` in
+  `backends/codex-backend.ts` refuses to start an unconfined run that was not
+  decided reduced. The mapping itself is owned by
+  `docs/specs/codex-backend-spec.md` (its sandbox mode rule).
 - **R-17**: An opted-in runner advertises the `sandbox:mount-allowlist`
   capability in its env keys (`scanEnvironment()` in `env-scan.ts`,
   `CAPABILITY_SANDBOX_MOUNT_ALLOWLIST` in `packages/shared/src/types.ts`) only
@@ -227,10 +233,12 @@ namespace, and the wrapper is wired for the Claude backend only.
 - AC-10 (failure): GIVEN `BUILDD_SANDBOX_MOUNT_ALLOWLIST=1` and
   `BUILDD_DISABLE_SANDBOX=1` WHEN `isMountAllowlistEnabled()` is called THEN it
   returns false — the kill switch overrides the opt-in, and no argv is built.
-- AC-11: GIVEN `bwrapSupported: false` and `sandboxMode: 'workspace-write'` WHEN
-  the Codex backend maps the sandbox mode THEN it returns `danger-full-access`
-  and logs a warning; GIVEN `sandboxMode: 'read-only'` THEN it returns
-  `read-only` regardless of `bwrapSupported`.
+- AC-11: GIVEN a Codex confinement of `none` in either `read-only` or
+  `workspace-write` WHEN the Codex backend maps the sandbox mode for a run
+  decided reduced (trusted_local, operator opt-in) THEN it returns
+  `danger-full-access` and logs a warning naming the cause; for any other run
+  THEN it refuses to start, and never returns `danger-full-access` (Living Spec
+  "Runner isolation" AC-5). GIVEN a confined mode THEN it keeps that mode.
 - AC-12: GIVEN a runner whose `WorkerManager` has been constructed THEN
   `getBwrapProbeAt()` is non-null before the first task starts.
 
@@ -239,8 +247,10 @@ namespace, and the wrapper is wired for the Claude backend only.
 ### 4. Degradation is always reported
 
 Two distinct failures, deliberately handled differently: the namespace cannot be
-created (containment impossible → keep working, lose the boundary) versus the
-namespace is too narrow (containment working → stop, widen it, retry).
+created (containment impossible → the trust rule of Living Spec "Runner
+isolation" R-7 decides: a protected task fails, a trusted_local one on an
+opted-in runner restarts without the boundary) versus the namespace is too
+narrow (containment working → stop, widen it, retry).
 
 **Invariants**:
 - **R-18**: `createBwrapSpawn()` watches the child's stderr for
@@ -252,16 +262,22 @@ namespace is too narrow (containment working → stop, widen it, retry).
   handling of tool results in `workers.ts`, which flips only the inner-sandbox
   cache).
 - **R-19**: On namespace denial the runner flips the cached probes to false,
-  sets `worker.bwrapRetryPending`, aborts the session, and restarts it **without
-  the sandbox** rather than marking the task failed (the `onNamespaceDenied`
-  callback passed to `createBwrapSpawn()`, and the `bwrapRetryPending` branch of
-  the `startSession` catch block). The restart preserves the worktree (the
+  sets `worker.bwrapRetryPending` and aborts the session (the
+  `onNamespaceDenied` callback passed to `createBwrapSpawn()`, and the
+  `bwrapRetryPending` branch of the `startSession` catch block). What follows
+  is the trust rule of Living Spec "Runner isolation" R-7
+  (`decideConfinementRestart` in `apps/runner/src/isolation-probe.ts`): a
+  `protected` task, or one with no isolation stamp, fails the attempt with the
+  cause and is **not** restarted with less confinement; a `trusted_local` task
+  on a runner whose operator opted in restarts **without the sandbox**,
+  recorded as an `isolation degraded: …` milestone. The restart preserves the worktree (the
   `bwrapRetryAfterCleanup` path skips worktree cleanup) and uses a fresh
   `invocationSessionId`. The cache flip is the loop guard: the flag is only
   set while a cache is not yet false, so a second bwrap abort cannot occur in
   the same process. This trades containment for task completion, once per runner
-  process, and the trade is visible in the `bwrap_retry: restarting without
-  sandbox` milestone and in the heartbeat's `sandboxEnabled` field
+  process, only where policy allows it, and the trade is visible in the
+  `isolation degraded` and `bwrap_retry: restarting without sandbox`
+  milestones and in the heartbeat's isolation record and `sandboxEnabled` field
   (sent by the `WorkerManager` heartbeat, typed in
   `apps/web/src/lib/runner-heartbeats-shared.ts`).
 - **R-20**: A `sandbox_mount_gap` trace MUST NOT flip the capability cache.

@@ -11,12 +11,16 @@
  */
 import { execSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
-import type {
-  BackendConfinement,
-  CodexSandboxMode,
-  IsolationReason,
-  RunnerHostPlatform,
-  RunnerIsolationRecord,
+import {
+  isolationReasonText,
+  reducedIsolationOptedIn,
+  type BackendConfinement,
+  type CodexSandboxMode,
+  type IsolationBackend,
+  type IsolationReason,
+  type RunnerHostPlatform,
+  type RunnerIsolationRecord,
+  type TaskIsolationDecision,
 } from '@buildd/shared';
 
 /** Why a bwrap probe failed, in the isolation record's vocabulary. */
@@ -137,6 +141,8 @@ export interface IsolationProbeInputs {
   probeAt: string;
   processStartedAt: string;
   runnerVersion: string;
+  /** The operator's opt-in to reduced confinement for trusted_local work (R-5). */
+  reducedOptIn?: boolean;
 }
 
 const CONFINED_SCOPE: BackendConfinement['scope'] = ['write', 'network', 'env'];
@@ -187,6 +193,7 @@ export function buildIsolationRecord(inputs: IsolationProbeInputs): RunnerIsolat
     probeAt: inputs.probeAt,
     processStartedAt: inputs.processStartedAt,
     runnerVersion: inputs.runnerVersion,
+    reducedOptIn: inputs.reducedOptIn === true,
   };
 }
 
@@ -219,6 +226,8 @@ export interface IsolationProbes {
   bwrap(): BwrapProbeResult;
   /** The darwin Seatbelt probe. */
   seatbelt(): boolean;
+  /** The operator's reduced-confinement opt-in (R-5); absent reads as not opted in. */
+  reducedOptIn?(): boolean;
 }
 
 /** The probes, run for real and uncached. The runtime caches its own (workers.ts). */
@@ -227,6 +236,7 @@ export const realIsolationProbes: IsolationProbes = {
   optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
   bwrap: () => probeBwrapNamespacesDetailed(CLAUDE_INNER_SANDBOX_UNSHARE, true),
   seatbelt: probeSeatbelt,
+  reducedOptIn: () => reducedIsolationOptedIn(process.env),
 };
 
 /**
@@ -255,10 +265,59 @@ export function probeIsolationRecord(
     probeAt: meta.probeAt?.() ?? new Date().toISOString(),
     processStartedAt: meta.processStartedAt,
     runnerVersion: meta.runnerVersion,
+    reducedOptIn: probes.reducedOptIn?.() ?? false,
   });
 }
 
 /** When this process started, the R-11 lower bound for its own probe. */
 export function processStartedAt(): string {
   return new Date(Date.now() - process.uptime() * 1000).toISOString();
+}
+
+const MECHANISM_WORDS: Record<BackendConfinement['mechanism'], string> = {
+  seatbelt: 'macOS Seatbelt',
+  bwrap: 'bubblewrap',
+  landlock: 'Landlock',
+  none: 'nothing',
+};
+
+/**
+ * The milestone a run records for the mode it starts under (R-5: the task's
+ * events say the effective mode). One line, readable on the task timeline.
+ */
+export function isolationModeLabel(
+  decision: Extract<TaskIsolationDecision, { ok: true }>,
+  backend: IsolationBackend,
+  platform: RunnerHostPlatform,
+): string {
+  const who = backend === 'claude' ? 'Claude' : 'Codex';
+  if (decision.mode === 'enforced') {
+    return `isolation: ${decision.requirement}, ${who} confined by ${MECHANISM_WORDS[decision.confinement.mechanism]}`;
+  }
+  const cause = decision.confinement.reason ? isolationReasonText(decision.confinement.reason, platform) : 'no confinement on this host';
+  return `isolation: ${decision.requirement}, ${who} runs REDUCED (unconfined: ${cause}); the runner operator opted in`;
+}
+
+/**
+ * R-7: may a run whose confinement failed mid-run (bwrap_namespace_denied)
+ * restart with less? Re-decided against the record as it now stands, which
+ * already shows the denial: a protected task never may; a trusted_local one
+ * may only with the operator's opt-in, and the restart is a recorded
+ * degradation. `error` is the attempt's failure when it may not.
+ */
+export function decideConfinementRestart(
+  decision: TaskIsolationDecision,
+  backend: IsolationBackend,
+): { restart: true; label: string } | { restart: false; error: string } {
+  const who = backend === 'claude' ? 'Claude' : 'Codex';
+  if (decision.ok && decision.mode === 'reduced') {
+    return { restart: true, label: `isolation degraded: ${who}'s sandbox failed mid-run; restarting this trusted_local task unconfined (operator opt-in)` };
+  }
+  const why = decision.ok
+    ? `the runner still reports confinement for ${who}, so the failure is not one a reduced restart should paper over`
+    : `${decision.message}${decision.remedy.length > 0 ? ` ${decision.remedy.join(' ')}` : ''}`;
+  return {
+    restart: false,
+    error: `${who}'s sandbox failed mid-run (bubblewrap could not create namespaces) and this ${decision.requirement} task is not restarted with less confinement: ${why}`,
+  };
 }
