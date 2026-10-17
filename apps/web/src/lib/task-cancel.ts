@@ -147,6 +147,8 @@ async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<
     task: { id: task.id, workspaceId, deliveryId: task.deliveryId, deliveryRole: task.deliveryRole ?? null, context: task.context },
     workerId: worker?.id ?? `cancel:${taskId}`,
     status: 'lost',
+    // 295486ba: a CI repair cancelled before anyone claimed it spends nothing.
+    cancelled: true,
     localHeadSha: null,
     commitCount: worker?.commitCount ?? 0,
     source: 'cancel',

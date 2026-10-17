@@ -483,7 +483,7 @@ describe('a reach check that cannot be made', () => {
 describe('the installation a command acts through is resolved from its workspace and repo', () => {
   const OTHER_REPO = 'acme/mobile';
   it('every op whose input carries an installationId is resolved, and no other', () => {
-    expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'observe_ci_green', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
+    expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'observe_ci_green', 'observe_conflict', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
   });
 
   it('the resolver is asked about the command\'s own workspace and repo', async () => {
@@ -514,6 +514,13 @@ describe('the installation a command acts through is resolved from its workspace
     const s = server({ installationOf: async () => ({ refused: 'repo_out_of_scope' }) });
     const res = await s.call(await signed(body({ input: { ...landInput, repoFullName: 'someone/else' } })));
     expect([res.status, (await res.json()).code]).toEqual([403, 'repo_out_of_scope']);
+    expect(s.ran).toEqual([]);
+  });
+
+  it('a repo whose installation is not one of the workspace\'s team\'s is refused 403 and nothing runs', async () => {
+    const s = server({ installationOf: async () => ({ refused: 'installation_not_team_owned' }) });
+    const res = await s.call(await signed(body({ input: { ...landInput, repoFullName: 'other/mobile' } })));
+    expect([res.status, (await res.json()).code]).toEqual([403, 'installation_not_team_owned']);
     expect(s.ran).toEqual([]);
   });
 

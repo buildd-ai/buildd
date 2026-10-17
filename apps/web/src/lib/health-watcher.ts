@@ -6,10 +6,10 @@ import {
   workspaces,
   workspaceSkills,
   tasks,
-  githubInstallations,
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { teamInstallationIdForOwner } from '@/lib/workspace-installation';
 import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyTeamOf } from '@/lib/notify';
@@ -113,7 +113,7 @@ export async function runWatcherForProject(projectId: string): Promise<{ fired: 
 }
 
 async function checkFailingReleasePRs(project: WatchedProject): Promise<number> {
-  const installationId = await resolveInstallationId(project.repo);
+  const installationId = await resolveInstallationId(project.repo, project.workspaceId);
   if (!installationId) {
     throw new Error(`No GitHub installation found for ${project.repo}`);
   }
@@ -516,15 +516,12 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
   return true;
 }
 
-async function resolveInstallationId(repo: string): Promise<number | null> {
+/** The watched project's workspace's own team's installation on the repo's account. */
+async function resolveInstallationId(repo: string, workspaceId: string): Promise<number | null> {
   const [owner] = repo.split('/');
   if (!owner) return null;
-  const row = await db
-    .select({ installationId: githubInstallations.installationId })
-    .from(githubInstallations)
-    .where(eq(githubInstallations.accountLogin, owner))
-    .limit(1);
-  return row[0]?.installationId ?? null;
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
+  return teamInstallationIdForOwner(owner, ws?.teamId);
 }
 
 const OPS_ROLE_CONTENT = `# Ops

@@ -17,6 +17,7 @@
  */
 import { applyCommandOn } from '../command-runner';
 import type { Command } from '../commands';
+import { attemptOrdinal } from '../reducer';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, type ClaimedEffect, type KernelPorts } from '../ports';
 import type { DeliverySnapshot } from '../types';
@@ -84,8 +85,9 @@ export function ciHandlers(ports: KernelPorts): EffectHandlers {
       target: { repoFullName: d.repoFullName, prNumber: d.prNumber, headSha, baseRef: d.baseRef },
       lineage: { deliveryId: d.id, attemptId: attempt.id, parentTaskId: d.ownerTaskId },
       dedupeKey: `ci_fix:${attempt.id}`,
-      // "attempt N of M" is display only, from the ledger row (§5.7 rule 4).
-      detail: { attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, trigger: attempt.trigger, firstAtHead, signature: attempt.triggerReason },
+      // "attempt N of M" is display only, from the ledger (§5.7 rule 4): N counts the dispatched
+      // attempts, so a skipped row before it does not number this one past the budget (295486ba).
+      detail: { attemptNo: attemptOrdinal(view.attempts, attempt) ?? attempt.attemptNo, maxAttempts: attempt.maxAttempts, trigger: attempt.trigger, firstAtHead, signature: attempt.triggerReason },
     });
     if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'not_filed'}` };
     if (filed.evidence) {

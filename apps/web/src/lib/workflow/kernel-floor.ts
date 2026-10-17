@@ -2,7 +2,8 @@
  * The kernel's drain and floor as one pass (docs/specs/workflow-kernel-library.md
  * §3): the outbox floor drain (workflow-state-kernel.md §10.3), the trunk
  * circuit breaker's recovery (§6.10), the reconciliation floor (§11), the S15
- * treadmill restart, and pruning the command ledger. Each step is isolated: one
+ * treadmill restart, re-submitting the door commands the control plane never
+ * answered (command-outbox.ts), and pruning the command ledger. Each step is isolated: one
  * failing never discards the others.
  *
  * Hosted by exactly one process per mode: the control plane's cron trigger in
@@ -18,6 +19,7 @@ import { withCronRun } from '@/lib/cron-run';
 import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles, type FloorSummary, type TreadmillCycleSummary, type TrunkSweepSummary } from './seam';
 import type { DrainSummary } from './effects';
 import { postgresCommandLedger } from './command-ledger';
+import { drainParkedCommands, type ParkedDrainSummary } from './command-outbox';
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 
@@ -36,6 +38,7 @@ export interface KernelFloorResult {
   kernelFloor: Isolated<FloorSummary>;
   treadmillCycles: Isolated<TreadmillCycleSummary>;
   commandsPruned: Isolated<number>;
+  parkedCommands: Isolated<ParkedDrainSummary>;
 }
 
 export interface KernelFloorDeps {
@@ -44,20 +47,22 @@ export interface KernelFloorDeps {
   reconcileKernelDeliveries?: () => Promise<FloorSummary>;
   restartTreadmillCycles?: typeof restartTreadmillCycles;
   pruneCommands?: () => Promise<number>;
+  drainParkedCommands?: () => Promise<ParkedDrainSummary>;
 }
 
 const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
   Promise.resolve().then(p).catch((err): { error: string } => ({ error: err instanceof Error ? err.message : String(err) }));
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
-  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned] = await Promise.all([
+  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
     isolate(() => (deps.reconcileKernelDeliveries ?? (() => reconcileKernelDeliveries()))()),
     isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: TREADMILL_COOLDOWN_MS })),
     isolate(() => (deps.pruneCommands ?? (() => postgresCommandLedger().prune()))()),
+    isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
   ]);
-  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned };
+  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands };
 }
 
 const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error' in (v as object));
@@ -68,10 +73,12 @@ export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; c
   const floor = ok(r.kernelFloor) ? r.kernelFloor : null;
   const trunk = ok(r.trunk) ? r.trunk : null;
   const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
+  // A parked command given up is an error: a verdict or an end that never landed.
+  const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
   return {
-    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0),
-    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0),
-    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1),
+    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0),
+    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0),
+    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1),
   };
 }
 
@@ -83,6 +90,7 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
   line('KernelFloor', r.kernelFloor);
   line('TreadmillCycles', r.treadmillCycles);
   line('KernelCommandsPruned', r.commandsPruned);
+  line('KernelParkedCommands', r.parkedCommands);
 }
 
 export const KERNEL_FLOOR_JOB = 'kernel-floor';

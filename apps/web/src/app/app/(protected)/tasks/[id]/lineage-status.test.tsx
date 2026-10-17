@@ -72,9 +72,9 @@ describe('lineageWorkerHistory', () => {
   it('numbers each row by attempt once there is more than one', () => {
     const rows = lineageWorkerHistory([w('first', 0)], [{ workers: [w('retry1', 20)] }, { workers: [w('retry2', 40)] }]);
     expect(rows.map(r => [r.worker.id, r.attemptLabel])).toEqual([
-      ['retry2', 'attempt 3 · CI fix'],
-      ['retry1', 'attempt 2 · CI fix'],
-      ['first', 'attempt 1'],
+      ['retry2', 'CI fix 2'],
+      ['retry1', 'CI fix 1'],
+      ['first', 'first run'],
     ]);
   });
 
@@ -97,10 +97,10 @@ describe('lineageWorkerHistory', () => {
     const key = (rows: ReturnType<typeof lineageWorkerHistory>) => rows.map(r => `${r.worker.id}|${r.attemptLabel}`);
     const expected = key(lineageWorkerHistory(own, attempts));
     expect(expected).toEqual([
-      'retry-z|attempt 2 · CI fix',
-      'retry-y|attempt 2 · CI fix',
-      'own-b|attempt 1',
-      'own-a|attempt 1',
+      'retry-z|CI fix 1',
+      'retry-y|CI fix 1',
+      'own-b|first run',
+      'own-a|first run',
     ]);
     let seed = 7;
     const shuffle = <T,>(xs: readonly T[]) => {

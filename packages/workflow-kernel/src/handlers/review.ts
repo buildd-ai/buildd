@@ -24,7 +24,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
-import { deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
+import { attemptOrdinal, deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
 import { openFindings } from '../findings';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
@@ -249,7 +249,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       lineage: { deliveryId: d.id, attemptId: attempt.id, parentTaskId: d.ownerTaskId },
       dedupeKey: `fix:${attempt.id}`,
       detail: {
-        roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
+        // "attempt N of M" counts dispatched attempts (§5.7 rule 4, 295486ba), as the checks list does.
+        roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attemptOrdinal(view.attempts, attempt) ?? attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
         // §5 / rule 3: the repair is pinned to the round and head, and its task is the open findings.
         round: round.round, findings: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
         ...(human ? { trigger: 'human', humanInstructions, actor: humanActor } : {}),

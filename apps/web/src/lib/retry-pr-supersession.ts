@@ -37,7 +37,7 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, notInArray, or } from '
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -542,7 +542,8 @@ export async function sweepDuplicateLineagePrs(now: Date = new Date()): Promise<
 
   successors.sort((a, b) => (b.prNumber ?? 0) - (a.prNumber ?? 0));
   const closedThisRun = new Set<string>();
-  const installationByRepo = new Map<string, number | null>();
+  // Each lineage's PRs are closed only through its own workspace's team's installation.
+  const installations = createTeamInstallationResolver();
 
   for (const s of successors) {
     const task = s.taskId ? attemptById.get(s.taskId) : undefined;
@@ -551,10 +552,7 @@ export async function sweepDuplicateLineagePrs(now: Date = new Date()): Promise<
     // Already closed as someone else's ancestor this run — it supersedes nothing.
     if (closedThisRun.has(`${repo.toLowerCase()}#${s.prNumber}`)) { result.skipped++; continue; }
 
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
-    }
-    const installationId = installationByRepo.get(repo);
+    const { installationId } = await installations.forWorkspace(repo, s.workspaceId ?? task.workspaceId ?? null);
     if (!installationId) { result.skipped++; continue; }
 
     const outcome = await closeAncestorRetryPrs({

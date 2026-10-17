@@ -19,7 +19,8 @@
  * The target may live in another repo when that repo belongs to the same
  * workspace or to a workspace with a task in the same mission (a
  * cross-repo move: docs relocated to a sibling repo). It is still verified
- * merged, through an installation that covers that repo.
+ * merged, through an installation that covers that repo and belongs to the
+ * workspace's team: each command acts only through its own team's installation.
  *
  * Also here: the two other durable resolutions of a closed-unmerged PR that a
  * person can choose — `recordPrAbandonment` (the work deliberately does not
@@ -32,7 +33,7 @@ import type { SupersessionScan } from '@buildd/core/pr-shipped';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { teamInstallationIdForRepo } from '@/lib/workspace-installation';
 import type { CommandResult } from '@/lib/workflow/seam';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -139,6 +140,23 @@ export async function supersessionRepoScope(worker: {
   return out;
 }
 
+/**
+ * The installation covering `repo` that belongs to the workspace's team: a command acts
+ * only through its own team's installation. A workspace with no team resolves none.
+ */
+async function teamInstallationFor(repo: string, teamId: string | null): Promise<{ installationId: number | null; notTeamOwned?: true }> {
+  if (!teamId) return { installationId: null };
+  return teamInstallationIdForRepo(repo, teamId).catch(() => ({ installationId: null }));
+}
+
+function notTeamOwned(repo: string): { ok: false; error: string; status: number } {
+  return {
+    ok: false,
+    error: `The GitHub installation that covers ${repo} is not one of this workspace's team's installations`,
+    status: 403,
+  };
+}
+
 /** Every row carrying this PR — a retry session can share its parent's PR. */
 function rowsOfPr(workerId: string, prUrl: string) {
   return or(eq(workers.id, workerId), and(eq(workers.prUrl, prUrl), isNull(workers.mergedAt)));
@@ -227,9 +245,13 @@ export async function recordPrSupersession(
     }
   }
 
-  const installationId: number | null = sameRepo(targetRepo, workspaceRepo) && wsRepo?.installation?.installationId
-    ? wsRepo.installation.installationId
-    : await installationIdForRepo(targetRepo).catch(() => null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const teamId: string | null = (worker.workspace as any)?.teamId ?? null;
+  const target = sameRepo(targetRepo, workspaceRepo) && wsRepo?.installation?.installationId
+    ? { installationId: wsRepo.installation.installationId as number }
+    : await teamInstallationFor(targetRepo, teamId);
+  if (target.notTeamOwned) return notTeamOwned(targetRepo);
+  const installationId = target.installationId;
   if (!installationId) {
     return { ok: false, error: `No GitHub installation covers ${targetRepo}`, status: 422 };
   }
@@ -265,9 +287,11 @@ export async function recordPrSupersession(
 
   // A kernel-owned PR (docs/specs/workflow-state-kernel.md T20, Slice D): the kernel
   // decides, and the edge reaches these columns only through its projection.
-  const closedInstallationId: number | null = sameRepo(closedRepo, workspaceRepo) && wsRepo?.installation?.installationId
-    ? wsRepo.installation.installationId
-    : await installationIdForRepo(closedRepo).catch(() => null);
+  const closed = sameRepo(closedRepo, workspaceRepo) && wsRepo?.installation?.installationId
+    ? { installationId: wsRepo.installation.installationId as number }
+    : await teamInstallationFor(closedRepo, teamId);
+  if (closed.notTeamOwned) return notTeamOwned(closedRepo);
+  const closedInstallationId = closed.installationId;
   if (worker.workspaceId && closedInstallationId) {
     const { recordSupersession, isDoorError, doorPrincipal } = await import('@/lib/workflow/kernel-client');
     const kernel = await recordSupersession({
@@ -336,6 +360,7 @@ export async function recordPrAbandonment(params: {
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, params.workerId)),
     columns: { id: true, workspaceId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
+    with: { workspace: { columns: { teamId: true } } },
   });
   if (!worker) return { ok: false, error: 'Worker not found', status: 404 };
   if (!worker.prUrl) return { ok: false, error: 'Worker has no PR', status: 400 };
@@ -344,7 +369,9 @@ export async function recordPrAbandonment(params: {
   // A kernel-owned PR (T21, Slice D): the kernel decides from its own state, which a
   // lost close webhook cannot leave stale, and projects `abandoned*` itself.
   const repo = repoFullNameFromPrUrl(worker.prUrl);
-  const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
+  const covering = repo ? await teamInstallationFor(repo, worker.workspace?.teamId ?? null) : { installationId: null };
+  if (repo && covering.notTeamOwned) return notTeamOwned(repo);
+  const installationId = covering.installationId;
   if (repo && worker.prNumber && worker.workspaceId && installationId) {
     const { abandonDelivery, isDoorError, doorPrincipal } = await import('@/lib/workflow/kernel-client');
     const kernel = await abandonDelivery({

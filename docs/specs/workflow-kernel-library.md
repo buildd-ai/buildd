@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-17
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -360,7 +360,22 @@ the control plane, authenticated as the caller).
     `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
     outside a repair, from the `check_suite` success webhook as a `system`
     principal; the same skew rule applies, so a repair is never left waiting
-    on a green GitHub sends once). The same
+    on a green GitHub sends once), and
+    `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
+    PATCH: a kernel round's verdict, or one from outside the rounds on a PR
+    the kernel owns) and `claim_fix` (T9 from the claim route, one request in
+    place of the seam's own reads), and `observe_conflict` (T12 from the
+    conflict door: landing, the merge routes, auto-merge, the dead-zone sweep
+    and the migration-collision dispatch, as a `system` principal; the live PR
+    is read on the control plane), each for the caller that reported it,
+    with the same skew rule; each names its workspace on the input, and the
+    host acts only on a delivery of that workspace (a verdict for another
+    workspace's delivery is refused, never read as a release to legacy). A
+    claim request's fix claims share one control-plane budget; once it is
+    spent the next fix candidate defers at once as `kernel_unavailable` and
+    the rest of the batch is claimed; a fix claim the control plane refuses
+    (403: auth, the claiming account's reach) defers as `kernel_refused`,
+    not as an outage. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -418,6 +433,33 @@ the control plane, authenticated as the caller).
   never applies the command twice. Once any attempt of a door call may have
   reached the control plane, the web host never runs that command itself: a
   later `not_host`, `unconfigured` or shadow reading raises `unknown` instead.
+- A door command nothing else re-sends is not lost when the control plane
+  does not answer (`apps/web/src/lib/workflow/command-outbox.ts`). An
+  attempt's end (`attempt_ended`: the runner reports it once, and the floor
+  re-sends only an owner's), a reviewer's verdict (`record_review_verdict`,
+  `adopt_review_verdict`: reported once, in the completion PATCH) and
+  GitHub's one green (`observe_ci_green`) are parked in `workflow_command_outbox` under the door's own idempotency key,
+  with their input, principal and whether an earlier submission may have
+  reached the control plane; the door still answers unavailable, with
+  `parked: true`. Every op is classified in `PARK_ON_UNAVAILABLE`, so a new op
+  does not type-check until someone decides. A door whose caller retries (a
+  person's merge, a sweep's observation) is not parked; a fix claim
+  (`claim_fix`) never is, since the claim it revalidates is rolled back and
+  claimed afresh. An answer is never parked either: a refusal, the command's
+  own failure, or the release-skew fallback.
+  - The kernel floor drains it. On the control plane it applies each due row
+    itself through the same reach check, installation and ledger as a
+    request (`applyCommandRequest`); on the web host (shadow, or the liveness
+    fallback) it re-submits through the client with the same key. The ledger
+    is read first: a key done there is settled as replayed and never sent; no
+    ledger row means nothing ran under it; a live claim is waited for. So a
+    parked command is applied at most once whoever drains it.
+  - Order: the command is re-submitted as it was and judged as the delivery
+    stands when it lands, so one a newer head, round or attempt has overtaken
+    is answered stale (or for another head) and settled, never applied.
+  - A row settles on any answer (applied, duplicate, stale, rejected); a
+    refusal, or 48 attempts, gives it up as `dead`, logged and counted as a
+    floor error. A control plane still down stops the pass at the first row.
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
@@ -448,6 +490,17 @@ the control plane, authenticated as the caller).
   (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and
   still runs where the fact arrives; on the web host that is the render
   read-through and the sweeps, a §9 write site S3b and S4 remove.
+  What still applies a kernel command on the web host, and why each stays:
+  `observePrState` (T17 to T19, a PR closed, merged or reopened), `observeBase`
+  (T29) and `observeHead` (T3) are applied from the GitHub webhook and the
+  reconcile and refresh sweeps. A webhook is a fact about GitHub that must be
+  recorded the moment it arrives; when the kernel cannot read the live PR it
+  records the fact unapplied and the fast heal applies it, so none is lost to a
+  host that is down. They move to the control plane with S3b, when the webhook
+  receiver itself does. `recordLocalHead` is one provenance statement on an
+  attempt row, not a command. `cancelSkippedTask` writes a task row the claim
+  route owns. Every command a person or a worker actively requests is a door
+  op above.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
@@ -527,10 +580,10 @@ the control plane, authenticated as the caller).
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
 
-**Switching over** (owner/operator steps, NOT DONE yet). Merging and
-releasing this code changes nothing on its own: without the secret the web
-host keeps applying commands and draining exactly as before. The order
-matters: the control plane first, then the web host.
+**Switching over** (owner/operator steps, DONE; see the record after the
+steps). Merging and releasing this code changed nothing on its own: without the
+secret the web host keeps applying commands and draining exactly as before. The
+order matters: the control plane first, then the web host.
 
 1. Set `KERNEL_COMMAND_SECRET` on the control plane Worker (a Worker secret),
    and run `wrangler triggers deploy` for it from an account login so its cron
@@ -541,6 +594,15 @@ matters: the control plane first, then the web host.
 3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
    their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
    `workflow_transitions` rows from doors carry `host = control-plane`.
+
+**Record (2026-10-17, S8 and the follow-up check).** The switch is made.
+Confirmed from outside: the control plane's health reports `mode: own, kernel:
+own`, and `/api/deploy-identity` reports the control plane in mode `own` with
+`lockstep: true`, on the release then in production (v0.362.0). Not confirmed
+(S8 had no database read): the `kernel-floor` cron runs naming the control plane
+as host, `/api/cron/pr-reconcile` reporting `kernelSkipped`, and `host =
+control-plane` on new `workflow_transitions` rows. Step 3 above stays the check
+for those until someone with a read of the table records it.
 
 The other order is safe but does nothing yet: a web host with the secret
 follows the Worker's health `kernel` field, which reads `own` only when the
@@ -580,6 +642,15 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
+- AC-35 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
+  unreachable for a door's whole budget WHEN an attempt end, a reviewer's
+  verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control
+  plane answers the floor applies it exactly once (a repeat is answered from
+  the ledger); an earlier submission that did apply is settled from the
+  ledger without applying it again; one a newer head overtook is refused as
+  stale (a verdict) or as for another head (a green) and settled, never
+  applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
+  `command-outbox.test.ts`, `kernel-client.test.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
@@ -1105,7 +1176,12 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   and the landing door (`latestRunPerName`) already read it. The reading is
   recorded whether or not anything acts on it (`CiObserved`, no state change):
   T10 deferring to an open CI fix, a state CI does not move, or a green with no
-  repair to end still leaves the head red, running or green.
+  repair to end still leaves the head red, running or green. A green reading on
+  the current head of a delivery held `ESCALATED(ci_exhausted)` ends that hold
+  (295486ba): a spent CI budget is a person's only while CI is red, so it goes
+  back to review or landing the way a CI repair that ends green does. A spent
+  review budget under it stays the person's and the escalation names it
+  (`review_exhausted`).
 
 **Acceptance criteria**:
 - AC-24: GIVEN a delivery with two review rounds WHEN `get_pr`, the task page
@@ -1176,7 +1252,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render

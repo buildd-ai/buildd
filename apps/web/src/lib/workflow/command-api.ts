@@ -94,6 +94,14 @@ export interface KernelOps {
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
   /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
   observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
+  /** T6: a kernel review round's verdict, reported by the worker PATCH. Only a delivery of `workspaceId` is acted on. */
+  record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
+  /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
+  adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
+  /** T12: a conflict (or migration collision) a door saw on a kernel-owned PR; the control plane reads the live PR and applies ConflictObserved. */
+  observe_conflict: { input: Parameters<Seam['observeConflict']>[0]; result: Awaited<ReturnType<Seam['observeConflict']>> };
+  /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
+  claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -116,6 +124,16 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
   observe_ci_green: (s, i) => s.observeCiGreen(i),
+  // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
+  record_review_verdict: (s, i) => s.recordReviewVerdict(i),
+  adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
+  observe_conflict: (s, i) => s.observeConflict(i),
+  claim_fix: (s, { task, workspaceId }) => {
+    // As attempt_ended: the claim it revalidates must be for a task of that workspace (and the seam then
+    // reads only that workspace's delivery).
+    if (task?.workspaceId !== workspaceId) throw new Error('claim_fix: input.workspaceId is not the task\'s workspace');
+    return s.claimFix(task);
+  },
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
@@ -125,7 +143,7 @@ export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' &
 type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOps[K]['input'] ? K : never }[KernelOp];
 // A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
 const INSTALLATION_OP: Record<InstallationOp, true> = {
-  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true,
+  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true, observe_conflict: true,
 };
 /**
  * The control plane acts through the installation it resolves for the command's workspace and repo,
@@ -354,7 +372,20 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
-  const cmd = body as CommandRequest;
+  return applyCommandRequest(body as CommandRequest, deps);
+}
+
+/**
+ * A well-formed command on the host that applies it: the reach check, the installation, then the
+ * ledger claim and the run. The endpoint calls it after the signature and shape checks; the floor
+ * calls it for a parked command (command-outbox.ts), which the web host wrote and signed nothing for,
+ * so the principal's reach is re-checked here exactly as for a request.
+ */
+export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServerDeps = {}): Promise<Response> {
+  const host = (deps.host ?? kernelHost)();
+  if (host !== 'control-plane' || executionModeOf((deps.env ?? process.env).EXECUTION_MODE) !== 'own') {
+    return refuse(409, 'not_host', 'This host does not apply kernel commands in the current mode; the web host runs them.', { host });
+  }
   const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
@@ -385,9 +416,13 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
       return refuse(503, 'installation_unavailable', 'The GitHub installation could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
     }
     if ('refused' in installation) {
-      return installation.refused === 'repo_out_of_scope'
-        ? refuse(403, 'repo_out_of_scope', 'The repo is not in this workspace\'s or its missions\' repo scope.', { applied: false })
-        : refuse(403, 'no_installation', 'No GitHub App installation covers this repo for this workspace.', { applied: false });
+      if (installation.refused === 'repo_out_of_scope') {
+        return refuse(403, 'repo_out_of_scope', 'The repo is not in this workspace\'s or its missions\' repo scope.', { applied: false });
+      }
+      if (installation.refused === 'installation_not_team_owned') {
+        return refuse(403, 'installation_not_team_owned', 'The GitHub App installation that covers this repo is not one of this workspace\'s team\'s installations.', { applied: false });
+      }
+      return refuse(403, 'no_installation', 'No GitHub App installation covers this repo for this workspace.', { applied: false });
     }
     const sent = (cmd.input as { installationId?: number }).installationId;
     if (sent !== undefined && sent !== installation.installationId) {

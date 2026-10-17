@@ -83,6 +83,9 @@ mock.module('@/lib/workflow/visual-review-state-load', () => ({
 }));
 mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
 
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -6258,7 +6261,7 @@ describe('GET /api/github/pr', () => {
     expect(data.delivery).toMatchObject({
       state: 'AWAITING_REVIEW', headline: 'Review queued',
       review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
-      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+      repairs: [{ label: 'Review fix 1 of up to 3', phase: 'pushed', taskId: 'fx' }],
     });
   });
 

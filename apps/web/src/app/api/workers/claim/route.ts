@@ -95,7 +95,17 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
+// T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+
+/**
+ * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
+ * A door alone may take DOOR_BUDGET_MS (20 s); summed over several fix candidates that outlasts the
+ * runner's claim deadline. Once it is spent the next fix candidate defers at once (nothing is sent)
+ * and the rest of the batch is claimed as usual.
+ */
+export const CLAIM_FIX_CONTROL_PLANE_BUDGET_MS = 5_000;
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -1122,6 +1132,8 @@ export async function POST(req: NextRequest) {
     duplicate_worker: 0,
     sibling_retry_open: 0,
     fix_not_needed: 0,
+    kernel_unavailable: 0,
+    kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -1548,6 +1560,8 @@ export async function POST(req: NextRequest) {
   }
   const claimOrder: Iterable<(typeof filteredTasks)[number]> = applyTasks.length > 0 ? plannedClaimOrder() : filteredTasks;
 
+  // Started by the first fix candidate, shared by every one after it (CLAIM_FIX_CONTROL_PLANE_BUDGET_MS).
+  let fixClaimDeadline: number | null = null;
   for (const task of claimOrder) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
@@ -2819,12 +2833,18 @@ export async function POST(req: NextRequest) {
     // resolved while it queued (approved, merged, head moved, round superseded)
     // is cancelled as skipped — never started, and not a worker failure.
     if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
-      const fixDecision = await claimKernelFix({
+      fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
+      const { value: fixDecision } = await withControlPlaneBudget('claim', Math.max(0, fixClaimDeadline - Date.now()), () => claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
-      }).catch((err): { action: 'defer'; reason: string } => {
+      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string; code: 'kernel_unavailable' | 'kernel_refused' } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
-        return { action: 'defer', reason: 'kernel_error' };
-      });
+        // A refusal (auth, the principal's reach, a malformed input) is not an outage: asking again on
+        // the next poll gets the same answer, so it reads as its own code in claim diagnostics.
+        if (err instanceof KernelCommandRefusedError) {
+          return { action: 'defer', reason: `refused ${err.status}${err.body.code ? ` ${String(err.body.code)}` : ''}`, code: 'kernel_refused' };
+        }
+        return { action: 'defer', reason: 'kernel_error', code: 'kernel_unavailable' };
+      }));
       if (fixDecision.action !== 'proceed') {
         if (gatedStartLeaseIds.length > 0) {
           await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
@@ -2838,7 +2858,9 @@ export async function POST(req: NextRequest) {
             .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
             .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
         }
-        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        // The kernel could not answer (the control plane down or slow, or the claim budget spent), or it
+        // refused the claim: each its own code, so neither reads as fixes nobody needs.
+        deferTask(task, 'code' in fixDecision ? fixDecision.code : 'fix_not_needed', { reason: fixDecision.reason });
         continue;
       }
     }

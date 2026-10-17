@@ -364,6 +364,12 @@ Rules:
    nothing provable on GitHub) is not a try at the fix, so up to
    `UNPROVEN_ATTEMPT_ALLOWANCE` of them per family do not spend the cap; past it they
    count, so an agent that always claims success still ends.
+   A second (295486ba): a `ci` attempt whose task is cancelled while the row is still
+   `queued` (nobody claimed it) with nothing local is `skipped`, not a failure. It did
+   no work, so it spends nothing, and the repair ends without filing the next attempt:
+   the cancel was someone deciding this fix should not run. The red reading stays, so
+   "Fix CI" or a new red head starts one again. A cancel after a claim, or the reaper's
+   `lost` end, still spends the attempt.
 2. **Infra requeues are not attempts.** A task requeued by the reaper, a budget wall,
    a mount gap or a provider failover keeps its own `infraRetryCount`/`retryCount`
    (today's behaviour, correct) and never touches a ledger; conversely an attempt row
@@ -373,7 +379,10 @@ Rules:
    task spawned on a CI-fix task does not inherit the CI count.
 4. **One 1-based view.** `attemptView(delivery, family) → {n, m}` is the only
    source for "attempt N of M" in the activity comment, task titles, Home chips and
-   `explain`. Today the comment shows the raw 0-based value while the title shows value
+   `explain`. One row's N is `attemptOrdinal`: its place among the family's
+   dispatched (not `skipped`) rows. `attempt_no` is the row's identity and a skipped
+   row also takes one, so it is never shown as N; it would read "4 of 3" past a
+   budget of three (295486ba). Today the comment shows the raw 0-based value while the title shows value
    plus one.
 5. **Manual retry.** "Fix CI", `apply-recommendation` and `retry-ci` are `trigger=human`
    attempts; they use the workspace's configured `maxCiRetries` like automatic ones
@@ -1459,8 +1468,8 @@ type".
    not count.
    *Today:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
    (`reducer.ts`) accept any decided approve round at the head and ignore later rounds.
-   A mission integration PR with no delivery gets no composition at all and is
-   reviewed whole.
+   A mission integration PR is composed like any other since S6 gave it a delivery
+   (it had none at #4686 and was reviewed whole).
 2. **Findings are durable.** A request-changes verdict creates findings, one per
    distinct issue, each pinned to the round, head, path and line it was raised on.
    A finding stays open across later pushes, CI results, base refreshes,
@@ -1574,20 +1583,20 @@ symbol. Every REST merge goes through `mergePullRequest` (`lib/github.ts`, pinne
 `sha`) except where noted. No GraphQL merge, no `enablePullRequestAutoMerge` and no
 workflow `gh pr merge` exists.
 
-| # | Door | Merge call | Reached from | Review gate today |
+| # | Door | Merge call | Reached from | Review gate (as shipped, S3b) |
 |---|---|---|---|---|
 | D1 | Kernel `merge_call` effect | `workflow/pr-landing-effects.ts` `mergeCall` | T15 `LandingRequested` (`reducer.ts`), drained by `landThroughKernel` (`workflow/landing.ts`) and the cron drain | kernel state at T15 only. At run time it checks `LANDING` + head, and no review recheck |
 | D2 | `landPr` | `lib/pr-landing.ts` (legacy `mergePullRequest`, else `landThroughKernel`) | `check_suite` webhook, `PUT /api/github/pr`, dashboard route, reviewer approve (`workers/[id]`), surface wake, landing sweep (`pr-landing-sweep-deps.ts`, cron `pr-reconcile`) | `guardReviewVerdict` (legacy PR), kernel `APPROVED` (kernel PR) |
 | D3 | Landing sweep, kernel arm | via D2 → D1 | `listApprovedKernelPrs` (`workflow/landing.ts`) | kernel `APPROVED`, including composition and `policy_rule` approvals |
-| D4 | `tryAutoMergeWorkerPr` | `lib/auto-merge.ts` | `check_suite` webhook (shadow/off), `maybeAutoMergeNoCiPr`, reviewer approve, surface wake | `guardReviewVerdict`, **skipped when no workspace id resolves** |
-| D5 | `PUT /api/github/pr` (MCP `merge_pr`) | `app/api/github/pr/route.ts` | MCP `merge_pr` (`packages/core/mcp-tools.ts`) | `landPr` in enforce. Otherwise `guardReviewVerdict`, **skipped entirely by admin `force`** |
+| D4 | `tryAutoMergeWorkerPr` | `lib/auto-merge.ts` | `check_suite` webhook (shadow/off), `maybeAutoMergeNoCiPr`, reviewer approve, surface wake | `guardReviewVerdict`, refuses when no workspace id resolves (S3b) |
+| D5 | `PUT /api/github/pr` (MCP `merge_pr`) | `app/api/github/pr/route.ts` | MCP `merge_pr` (`packages/core/mcp-tools.ts`) | `landPr` in enforce. Otherwise `guardReviewVerdict`. Admin `force` keeps the review verdict (S3b) |
 | D6 | `POST /api/prs/[prNumber]/merge` (dashboard, chat `merge_pr`, compose include) | `app/api/prs/[prNumber]/merge/route.ts` | dashboard, chat registry, `release/compose-runtime.ts` | `landPr` in enforce, otherwise `guardReviewVerdict`. A person may override |
-| D7 | Release PR on green CI | `app/api/github/webhook/route.ts` `handleReleasePrCiSuccess` | `check_suite` success | `guardReviewVerdict` (legacy rows). **No kernel check** |
-| D8 | `executeRelease`, release-PR path | `lib/release-executor.ts` (direct `githubApi` PUT, **no `sha` pin**) | worker completion (`release-completion-policy.ts`), mission release | **none** |
-| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` (squash, **no `sha` pin**) | same, `every_merge` strategy | **none** |
-| D10 | Compose release | `release/compose-actions.ts` → `release/compose-runtime.ts` `mergePr` | `api/releases/compose` | GitHub reviews at the candidate SHA only (`packages/core/release-compose.ts`). No buildd verdict |
+| D7 | Release PR on green CI | `app/api/github/webhook/route.ts` `handleReleasePrCiSuccess` | `check_suite` success | `guardReviewVerdict` (legacy rows). A kernel-owned PR lands through the kernel (S3b) |
+| D8 | `executeRelease`, release-PR path | `lib/release-executor.ts` (`release/pinned-merge.ts`, pinned with `sha` since S3b) | worker completion (`release-completion-policy.ts`), mission release | the review gate, merging only the verified head (AC-16) |
+| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` (squash, pinned with `sha` since S3b) | same, `every_merge` strategy | the review gate, merging only the verified head (AC-16) |
+| D10 | Compose release | `release/compose-actions.ts` → `release/compose-runtime.ts` `mergePr` | `api/releases/compose` | GitHub reviews at the candidate SHA (`packages/core/release-compose.ts`), plus the review gate on the pinned head (S3b, AC-16) |
 | D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
-| D12 | Manual merge on GitHub | — | a person's account, UI or CLI | **none: nothing buildd publishes is required** (rule 7). This is the #4686 door |
+| D12 | Manual merge on GitHub | — | a person's account, UI or CLI | not a gate: recorded as an external merge, with a trunk fix filed once (AC-15). `buildd/landing` stops it once trunk requires that status (rule 7). This is the #4686 door |
 | D13 | Agent self-merge | — | local runner Bash (only `gh pr merge` denied, `apps/runner/src/pr-mutation-enforcement.ts`), cloud runner egress (REST and GraphQL merge blocked, `apps/cloud-runner/src/outbound.ts`) | deny lists, not a gate |
 | D14 | Living Spec generated repo copy | `lib/specs/repo-copy.ts` `landSpecRepoCopy` (pinned with `sha`) | `check_suite` success on a spec's generated PR | only the generator's own commit at the approved revision (living-specs R-35); not a kernel delivery |
 
@@ -1610,10 +1619,12 @@ scratch ref cut at the delivery's merge commit, reads the tree, and deletes the 
 the same step. Nothing it writes is ever a base or a branch anything reads.
 
 **Which already use the kernel gate:** D1 (as T15), D2 and D3 for a kernel-owned PR,
-D4–D6 via T15 for a kernel-owned PR after their own legacy gate, and D11 (but it
-manufactures the approval). D7–D10 and D12 never consult the kernel. A mission
-integration PR, as in #4686, has no delivery at all, so it gets no kernel gate from any
-door.
+D4–D6 via T15 for a kernel-owned PR after their own legacy gate, D7 for a kernel-owned
+PR, D8–D10 through the review gate on the pinned head (S3b), and D11 (but it
+manufactures the approval). D12 and D13 never consult the kernel. A mission integration
+PR has had a delivery since S6 (`openMissionPrDelivery` binds it to its bookkeeping
+task, one delivery per epoch), so it gets the same gate at every door; at the #4686
+commit it had none.
 
 Regressions: AC-20 to AC-23 (§19) here; the rest in fa62b865 (§19 maps them).
 

@@ -340,10 +340,16 @@ mock.module('@/lib/supersession', () => ({
 // Workflow kernel T9 (lib/workflow/seam.ts; real-SQL suite in
 // apps/web/tests/db/workflow-seam.test.ts). Here only the wiring: a kernel fix
 // is revalidated after the claim CAS, and one the kernel skips is cancelled.
-const mockClaimKernelFix = mock(async (_t: any): Promise<any> => ({ action: 'proceed' }));
+const mockClaimKernelFix = mock(async (_t: any, _c?: any): Promise<any> => ({ action: 'proceed' }));
 const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undefined);
+// T9 goes through the one client (AC-9): the kernel's door, never the seam's own on this host.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+// Captured before the mock: the namespace is live, so after mock.module its claimFix is the mock.
+const realClaimFix = realKernelClient.claimFix;
+const realResetKernelModeCache = realKernelClient.resetKernelModeCache;
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, claimFix: mockClaimKernelFix }));
 mock.module('@/lib/workflow/seam', () => ({
-  claimFix: mockClaimKernelFix,
+  claimFix: mock(async () => { throw new Error('the claim route called the seam\'s claimFix, not the kernel client\'s'); }),
   cancelSkippedTask: mockCancelSkippedTask,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
 }));
@@ -9735,6 +9741,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(mockClaimKernelFix).toHaveBeenCalledTimes(1);
     expect((mockClaimKernelFix.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' });
+    // Through the kernel client, for the runner that claims it (AC-9): the control plane applies T9 in own mode.
+    expect((mockClaimKernelFix.mock.calls[0] as any[])[1]).toMatchObject({ principal: { kind: 'account', id: account().id, grant: null } });
     expect(mockCancelSkippedTask).toHaveBeenCalledWith('task-1', 'fix_not_needed');
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
     expect(data.diagnostics.taskExclusion.code).toBe('fix_not_needed');
@@ -9750,6 +9758,87 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(mockCancelSkippedTask).not.toHaveBeenCalled();
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
+  });
+
+  it('T9 at claim shares one control-plane budget: with a control plane that never answers, two fix candidates defer within it as kernel_unavailable and the other task is still claimed', async () => {
+    const saved = process.env.KERNEL_CLAIM_BUDGET_MS;
+    process.env.KERNEL_CLAIM_BUDGET_MS = '300';
+    // The real door, in own mode, against a control plane that accepts the connection and never answers.
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => {
+      init.signal?.addEventListener('abort', () => rej(init.signal!.reason));
+    })) as unknown as typeof fetch;
+    realResetKernelModeCache();
+    mockClaimKernelFix.mockReset();
+    mockClaimKernelFix.mockImplementation((t: any, c: any) => realClaimFix(t, {
+      ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: hanging },
+    }));
+    mockCancelSkippedTask.mockClear();
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) } as any);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValue([
+      task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+      task({ id: 'fix-2', taskClass: 'attempt', deliveryId: 'delivery-2', deliveryRole: 'fix', context: { workflowAttemptId: 'a-2' } }),
+      task({ id: 'task-3' }),
+    ]);
+    try {
+      const started = Date.now();
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 3 } }));
+      const elapsed = Date.now() - started;
+      const data = await res.json();
+
+      // The whole request, both fix candidates included, stays near the one budget (a door alone may take 20 s).
+      expect(elapsed).toBeLessThan(3_000);
+      expect(mockClaimKernelFix).toHaveBeenCalledTimes(2);
+      // Both roll back to pending, under the outage's own code; neither is cancelled.
+      expect(sets.filter((v) => v.status === 'pending' && v.claimedBy === null)).toHaveLength(2);
+      expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+      // The non-fix task in the batch is still claimed.
+      expect(data.workers).toHaveLength(1);
+
+      // With only the fix candidates (an empty claim reports its deferrals): the outage's own code.
+      mockTasksFindMany.mockResolvedValue([
+        task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+        task({ id: 'fix-2', taskClass: 'attempt', deliveryId: 'delivery-2', deliveryRole: 'fix', context: { workflowAttemptId: 'a-2' } }),
+      ]);
+      const empty = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 3 } }))).json();
+      expect(empty.workers).toHaveLength(0);
+      expect(empty.diagnostics.deferrals).toEqual({ kernel_unavailable: 2 });
+    } finally {
+      if (saved === undefined) delete process.env.KERNEL_CLAIM_BUDGET_MS; else process.env.KERNEL_CLAIM_BUDGET_MS = saved;
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockTasksFindMany.mockResolvedValue([]);
+      realResetKernelModeCache();
+    }
+  });
+
+  it('T9 at claim: a control plane that refuses the claim (403, auth or reach) defers it as kernel_refused, not as an outage, and nothing is cancelled', async () => {
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    realResetKernelModeCache();
+    mockClaimKernelFix.mockReset();
+    mockClaimKernelFix.mockImplementation((t: any, c: any) => realClaimFix(t, {
+      ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: refusing },
+    }));
+    mockCancelSkippedTask.mockClear();
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) } as any);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValue([
+      task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+    ]);
+    try {
+      const data = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 1 } }))).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.deferrals).toEqual({ kernel_refused: 1 });
+      expect(sets.filter((v) => v.status === 'pending' && v.claimedBy === null)).toHaveLength(1);
+      expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+    } finally {
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockTasksFindMany.mockResolvedValue([]);
+      realResetKernelModeCache();
+    }
   });
 
   it('a task with no kernel delivery never consults the kernel at claim', async () => {

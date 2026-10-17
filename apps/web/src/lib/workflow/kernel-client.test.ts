@@ -595,6 +595,213 @@ describe('a green head from the check_suite webhook is a door too (AC-9): CiGree
   });
 });
 
+describe('AC-35: a door command the control plane never answered is parked for the floor, under its own key', () => {
+  const end = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } },
+    workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+  /** A clock the door's backoff moves, so a door that never gets an answer runs out its budget at once. */
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } }; };
+  const parker = () => {
+    const parked: Array<Record<string, unknown>> = [];
+    return { parked, park: async (p: Record<string, unknown>) => { parked.push(p); return true; } };
+  };
+
+  it('an attempt end that never got an answer is parked with the door\'s key, op, input and principal, and the door still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    const k = parker();
+    const err = await attemptEnded(end, { principal: runner, idempotencyKey: 'attempt_ended:k-park-1', deps: { ...l.deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toEqual([{ key: 'attempt_ended:k-park-1', op: 'attempt_ended', input: { ...end, workspaceId: WS }, principal: runner, priorUnknown: false, why: err.why }]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('an unknown outcome is parked as such, so the floor never runs it on the web host without the ledger\'s word', async () => {
+    const { observeCiGreen, systemPrincipal } = await import('./kernel-client');
+    const k = parker();
+    let t = 0;
+    const timeout = (async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch;
+    const green = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' };
+    const err = await observeCiGreen(green, {
+      principal: systemPrincipal('system:webhook:check_suite'),
+      deps: { ...local().deps, env: OWN, fetch: timeout, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: k.park as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('unknown');
+    expect(k.parked).toHaveLength(1);
+    expect(k.parked[0]).toMatchObject({ op: 'observe_ci_green', priorUnknown: true, key: err.idempotencyKey });
+  });
+
+  it('only ops nothing else re-sends: a landing that got no answer is the caller\'s to retry, and is not parked', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const k = parker();
+    const err = await landThroughKernel(input, { principal, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(false);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('an answer is never parked: a refusal, the command\'s own failure, or a skew fallback', async () => {
+    const { attemptEnded, KernelCommandFailedError } = await import('./kernel-client');
+    const answers: Array<[() => Response, unknown]> = [
+      [() => Response.json({ v: 1, code: 'forbidden', error: 'no reach' }, { status: 403 }), KernelCommandRefusedError],
+      [() => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 }), KernelCommandFailedError],
+    ];
+    for (const [reply, kind] of answers) {
+      const k = parker();
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, env: OWN, fetch: (async () => reply()) as unknown as typeof fetch, park: k.park as never } }).catch((e) => e);
+      expect(err).toBeInstanceOf(kind as never);
+      expect(k.parked).toEqual([]);
+    }
+    const k = parker();
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_ended"' }, { status: 400 })) as unknown as typeof fetch;
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      await attemptEnded(end, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older, park: k.park as never } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['attempt_ended']);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('a door with no principal is never parked (it is refused before sending), and a park that fails still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const k = parker();
+    const refused = await attemptEnded(end, { principal: null, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(refused).toBeInstanceOf(KernelCommandRefusedError);
+    expect(k.parked).toEqual([]);
+    const realError = console.error;
+    const logged: string[] = [];
+    console.error = (...a: unknown[]) => { logged.push(a.join(' ')); };
+    try {
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: async () => { throw new Error('db down'); } } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.parked).toBe(false);
+    } finally {
+      console.error = realError;
+    }
+    expect(logged.join('\n')).toContain('could not be parked');
+  });
+
+  it('a reviewer\'s verdict that got no answer is parked; a fix claim never is (its claim is rolled back and claimed afresh)', async () => {
+    const { recordReviewVerdict, claimFix } = await import('./kernel-client');
+    const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+    const k = parker();
+    const err = await recordReviewVerdict(verdict, { principal: runner, idempotencyKey: 'record_review_verdict:k-park-3', deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toMatchObject([{ key: 'record_review_verdict:k-park-3', op: 'record_review_verdict', input: verdict }]);
+
+    const c = parker();
+    const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+    const claimErr = await claimFix(fixTask, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: c.park as never } }).catch((e) => e);
+    expect(claimErr).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(claimErr.parked).toBe(false);
+    expect(c.parked).toEqual([]);
+  });
+
+  it('every op is classified, and the doors without another re-sender are the parked ones', async () => {
+    const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
+    const { KERNEL_OPS } = await import('./command-api');
+    expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'observe_ci_green', 'record_review_verdict']);
+    // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
+    expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
+  });
+
+  it('the door\'s 503 says it was parked', async () => {
+    const { doorErrorAnswer } = await import('./kernel-client');
+    const e = new ControlPlaneUnavailableError('unreachable', 'not_applied', 'attempt_ended:k-park-2');
+    expect(doorErrorAnswer(e).body.parked).toBeUndefined();
+    e.parked = true;
+    expect(doorErrorAnswer(e).body).toMatchObject({ parked: true, idempotencyKey: 'attempt_ended:k-park-2', retryable: true });
+  });
+});
+
+describe('T6 and T9 are doors too (AC-9): a review verdict (recorded or adopted) and a fix claim from the web host', () => {
+  const OTHER = '44444444-4444-4444-8444-444444444444';
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+  const adopted = { workspaceId: WS, deliveryId: DELIVERY, reviewerTaskId: 'rv-2', verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.8 };
+  const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+  type Door = 'recordReviewVerdict' | 'adoptReviewVerdict' | 'claimFix';
+  const cases: Array<{ fn: Door; op: string; arg: unknown; sent: unknown }> = [
+    { fn: 'recordReviewVerdict', op: 'record_review_verdict', arg: verdict, sent: verdict },
+    { fn: 'adoptReviewVerdict', op: 'adopt_review_verdict', arg: adopted, sent: adopted },
+    // The task's workspace rides on the input for the reach check, as attempt_ended's does.
+    { fn: 'claimFix', op: 'claim_fix', arg: fixTask, sent: { task: fixTask, workspaceId: WS } },
+  ];
+  const call = async (fn: Door, arg: unknown, c: Record<string, unknown>) => {
+    const client = await import('./kernel-client');
+    return (client[fn] as (a: unknown, c: unknown) => Promise<unknown>)(arg, c);
+  };
+
+  for (const { fn, op, arg, sent } of cases) {
+    it(`${op}: in own mode it is submitted to the control plane for its caller, and nothing runs here`, async () => {
+      const l = local();
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op, result: { handled: false } }); }) as unknown as typeof fetch;
+      expect(await call(fn, arg, { principal: runner, idempotencyKey: `${op}:k-0001`, deps: { ...l.deps, env: OWN, fetch: fetchSpy } })).toEqual({ handled: false });
+      expect(l.ran).toEqual([]);
+      expect(bodies).toEqual([{ v: 1, op, input: sent, principal: runner, idempotencyKey: `${op}:k-0001` }]);
+    });
+
+    it(`${op}: in shadow the web host runs it itself, as before`, async () => {
+      const l = local();
+      await call(fn, arg, { principal: runner, deps: { ...l.deps, env: {} } });
+      expect(l.ran).toEqual([op]);
+    });
+
+    it(`${op}: release skew, a control plane that predates the op refused it as unknown, so the web host applies it itself and says so`, async () => {
+      const l = local();
+      const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+      const errors: unknown[] = [];
+      const realError = console.error;
+      console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+      try {
+        await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
+      } finally {
+        console.error = realError;
+      }
+      expect(l.ran).toEqual([op]);
+      expect(String(errors[0])).toContain('SKEW');
+      expect(String(errors[0])).toContain(op);
+    });
+
+    it(`${op}: release skew only, any other refusal stays a refusal and nothing runs here`, async () => {
+      for (const [status, code, error] of [[403, 'forbidden', 'account does not reach this workspace'], [400, 'bad_request', 'unknown op "land"']] as const) {
+        const l = local();
+        const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+        const err = await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+        expect(err).toBeInstanceOf(KernelCommandRefusedError);
+        expect(l.ran).toEqual([]);
+      }
+    });
+
+    it(`${op}: the command endpoint knows the op`, async () => {
+      const { isKernelOp } = await import('./command-api');
+      expect(isKernelOp(op)).toBe(true);
+    });
+  }
+
+  it('claim_fix: the host claims a fix only for a task of the workspace the reach check judged', async () => {
+    const { runKernelOp } = await import('./command-api');
+    await expect(runKernelOp('claim_fix', { task: fixTask, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+  });
+
+  it('a verdict names its workspace: without one the endpoint refuses it as malformed before any check', async () => {
+    const { commandProblem } = await import('./command-api');
+    const { workspaceId: _ws, ...noWorkspace } = verdict;
+    expect(commandProblem({ v: 1, op: 'record_review_verdict', idempotencyKey: 'k-00000001', principal: runner, input: noWorkspace })).toBe('input.workspaceId must be a uuid');
+  });
+});
+
 describe('a door after an unknown outcome', () => {
   it('submits again with the same key and returns the control plane\'s answer; a not_applied failure is not retried', async () => {
     const { landThroughKernel, DOOR_UNKNOWN_RETRIES } = await import('./kernel-client');
@@ -979,5 +1186,49 @@ describe('an installation the control plane could not read', () => {
     expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
     expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 installation_unavailable']);
     expect(requests).toBe(2);
+  });
+});
+
+describe('T12 from the conflict door is a door too (AC-9)', () => {
+  const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hint: 'dirty' as const, isDependencyBot: false, maxAgentAttempts: 3, source: 'door:conflict' };
+  const sweep = { kind: 'system' as const, id: 'system:door-conflict' };
+
+  it('in own mode it is submitted to the control plane, and nothing runs here', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_conflict', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeConflict(seen, { principal: sweep, idempotencyKey: 'observe_conflict:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_conflict', input: seen, principal: sweep, idempotencyKey: 'observe_conflict:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_conflict']);
+  });
+
+  it('release skew: a control plane that predates the op is refused as unknown, so the web host applies it itself and says so', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_conflict"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_conflict']);
+    expect(String(errors[0])).toContain('SKEW');
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_conflict')).toBe(true);
   });
 });

@@ -332,6 +332,7 @@ DELETE FROM task_dispatch_outbox;
 DELETE FROM landing_lanes;
 -- The command API's idempotency ledger: stored answers carry the same payloads.
 DELETE FROM workflow_commands;
+DELETE FROM workflow_command_outbox;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
