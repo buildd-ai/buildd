@@ -50,7 +50,7 @@ import {
   dispatchConflictRetry,
   type DispatchConflictRetryResult,
 } from '@/lib/conflict-retry';
-import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { guardMissionPrMerge, finalizeMissionPrMerge, deliveryOwnerTask } from '@/lib/mission-pr';
 import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta } from '@/lib/workflow/base-delta';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
@@ -264,6 +264,8 @@ export interface LandPrDeps {
   kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
   /** Runs a delivery's due effects (a REPAIRING delivery's backed-off repair). Defaults to the seam's `drainDelivery`. */
   drainDelivery?: (deliveryId: string) => Promise<unknown>;
+  /** The mission-PR / delivery-target hold. Defaults to mission-pr.ts `guardMissionPrMerge`. */
+  guardMissionPrMerge?: typeof guardMissionPrMerge;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -1053,11 +1055,21 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       console.warn(`[pr-landing] could not read task ${owner.taskId}:`, errMessage(err));
     }
   }
-  const missionGate = await guardMissionPrMerge(mergingTask);
-  if (missionGate.blocks) {
+  // An attempt's worker (the newest on the PR) carries none of its parent's meaning: the hold,
+  // the merge method and the refresh rules are the owner's, as the kernel's rails read them (#4909).
+  if (mergingTask) {
+    mergingTask = await deliveryOwnerTask(mergingTask).catch(() => mergingTask) as typeof mergingTask;
+  }
+  const missionGate = await (deps.guardMissionPrMerge ?? guardMissionPrMerge)(mergingTask);
+  // A lasting hold (a refresh on a branch it was not filed for) never clears by waiting. On a
+  // kernel-owned PR it goes to the kernel, whose merge-time rails refuse it as lasting and
+  // escalate the delivery once (T16), so the sweep stops asking; it never reaches a legacy merge.
+  const lastingHold = missionGate.blocks && missionGate.lasting === true ? missionGate.reason : null;
+  if (missionGate.blocks && !lastingHold) {
     return waiting(missionGate.reason ?? 'mission work is not finished', { waitingOn: 'mission_siblings' });
   }
 
+  if (lastingHold && !act) return human('unsafe_other', lastingHold, { waitingOn: 'delivery_target' });
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
   // See the matching note in auto-merge.ts: mission-branch-refresh.ts's
@@ -1080,11 +1092,15 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
       ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
     }, { principal: input.principal });
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
+    if (kernel) return { kernel };
+    if (lastingHold) return { held: true as const };
+    return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
-  if (slotted.result.kernel) return kernelLanded(slotted.result.kernel);
-  const result = slotted.result.legacy;
+  const slot = slotted.result;
+  if ('kernel' in slot && slot.kernel) return kernelLanded(slot.kernel);
+  if ('held' in slot || !slot.legacy) return human('unsafe_other', lastingHold ?? 'a merge rail refused', { waitingOn: 'delivery_target' });
+  const result = slot.legacy;
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';

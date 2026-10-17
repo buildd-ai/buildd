@@ -31,6 +31,8 @@ let workspaceRow: any = null;
 let repoRow: any = null;
 let orphanWorkerRow: any = null;
 let missionNoteRows: any[] = [];
+/** tasks.findFirst by id (the attempt -> owner walk and the context read). */
+let taskById: Record<string, any> = {};
 
 const inserts: Array<{ table: string; values: any }> = [];
 const updates: Array<{ setValues: any }> = [];
@@ -66,7 +68,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'tasks.id', missionId: 'tasks.mission_id' },
+  tasks: { id: 'tasks.id', missionId: 'tasks.mission_id', parentTaskId: 'tasks.parent_task_id' },
   workers: {
     id: 'workers.id', taskId: 'workers.task_id', prUrl: 'workers.pr_url',
     mergedAt: 'workers.merged_at',
@@ -87,6 +89,14 @@ function hasEq(where: any, col: string, val?: unknown): boolean {
   if (where._op === 'eq') return where.col === col && (val === undefined || where.val === val);
   if (where._op === 'and') return where.args.some((a: any) => hasEq(a, col, val));
   return false;
+}
+function eqValue(where: any, col: string): unknown {
+  if (!where) return undefined;
+  if (where._op === 'eq' && where.col === col) return where.val;
+  if (where._op === 'and') {
+    for (const a of where.args) { const v = eqValue(a, col); if (v !== undefined) return v; }
+  }
+  return undefined;
 }
 function hasOp(where: any, op: string, col?: string): boolean {
   if (!where) return false;
@@ -110,6 +120,10 @@ mock.module('@buildd/core/db', () => ({
         findMany: (args: any) => {
           taskQueryWhere = args?.where;
           return Promise.resolve(taskRowsForMission);
+        },
+        findFirst: (args: any) => {
+          const id = eqValue(args?.where, 'tasks.id');
+          return Promise.resolve(typeof id === 'string' ? taskById[id] ?? null : null);
         },
       },
       workers: {
@@ -212,6 +226,7 @@ const {
   finalizeMissionPrMerge,
   findMissionPrOwner,
   guardMissionPrMerge,
+  deliveryOwnerTask,
   isMissionPrTask,
   maybeOpenMissionIntegrationPr,
   noteMissionPrOpenFailure,
@@ -252,6 +267,7 @@ beforeEach(() => {
   workerRowsByTask = {};
   orphanWorkerRow = null;
   missionNoteRows = [];
+  taskById = {};
   inserts.length = 0;
   updates.length = 0;
   recordedFacts.length = 0;
@@ -456,6 +472,62 @@ describe('guardMissionPrMerge — a refresh PR lands only on the delivery it was
     workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
     missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: BRANCH, state: 'open' }];
     expect((await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
+  });
+
+  // #4909 (task 0427d13b): an infra requeue overwrote the refresh's baseBranch with its own head,
+  // so every merge-time read refused it as "filed for" its own head branch, forever.
+  const clobbered = (o: Record<string, unknown> = {}) => refreshTask({
+    context: { requireMergeCommit: true, baseBranch: 'buildd/r-1-chore', resumeBranch: 'buildd/r-1-chore', refreshTrunk: 'dev', refreshTrunkSha: 'd1', ...o },
+  });
+
+  it('#4909: a refresh whose filed-for base a requeue overwrote is judged by where it is based, never refused as its own head', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4909, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'open' }];
+    expect((await guardMissionPrMerge(clobbered())).blocks).toBe(false);
+  });
+
+  it('#4909: with no filed-for branch left, a refresh on trunk or on a shipped delivery is still refused, as lasting', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4909, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    const onTrunk = await guardMissionPrMerge(clobbered());
+    expect(onTrunk).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'], lasting: true });
+    expect((onTrunk as { reason: string }).reason).not.toContain('buildd/r-1-chore');
+
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4909, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];
+    expect(await guardMissionPrMerge(clobbered())).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'], lasting: true });
+  });
+
+  it('the explicit refreshBranch names the delivery a refresh was filed for, whatever baseBranch says', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4909, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    const gate = await guardMissionPrMerge(clobbered({ refreshBranch: BRANCH }));
+    expect(gate).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'], lasting: true });
+    expect((gate as { reason: string }).reason).toContain(`\`${BRANCH}\``);
+  });
+
+  it('#4909: a CI-fix attempt on a refresh PR is judged as the refresh that owns the PR (the sweep and the merge-time rails agree)', async () => {
+    // The sweep resolves the PR's newest worker, an attempt with none of the refresh context;
+    // the kernel rails read the delivery owner. Both must reach the same answer.
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    workerRowsByTask['a-1'] = [worker({ taskId: 'a-1', id: 'w-a', prUrl: 'u', prNumber: 4670, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    const root = refreshTask();
+    taskById['r-1'] = { ...root, parentTaskId: null };
+    taskById['a-1'] = { id: 'a-1', missionId: MISSION_ID, title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: 'r-1', context: { baseBranch: 'buildd/r-1-chore', resumeBranch: 'buildd/r-1-chore' } };
+    const viaOwner = await guardMissionPrMerge(root);
+    const viaAttempt = await guardMissionPrMerge({ id: 'a-1', missionId: MISSION_ID, title: '[builder · after CI #1] x', taskClass: 'attempt', context: taskById['a-1'].context });
+    expect(viaOwner).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'] });
+    expect(viaAttempt).toEqual(viaOwner);
+    expect(await deliveryOwnerTask({ id: 'a-1', taskClass: 'attempt' })).toMatchObject({ id: 'r-1', taskClass: 'work' });
+  });
+
+  it('a task PR on a shipped delivery is lasting only when there is no current delivery to move it to', async () => {
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];
+    const moving = await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} });
+    expect(moving).toMatchObject({ blocks: true, codes: ['delivery_shipped'] });
+    expect((moving as { lasting?: boolean }).lasting).toBeFalsy();
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }];
+    expect(await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} }))
+      .toMatchObject({ blocks: true, codes: ['delivery_shipped'], lasting: true });
   });
 
   it('an ordinary task PR is never asked', async () => {
