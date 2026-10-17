@@ -33,7 +33,11 @@ const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
 /** How many times a round whose reviewer could not be filed is re-queued before it is a person's (T27). */
 export const REVIEW_DISPATCH_RETRIES = 2;
-/** The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not spent in the same drain. */
+/**
+ * The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not
+ * spent in the same drain. Nothing wakes a drain for it: on a quiet PR the hourly floor runs it, so
+ * keep n times this under one floor period (`kernel-floor.test.ts`, spec §5).
+ */
 export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
@@ -384,7 +388,9 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
   if (reason === 'head_moved') {
     const work = need(ports, 'work', e.kind);
     // The transition names the tasks it made moot: only those are cancelled, never a newer one the
-    // same role filed since (a retried effect runs after it). An effect from before carries none.
+    // same role filed since (a retried effect runs after it). A mechanical repair has no task and
+    // names none (`taskIds: []`, a81a100f). An effect from before `taskIds` carries none, and nor
+    // does one for an agent row not yet linked: those keep the role-wide cancel below.
     if (Array.isArray(e.payload.taskIds)) {
       const ids = (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string');
       for (const id of ids) await work.cancel(id, 'the PR head moved before the fix started');
@@ -425,7 +431,10 @@ export async function escalateReviewExhaustion(ports: KernelPorts, e: ClaimedEff
   const current = rounds.find((r) => r.round === d.currentRound);
   const out: ReviewOutput = current ? await need(ports, 'reviews', e.kind).output(current) : {};
   // A fix ledger spent before the rounds were (T8, 67d34094) says so; otherwise the rounds ran out.
-  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts` : `after ${d.currentRound} review rounds`;
+  // A held delivery reopened (79649a80) is the same spent budget coming back to the person.
+  const detail = e.payload.max != null ? `after ${Number(e.payload.attempts)} fix attempts`
+    : e.payload.reopened === true ? `reopened after ${d.currentRound} review rounds; the review budget is still spent`
+    : `after ${d.currentRound} review rounds`;
   const outcome = await need(ports, 'escalate', e.kind).exhausted(d, {
     family: 'review_fix', headSha: d.currentHeadSha, attempts: Number(e.payload.attempts ?? d.currentRound), max: Number(e.payload.max ?? d.maxRounds),
     title: 'Review fix attempts exhausted', detail, note: out.feedback ?? null,
