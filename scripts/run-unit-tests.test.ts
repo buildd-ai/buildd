@@ -191,6 +191,29 @@ describe('runTestFile', () => {
  * wrote fixture records into the operator's real ~/.buildd/workers, where they
  * were counted as fleet data.
  */
+describe('runTestFile wall-clock cap', () => {
+  it('kills a hung file and says why', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      let killed = false;
+      let resolveExit!: (n: number) => void;
+      const exited = new Promise<number>(r => (resolveExit = r));
+      const empty = () => new ReadableStream<Uint8Array>({ start: c => void exited.then(() => c.close()) });
+      const result = await runTestFile('hang.test.ts', () => ({
+        exited,
+        kill: () => { killed = true; resolveExit(137); },
+        stdout: empty(),
+        stderr: empty(),
+      }));
+      expect(killed).toBe(true);
+      expect(result.exitCode).toBe(137);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
+});
+
 describe('runTestFile BUILDD_HOME isolation', () => {
   function capturedEnv(file: string): Record<string, string | undefined> {
     let env: Record<string, string | undefined> = {};

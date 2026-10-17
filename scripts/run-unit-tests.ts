@@ -396,6 +396,22 @@ export function getTestTimeoutMs(configured: string | undefined): number {
   return Math.floor(n);
 }
 
+/**
+ * Wall-clock cap for one test file's whole process. `bun test --timeout` is per
+ * test, so a file that hangs at module scope, in a hook, or in a subprocess it
+ * spawned (warm-repo on a loaded host) never trips it and the run stalls
+ * silently. Generous by default: it is a backstop, not a performance budget.
+ */
+const DEFAULT_FILE_WALL_TIMEOUT_MS = 600_000;
+
+export function getFileWallTimeoutMs(configured: string | undefined): number {
+  const n = Number(configured);
+  if (configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1) {
+    return DEFAULT_FILE_WALL_TIMEOUT_MS;
+  }
+  return Math.floor(n);
+}
+
 export async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
@@ -419,6 +435,7 @@ type SpawnTestProcess = (
   options: Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>,
 ) => {
   exited: Promise<number>;
+  kill?: (signal?: number | NodeJS.Signals) => void;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
 };
@@ -533,11 +550,30 @@ export async function runTestFile(
       // accumulating in the shared /tmp across runs.
       env: { ...process.env, BUILDD_HOME: buildHome, TMPDIR: testHome },
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
+    const wallMs = getFileWallTimeoutMs(process.env.BUILDD_TEST_FILE_TIMEOUT_MS);
+    let wallTimedOut = false;
+    const wallTimer = setTimeout(() => {
+      wallTimedOut = true;
+      child.kill?.('SIGKILL');
+    }, wallMs);
+    let exitCode: number, stdout: string, stderr: string;
+    try {
+      [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+    } finally {
+      clearTimeout(wallTimer);
+    }
+    if (wallTimedOut) {
+      return {
+        file,
+        exitCode: exitCode || 1,
+        output: `${stdout}${stderr}\nKilled ${file} after ${wallMs}ms wall-clock (BUILDD_TEST_FILE_TIMEOUT_MS). The per-test --timeout does not cover a hang outside a test body (module scope, hooks, spawned subprocess).\n`,
+        durationMs: elapsed(),
+      };
+    }
     return { file, exitCode, output: `${stdout}${stderr}`, durationMs: elapsed() };
   } catch (error) {
     const detail = error instanceof Error ? error.stack ?? error.message : String(error);
