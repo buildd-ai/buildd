@@ -109,9 +109,11 @@ export function isReviewEscalation(reason: string | null | undefined): boolean {
 /**
  * States that keep a spent review budget's hold in `resumeState` while they run: the repair, a
  * red base during it, a repair whose push GitHub does not show yet (AWAITING_PUSH, and the
- * push_undeliverable escalation it can end in), and an escalation stacked on top of it.
+ * push_undeliverable escalation it can end in), an escalation stacked on top of it, and a closed
+ * PR (task 79649a80: a close and a reopen is not a person lifting the budget, so T19 returns to
+ * ESCALATED(review_exhausted) instead of starting a round).
  */
-const HOLD_CARRIERS: ReadonlySet<DeliveryState> = new Set(['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH', 'ESCALATED']);
+const HOLD_CARRIERS: ReadonlySet<DeliveryState> = new Set(['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH', 'ESCALATED', 'CLOSED_UNMERGED']);
 
 export function reviewBudgetHeld(d: Pick<DeliverySnapshot, 'state' | 'stateReason' | 'resumeState'>): boolean {
   if (d.state === 'ESCALATED' && d.stateReason === 'review_exhausted') return true;
@@ -381,6 +383,24 @@ export function currentOf(view: KernelView): CurrentView {
 
 const OPEN_ROUND = new Set(['queued', 'reviewing']);
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
+
+/** The task role each repair family files under (the host's `Work` roles). */
+const REPAIR_ROLE: Partial<Record<AttemptFamily, string>> = { review_fix: 'fix', ci: 'ci_fix', conflict: 'conflict_fix', migration: 'conflict_fix' };
+const RESOLUTION_FAMILIES: AttemptFamily[] = ['review_fix', 'ci', 'conflict', 'migration'];
+
+/**
+ * What a close (T18) or a merge (T17) makes moot, for its `cancel_open_attempts` (b6cfdbb9): the
+ * tasks of every open repair and of every open round's reviewer, by id. A repair row not yet
+ * linked to its task names its role instead, so the host can cancel that role's unstarted tasks.
+ * The ledger rows are cancelled by the transition itself; the tasks are the host's, and without
+ * this a queued repair stayed pending on a PR that no longer existed.
+ */
+function mootOnResolution(view: KernelView): { taskIds: string[]; unlinkedRoles?: string[] } {
+  const open = view.attempts.filter((a) => RESOLUTION_FAMILIES.includes(a.family) && OPEN_ATTEMPT.has(a.status));
+  const taskIds = [...open.flatMap((a) => (a.taskId ? [a.taskId] : [])), ...view.rounds.flatMap((r) => (OPEN_ROUND.has(r.status) && r.reviewerTaskId ? [r.reviewerTaskId] : []))];
+  const unlinkedRoles = [...new Set(open.filter((a) => !a.taskId).map((a) => REPAIR_ROLE[a.family]!))];
+  return { taskIds: [...new Set(taskIds)], ...(unlinkedRoles.length ? { unlinkedRoles } : {}) };
+}
 
 class Ctx {
   readonly d: DeliverySnapshot | null;
@@ -1173,7 +1193,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
         // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
+        effects: [fx('stamp_pr_rows'), { ...fx('cancel_open_attempts'), payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null, reason: 'merged', ...mootOnResolution(c.view) } }, fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
         evidence: {
           live: cmd.live, reviewClass,
           ...(external ? { external: true, mergedBy: cmd.live.mergedBy ?? null, mergedHead, fromState: dd.state, merged_over_open_findings: mergedOverOpenFindings } : {}),
@@ -1192,23 +1212,31 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const fx = (kind: EffectSpec['kind']): EffectSpec => ({ kind, dedupeKey: `${kind}:${dd.id}:closed:${cmd.live.updatedAt ?? 'unknown'}`, payload: { closeCause: cmd.closeCause } });
       return c.apply(`closed:${c.prKey}:${cmd.live.updatedAt ?? 'unknown'}`, 'CLOSED_UNMERGED', {
         states: NON_TERMINAL,
-        patch: { stateReason: cmd.closeCause, boundAttemptId: null, resumeState: null },
+        // Any other resume (a red base's APPROVED) ends with the close; a spent review budget
+        // does not (79649a80), so the reopen still goes to the person.
+        patch: { stateReason: cmd.closeCause, boundAttemptId: null, resumeState: reviewBudgetHeld(dd) ? 'ESCALATED' : null },
         rounds: c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } })),
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
-        effects: [fx('cancel_open_attempts'), fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
+        effects: [{ ...fx('cancel_open_attempts'), payload: { closeCause: cmd.closeCause, reason: 'closed', ...mootOnResolution(c.view) } }, fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
         evidence: { live: cmd.live },
       });
     }
 
-    // T19
+    // T19. On a delivery closed with its review budget spent, `apply` turns the round into
+    // ESCALATED(review_exhausted) at the reopened head (79649a80).
     case 'PrReopened': {
       const dd = d!;
       if (dd.state !== 'CLOSED_UNMERGED') return isTerminal(dd.state) ? c.stale('terminal') : c.duplicate('not_closed');
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
       const head = cmd.live.headSha;
       const r = c.startRound(head);
+      // `apply` redirects the round to the person; the person is told it is back with them, once
+      // per reopen (the version read), as the original exhaustion told them.
+      const told: EffectSpec[] = reviewBudgetHeld(dd)
+        ? [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${head}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, reopened: true } }]
+        : [];
       return c.apply(`reopen:${c.prKey}:${cmd.live.updatedAt ?? 'unknown'}`, 'AWAITING_REVIEW', {
-        patch: { ...r.patch, currentHeadSha: head, stateReason: null }, rounds: r.rounds, effects: r.effects, evidence: { live: cmd.live },
+        patch: { ...r.patch, currentHeadSha: head, stateReason: null }, rounds: r.rounds, effects: [...r.effects, ...told], evidence: { live: cmd.live },
       });
     }
 

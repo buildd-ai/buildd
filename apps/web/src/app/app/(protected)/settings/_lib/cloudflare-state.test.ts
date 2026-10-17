@@ -7,10 +7,10 @@ const cred = (over: Partial<CloudflareCredentialView> = {}): CloudflareCredentia
 });
 
 describe('cloudflareState', () => {
-  it('gives each state exactly one next step', () => {
+  it('gives each state at most one next step, and a verified token none', () => {
     expect(cloudflareState(null)).toMatchObject({ kind: 'empty', next: 'Add token' });
     expect(cloudflareState(cred())).toMatchObject({ kind: 'unverified', next: 'Verify' });
-    expect(cloudflareState(cred({ healthStatus: 'healthy' }))).toMatchObject({ kind: 'verified', next: 'Deploy', tone: 'ok' });
+    expect(cloudflareState(cred({ healthStatus: 'healthy' }))).toMatchObject({ kind: 'verified', next: null, tone: 'ok' });
     expect(cloudflareState(cred({ healthStatus: 'revoked' }))).toMatchObject({ kind: 'rejected', next: 'Replace', tone: 'err' });
     expect(cloudflareState(cred({ healthStatus: 'degraded' }))).toMatchObject({ kind: 'degraded', next: 'Verify' });
   });

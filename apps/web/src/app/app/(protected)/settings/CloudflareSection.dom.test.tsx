@@ -1,7 +1,7 @@
 /**
  * Cloudflare token row: the browser sends the token once, then only ever
  * sees masked metadata; storing verifies straight away. Each state has one
- * next step (Add token / Verify / Replace / Deploy), and the fleet's
+ * next step (Add token / Verify / Replace; a verified token has none), and the fleet's
  * cloud-runner row shows the same state.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
@@ -155,15 +155,29 @@ describe('CloudflareSection', () => {
     expect(host.textContent).toContain('Workers AI: not allowed (add Workers AI Read to this token)');
   });
 
-  it('verified: Deploy shows the deploy.ts command', async () => {
+  it('verified: no header step; the terminal deploy and gateway tokens sit folded under the row', async () => {
     installFetch({ stored: true, health: 'healthy' });
     await mount();
     expect(chip()).toBe('Verified');
-    expect(next().textContent).toBe('Deploy');
+    expect(host.querySelector('[data-testid="cloudflare-next"]')).toBeNull();
+    await click(host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-row"] button[aria-expanded]')!);
+    // No placeholder keys and no "from the repo root" instruction up front.
+    expect(host.textContent).not.toContain('BUILDD_API_KEY');
+    expect(host.textContent).not.toContain('repo root');
+    const toggle = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')].find((b) => b.textContent?.includes(label))!;
+    const terminal = toggle('Deploy from a terminal instead');
+    expect(terminal.getAttribute('aria-expanded')).toBe('false');
     expect(host.querySelector('[data-testid="cloudflare-deploy"]')).toBeNull();
-    await click(next());
+    await click(terminal);
     const deploy = host.querySelector('[data-testid="cloudflare-deploy"]')!;
-    expect(deploy.textContent).toContain('bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace --dry-run');
+    expect(deploy.textContent).toContain('bun apps/cloud-runner/scripts/deploy.ts --help');
+    expect(deploy.querySelector('a')!.getAttribute('href')).toContain('apps/cloud-runner/README.md');
+
+    const gateway = toggle('AI Gateway (optional)');
+    expect(gateway.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector('[data-testid="gateway-tokens"]')).toBeNull();
+    await click(gateway);
+    expect(host.querySelector('[data-testid="gateway-tokens"]')).not.toBeNull();
   });
 
   it('rejected: Replace opens the replace form', async () => {
@@ -185,6 +199,9 @@ describe('CloudflareSection', () => {
     await click(next());
     await flush();
     expect(row().getAttribute('data-state')).toBe('verified');
+    // A verified token has no next step, so the fleet row's link just opens the Cloudflare row.
+    expect(row().querySelector('a')!.getAttribute('href')).toBe('#cloudflare');
+    expect(row().querySelector('a')!.textContent).toBe('Open');
   });
 });
 

@@ -145,7 +145,9 @@ export async function POST(
   const seam = await import('@/lib/workflow/seam');
   const kernelRound = await seam.isKernelReviewRound(reviewerTask).catch(() => false);
   if (kernelRound) {
-    await seam.attemptEnded({
+    // Through the client: the control plane applies it in own mode (AC-9).
+    const { attemptEnded, kernelPrincipalOf } = await import('@/lib/workflow/kernel-client');
+    await attemptEnded({
       task: {
         id: reviewerTask.id,
         workspaceId: reviewerTask.workspaceId ?? worker.workspaceId,
@@ -159,7 +161,7 @@ export async function POST(
       commitCount: 0,
       source: 'human:interrupt',
       reviewFailure: 'human_takeover',
-    }).catch((err) => console.error(`[interrupt] workflow kernel ReviewRoundFailed failed for task ${reviewerTask.id}:`, err));
+    }, { principal: kernelPrincipalOf({ person: user.id }) }).catch((err) => console.error(`[interrupt] workflow kernel ReviewRoundFailed failed for task ${reviewerTask.id}:`, err));
   }
 
   // Post a reviewer_escalated note on the original task so the PR surfaces in

@@ -30,7 +30,10 @@
  *    production had.
  * Both sides of a step are compared after `redactProse` (the exporter's own
  * rule), and after the documented `KNOWN_EVOLUTIONS` whose exact shape matches;
- * a delivery that needed one lists it in `tolerated`.
+ * a delivery that needed one lists it in `tolerated`. A recorded command whose
+ * input is retired (`RETIRED_INPUTS`) or a decision the kernel replaced on
+ * purpose (`SUPERSEDED_DECISIONS`) stops its delivery as `incomplete`, naming
+ * the change: later steps would be judged against a state the code never reaches.
  */
 import { sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +42,7 @@ import { ingestFact } from '../facts';
 import { applyCommand, loadView, type CommandResult, type Exec } from '../kernel';
 import type { KernelView } from '../types';
 import type { CorpusDelivery, CorpusEffect, CorpusFact, CorpusTransition } from './corpus';
-import { firstDivergence, normalizeForCompare, remapIds, summary, type Divergence, type StepDecision } from './diff';
+import { firstDivergence, normalizeForCompare, remapIds, RETIRED_INPUTS, SUPERSEDED_DECISIONS, summary, type Divergence, type StepDecision } from './diff';
 import { recordedReader, UnansweredRead } from './recorded-github';
 import { allocatedIds, buildSteps, isDecisionEffect, outOfBandAttemptEnds, outOfBandEffects, outOfBandFacts, reconstructCommand, stepTime, type Step } from './reconstruct';
 import { redactProse } from './sanitize';
@@ -255,6 +258,8 @@ export async function replayDelivery(c: CorpusDelivery, opts: ReplayOptions): Pr
           if (r.factId) factIds.set(s.fact.id, r.factId);
           result = r;
         } else {
+          const retired = RETIRED_INPUTS.find((x) => x.matches(s.expected));
+          if (retired) return incomplete(`${s.expected.command}: retired input, ${retired.id}`);
           const rc = reconstructCommand(s.expected, { view, corpus: c, factIds });
           if (!rc.ok) return incomplete(rc.missing);
           rc.inferred.forEach((x) => inferred.add(`${s.expected.command}.${x}`));
@@ -277,6 +282,8 @@ export async function replayDelivery(c: CorpusDelivery, opts: ReplayOptions): Pr
       const { recorded, replayed } = cmp;
       const div = firstDivergence(recorded, replayed);
       if (div) {
+        const superseded = SUPERSEDED_DECISIONS.find((x) => x.matches(recorded, replayed, view.delivery ? { state: view.delivery.state, stateReason: view.delivery.stateReason ?? null } : null));
+        if (superseded) return incomplete(`${div.field}: superseded decision, ${superseded.id}`);
         const outcome = result && 'reason' in result && result.reason ? `${result.result}: ${result.reason}` : String(result?.result ?? 'nothing');
         return done({
           result: 'diverged', stepIndex: i, step: stepLabel(s), divergence: div,
