@@ -2290,6 +2290,12 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha', 'resumeState']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2', resumeState: null }, 'a person\'s, at the reopened head');
       eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
       notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t1', headSha: 'H2', live: s.live('H2'), forced: false }), 'rejected', 'review_budget_spent', 'an agent asks again after the reopen');
+      // The person is told it is back with them: the exhaustion notice, once for the spend and once for the reopen.
+      eq(await s.count('escalate_exhaustion'), 2, 'one notice per escalation');
+      const fs = fakePorts(host);
+      fs.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      await drainKernel(host, s, fs.ports);
+      eq(fs.escalate.calls.map((x) => x.detail), ['after 1 review rounds', 'reopened after 1 review rounds; the review budget is still spent'], 'the reopen notice says what happened');
 
       // Closed while a CI repair out of the spent escalation runs: the reopen still goes to the person.
       const r = await new Delivery(host, 116).open({ maxRounds: 1 });
@@ -2301,6 +2307,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await r.submit({ type: 'PrReopened', actor: 'webhook', live: r.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'ESCALATED', 'reopened (repair)');
       eq(pick(await r.d(), ['stateReason', 'currentRound']), { stateReason: 'review_exhausted', currentRound: 1 }, 'a person\'s again');
       eq(await r.count('dispatch_review'), 1, 'no reviewer for the reopen');
+      eq(await r.count('escalate_exhaustion'), 2, 'the person is told again on the reopen');
 
       // Without a spent budget a reopen is reviewed, as before.
       const n = await new Delivery(host, 117).open();
@@ -2308,6 +2315,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await n.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: n.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed (fresh)');
       applied(await n.submit({ type: 'PrReopened', actor: 'webhook', live: n.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'AWAITING_REVIEW', 'reopened (fresh)');
       eq(await n.count('dispatch_review'), 2, 'the reopen dispatches a reviewer');
+      eq(await n.count('escalate_exhaustion'), 0, 'and tells nobody it is theirs');
     },
   },
   {

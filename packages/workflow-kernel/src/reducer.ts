@@ -1212,8 +1212,13 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
       const head = cmd.live.headSha;
       const r = c.startRound(head);
+      // `apply` redirects the round to the person; the person is told it is back with them, once
+      // per reopen (the version read), as the original exhaustion told them.
+      const told: EffectSpec[] = reviewBudgetHeld(dd)
+        ? [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${head}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, reopened: true } }]
+        : [];
       return c.apply(`reopen:${c.prKey}:${cmd.live.updatedAt ?? 'unknown'}`, 'AWAITING_REVIEW', {
-        patch: { ...r.patch, currentHeadSha: head, stateReason: null }, rounds: r.rounds, effects: r.effects, evidence: { live: cmd.live },
+        patch: { ...r.patch, currentHeadSha: head, stateReason: null }, rounds: r.rounds, effects: [...r.effects, ...told], evidence: { live: cmd.live },
       });
     }
 

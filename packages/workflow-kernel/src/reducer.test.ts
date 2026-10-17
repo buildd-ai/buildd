@@ -2321,6 +2321,11 @@ describe('79649a80: closing and reopening a PR does not reset a spent review bud
     noReview(dec);
     expect(dec.patch.currentHeadSha).toBe('H2');
     expect(dec.evidence).toMatchObject({ reviewBudgetSpent: true, heldFrom: 'CLOSED_UNMERGED' });
+    // The person is told it is back with them, once per reopen.
+    const told = dec.effects.filter((e) => e.kind === 'escalate_exhaustion');
+    expect(told).toEqual([{ kind: 'escalate_exhaustion', dedupeKey: 'exhaust:d1:H2@v5', payload: { family: 'review_fix', rounds: 3, reopened: true } }]);
+    const again = reopen(closed({ version: 9 }), 'H2').effects.find((e) => e.kind === 'escalate_exhaustion');
+    expect(again?.dedupeKey).toBe('exhaust:d1:H2@v9');
   });
 
   test('the closed delivery itself reads as held, so nothing automatic asks for a review there', () => {
@@ -2331,6 +2336,7 @@ describe('79649a80: closing and reopening a PR does not reset a spent review bud
   test('a delivery closed without a spent budget is reviewed on reopen, as before', () => {
     const dec = reopen(closed({ resumeState: null, currentRound: 1 }));
     expect({ to: dec.toState, round: dec.patch.currentRound, review: effectKinds(dec).includes('dispatch_review') }).toEqual({ to: 'AWAITING_REVIEW', round: 2, review: true });
+    expect(effectKinds(dec)).not.toContain('escalate_exhaustion');
   });
 
   test('after the reopen, only a person forcing a round asks again', () => {
