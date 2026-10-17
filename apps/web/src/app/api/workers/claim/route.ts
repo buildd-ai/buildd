@@ -153,13 +153,12 @@ import {
   openPrStartVerdict,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
-  softOverlapStartVerdict,
-  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
   type ClaimHoldNote,
   type ClaimRiskEvidence,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
+import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, overlapHolds, workspaceHardSurface } from './overlap-policy';
 import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
@@ -1620,6 +1619,16 @@ export async function POST(req: NextRequest) {
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
+      // Overlap policy (./overlap-policy): an open PR sharing only mergeable
+      // files does not hold; the task starts alongside it and the merge
+      // settles it. Only a PR on an unmergeable surface holds. Either way the
+      // collector below still records the model's question (never deciding).
+      const wsHardSurface = workspaceHardSurface((task as any).workspace?.gitConfig ?? null);
+      const holdingPr = blocking ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface) : null;
+      const startsAlongsidePr = blocking && !holdingPr
+        ? filterOpenPrTasks.find(t => (t.prNumber ?? null) === blocking.prNumber && (t.prUrl ?? null) === blocking.prUrl) ?? null
+        : null;
+      const heldByPr = holdingPr ? { prNumber: holdingPr.pr.prNumber ?? null, prUrl: holdingPr.pr.prUrl ?? null } : null;
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
       // The collector is synchronous and does no I/O, so what it needs is read
       // here: each overlapping holder's current PR diff, and (for a candidate
@@ -1629,15 +1638,31 @@ export async function POST(req: NextRequest) {
         ? await readOpenPrRiskEvidence(task, taskManifest, filterOpenPrTasks, splitOwnOpenPrs(task, openPrTasks).own)
         : {};
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
-      const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      // The model's verdict is recorded, never applied (gated: false): only the
+      // rule's disjoint-diff START can lift a hold on an unmergeable surface.
+      const openPrVerdict = heldByPr && holdNote ? await openPrStartVerdict(holdNote, false) : 'HOLD';
       if (blocking) sawCoordinationBlocker = true;
-      if (blocking && openPrVerdict !== 'HOLD') {
-        if (openPrVerdict === 'START' && holdNote) jevStartNotes.push(holdNote);
-        console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
+      if (startsAlongsidePr) {
+        const sharedPaths = boundDeferralPaths(intersectPaths(taskManifest, startsAlongsidePr.pathManifest ?? []));
+        console.log(`[claim] overlap_start: task ${task.id} starts alongside PR #${blocking!.prNumber ?? blocking!.prUrl} (mergeable files)`);
+        softOverlapStarted.push({
+          gate: 'open_pr_overlap',
+          holderTaskId: startsAlongsidePr.taskId ?? null,
+          prNumber: startsAlongsidePr.prNumber ?? null,
+          paths: sharedPaths,
+          overlapKind: 'mergeable',
+          decidedBy: 'rule',
+          riskTier: holdNote?.candidate.risk?.tier ?? null,
+          areaClass: CLAIM_LEARNING_HOOKS.areaClass(sharedPaths),
+        });
+        const exclusive = exclusiveStartPaths(taskManifest, wsHardSurface);
+        if (exclusive.length > 0) gatedStartPaths = exclusive;
+      } else if (heldByPr && openPrVerdict !== 'HOLD') {
+        console.log(`[claim] rule_start: task ${task.id} past open-PR overlap (PR #${heldByPr.prNumber ?? heldByPr.prUrl}); acquiring its paths`);
         gatedStartPaths = holdNote!.candidate.concretePaths;
-      } else if (blocking) {
-        console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
-        const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
+      } else if (heldByPr) {
+        console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${heldByPr.prNumber ?? heldByPr.prUrl} on an unmergeable surface)`);
+        const blockedByPr = heldByPr;
         firstBlockingPr ??= blockedByPr;
         const blockingEntry = filterOpenPrTasks.find(
           t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
@@ -1679,36 +1704,49 @@ export async function POST(req: NextRequest) {
       // A fix attempt's own ancestors never block it (§13.11 rule 4).
       const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds);
       if (leaseBlock) {
-        const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = leaseBlock;
-        console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-        if (task.id === taskId && !liftedByForce('path_overlap')) {
-          explicitTaskExclusion = {
-            code: 'path_overlap',
-            detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
-          };
+        // Overlap policy (./overlap-policy): a live lease on mergeable files
+        // does not hold, the task starts alongside it; an unmergeable one does,
+        // and so does any lease in a workspace that enforces path claims.
+        const holdingLease = findHoldingLease(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds, (task as any).workspace?.gitConfig ?? null);
+        if (!holdingLease) {
+          const sharedPaths = boundDeferralPaths(leaseBlock.overlapPaths);
+          softOverlapStarted.push({
+            gate: 'lease_overlap', holderTaskId: leaseBlock.holderTaskId, paths: sharedPaths, overlapKind: 'mergeable',
+            decidedBy: 'rule', riskTier: null, areaClass: CLAIM_LEARNING_HOOKS.areaClass(sharedPaths),
+          });
         }
-        // prNumber/prUrl: null so a coalesced row does not keep naming a
-        // PR from an earlier layer-1 deferral as the current blocker.
-        if (bypassOrDefer('path_overlap', {
-          blockingTaskId: claimingTaskId, prNumber: null, prUrl: null, paths: boundDeferralPaths(overlapPaths),
-        })) {
-          // The holder's lease paths, so a narrowing that gives one back
-          // wakes this task too (narrow matches waiters by exact path).
-          noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
-          continue;
+        const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = holdingLease ?? leaseBlock;
+        if (holdingLease) {
+          console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+          if (task.id === taskId && !liftedByForce('path_overlap')) {
+            explicitTaskExclusion = {
+              code: 'path_overlap',
+              detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
+            };
+          }
+          // prNumber/prUrl: null so a coalesced row does not keep naming a
+          // PR from an earlier layer-1 deferral as the current blocker.
+          if (bypassOrDefer('path_overlap', {
+            blockingTaskId: claimingTaskId, prNumber: null, prUrl: null, paths: boundDeferralPaths(overlapPaths),
+          })) {
+            // The holder's lease paths, so a narrowing that gives one back
+            // wakes this task too (narrow matches waiters by exact path).
+            noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
+            continue;
+          }
         }
       }
 
       // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
       // scope overlaps this one's on the same file or by directory prefix, or a
-      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
-      // (serialized, generated, hotspot) / unknown-state entry holds
-      // deterministically. The rest is tiered (orchestration-claim-risk): a
-      // holder that never started, or a directory-only overlap, starts in code
-      // (`rule_start`); a same-file one holds unless an applied Jev START
-      // exists for this exact state. Either START's declared paths are then
-      // acquired exclusively before the claim (a live lease wins). Forced:
-      // bypassed and recorded.
+      // pre-v2 inferred edge. Never a dependsOn edge. An overlap on an
+      // unmergeable surface (./overlap-policy: migration, the core list, a
+      // workspace hard surface) or an unknown-state entry holds
+      // deterministically. Every other overlap starts in code (`rule_start`):
+      // the model is still asked and its answer recorded, but it does not
+      // decide. A START acquires only its unmergeable paths exclusively before
+      // the claim, so a third task on the same mergeable file starts too.
+      // Forced: bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
             // Only same-PR conflict/collision attempts get this exemption. Other
@@ -1716,16 +1754,16 @@ export async function POST(req: NextRequest) {
             repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
               ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
               : [],
-            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
+            isHardSurface: (paths, kind) => overlapHolds(paths, kind, workspaceHardSurface((task as any).workspace?.gitConfig ?? null)),
           })
         : [];
       let softHeld = false;
       if (softVerdicts.length) sawCoordinationBlocker = true;
       for (const v of softVerdicts) {
         let softNote: ClaimHoldNote | null = null;
-        // The rule's verdict: deterministic for a hard overlap, HOLD for a
-        // same-file or prefix one until an applied Jev START says otherwise.
-        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        // The rule's verdict: deterministic for an unmergeable overlap, START
+        // for every other one.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'rule_start';
         let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
           v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         // A person's Force start already decided this overlap: no Jev read.
@@ -1740,19 +1778,22 @@ export async function POST(req: NextRequest) {
             : null;
           softNote = assessed?.note ?? null;
           if (assessed) risk = assessed.risk;
-          verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
-        if (verdict === 'START' && softNote) jevStartNotes.push(softNote);
-        if (verdict === 'START' || verdict === 'rule_start') {
-          console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
-          gatedStartPaths = concreteManifest;
+        if (verdict === 'rule_start') {
+          console.log(`[claim] overlap_start: task ${task.id} starts alongside ${v.holderTaskId} (${v.overlapKind}, mergeable files)`);
+          const exclusive = exclusiveStartPaths(concreteManifest, workspaceHardSurface((task as any).workspace?.gitConfig ?? null));
+          if (exclusive.length > 0) gatedStartPaths = exclusive;
           softOverlapStarted.push({
+            gate: 'soft_overlap',
             holderTaskId: v.holderTaskId,
             paths: v.paths.slice(0, 10),
             overlapKind: v.overlapKind,
-            decidedBy: verdict === 'rule_start' ? 'rule' : 'jev',
+            decidedBy: 'rule',
             riskTier: risk?.tier ?? null,
             reasons: risk?.reasons.slice(0, 4) ?? [],
+            // What the model would have answered, for grading; it did not decide.
+            modelRoute: softNote?.candidate.risk?.route ?? null,
+            areaClass: CLAIM_LEARNING_HOOKS.areaClass(v.paths),
           });
           continue;
         }

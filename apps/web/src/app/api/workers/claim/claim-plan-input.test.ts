@@ -114,8 +114,8 @@ describe('splitOwnOpenPrs', () => {
 describe('buildClaimPlanInput', () => {
   it('orders a candidate behind an open PR with overlapping files', () => {
     const src = source({
-      candidates: [task('a', { pathManifest: ['src/x.ts'] })],
-      openPrTasksByWorkspace: new Map([['ws-1', [pr('p', 1, ['src/x.ts'])]]]),
+      candidates: [task('a', { pathManifest: ['src/bun.lock'] })],
+      openPrTasksByWorkspace: new Map([['ws-1', [pr('p', 1, ['src/bun.lock'])]]]),
     });
     const plan = planClaimBatch(buildClaimPlanInput(src).input);
     expect(plan.picks).toEqual([]);
@@ -130,9 +130,9 @@ describe('buildClaimPlanInput', () => {
   });
 
   it('a live lease held by another task orders the candidate behind it; its own lease does not', () => {
-    const leases = new Map([['ws-1', new Map([['other', ['src/x.ts']], ['a', ['src/y.ts']]])]]);
+    const leases = new Map([['ws-1', new Map([['other', ['src/bun.lock']], ['a', ['src/y.ts']]])]]);
     const plan = planClaimBatch(buildClaimPlanInput(source({
-      candidates: [task('a', { pathManifest: ['src/x.ts', 'src/y.ts'] })],
+      candidates: [task('a', { pathManifest: ['src/bun.lock', 'src/y.ts'] })],
       activePathClaimsByWorkspace: leases,
     })).input);
     expect(plan.picks).toEqual([]);
@@ -202,11 +202,30 @@ describe('buildClaimPlanInput', () => {
 
   it('a task claimed earlier in the batch is in flight for the next plan', () => {
     const plan = planClaimBatch(buildClaimPlanInput(source({
-      candidates: [task('b', { pathManifest: ['src/x.ts'] })],
-      claimedThisBatch: [task('a', { pathManifest: ['src/x.ts'] })],
+      candidates: [task('b', { pathManifest: ['src/bun.lock'] })],
+      claimedThisBatch: [task('a', { pathManifest: ['src/bun.lock'] })],
     })).input);
     expect(plan.picks).toEqual([]);
     expect(plan.orientation[0]).toMatchObject({ taskId: 'b', blockedBy: 'w:a', reason: 'in_flight' });
+  });
+
+  // Overlap policy (./overlap-policy): only an unmergeable surface is an edge.
+  it('a mergeable shared file is no edge: open PR, live lease and batch peer all leave the candidate pickable', () => {
+    expect(picks(source({
+      candidates: [task('a', { pathManifest: ['src/x.ts'] })],
+      openPrTasksByWorkspace: new Map([['ws-1', [pr('p', 1, ['src/x.ts'])]]]),
+      activePathClaimsByWorkspace: new Map([['ws-1', new Map([['other', ['src/x.ts']]])]]),
+      claimedThisBatch: [task('z', { pathManifest: ['src/x.ts'] })],
+    }))).toEqual(['a']);
+  });
+
+  it('a workspace that enforces path claims keeps every live lease an edge', () => {
+    const plan = planClaimBatch(buildClaimPlanInput(source({
+      candidates: [task('a', { pathManifest: ['src/x.ts'], workspace: { id: 'ws-1', gitConfig: { pathClaimEnforcement: 'enforce' } } })],
+      activePathClaimsByWorkspace: new Map([['ws-1', new Map([['other', ['src/x.ts']]])]]),
+    })).input);
+    expect(plan.picks).toEqual([]);
+    expect(plan.orientation[0]).toMatchObject({ blockedBy: 'lease:other', edge: 'lease_overlap' });
   });
 
   it('carries starvation credit, dependents and size from the signals', () => {

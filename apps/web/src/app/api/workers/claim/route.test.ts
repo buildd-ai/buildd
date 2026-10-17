@@ -6444,8 +6444,8 @@ describe('path-overlap claim guard', () => {
     // 1st tasks.findMany → claimable tasks (has pathManifest)
     // 2nd tasks.findMany → PR task manifests (same file → overlap)
     mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-      .mockResolvedValueOnce([{ id: 'pr-task-1', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+      .mockResolvedValueOnce([taskWithManifest(['bun.lock'])])
+      .mockResolvedValueOnce([{ id: 'pr-task-1', pathManifest: ['bun.lock'] }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -6459,6 +6459,55 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(0);
   });
 
+  // Overlap policy (./overlap-policy): an open PR sharing only mergeable files
+  // does not hold; the task starts alongside it and the start is recorded with
+  // the shared paths, for the merge-conflict readout.
+  it('starts a task whose pathManifest overlaps an open PR only on a mergeable file, and records the start', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockFireGateEvent.mockClear();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'pr-task-1', prNumber: 1126, prUrl: 'https://github.com/org/repo/pull/1126', status: 'running' },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/x.ts'])])
+      .mockResolvedValueOnce([{ id: 'pr-task-1', pathManifest: ['apps/web/src/lib/x.ts'] }]);
+
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+    const data = await res.json();
+    expect(data.workers).toHaveLength(1);
+    const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
+    expect(started).toMatchObject({
+      outcome: 'accepted', taskId: 'task-1',
+      detail: { gate: 'open_pr_overlap', holderTaskId: 'pr-task-1', prNumber: 1126, paths: ['apps/web/src/lib/x.ts'], decidedBy: 'rule', areaClass: 'other' },
+    });
+  });
+
+  it('still defers when an open PR shares a mergeable file AND a later one shares an unmergeable file', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'pr-task-1', prNumber: 1126, prUrl: 'https://github.com/org/repo/pull/1126', status: 'running' },
+        { workspaceId: 'ws-1', taskId: 'pr-task-2', prNumber: 1127, prUrl: 'https://github.com/org/repo/pull/1127', status: 'running' },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/x.ts', 'packages/core/db/schema.ts'])])
+      .mockResolvedValueOnce([
+        { id: 'pr-task-1', pathManifest: ['apps/web/src/lib/x.ts'] },
+        { id: 'pr-task-2', pathManifest: ['packages/core/db/schema.ts'] },
+      ]);
+
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+    const data = await res.json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    expect(data.diagnostics?.blockedByPr?.prNumber).toBe(1127);
+  });
+
   // The live shape (PR #3983): a trunk → mission refresh PR whose task manifest
   // grew to every trunk file its merge touched. It changes nothing on trunk, so
   // a trunk-bound task on one of those files is not waiting on it
@@ -6466,10 +6515,10 @@ describe('path-overlap claim guard', () => {
   describe('open PR into a different landing base', () => {
     const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
     const trunkTask = () => ({
-      ...taskWithManifest(['apps/web/src/app/api/workers/claim/route.ts']),
+      ...taskWithManifest(['bun.lock']),
       workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev', claimPlanner: 'record' }, teamId: 'team-1' },
     });
-    const refreshManifest = ['apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/lib/pr-landing.ts', 'packages/core/mcp-tools.ts'];
+    const refreshManifest = ['bun.lock', 'apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/lib/pr-landing.ts', 'packages/core/mcp-tools.ts'];
 
     async function claimWith(prBaseRef: string) {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
@@ -6515,7 +6564,7 @@ describe('path-overlap claim guard', () => {
     // 1st tasks.findMany → claimable tasks
     // 2nd tasks.findMany → PR task manifests (different file — no overlap)
     mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([taskWithManifest(['bun.lock'])])
       .mockResolvedValueOnce([{ id: 'pr-task-2', pathManifest: ['packages/core/db/schema.ts'] }]);
 
     const req = createMockRequest({
@@ -6548,7 +6597,7 @@ describe('path-overlap claim guard', () => {
     };
     mockTasksFindMany
       .mockResolvedValueOnce([taskNoManifest])
-      .mockResolvedValueOnce([{ id: 'pr-task-3', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+      .mockResolvedValueOnce([{ id: 'pr-task-3', pathManifest: ['bun.lock'] }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -6630,7 +6679,7 @@ describe('path-overlap claim guard', () => {
 
     // Claimable task is a conflict-retry task with the same pathManifest and same PR number
     const conflictRetryTask = {
-      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      ...taskWithManifest(['yarn.lock']),
       id: 'conflict-retry-task',
       title: '[builder · after conflict #1] Fix merge conflicts',
       missionId: 'mission-1',
@@ -6642,7 +6691,7 @@ describe('path-overlap claim guard', () => {
     // PR task manifest lookup (should be filtered out for conflict-retry tasks)
     mockTasksFindMany
       .mockResolvedValueOnce([conflictRetryTask])
-      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] }]);
+      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['yarn.lock'] }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -6713,7 +6762,7 @@ describe('path-overlap claim guard', () => {
         ]);
 
       const fixTask = {
-        ...taskWithManifest(['.github/workflows/integration.yml']),
+        ...taskWithManifest(['bun.lock']),
         id: 'fix-task',
         [column]: 2659,
       };
@@ -6721,8 +6770,8 @@ describe('path-overlap claim guard', () => {
       mockTasksFindMany
         .mockResolvedValueOnce([fixTask])
         .mockResolvedValueOnce([
-          { id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] },
-          { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+          { id: 'original-task', pathManifest: ['bun.lock'] },
+          { id: 'sibling-task', pathManifest: ['bun.lock'] },
         ]);
 
       const req = createMockRequest({
@@ -6873,7 +6922,7 @@ describe('path-overlap claim guard', () => {
       ]);
 
     const takeoverTask = {
-      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      ...taskWithManifest(['yarn.lock']),
       id: 'takeover-task',
       title: 'Rebase and land PR #2659',
       subjectKind: 'pull_request',
@@ -6883,7 +6932,7 @@ describe('path-overlap claim guard', () => {
 
     mockTasksFindMany
       .mockResolvedValueOnce([takeoverTask])
-      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] }]);
+      .mockResolvedValueOnce([{ id: 'original-task', pathManifest: ['yarn.lock'] }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -6909,7 +6958,7 @@ describe('path-overlap claim guard', () => {
       ]);
 
     const takeoverTask = {
-      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      ...taskWithManifest(['yarn.lock']),
       id: 'takeover-task',
       title: 'Rebase and land PR #2659',
       subjectKind: 'pull_request',
@@ -6920,8 +6969,8 @@ describe('path-overlap claim guard', () => {
     mockTasksFindMany
       .mockResolvedValueOnce([takeoverTask])
       .mockResolvedValueOnce([
-        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
-        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'original-task', pathManifest: ['yarn.lock'] },
+        { id: 'sibling-task', pathManifest: ['yarn.lock'] },
       ]);
 
     const req = createMockRequest({
@@ -6981,10 +7030,10 @@ describe('path-overlap claim guard', () => {
       ]);
 
     mockTasksFindMany
-      .mockResolvedValueOnce([{ ...taskWithManifest(['.github/workflows/integration.yml']), id: 'loop-task' }])
+      .mockResolvedValueOnce([{ ...taskWithManifest(['bun.lock']), id: 'loop-task' }])
       .mockResolvedValueOnce([
-        { id: 'loop-task', pathManifest: ['.github/workflows/integration.yml'] },
-        { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+        { id: 'loop-task', pathManifest: ['bun.lock'] },
+        { id: 'sibling-task', pathManifest: ['bun.lock'] },
       ]);
 
     const res = await POST(createMockRequest({
@@ -7012,7 +7061,7 @@ describe('path-overlap claim guard', () => {
       ]);
 
     const conflictRetryTask = {
-      ...taskWithManifest(['apps/web/src/lib/conflict-retry.ts']),
+      ...taskWithManifest(['yarn.lock']),
       id: 'conflict-retry-task',
       conflictRetryPrNumber: 2659,
     };
@@ -7020,8 +7069,8 @@ describe('path-overlap claim guard', () => {
     mockTasksFindMany
       .mockResolvedValueOnce([conflictRetryTask])
       .mockResolvedValueOnce([
-        { id: 'original-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
-        { id: 'sibling-task', pathManifest: ['apps/web/src/lib/conflict-retry.ts'] },
+        { id: 'original-task', pathManifest: ['yarn.lock'] },
+        { id: 'sibling-task', pathManifest: ['yarn.lock'] },
       ]);
 
     const req = createMockRequest({
@@ -7054,8 +7103,8 @@ describe('path-overlap claim guard', () => {
         },
       ]);
     mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-      .mockResolvedValueOnce([{ id: 'parked-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+      .mockResolvedValueOnce([taskWithManifest(['bun.lock'])])
+      .mockResolvedValueOnce([{ id: 'parked-task', pathManifest: ['bun.lock'] }]);
     return POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { runner: 'test-runner' },
@@ -7111,8 +7160,8 @@ describe('path-overlap claim guard', () => {
       ]);
 
     mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+      .mockResolvedValueOnce([taskWithManifest(['bun.lock'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['bun.lock'] }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -7125,7 +7174,7 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics?.taskExclusion).toEqual({
       code: 'path_overlap',
-      detail: 'Its files overlap open PR #2700 (apps/web/src/lib/mcp-oauth.ts). Wait for it to merge, or rebase onto it.',
+      detail: 'Its files overlap open PR #2700 (bun.lock). Wait for it to merge, or rebase onto it.',
     });
   });
 
@@ -7142,8 +7191,8 @@ describe('path-overlap claim guard', () => {
         { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
       ]);
     mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+      .mockResolvedValueOnce([taskWithManifest(['bun.lock'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['bun.lock'] }]);
 
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
 
@@ -7152,7 +7201,7 @@ describe('path-overlap claim guard', () => {
       prNumber: 2700,
       prUrl: 'https://github.com/org/repo/pull/2700',
       blockingTaskId: 'sibling-task',
-      paths: ['apps/web/src/lib/mcp-oauth.ts'],
+      paths: ['bun.lock'],
     });
   });
 
@@ -7164,10 +7213,10 @@ describe('path-overlap claim guard', () => {
       .mockResolvedValueOnce([]) // active workers
       .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
     mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
-      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
+      new Map([['task-9', ['bun.lock']]]),
     );
 
-    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['bun.lock'])]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -7180,7 +7229,7 @@ describe('path-overlap claim guard', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics?.taskExclusion).toEqual({
       code: 'path_overlap',
-      detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
+      detail: 'Its files overlap an active claim held by task task-9 (bun.lock). Wait for that task to finish, or rebase onto its work.',
     });
   });
 
@@ -7192,10 +7241,10 @@ describe('path-overlap claim guard', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
-      new Map([['task-parent', ['apps/web/src/lib/mcp-oauth.ts']]]),
+      new Map([['task-parent', ['bun.lock']]]),
     );
     mockTasksFindMany.mockResolvedValueOnce([{
-      ...taskWithManifest(['apps/web/src/lib/mcp-oauth.ts']),
+      ...taskWithManifest(['bun.lock']),
       taskClass: 'attempt',
       parentTaskId: 'task-parent',
       context: { rootTaskId: 'task-parent', lineagePrNumbers: [2700] },
@@ -7231,15 +7280,15 @@ describe('path-overlap claim guard', () => {
           { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'completed', prLifecycleStatus: 'open' },
         ]);
       mockTasksFindMany
-        .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-        .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib', 'docs/x.md'] }]);
+        .mockResolvedValueOnce([taskWithManifest(['packages/core/drizzle/0300_x.sql'])])
+        .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['packages/core/drizzle', 'docs/x.md'] }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
       expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
       await flush();
       expect(mockRegisterClaimDeferralWaiters).toHaveBeenCalledTimes(1);
       expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
-        { waitingTaskId: 'task-1', blockingTaskId: 'sibling-task', blockedPath: 'apps/web/src/lib' },
+        { waitingTaskId: 'task-1', blockingTaskId: 'sibling-task', blockedPath: 'packages/core/drizzle' },
       ]]);
     });
 
@@ -7247,14 +7296,14 @@ describe('path-overlap claim guard', () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupForClaim();
       mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
-      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['bun.lock']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['bun.lock'])]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
       expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
       await flush();
       expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
-        { waitingTaskId: 'task-1', blockingTaskId: 'task-9', blockedPath: 'apps/web/src/lib/mcp-oauth.ts' },
+        { waitingTaskId: 'task-1', blockingTaskId: 'task-9', blockedPath: 'bun.lock' },
       ]]);
     });
 
@@ -7262,7 +7311,7 @@ describe('path-overlap claim guard', () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupForClaim();
       mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['bun.lock'])]);
 
       await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
       await flush();
@@ -7273,8 +7322,8 @@ describe('path-overlap claim guard', () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       setupForClaim();
       mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
-      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['bun.lock']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['bun.lock'])]);
       mockRegisterClaimDeferralWaiters.mockRejectedValueOnce(new Error('db down'));
       const errSpy = mock(() => {});
       const origError = console.error;
@@ -8890,10 +8939,10 @@ describe('claim gate overrides', () => {
 
     it('layer 2: a path_claim deferral clears prNumber/prUrl so a coalesced gate row cannot name a stale PR', async () => {
       mockTasksFindMany
-        .mockResolvedValueOnce([advisoryTask('task-1', null, ['apps/web/src/a.ts'])])
+        .mockResolvedValueOnce([advisoryTask('task-1', null, ['apps/web/bun.lock'])])
         .mockResolvedValue([]);
       mockGetActiveClaimsByWorkspace.mockResolvedValue(
-        new Map([['task-9', ['apps/web/src/a.ts']]]),
+        new Map([['task-9', ['apps/web/bun.lock']]]),
       );
       mockFireDeferralEvent.mockClear();
 
@@ -8904,15 +8953,15 @@ describe('claim gate overrides', () => {
       const ev = mockFireDeferralEvent.mock.calls
         .map((c: any[]) => c[0])
         .find((e: any) => e.reason === 'path_overlap');
-      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null, paths: ['apps/web/src/a.ts'] });
+      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null, paths: ['apps/web/bun.lock'] });
     });
 
-    it('layer 2: a manifest of ["**","a.ts"] still respects a held path_claim on a.ts', async () => {
+    it('layer 2: a manifest of ["**","bun.lock"] still respects a held path_claim on a.ts', async () => {
       mockTasksFindMany
-        .mockResolvedValueOnce([advisoryTask('task-1', null, ['**', 'apps/web/src/a.ts'])])
+        .mockResolvedValueOnce([advisoryTask('task-1', null, ['**', 'apps/web/bun.lock'])])
         .mockResolvedValue([]);
       mockGetActiveClaimsByWorkspace.mockResolvedValue(
-        new Map([['task-9', ['apps/web/src/a.ts']]]),
+        new Map([['task-9', ['apps/web/bun.lock']]]),
       );
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
@@ -10248,8 +10297,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
-      .mockResolvedValueOnce([task({ pathManifest: ['a.ts'] })])
-      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['a.ts'] }]);
+      .mockResolvedValueOnce([task({ pathManifest: ['bun.lock'] })])
+      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['bun.lock'] }]);
     mockEvaluateForcedGates.mockResolvedValue(['deps_blocked']);
     const ctx = claimedContext();
 
@@ -10265,7 +10314,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
   it('force past a soft overlap: claimed, and the human START is recorded with the holder and paths as calibration data', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
-    softHoldersTest.rows = new Map([['holder-1', { id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/widget.ts'], workerStatus: 'running', title: 'Holder' }]]);
+    softHoldersTest.rows = new Map([['holder-1', { id: 'holder-1', status: 'in_progress', pathManifest: ['apps/web/src/lib/bun.lock'], workerStatus: 'running', title: 'Holder' }]]);
     mockTasksFindMany
       .mockResolvedValueOnce(forceTarget())
       .mockResolvedValueOnce([task({
@@ -10279,8 +10328,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
       expect(data.workers).toHaveLength(1);
       expect(ctx().forceClaim.bypassed).toContain('soft_overlap');
       const forced = bypassEvents().find((e: any) => e.reason === 'force_soft_overlap');
-      expect(forced).toMatchObject({ taskId: 'task-1', workerId: 'worker-1', detail: { holderTaskId: 'holder-1', calibration: 'human_force', verdict: 'HOLD', overlapKind: 'prefix' } });
-      expect(forced.detail.paths).toContain('apps/web/src/lib/widget.ts');
+      expect(forced).toMatchObject({ taskId: 'task-1', workerId: 'worker-1', detail: { holderTaskId: 'holder-1', calibration: 'human_force', verdict: 'deterministic_hold', overlapKind: 'hard_surface' } });
+      expect(forced.detail.paths).toContain('apps/web/src/lib/bun.lock');
     } finally {
       softHoldersTest.rows = new Map();
     }
@@ -10301,8 +10350,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
     mockTasksFindMany
-      .mockResolvedValueOnce([task({ pathManifest: ['a.ts'] })])
-      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['a.ts'] }]);
+      .mockResolvedValueOnce([task({ pathManifest: ['bun.lock'] })])
+      .mockResolvedValueOnce([{ id: 'sibling', pathManifest: ['bun.lock'] }]);
 
     const data = await (await claim({ runner: 'mcp' })).json();
     expect(data.workers).toHaveLength(0);
@@ -10610,7 +10659,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       title: 'Task one',
       backend: 'claude' as const,
       dependsOn: [],
-      pathManifest: ['apps/web/src/lib/widget.ts'],
+      pathManifest: ['bun.lock'],
       context: {},
       createdAt: new Date('2026-09-30T11:00:00Z'),
       workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
@@ -10679,7 +10728,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     openPrAfterWorkerEnded: () => arm({
       tasks: [task()],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
     }),
   };
 
@@ -10720,7 +10769,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
   ])('a malformed workspace gitConfig (%s) leaves the claim response unchanged: same deferral, no 500', async (_name, gitConfig) => {
     const openPrs = [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }];
-    const prManifests = [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }];
+    const prManifests = [{ id: 'pr-task', pathManifest: ['bun.lock'] }];
     const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
     const malformed = await claimWith(holdStartOn(), () => arm({
       tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', ...gitConfig } } })], openPrs, prManifests,
@@ -10750,11 +10799,11 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     'a live PR holder (worker running)': () => arm({
       tasks: [task()],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'running', prLifecycleStatus: 'pr_open' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
     }),
     'an exclusive live lease (layer 2)': () => arm({
       tasks: [task()],
-      leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+      leases: new Map([['task-9', ['bun.lock']]]),
     }),
     'a migration path': () => arm({
       tasks: [task({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })],
@@ -10790,7 +10839,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     const on = await claimWith(holdStartOn(), () => arm({
       tasks: [task({ [column]: 41 })],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
     }));
     expect(on.body.workers).toHaveLength(1);
     expect(on.scheduled).toBe(0);
@@ -10800,7 +10849,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     const on = await claimWith(holdStartOn(), () => arm({
       tasks: [task({ subjectKind: 'pull_request', subjectPrNumber: 41 })],
       openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
     }));
     expect(on.body.workers).toHaveLength(1);
     expect(on.scheduled).toBe(0);
@@ -10836,15 +10885,22 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.rows).toHaveLength(0);
     });
 
-    it('relaxes only the open-PR overlap and acquires the declared paths exclusively first', async () => {
-      const on = await claimWith(gated(), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(1);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    // The model's verdict is recorded, never applied: an open-PR overlap on an
+    // unmergeable surface holds whatever the ledger says.
+    it('an applied Jev START does not lift an unmergeable open-PR overlap: the hold stands, nothing acquired', async () => {
+      let lookups = 0;
+      const on = await claimWith(gated({ findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+      expect(lookups).toBe(0);
+      expect(acquired).toHaveLength(0);
+      // Still asked, so the verdict can be graded.
+      expect(on.rows).toHaveLength(1);
     });
 
-    it('as shipped (default definition and fraction) an applied START on the ledger lets the claim through', async () => {
+    it('as shipped (default definition and fraction) an applied START on the ledger still does not let it through', async () => {
       const on = await claimWith(gated({ decision: undefined, applyingFraction: undefined }), scenarios.openPrAfterWorkerEnded);
-      expect(on.body.workers).toHaveLength(1);
+      expect(on.body.workers).toHaveLength(0);
     });
 
     // The stale mission-refresh shape: the holder's task manifest was inherited
@@ -10864,7 +10920,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
         expect(lookups).toBe(0);
         expect(on.rows).toHaveLength(0);
         expect(riskEvidenceTest.scopeCalls).toEqual([[41]]);
-        expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+        expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['bun.lock'], declare: true }]);
       });
 
       it('goes back to Jev once the head moves: the diff read at the old head no longer counts', async () => {
@@ -10883,7 +10939,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       });
 
       it('holds when the current diff still touches the candidate\'s file', async () => {
-        riskEvidenceTest.prScopes.set(41, diff(['apps/web/src/lib/widget.ts']));
+        riskEvidenceTest.prScopes.set(41, diff(['bun.lock']));
         const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
         expect(on.body.workers).toHaveLength(0);
         expect(on.rows).toHaveLength(1);
@@ -10901,22 +10957,22 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
         const on = await claimWith(gated(), () => arm({
           tasks: [task()],
           openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
-          leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+          prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
+          leases: new Map([['task-9', ['bun.lock']]]),
         }));
         expect(on.body.workers).toHaveLength(0);
         expect(acquired).toHaveLength(0);
       });
 
       it('a real conflict probe of the pair holds in code, naming the files, even with a disjoint-looking record', async () => {
-        riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: NOW, headsCurrent: true };
+        riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['bun.lock'], probedAt: NOW, headsCurrent: true };
         const on = await claimWith(gated({ findAppliedStart: async () => true }), () => arm({
           tasks: [task({ conflictRetryPrNumber: 99 })],
           openPrs: [
             { workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', branch: 'holder', status: 'completed', prLifecycleStatus: 'ci_green' },
             { workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own', status: 'completed', prLifecycleStatus: 'ci_green' },
           ],
-          prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }, { id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+          prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }, { id: 'task-1', pathManifest: ['bun.lock'] }],
         }));
         expect(on.body.workers).toHaveLength(0);
         expect(on.rows).toHaveLength(0);
@@ -10946,8 +11002,8 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       const on = await claimWith(gated(), () => arm({
         tasks: [task()],
         openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
-        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
-        leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+        prManifests: [{ id: 'pr-task', pathManifest: ['bun.lock'] }],
+        leases: new Map([['task-9', ['bun.lock']]]),
       }));
       expect(on.body.workers).toHaveLength(0);
       expect(acquired).toHaveLength(0);
@@ -10959,15 +11015,15 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(acquired).toHaveLength(0);
     });
 
-    it('a later gate (mission concurrency cap) still applies after a relaxed advisory gate', async () => {
+    it('a later gate (mission concurrency cap) still applies after an open-PR overlap on mergeable files starts', async () => {
       const on = await claimWith(gated(), () => arm({
-        tasks: [task()],
+        tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'] })],
         openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
         prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
       }));
       expect(on.body.workers).toHaveLength(1);
       const capped = await claimWith(gated(), () => arm({
-        tasks: [task({ missionId: 'mission-A' })],
+        tasks: [task({ missionId: 'mission-A', pathManifest: ['apps/web/src/lib/widget.ts'] })],
         missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
         inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
         openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
@@ -10975,10 +11031,13 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       }));
       expect(capped.body.workers).toHaveLength(0);
       expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
-      expect(acquired).toHaveLength(1);
+      expect(acquired).toHaveLength(0);
     });
   });
 
+  // Overlap policy (./overlap-policy): a soft overlap on mergeable files starts
+  // in code and the model's answer is recorded, never applied; only an
+  // unmergeable surface holds.
   describe('soft overlap (same-file or prefix declared overlap, never a dependsOn edge)', () => {
     const acquired: any[] = [];
     const soft = (entries: any[], pathManifest: string[] = ['apps/web/src/lib/']) => task({
@@ -10991,89 +11050,92 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
       ...over,
     });
-    beforeEach(() => { acquired.length = 0; softHoldersTest.rows = new Map([['holder-1', holderRow()]]); softHoldersTest.calls = 0; });
+    const answering = (choice: 'HOLD' | 'START') => ({
+      decisionDeps: { ...holdStartOn().decisionDeps, call: (async () => ({ ok: true, answers: { action: { choice, confidence: 0.99, distribution: {} } }, model: JEV, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any },
+    });
+    const started = () => (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.reason === 'soft_overlap_start');
+    const softDeferral = () => (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+    beforeEach(() => {
+      acquired.length = 0; softHoldersTest.rows = new Map([['holder-1', holderRow()]]); softHoldersTest.calls = 0;
+      mockFireGateEvent.mockClear(); mockFireDeferralEvent.mockClear();
+    });
     afterEach(() => { softHoldersTest.rows = new Map(); });
 
-    it('Jev HOLD (no applied START): the task waits, the decision is asked, and the wait is on the gate ledger', async () => {
-      mockFireDeferralEvent.mockClear();
-      const on = await claimWith(withStart(false, {
-        decisionDeps: { ...holdStartOn().decisionDeps, call: (async () => ({ ok: true, answers: { action: { choice: 'HOLD', confidence: 0.99, distribution: {} } }, model: JEV, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 })) as any },
-      }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
-      expect(on.rows).toHaveLength(1);
-      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', effective: 'HOLD', taskId: 'task-1' });
-      const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
-      expect(ledger).toMatchObject({ outcome: 'deferred', taskId: 'task-1', detail: { holderTaskId: 'holder-1', verdict: 'HOLD', riskTier: 'uncertain' } });
-      expect(ledger.detail.paths).toContain('apps/web/src/lib/widget.ts');
-      expect(typeof ledger.detail.rationale).toBe('string');
-      expect(ledger.detail.reevaluateOn).toContain('model_answer');
-    });
-
-    it('Jev START (applied for this state): the task runs, its declared paths acquired exclusively first, recorded as decided by Jev', async () => {
-      mockFireGateEvent.mockClear();
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+    it('a same-file overlap on a mergeable file starts though the model answers HOLD: the answer is recorded, it does not decide', async () => {
+      let lookups = 0;
+      const on = await claimWith(withStart(false, { ...answering('HOLD'), findAppliedStart: async () => { lookups++; return false; } }),
+        () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
       expect(on.body.workers).toHaveLength(1);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
-      const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
-      expect(started).toMatchObject({ outcome: 'accepted', taskId: 'task-1', detail: { holderTaskId: 'holder-1', decidedBy: 'jev', riskTier: 'uncertain' } });
+      expect(lookups).toBe(0);
+      // Asked after the response, so the verdict can be graded.
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', taskId: 'task-1' });
+      // A mergeable file is never leased up front.
+      expect(acquired).toHaveLength(0);
+      expect(softDeferral()).toBeUndefined();
+      const [s] = started();
+      expect(s).toMatchObject({ outcome: 'accepted', taskId: 'task-1', detail: { gate: 'soft_overlap', holderTaskId: 'holder-1', decidedBy: 'rule', overlapKind: 'same_file', areaClass: 'other' } });
+      expect(s.detail.paths).toContain('apps/web/src/lib/widget.ts');
     });
 
-    it('a directory-only overlap starts in code: no ledger lookup, no model call, paths acquired, recorded as decided by rule', async () => {
-      mockFireGateEvent.mockClear();
+    it('a directory-only overlap starts in code: no ledger lookup, no model call, nothing leased', async () => {
       let lookups = 0;
       const on = await claimWith(withStart(false, { findAppliedStart: async () => { lookups++; return false; } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
       expect(on.body.workers).toHaveLength(1);
       expect(lookups).toBe(0);
       expect(on.rows).toHaveLength(0);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/'], declare: true }]);
-      const started = (mockFireGateEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap_start');
-      expect(started).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
+      expect(acquired).toHaveLength(0);
+      expect(started()[0]).toMatchObject({ outcome: 'accepted', detail: { decidedBy: 'rule', riskTier: 'low' } });
     });
 
-    it('a retry whose branch conflicts with the live holder in a pair probe holds in code: Jev is not asked, the files are named', async () => {
-      mockFireDeferralEvent.mockClear();
+    it('a retry whose branch conflicts with the live holder in a pair probe still starts on mergeable files, recorded as high risk', async () => {
       riskEvidenceTest.probe = { outcome: 'conflict', conflictFiles: ['apps/web/src/lib/widget.ts'], probedAt: new Date().toISOString(), headsCurrent: true };
       try {
-        const on = await claimWith(withStart(true), () => arm({
+        const on = await claimWith(withStart(false), () => arm({
           tasks: [{ ...soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts']), conflictRetryPrNumber: 99 }],
           openPrs: [{ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 99, prUrl: 'https://example.test/pull/99', branch: 'own-branch', status: 'completed', prLifecycleStatus: 'ci_green' }],
           prManifests: [{ id: 'task-1', pathManifest: ['apps/web/src/lib/widget.ts'] }],
         }));
-        expect(on.body.workers).toHaveLength(0);
-        expect(on.rows).toHaveLength(0);
-        const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
-        expect(ledger).toMatchObject({ detail: { riskTier: 'high' } });
-        expect(ledger.detail.rationale).toContain('apps/web/src/lib/widget.ts');
+        expect(on.body.workers).toHaveLength(1);
+        expect(started()[0]).toMatchObject({ detail: { riskTier: 'high', decidedBy: 'rule' } });
       } finally { riskEvidenceTest.probe = null; }
     });
 
-    it('a holder that never started does not strand the candidate, even on the same file', async () => {
-      softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
-      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(1);
-      expect(on.rows).toHaveLength(0);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    it('a START leases only its unmergeable paths, and a refused lease holds: no ghost START', async () => {
+      const refused = await claimWith(withStart(false, { acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: [], insertedIds: [], blocked: ['bun.lock'], pathManifest: null, revision: 1 }; } }),
+        () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }], ['apps/web/src/lib/', 'bun.lock'])] }));
+      expect(refused.body.workers).toHaveLength(0);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['bun.lock'], declare: true }]);
     });
 
-    it('a rule START whose exclusive acquisition is refused holds: no ghost START', async () => {
-      const on = await claimWith(withStart(false, { acquire: async () => ({ kind: 'acquired', inserted: [], insertedIds: [], blocked: ['apps/web/src/lib/widget.ts'], pathManifest: null, revision: 1 }) }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])] }));
-      expect(on.body.workers).toHaveLength(0);
-    });
-
-    it('a live lease on the actual files still wins over an applied START', async () => {
-      const on = await claimWith(withStart(true), () => arm({
+    it('a live lease on a mergeable file does not hold; one on an unmergeable file does', async () => {
+      const mergeable = await claimWith(withStart(false), () => arm({
         tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }])],
         leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
       }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(acquired).toHaveLength(0);
+      expect(mergeable.body.workers).toHaveLength(1);
+      const lease = started().find((e: any) => e.detail.gate === 'lease_overlap');
+      expect(lease).toMatchObject({ detail: { holderTaskId: 'holder-1', decidedBy: 'rule', paths: ['apps/web/src/lib'] } });
+      const unmergeable = await claimWith(withStart(false), () => arm({
+        tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
+        leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
+      }));
+      expect(unmergeable.body.workers).toHaveLength(0);
+      expect(unmergeable.body.diagnostics?.deferrals?.path_overlap).toBe(1);
     });
 
-    it('a decision error fails closed: the task holds', async () => {
-      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+    it('under pathClaimEnforcement enforce, every live lease overlap still holds', async () => {
+      const on = await claimWith(withStart(false), () => arm({
+        tasks: [task({ pathManifest: ['apps/web/src/lib/widget.ts'], workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record', pathClaimEnforcement: 'enforce' } } })],
+        leases: new Map([['holder-1', ['apps/web/src/lib/widget.ts']]]),
+      }));
       expect(on.body.workers).toHaveLength(0);
-      expect(on.body.diagnostics?.deferrals?.soft_overlap).toBe(1);
+      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+
+    it('a ledger read error cannot hold a mergeable overlap: the ledger is not read', async () => {
+      const on = await claimWith(withStart(false, { findAppliedStart: async () => { throw new Error('ledger down'); } }), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(1);
     });
 
     it('an unreadable holder set fails closed to a deterministic hold', async () => {
@@ -11084,29 +11146,45 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.rows).toHaveLength(0);
     });
 
-    it('a same-file overlap with no applied START holds, and Jev is asked with the same_file kind', async () => {
-      mockFireDeferralEvent.mockClear();
-      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
-      expect(on.body.workers).toHaveLength(0);
-      expect(on.rows).toHaveLength(1);
-      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', taskId: 'task-1' });
-      const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
-      expect(ledger.detail).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD', overlapKind: 'same_file' });
-    });
-
-    it('a same-file overlap with no conflict history and an applied Jev START runs (legacy edges too)', async () => {
+    it('a legacy inferred edge onto a holder that never started starts, nothing leased', async () => {
       softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
-      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
       expect(on.body.workers).toHaveLength(1);
-      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+      expect(acquired).toHaveLength(0);
     });
 
-    it('a same-file overlap on a migration path holds deterministically: Jev is never asked', async () => {
+    it('two tasks sharing packages/core/drizzle/** serialize: deterministic hold, the model is never asked', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/meta/_journal.json'] })]]);
+      const on = await claimWith(withStart(true, answering('START')), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'prefix' }], ['packages/core/drizzle/'])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.rows).toHaveLength(0);
+      expect(acquired).toHaveLength(0);
+      expect(softDeferral()).toMatchObject({ outcome: 'deferred', detail: { holderTaskId: 'holder-1', verdict: 'deterministic_hold', overlapKind: 'migration' } });
+    });
+
+    it('a shared lockfile holds deterministically as an unmergeable surface', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['bun.lock'] })]]);
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['bun.lock'])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(softDeferral()).toMatchObject({ detail: { verdict: 'deterministic_hold', overlapKind: 'hard_surface' } });
+    });
+
+    it('a same-file overlap on a migration path holds deterministically: the model is never asked', async () => {
       softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })]]);
       const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/drizzle/0300_x.sql'])] }));
       expect(on.body.workers).toHaveLength(0);
       expect(on.rows).toHaveLength(0);
       expect(acquired).toHaveLength(0);
+    });
+
+    it.each([
+      ['a future startAt', { status: 'pending', workerStatus: null, startAt: new Date(Date.now() + 86_400_000).toISOString() }],
+      ['a held mission', { status: 'pending', workerStatus: null, missionHeld: true }],
+    ])('a holder that cannot start itself (%s) never holds, even on an unmergeable surface', async (_name, over) => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/db/schema.ts'], ...over })]]);
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/db/schema.ts'])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(softDeferral()).toBeUndefined();
     });
 
     it('a finished holder releases the soft overlap: the task runs with nothing asked', async () => {
@@ -11201,8 +11279,8 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   /** Three candidates: a and b share a file, c is disjoint. Highest priority first. */
   function overlappingTrio(gitConfig: Record<string, unknown> | null) {
     return [
-      plannedTask('a', { priority: 5, pathManifest: ['src/x.ts'] }, gitConfig),
-      plannedTask('b', { priority: 4, pathManifest: ['src/x.ts'] }, gitConfig),
+      plannedTask('a', { priority: 5, pathManifest: ['src/bun.lock'] }, gitConfig),
+      plannedTask('b', { priority: 4, pathManifest: ['src/bun.lock'] }, gitConfig),
       plannedTask('c', { priority: 3, pathManifest: ['src/y.ts'] }, gitConfig),
     ];
   }
@@ -11216,6 +11294,24 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   const pickedIds = (data: any) => (data.workers ?? []).map((w: any) => w.taskId);
   /** The response echoes each task's workspace.gitConfig; drop it so only behaviour is compared. */
   const withoutGitConfig = (r: { status: number; data: any }) => JSON.parse(JSON.stringify(r), (k, v) => (k === 'gitConfig' ? undefined : v));
+
+  // Overlap policy: the planner keeps two tasks apart only on an unmergeable
+  // surface. Two tasks sharing a mergeable file are both claimed, the second
+  // carrying a soft overlap onto the first.
+  it('apply: two tasks sharing apps/web/src/lib/x.ts are both claimed in one poll', async () => {
+    softHoldersTest.rows = new Map([['a', { id: 'a', status: 'pending', pathManifest: ['apps/web/src/lib/x.ts'], workerStatus: null, title: 'A' }]]);
+    try {
+      const { data } = await claim([
+        plannedTask('a', { priority: 5, pathManifest: ['apps/web/src/lib/x.ts'] }),
+        plannedTask('b', {
+          priority: 4, pathManifest: ['apps/web/src/lib/x.ts'],
+          pathDeclaration: { declared: ['apps/web/src/lib/x.ts'], source: 'creation', snapshotAt: 'x', overlapPolicy: 'v2', softOverlaps: [{ taskId: 'a', paths: ['apps/web/src/lib/x.ts'], kind: 'same_file' }] },
+        }),
+      ]);
+      expect(pickedIds(data)).toEqual(['a', 'b']);
+      expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+    } finally { softHoldersTest.rows = new Map(); }
+  });
 
   it('off: an explicit \'off\' touches no planner I/O', async () => {
     const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
@@ -11269,7 +11365,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     // The waiter is registered on the blocker so its release wakes b.
     await new Promise(r => setTimeout(r, 0));
     expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
-      { waitingTaskId: 'b', blockingTaskId: 'a', blockedPath: 'src/x.ts' },
+      { waitingTaskId: 'b', blockingTaskId: 'a', blockedPath: 'src/bun.lock' },
     ]]);
     // No per-poll path_overlap deferral for the planned-out node.
     const reasons = mockFireDeferralEvent.mock.calls.map((c: any[]) => `${c[0].taskId}:${c[0].reason}`);
@@ -11286,10 +11382,10 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
       ]);
     mockTasksFindMany
       .mockResolvedValueOnce([
-        plannedTask('a', { priority: 9, pathManifest: ['src/x.ts'] }, cfg),
-        plannedTask('b', { priority: 1, pathManifest: ['src/x.ts'] }, cfg),
+        plannedTask('a', { priority: 9, pathManifest: ['src/bun.lock'] }, cfg),
+        plannedTask('b', { priority: 1, pathManifest: ['src/bun.lock'] }, cfg),
       ])
-      .mockResolvedValueOnce([{ id: 'b', pathManifest: ['src/x.ts'] }]);
+      .mockResolvedValueOnce([{ id: 'b', pathManifest: ['src/bun.lock'] }]);
     const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
     const data = await res.json();
     expect(pickedIds(data)).toEqual(['b']);
@@ -11332,9 +11428,9 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
 
   it('apply: repeated polls name the same (task, blocker) pair, and only through ordered_behind', async () => {
     const cfg = { claimPlanner: 'apply' };
-    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map([['holder', ['src/x.ts']]]));
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map([['holder', ['src/bun.lock']]]));
     for (let i = 0; i < 3; i++) {
-      const { data } = await claim([plannedTask('a', { pathManifest: ['src/x.ts'] }, cfg)]);
+      const { data } = await claim([plannedTask('a', { pathManifest: ['src/bun.lock'] }, cfg)]);
       expect(pickedIds(data)).toEqual([]);
       expect(data.diagnostics).toMatchObject({ reason: 'all_candidates_deferred', deferrals: { ordered_behind: 1 } });
     }
@@ -11381,7 +11477,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
 
   it('an explicit taskId claim never plans', async () => {
     const cfg = { claimPlanner: 'apply' };
-    await claim([plannedTask('a', { pathManifest: ['src/x.ts'] }, cfg)], { taskId: 'a' });
+    await claim([plannedTask('a', { pathManifest: ['src/bun.lock'] }, cfg)], { taskId: 'a' });
     expect(mockLoadPlannerSignals).not.toHaveBeenCalled();
     expect(mockFireClaimPlanRecord).not.toHaveBeenCalled();
   });
