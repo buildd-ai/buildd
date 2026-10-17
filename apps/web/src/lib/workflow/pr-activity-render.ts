@@ -20,7 +20,7 @@ import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projec
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
-import { deltaApprovalOf } from '@buildd/workflow-kernel/reducer';
+import { attemptOrdinal, deltaApprovalOf } from '@buildd/workflow-kernel/reducer';
 
 export interface ActivityTransition {
   command: string;
@@ -88,8 +88,9 @@ export function transitionsToActivityEntries(
   let fixAttempt: AttemptSnapshot | undefined;
   let lastHead: string | null = null;
   const reviewUrl = (r: RoundSnapshot | undefined): string | null => (r?.reviewerTaskId ? taskActivityUrl(r.reviewerTaskId) : null);
+  // The N of "fix N of M" is the attempt's place among those dispatched (295486ba), as in the titles and checks.
   const fixFields = (a: AttemptSnapshot | undefined) => (a
-    ? { iteration: a.attemptNo, maxIterations: a.maxAttempts, ...(a.taskId ? { taskUrl: taskActivityUrl(a.taskId) } : {}) }
+    ? { iteration: attemptOrdinal(attempts, a) ?? a.attemptNo, maxIterations: a.maxAttempts, ...(a.taskId ? { taskUrl: taskActivityUrl(a.taskId) } : {}) }
     : {});
 
   for (const t of sorted) {
@@ -123,8 +124,8 @@ export function transitionsToActivityEntries(
           push({ kind: 'review_approved', ...(from ? { detail: `carries the approval at \`${from}\`` } : {}), ...(url ? { taskUrl: url } : {}) });
         }
         else if (t.toState === 'CHANGES_REQUESTED') {
-          const next = attempts.filter((a) => a.family === 'review_fix' && a.triggerReason === round?.id).sort((a, b) => b.attemptNo - a.attemptNo)[0];
-          push({ kind: 'review_changes_requested', iteration: next?.attemptNo ?? (attempts.filter((a) => a.family === 'review_fix').length + 1), maxIterations: next?.maxAttempts ?? null, ...(url ? { taskUrl: url } : {}) });
+          const next = attempts.filter((a) => a.family === 'review_fix' && a.triggerReason === round?.id && a.status !== 'skipped').sort((a, b) => b.attemptNo - a.attemptNo)[0];
+          push({ kind: 'review_changes_requested', iteration: (next ? attemptOrdinal(attempts, next) : null) ?? (attempts.filter((a) => a.family === 'review_fix' && a.status !== 'skipped').length + 1), maxIterations: next?.maxAttempts ?? null, ...(url ? { taskUrl: url } : {}) });
         } else if (t.toState === 'ESCALATED') {
           push({ kind: 'review_escalated', detail: verdict === 'escalate' ? null : 'review budget spent', ...(url ? { taskUrl: url } : {}) });
         }

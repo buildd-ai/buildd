@@ -104,6 +104,8 @@ export function describeExplicitDeferral(
         detail: `The review fix was revalidated at claim and is no longer needed${why ? ` (${why})` : ''}; it was skipped, not failed.`,
       };
     }
+    case 'kernel_unavailable':
+      return { code: reason, detail: 'The fix could not be revalidated because the workflow control plane did not answer in time; it was put back and is retried on the next poll.' };
     case 'ordered_behind': {
       const blocker = str(detail.blockedBy);
       return {

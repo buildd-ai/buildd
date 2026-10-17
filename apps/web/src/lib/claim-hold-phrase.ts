@@ -28,6 +28,7 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   duplicate_worker: 'an agent is already working on it',
   sibling_retry_open: 'a retry of the same work is already open',
   fix_not_needed: 'the fix it was filed for is no longer needed',
+  kernel_unavailable: 'the workflow control plane did not answer in time',
   runner_capability: 'no online runner has what it needs',
   codex_single_flight: 'Codex runs one task at a time and is busy',
   oauth_parallelism: 'the subscription is at its session limit',
