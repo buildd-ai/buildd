@@ -619,8 +619,12 @@ export const SIGNATURE_OVERRIDE_ACTIONS = Object.keys(SIGNATURE_OVERRIDES) as Bu
  * sees only the fields (and the parts of a description) it can act on. A test
  * holds that each tagged action's long docs name the field.
  */
-/** `moreOnly`: shown only while its action is on `More:` (a listed one's signature already says it). */
-type ParamPart = { text: string; actions: BuilddAction[]; moreOnly?: true };
+/**
+ * `moreOnly`: shown only while its action is on `More:` (a listed one's signature already says it).
+ * `forMore`: typed even while its action is on `More:`, for the few fields beyond
+ * the selector that most of its calls cannot go without.
+ */
+type ParamPart = { text: string; actions: BuilddAction[]; moreOnly?: true; forMore?: true };
 export interface GroupParam {
   name: string;
   /** JSON schema of the field, without its description. */
@@ -721,8 +725,9 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
     param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }]),
-    param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'] }]),
-    param('expectedVersion', num, [{ text: 'revise: the version you read; a stale one is refused with currentVersion', actions: ['manage_specs'] }]),
+    // Nearly every manage_specs call names a spec, and every write carries the version read.
+    param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'], forMore: true }]),
+    param('expectedVersion', num, [{ text: 'Writes: the version you read', actions: ['manage_specs'], forMore: true }]),
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
@@ -793,15 +798,16 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
 export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[], more?: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>>; additionalProperties: true } {
   const listed = new Set(actions);
   // `more` (the tool's `More:` actions) types only what a schema-constrained
-  // model cannot call one without: its sub-action selector. All of their fields
-  // would cost ~700 tokens past the 6k budget; the rest pass through untyped.
+  // model cannot call one without: its sub-action selector, and parts marked
+  // `forMore`. All of their fields would cost ~700 tokens past the 6k budget;
+  // the rest pass through untyped.
   // Without `more` (the whole registry, as tests read it), moreOnly parts count.
-  const typedForMore = (a: string, field: string) =>
-    !!more?.includes(a) && field === subActionSelector(a) && subActionsOf(a) != null;
+  const typedForMore = (a: string, field: string, p: ParamPart) =>
+    !!more?.includes(a) && (p.forMore === true || (field === subActionSelector(a) && subActionsOf(a) != null));
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
     const texts = f.parts
-      .filter(p => p.actions.some(a => (listed.has(a) && !(p.moreOnly && more)) || typedForMore(a, f.name)))
+      .filter(p => p.actions.some(a => (listed.has(a) && !(p.moreOnly && more)) || typedForMore(a, f.name, p)))
       .map(p => p.text);
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
