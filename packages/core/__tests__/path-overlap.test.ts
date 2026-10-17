@@ -564,3 +564,39 @@ describe('partitionRegenerableOverlaps', () => {
     expect(partitionRegenerableOverlaps([])).toEqual({ contended: [], regenerable: [] });
   });
 });
+
+describe('large lease sets', () => {
+  it('compares wide disjoint manifests without a pairwise prefix scan', () => {
+    const candidates = Array.from({ length: 1000 }, (_, i) => `packages/candidate/file-${i}.ts`);
+    const held = Array.from({ length: 3000 }, (_, i) => `apps/holder/file-${i}.ts`);
+    // Count path-prefix probes rather than asserting wall time on a busy host.
+    const original = String.prototype.startsWith;
+    let probes = 0;
+    let overlap: boolean;
+    let intersection: string[];
+    try {
+      String.prototype.startsWith = function (this: string, prefix: string, position?: number) {
+        probes++;
+        return original.call(this, prefix, position);
+      };
+      overlap = pathsOverlap(candidates, held);
+      intersection = intersectPaths(candidates, held);
+    } finally {
+      String.prototype.startsWith = original;
+    }
+    expect(overlap!).toBe(false);
+    expect(intersection!).toEqual([]);
+    expect(probes).toBeLessThan(100_000);
+  });
+});
+
+it('preserves literal exact and slash-prefix semantics for unusual paths', () => {
+  const entries = ['', '/', '/a', 'a', 'a/', 'a//b', 'a/b', 'a/bc', 'ab/c', '*.ts', '**', '路径/文件'];
+  for (const a of entries) for (const b of entries) {
+    const left = stripTrailingSep(a);
+    const right = stripTrailingSep(b);
+    const spatial = left === right || left.startsWith(right + '/') || right.startsWith(left + '/');
+    expect(pathsOverlap([a], [b])).toBe(a === '**' || b === '**' || spatial);
+    expect(intersectPaths([a, a], [b])).toEqual(a !== '**' && b !== '**' && spatial ? [left] : []);
+  }
+});
