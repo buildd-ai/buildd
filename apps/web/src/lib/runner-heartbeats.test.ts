@@ -150,3 +150,29 @@ describe('isRunnerOnline', () => {
     expect(isRunnerOnline(heartbeatAt, 1_800_000_000_000 + 5 * 60 * 1000)).toBe(false);
   });
 });
+
+describe('loadBrowserRunnerHeartbeats workspaceIds follow the claim rule', () => {
+  const NOW = Date.now();
+  const hb = (accountId: string, teamId: string) => ({ accountId, localUiUrl: null, lastHeartbeatAt: new Date(NOW), environment: null, accountTeamId: teamId });
+  async function run(hbs: any[], links: any[], ws: any) {
+    const chain = (rows: any[]) => {
+      const c: any = { from: () => c, innerJoin: () => c, where: async () => rows };
+      return c;
+    };
+    const calls = [hbs, links];
+    (await import('@buildd/core/db')).db.select = (() => chain(calls.shift()!)) as any;
+    const { loadBrowserRunnerHeartbeats } = await import('./runner-heartbeats');
+    return loadBrowserRunnerHeartbeats(ws, NOW);
+  }
+  const ws = { id: 'ws-1', teamId: 'team-a', accessMode: 'restricted', gitConfig: null, webhookConfig: null };
+
+  it('lists the workspace for a runner with a claim link, not for an unlinked other-team runner', async () => {
+    const out = await run(
+      [hb('linked', 'team-b'), hb('stranger', 'team-b')],
+      [{ accountId: 'linked', canClaim: true, canCreate: false }],
+      ws,
+    );
+    expect(out!.find(h => h.accountId === 'linked')!.workspaceIds).toEqual(['ws-1']);
+    expect(out!.find(h => h.accountId === 'stranger')!.workspaceIds).toEqual([]);
+  });
+});

@@ -29,8 +29,7 @@ describe('workspaceAwaitingMissionsQuery', () => {
   it('candidate: an auditor-scoped unsure screenshot with no active review', () => {
     expect(sql).toContain(`"a"."type" = 'screenshot'`);
     expect(sql).toContain(`"a"."metadata" -> 'qa' ->> 'verdict' = 'unsure'`);
-    expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and "t"\."role_slug" = \$\d+\)/);
-    expect(params).toContain('visual-auditor');
+    expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and \("t"\.role_slug = 'visual-auditor' or "t"\.title like '\[surface audit\] %'\)\)/);
     expect(sql).toContain('not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)');
   });
 
@@ -44,6 +43,24 @@ describe('workspaceAwaitingMissionsQuery', () => {
   it('newest first, one past the limit so the caller can say more exist', () => {
     expect(sql).toContain('order by "missions"."updated_at" desc');
     expect(params[params.length - 1]).toBe(WORKSPACE_AWAITING_MISSIONS_LIMIT + 1);
+  });
+});
+
+describe('one audit identity in SQL', () => {
+  const ROLE = `role_slug = 'visual-auditor'`;
+  const TITLE = `title like '[surface audit] %'`;
+  it('every task-scoped audit predicate matches the role or the title prefix', () => {
+    const shots = visualReviewWorkersQuery(qb(), MISSION).toSQL().sql;
+    const awaiting = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL().sql;
+    for (const sql of [shots, awaiting]) {
+      expect(sql).toContain(ROLE);
+      expect(sql).toContain(TITLE);
+    }
+    expect(awaiting.split(TITLE).length - 1).toBe(2);
+  });
+  it('the audit context and summary projections cover a title-only audit', () => {
+    const { sql } = visualReviewTasksQuery(qb(), MISSION).toSQL();
+    expect(sql).toMatch(/case when \("tasks"\."role_slug" = \$\d+ or "tasks"\."title" like \$\d+\) then (jsonb_build_object|left)/);
   });
 });
 
