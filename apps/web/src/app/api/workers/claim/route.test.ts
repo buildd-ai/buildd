@@ -585,7 +585,7 @@ import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-wor
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { claudeLoginSeatKey, runnerSeatKey } from '@/lib/runner-seat-wall';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -2252,6 +2252,37 @@ describe('POST /api/workers/claim', () => {
         && n.args.some((a: any) => a.type === 'eq' && a.value === runnerSeatKey(RUNNER_B)));
       expect(seatOr).toBeTruthy();
       expect(nodes.some(n => n.type === 'eq' && n.value === runnerSeatKey(RUNNER_A))).toBe(false);
+    });
+
+    // Two runners on one Claude login share its limit: a wall keyed on the
+    // login holds every runner that reports that login, and no other.
+    it('holds two runners on one login identity, and not a runner on another login', async () => {
+      const LOGIN = 'a'.repeat(32);
+      const claimOn = (runner: string, claudeLoginId: string) => POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner, claudeLoginId, capabilities: ['backend:codex'] },
+      }));
+      for (const runner of [RUNNER_A, RUNNER_B]) {
+        wallOn(claudeLoginSeatKey(LOGIN));
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        const data = await (await claimOn(runner, LOGIN)).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics.budgetBlock.walls[0].kind).toBe('runner_seat');
+      }
+      wallOn(claudeLoginSeatKey(LOGIN));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const other = await (await claimOn(RUNNER_B, 'b'.repeat(32))).json();
+      expect(other.workers).toHaveLength(1);
+    });
+
+    it("still holds a runner that reports a login on a wall keyed to its own runner id", async () => {
+      wallOn(runnerSeatKey(RUNNER_A));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const data = await (await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: RUNNER_A, claudeLoginId: 'a'.repeat(32), capabilities: ['backend:codex'] },
+      }))).json();
+      expect(data.workers).toHaveLength(0);
     });
 
     // Fail-safe: a wall whose login identity is unknown (an old runner, a team
@@ -9837,6 +9868,16 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('Install bubblewrap');
     const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'isolation_unenforced');
     expect(deferred?.detail).toMatchObject({ code: 'confinement_not_enforced', requirement: 'protected', reason: 'bwrap_missing' });
+  });
+
+  it('an environment with only an isolation probe (no tools, envKeys or mcp) claims instead of failing with a 500', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const environment = { isolation: { platform: 'linux' } };
+
+    const res = await claim({ runner: 'test-runner', environment });
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toBeDefined();
   });
 
   it('an admin force claim does not lift the isolation gate', async () => {

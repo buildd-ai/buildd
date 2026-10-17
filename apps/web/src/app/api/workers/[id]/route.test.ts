@@ -546,6 +546,8 @@ mock.module('@/lib/runner-seat-wall', () => ({
   resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
   runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
   isMachineLoginWallError: () => true,
+  parseRunLoginUsed: (v: unknown) => (v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null),
+  parseClaudeLoginId: (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null),
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -736,7 +738,7 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 // The workflow kernel seam (lib/workflow/seam.ts) has its own real-Postgres
 // suite (apps/web/tests/db/workflow-seam.test.ts). Here: that the route calls
 // it at the right points and that the legacy write does not run beside it.
-const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
+const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
@@ -748,6 +750,9 @@ const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
 }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded }));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
@@ -3921,6 +3926,8 @@ describe('PATCH /api/workers/[id]', () => {
         task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
         workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
       });
+      // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
+      expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
     });
 
     it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
@@ -7659,6 +7666,26 @@ describe('PATCH /api/workers/[id]', () => {
         expect(requeue.backend).toBeUndefined();
         expect(requeue.context?.budgetExhausted).toBeUndefined();
         expect(wakeCausesFor('task-1')).toContain('task.requeued');
+      });
+
+      it("passes the run's reported login identity to the decision, and drops a malformed one", async () => {
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginUsed: 'machine_login', claudeLoginId: 'a'.repeat(32) },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          loginUsed: 'machine_login', loginId: 'a'.repeat(32),
+        }));
+
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginId: 'not-a-hash' },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenLastCalledWith(expect.objectContaining({ loginId: null }));
       });
 
       it('keeps the account-wide wall when the login identity is unknown', async () => {

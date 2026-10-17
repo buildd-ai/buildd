@@ -2,7 +2,7 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-10-17
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
@@ -237,7 +237,10 @@ GitHub or Next.js.
   §14 legacy hand-off (`handOffToLegacyOn`, which `seam.ts`
   `handOffToLegacy` calls). A kind several families share
   (`escalate_exhaustion`, `cancel_open_attempts`) is answered per family; a
-  family the kernel does not know is `skipped:legacy_owns`.
+  family the kernel does not know is `skipped:legacy_owns`. A close's or a
+  merge's `cancel_open_attempts` (reasons `closed`, `merged`) is the kernel's:
+  it cancels the unstarted tasks the transition named (b6cfdbb9); the legacy
+  reconciler skips a kernel-owned PR, so nothing else would.
 - Conformance suite: `CONFORMANCE_SCENARIOS`
   (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
   scenarios over a `ConformanceHost`, run on the in-memory store by
@@ -343,7 +346,21 @@ the control plane, authenticated as the caller).
     `drain` (one delivery's due effects, `system` principals only), and
     `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
     its PR, reconcile what is owed; re-checked against the mission's repo
-    workspace). The same
+    workspace), and `attempt_ended` (T4: an attempt's end as the worker
+    PATCH, the reaper, a cancel or a reviewer takeover reports it; the
+    task's workspace rides on the input for the reach check, and the host
+    refuses an end whose task is in another workspace; during a release, a
+    control plane that predates the op refuses it as an unknown op and
+    applies nothing, and only then the web host applies the end itself and
+    logs it loudly, so a repair's or review's end is never lost; any other
+    refusal stays a refusal), and `observe_ci_failure` (T10 from buildd's
+    own CI doors: the red-PR sweep `cron:ci-red`, the landing path and the
+    `check_suite` subscriber, each as a `system` principal; the same skew
+    rule applies, so a red PR is never left without its repair), and
+    `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
+    outside a repair, from the `check_suite` success webhook as a `system`
+    principal; the same skew rule applies, so a repair is never left waiting
+    on a green GitHub sends once). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -510,10 +527,10 @@ the control plane, authenticated as the caller).
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
 
-**Switching over** (owner/operator steps, NOT DONE yet). Merging and
-releasing this code changes nothing on its own: without the secret the web
-host keeps applying commands and draining exactly as before. The order
-matters: the control plane first, then the web host.
+**Switching over** (owner/operator steps, DONE; see the record after the
+steps). Merging and releasing this code changed nothing on its own: without the
+secret the web host keeps applying commands and draining exactly as before. The
+order matters: the control plane first, then the web host.
 
 1. Set `KERNEL_COMMAND_SECRET` on the control plane Worker (a Worker secret),
    and run `wrangler triggers deploy` for it from an account login so its cron
@@ -524,6 +541,15 @@ matters: the control plane first, then the web host.
 3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
    their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
    `workflow_transitions` rows from doors carry `host = control-plane`.
+
+**Record (2026-10-17, S8 and the follow-up check).** The switch is made.
+Confirmed from outside: the control plane's health reports `mode: own, kernel:
+own`, and `/api/deploy-identity` reports the control plane in mode `own` with
+`lockstep: true`, on the release then in production (v0.362.0). Not confirmed
+(S8 had no database read): the `kernel-floor` cron runs naming the control plane
+as host, `/api/cron/pr-reconcile` reporting `kernelSkipped`, and `host =
+control-plane` on new `workflow_transitions` rows. Step 3 above stays the check
+for those until someone with a read of the table records it.
 
 The other order is safe but does nothing yet: a web host with the secret
 follows the Worker's health `kernel` field, which reads `own` only when the
@@ -626,7 +652,16 @@ recorded as such, never as an approval.
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
   notified, with the rail named on `buildd/landing`. The status is written only
   when GitHub does not already show it, and re-checked after writing so the
-  newest version wins across drains.
+  newest version wins across drains. The mission-PR hold is a rail too, and
+  lasting when only a person or a new fact changes it: a refresh on a branch it
+  was not filed for, or a task PR on a shipped delivery with no current one to
+  move to. A door that reads such a hold hands a kernel-owned PR to the kernel
+  anyway, so the merge-time rails escalate it once; it never merges it on a
+  legacy arm, and the sweep stops asking once the delivery is `ESCALATED`.
+  Every door and the rails ask the hold of the task the PR was opened for,
+  never a repair attempt pushing to it (`deliveryOwnerTask`): an attempt carries
+  none of a refresh's context, which is how the sweep passed #4909 while the
+  merge-time rails refused it on every pass.
 - Release doors hold, never fail or throw, when a kernel-owned PR is not landed
   yet or the control plane does not answer; a PR the kernel does not own never
   reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
@@ -660,6 +695,15 @@ recorded as such, never as an approval.
 - AC-16 (failure): GIVEN the release executor merging a release PR WHEN its
   head moved after verification THEN the merge is refused, not merged
   unpinned.
+- AC-31 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
+  lasting WHEN the sweep or any door asks to land it THEN the delivery is
+  `ESCALATED(landing_needs_human)` once with the hold named, nothing merges,
+  and the sweep does not request landing again for that head; a CI-fix
+  attempt's worker on the PR gets the same answer as its owner.
+
+| AC | Test |
+| --- | --- |
+| Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
 
@@ -798,12 +842,19 @@ push, refresh, completion or owner change can make it disappear.
   while the owner works, a repair holds or trunk is red, and the kernel has
   asked no reviewer of its own, it is kept as a decided round and the
   hand-off applies it. It is never posted to GitHub as a review. The kept
-  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  round is a round like any other: it uses one of the delivery's `maxRounds`
+  (unless it re-checks a head after an approval, which spends none:
+  workflow-state-kernel.md §8.2, c1d66a6a).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
+- A push after an escalation that touches a finding's path marks the finding
+  `addressed` (AC-17's interim disposition), held deliveries included. No
+  review is queued for it while the hold stands, but the person sees it: the
+  review line reads "2 open findings, 1 with a fix waiting for a re-review" and
+  the escalation detail says how many have a fix waiting (c1d66a6a).
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
   proof is §9's "L unknown" rule (the head moved off the bound head; a
@@ -909,7 +960,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
   longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the
   mission and `create_pr` ask for a writable epoch first. A task filed under an
   earlier epoch is claimed onto the writable branch (`isPriorEpochBranch` at the
-  claim); a refresh keeps the branch it was filed for.
+  claim); a refresh keeps the branch it was filed for. That branch is recorded
+  once at filing (`context.refreshBranch`) and a requeue never rewrites a
+  refresh's `baseBranch` (`requeueBranchContext`). A refresh filed before
+  either, whose `baseBranch` a requeue overwrote with its own head, is judged by
+  where its PR is based: the writable delivery's branch, never trunk
+  (`refreshFiledFor`).
 - Compatibility: a mission that predates epochs is adopted on its first epoch
   command, from its recorded mission PR (`adoptionOf`): no PR, or an open one, is
   epoch 1 open; a merged PR with no work left is epoch 1 merged and retired; a
@@ -963,6 +1019,29 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor; a refresh with work of its own, or anything unreadable, holds the
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
+- When a delivery branch is finished (`deliveryBranchFinished`, task fbc93ebd):
+  the mission is completed or archived; the delivery merged (and no later
+  delivery reuses its branch) or its branch retired; or its PR closed unmerged
+  and was superseded with no successor, meaning the closed PR's work is
+  recorded as landed in another merged PR, or a content check shows the branch
+  already in trunk, and no other PR from the branch into trunk is open.
+  Closing the integration PR alone does not finish the branch: it is still the
+  mission's, a new PR can open from it, and a refresh onto it stays valid.
+- On a finished open delivery, every reconcile settles the refresh PRs still
+  based on its branch (`settleFinishedBranch`): each is closed with a comment
+  saying why the branch is finished, and recorded as superseded by the merged
+  PR that carries the branch's work when one is known; a refresh filed for the
+  branch that never started is cancelled. With no such PR (the branch is in
+  trunk, but no row says through which PR) one mission note asks a person
+  where to record the closed PRs. Task PRs on the branch are never touched.
+  A closed refresh whose record or note failed is found again from the rows
+  (closed, unmerged, no resolution, based on the branch) and settled on the
+  next pass; the note is posted once per delivery. The settlement reads only
+  as far as it needs: an open or merged delivery PR stops at one read, and the
+  content check runs only when a refresh is left to settle. The mission-PR
+  line names where a closed PR's work landed when an edge records it, and
+  never claims the branch finished: the rows it reads cannot rule out an open
+  successor, which only the live settlement checks.
 - Projection (S6c): the mission page and `manage_missions get` read the
   delivery records. The mission-PR line is the current delivery ("Delivery 2"),
   with shipped deliveries named beside it ("Delivery 1 merged (#n)"), never a
@@ -984,9 +1063,19 @@ later work and nothing refreshes or re-ships a branch that already landed.
   refresh task is filed (the ecea17f3 sequence).
 - AC-22: GIVEN a refresh builder whose branch already contains trunk WHEN it
   completes THEN completion succeeds with the ancestry evidence and no PR.
+- AC-32: GIVEN a refresh whose task was requeued after an infra failure WHEN
+  any door asks whether its PR may land THEN the branch it was filed for is
+  the mission branch, never its own head, and a refresh retargeted to trunk is
+  still refused.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
+- AC-34: GIVEN an open delivery whose integration PR closed unmerged, with an
+  open refresh PR on its branch WHEN the delivery is reconciled THEN the
+  refresh PR stays open while the closed PR's work is neither recorded as
+  landed elsewhere nor in trunk, and is closed with a comment (and recorded as
+  superseded by that merged PR, when there is one) once it is; a successor PR
+  from the branch keeps it open (the #4909/#4913 sequence).
 
 | AC | Test |
 | --- | --- |
@@ -994,6 +1083,8 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Criterion AC-32 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
+| Criterion AC-34 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
@@ -1012,6 +1103,23 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   while rounds exist (§13.13 rule 8).
 - A repair shows queued, running, awaiting push, pushed and testing, awaiting
   review, or no change, from attempt facts.
+- CI is read per head (task 6900a317). The delivery keeps one CI reading,
+  bound to the head it was read on (`ci`, `ciHeadSha`); a reading on another
+  head says nothing, so a new commit reads running until its own CI reports,
+  and a late or out-of-order webhook for an older head records nothing. A
+  failed check outranks checks still running. A run that a newer run of the
+  same check name replaced on the same commit (a re-run, or a gate re-triggered
+  by a PR-body edit) no longer counts, in the kernel's reads (`checkRuns`,
+  `ciGreen`) and in the per-commit history alike, the way GitHub's merge box
+  and the landing door (`latestRunPerName`) already read it. The reading is
+  recorded whether or not anything acts on it (`CiObserved`, no state change):
+  T10 deferring to an open CI fix, a state CI does not move, or a green with no
+  repair to end still leaves the head red, running or green. A green reading on
+  the current head of a delivery held `ESCALATED(ci_exhausted)` ends that hold
+  (295486ba): a spent CI budget is a person's only while CI is red, so it goes
+  back to review or landing the way a CI repair that ends green does. A spent
+  review budget under it stays the person's and the escalation names it
+  (`review_exhausted`).
 
 **Acceptance criteria**:
 - AC-24: GIVEN a delivery with two review rounds WHEN `get_pr`, the task page
@@ -1022,6 +1130,11 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
 - AC-26 (failure): GIVEN a worker row that says merged and a delivery that says
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
+- AC-33 (failure): GIVEN a CI fix that pushed a new head and is still open
+  WHEN one check fails on that head while others run THEN the PR reads CI
+  failed, not running; WHEN that check is re-run THEN it reads running, and
+  WHEN everything passes THEN it reads passed with no state change; a green
+  for the older head changes nothing, and the next commit reads running.
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
 requested · 1 open finding") and a repair's phase are pure readings in the
@@ -1041,6 +1154,7 @@ as a candidate whatever its worker row says.
 | Criterion AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
 | Criterion AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
+| Criterion AC-33 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
 ## 8. Order of work
 
@@ -1076,7 +1190,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render
@@ -1124,16 +1238,36 @@ column outside the kernel; S3 and S4 remove or route each one.
   only for the PR its delivery is bound to: another PR of the same task (a
   stacked series, a follow-up after the delivery's PR was abandoned) still
   completes it.
+  The attempt writers are ratcheted: the guard pins each ATTEMPT file's
+  count of `tasks.status` / `tasks.result` write statements
+  (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
+  one, fails CI, and a family moved behind the projection lowers its count.
+  The kernel reads an owner attempt's end from its latest worker row, not
+  from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
+  floor): a finished worker is an end even while the task is still
+  `assigned` (the status a running owner task holds for its whole attempt),
+  so an end that never arrived is re-sent. `pending` (its retry is queued)
+  and `cancelled` (the cancel sent its own end) are never an end. On an
+  `assigned` task the end counts only for a worker row created at or after
+  `claimed_at` (the claim stamps it, then inserts the new worker row, so an
+  older row is the previous attempt's while a claim is in flight), and only
+  once that row has gone unchanged for `OWNER_END_SETTLE_MS`: the worker
+  PATCH writes the worker's terminal status before it decides on a retry
+  requeue, so an end read in between is not sent. A terminal task's end
+  counts at once.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
   conflict and CI retries, loop exits) still set the owner task's status
-  directly, because the kernel reads that status as the attempt's end
-  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
-  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  directly, because there is no attempt-to-task projection to replace them
+  yet (an AttemptEnded that sets the owner task in its own statement);
+  person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row).
+  worker PATCH still copies them from the worker row). Also not implemented
+  (AC-9): the worker PATCH and the claim route still apply the review verdict
+  (record and adopt) and FixClaimed on the web host through the seam, with no
+  door op of their own like `attempt_ended`.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

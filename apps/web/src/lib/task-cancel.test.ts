@@ -12,8 +12,11 @@ mock.module('@buildd/core/db', () => ({
 }));
 const mockSettle = mock((_taskId: string, _cause: string) => Promise.resolve(0));
 mock.module('@/lib/sessionless-worker-settle', () => ({ settleSessionlessWorkersOfTask: mockSettle }));
-const mockAttemptEnded = mock(async (_p: any) => ({ handled: true }));
+const mockAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: true }));
 mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockAttemptEnded }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockAttemptEnded }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
@@ -77,8 +80,12 @@ describe('applyTaskCancelSideEffects', () => {
     expect(mockAttemptEnded.mock.calls[0][0]).toMatchObject({
       task: { id: 'task-1', workspaceId: 'ws-1', deliveryId: 'd1', deliveryRole: 'fix' },
       status: 'lost',
+      // 295486ba: says it is a cancel, so a CI repair nobody claimed spends nothing.
+      cancelled: true,
       source: 'cancel',
     });
+    // Through the kernel client (AC-9): the control plane applies it in own mode.
+    expect(mockAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:task_cancel' } });
   });
 
   it('a cancelled review round is a takeover, not an infra failure the kernel re-files', async () => {

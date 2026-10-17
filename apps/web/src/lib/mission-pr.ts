@@ -1189,6 +1189,12 @@ export type MissionPrMergeGate =
       /** Why, as codes (`ready-to-merge.ts`); doors that only show `reason` ignore it. */
       codes?: string[];
       nextActor?: 'system' | 'jev' | 'owner' | 'none';
+      /**
+       * It will not clear by waiting: only a person (or a new fact, like a
+       * retarget) changes it. The kernel's merge-time rails escalate a lasting
+       * refusal once (T16) instead of leaving the approval for the sweep to retry.
+       */
+      lasting?: boolean;
     };
 
 /** How many held items a refusal names before it summarises the rest. */
@@ -1231,9 +1237,46 @@ function nameHolders(labels: string[]): string {
  * work will not happen, not an absence of one; a cancelled task holding the
  * gate forever is how a mission becomes unmergeable by hand.
  */
+type GuardTask = { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown };
+
+/** How far `deliveryOwnerTask` follows `parentTaskId`; attempts of attempts are rare and shallow. */
+const OWNER_WALK_LIMIT = 5;
+
+/**
+ * The task a PR's delivery belongs to. A repair attempt (reviewer, CI-fix,
+ * conflict retry) pushes to its parent's PR and carries none of its parent's
+ * meaning (a refresh's `requireMergeCommit`, a mission PR's title), so every
+ * question about the PR is asked of the task it was opened for. Doors that pick
+ * the PR's newest worker get the attempt; the kernel's rails read the delivery
+ * owner. Before this, the two disagreed on #4909: the sweep passed it and the
+ * merge-time rails refused it, every 15-20 minutes.
+ *
+ * Anything that is not an attempt is returned as given. An unreadable or
+ * missing parent returns the last task read.
+ */
+export async function deliveryOwnerTask<T extends GuardTask>(task: T): Promise<T | GuardTask> {
+  let cur: GuardTask = task;
+  for (let i = 0; i < OWNER_WALK_LIMIT && cur.taskClass === 'attempt' && cur.id; i++) {
+    const self = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, cur.id)), columns: { parentTaskId: true } });
+    const parentId = (self as { parentTaskId?: string | null } | undefined)?.parentTaskId;
+    if (!parentId) break;
+    const parent = await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, parentId)),
+      columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
+    });
+    if (!parent) break;
+    cur = parent as GuardTask;
+  }
+  return cur;
+}
+
 export async function guardMissionPrMerge(
-  task: { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
+  given: GuardTask | null | undefined,
 ): Promise<MissionPrMergeGate> {
+  const task = given ? await deliveryOwnerTask(given).catch((err) => {
+    console.warn('[mission-pr] delivery owner unreadable (judging the task as given):', err instanceof Error ? err.message : err);
+    return given;
+  }) : given;
   // A PR lands only where its work can still reach trunk (a11abc4b R-3, AC-5;
   // workflow-kernel-library §6): a refresh on the delivery it was filed for, and
   // no task PR on a delivery branch that already shipped. Every merge door asks this.
@@ -1245,7 +1288,13 @@ export async function guardMissionPrMerge(
         return null;
       })
     : null;
-  if (targetHold) return { blocks: true, reason: targetHold.reason, codes: [targetHold.code], nextActor: targetHold.code === 'delivery_shipped' ? 'system' : 'owner' };
+  if (targetHold) {
+    return {
+      blocks: true, reason: targetHold.reason, codes: [targetHold.code],
+      nextActor: targetHold.lasting ? 'owner' : 'system',
+      ...(targetHold.lasting ? { lasting: true } : {}),
+    };
+  }
   if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
   const work = await evaluateMissionWorkState(task.missionId);
 
@@ -1308,7 +1357,7 @@ export async function guardMissionPrMerge(
  */
 async function deliveryTargetHold(
   task: { id?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
-): Promise<{ code: 'refresh_target_mismatch' | 'delivery_shipped'; reason: string } | null> {
+): Promise<{ code: 'refresh_target_mismatch' | 'delivery_shipped'; reason: string; lasting: boolean } | null> {
   if (!task?.id || !task.missionId) return null;
   const rows = ((await db.query.workers.findMany({
     where: sqlWhere(and(eq(workers.taskId, task.id), isNotNull(workers.prNumber))),
@@ -1322,18 +1371,38 @@ async function deliveryTargetHold(
   if (context === undefined) {
     context = (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { context: true } }))?.context;
   }
-  const { integrationRefreshOf } = await import('@/lib/integration-refresh');
-  const filedFor = integrationRefreshOf(context) ? (context as Record<string, unknown>).baseBranch : null;
-  if (typeof filedFor === 'string' && filedFor) {
-    if (prBase && prBase !== filedFor) {
-      return {
-        code: 'refresh_target_mismatch',
-        reason: `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
-          + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`,
-      };
-    }
-    if (epochs.length > 0 && writableEpoch({ epochs })?.branch !== filedFor) {
-      return { code: 'refresh_target_mismatch', reason: `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.` };
+  const { integrationRefreshOf, refreshFiledFor } = await import('@/lib/integration-refresh');
+  const refresh = integrationRefreshOf(context);
+  if (refresh) {
+    // Every refresh refusal is lasting: a person closes the PR or retargets it (a new fact).
+    const writable = epochs.length > 0 ? writableEpoch({ epochs })?.branch ?? null : null;
+    const filedFor = refreshFiledFor(context);
+    if (filedFor) {
+      if (prBase && prBase !== filedFor) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
+            + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`,
+        };
+      }
+      if (epochs.length > 0 && writable !== filedFor) {
+        return { code: 'refresh_target_mismatch', lasting: true, reason: `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.` };
+      }
+    } else if (prBase) {
+      // The filed-for branch was lost (a requeue overwrote it, #4909): the PR's own base must be
+      // the writable delivery's branch, and never trunk, which is where GitHub retargets it.
+      if (refresh.trunk && prBase === refresh.trunk) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR now targets trunk (\`${prBase}\`), not a mission branch. A refresh only ever lands on the mission branch it merges trunk into; close it.`,
+        };
+      }
+      if (epochs.length > 0 && writable !== prBase) {
+        return {
+          code: 'refresh_target_mismatch', lasting: true,
+          reason: `This refresh PR targets \`${prBase}\`, which is not this mission's open delivery${writable ? ` (\`${writable}\`)` : ''}, so there is nothing left for it to refresh. Close it.`,
+        };
+      }
     }
   }
   const shipped = epochs.length > 0 ? shippedEpochOf({ epochs }, prBase) : null;
@@ -1341,6 +1410,8 @@ async function deliveryTargetHold(
     const current = writableEpoch({ epochs });
     return {
       code: 'delivery_shipped',
+      // Settlement moves it when there is a current delivery; with none, a person decides.
+      lasting: !current,
       reason: `This PR is based on delivery ${shipped.epoch}'s branch (\`${shipped.branch}\`), which already reached trunk, so merging it there would ship nothing. `
         + (current ? `buildd moves it to delivery ${current.epoch} (\`${current.branch}\`); merge it there.` : `Close it, or file the work again so it goes out in a new delivery.`),
     };

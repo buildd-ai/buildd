@@ -74,6 +74,12 @@ describe('prSubjectFor', () => {
     expect(s).toMatchObject({ why: 'review_exhausted', ci: 'green', detail: 'rounds spent' });
   });
 
+  it('review_exhausted carries the projection headline, so approved-then-refused is not "never approved"', () => {
+    const k = (headline: string) => ({ stateReason: 'review_exhausted', prState: 'ci_passed', detail: null, headline });
+    expect(prSubjectFor(input({ kernel: k('Approved twice, then a later change was refused') }))).toMatchObject({ reviewHistory: 'Approved twice, then a later change was refused' });
+    expect(prSubjectFor(input({ kernel: k('Review budget spent without an approval') }))).toMatchObject({ reviewHistory: 'Review budget spent without an approval' });
+  });
+
   it('a migration collision and a stranded landing become Buildd\'s next steps', () => {
     expect(escalationRule(prSubjectFor(input({ landingStall: 'migration_collision', lifecycle: 'pr_open' })))).toMatchObject({ action: 'renumber_migration' });
     expect(escalationRule(prSubjectFor(input({ landingStall: 'stranded', lifecycle: 'ci_green' })))).toMatchObject({ action: 'retry_landing' });

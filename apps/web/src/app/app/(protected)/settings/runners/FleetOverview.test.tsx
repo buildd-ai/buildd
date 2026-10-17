@@ -62,6 +62,21 @@ describe('FleetOverview', () => {
     expect(fleetOverviewHeadline(fleet([]), 'Team 1').map(p => p.text).join('')).toBe('No runners online for Team 1.');
   });
 
+  it('more agents running than slots is said in words, never "6 of 5 slots busy"', () => {
+    const over: FleetRunner = { ...runner('a', 'atlas', 5, 5), slots: Array.from({ length: 6 }, (_, i) => slot(i, true)) };
+    expect(fleetOverviewHeadline(fleet([over])).map(p => p.text).join('')).toBe('6 agents running, over the 5 slots online.');
+    const t = text(renderToStaticMarkup(<FleetOverview fleet={fleet([over])} />));
+    expect(t).toContain('6 running, over its 5 slots');
+    expect(t).not.toContain('6 /5 busy');
+  });
+
+  it('says where slots are set, once, under the runners', () => {
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 4), runner('b', 'runner-2', 0, 4)])} />);
+    expect(html.match(/data-testid="fleet-slots-hint"/g)?.length).toBe(1);
+    expect(text(html)).toContain('buildd slots');
+    expect(text(html)).toContain('in buildd top');
+  });
+
   it('never counts runs on an offline runner against online capacity', () => {
     // An offline runner whose last heartbeat still listed workers: those runs
     // are not in the online slots, so "3 of 0 slots busy" is impossible.

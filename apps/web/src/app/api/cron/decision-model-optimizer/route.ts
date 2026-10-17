@@ -8,13 +8,15 @@
  * week old, while the invocation's time allows; the rest go first next day.
  * No opted-in team and no switch in effect -> two cheap queries.
  *
- * `changed` = switches made plus switches reverted.
+ * `changed` = switches made plus switches reverted. The recorded result lists
+ * each kind's outcome (action, reason, graded n, score vs bar), so a run that
+ * switched nothing can be read from `cron_runs` without a schema change.
  *
  * Auth: Bearer CRON_SECRET (via withCronRun).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun } from '@/lib/cron-run';
-import { runOptimizerSweep } from '@/lib/decision-model-optimizer/optimizer';
+import { runOptimizerSweep, sweepOutcomes } from '@/lib/decision-model-optimizer/optimizer';
 import { dueOptimizerTeams, optimizerDeps } from '@/lib/decision-model-optimizer/store';
 
 export const maxDuration = 300;
@@ -31,7 +33,11 @@ export async function GET(req: NextRequest) {
       processed: out.teams.length + out.reverts.checked,
       changed: switched + out.reverts.reverted,
       errors,
-      result: { teams: out.teams.length, deferred: out.deferred.length, switched, reverted: out.reverts.reverted },
+      // Per kind, so a run that switched nothing says why (cron_runs keeps this verbatim).
+      result: {
+        teams: out.teams.length, deferred: out.deferred.length, switched, reverted: out.reverts.reverted,
+        ...(() => { const o = sweepOutcomes(out); return { outcomes: o.rows, outcomesOmitted: o.omitted }; })(),
+      },
     });
     return NextResponse.json(out);
   });

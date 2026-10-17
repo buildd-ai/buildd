@@ -57,6 +57,46 @@ export const NEAREST_OCCURRENCE_WINDOW_MS = 12 * 60 * 60 * 1000;
 const UTC_ZONE_LABELS = new Set(['utc', 'gmt', 'z', 'utc+0', 'gmt+0', 'utc+00', 'gmt+00']);
 
 /**
+ * An IANA zone name ("America/New_York"), which is how Claude quotes a reset
+ * in the login's own zone. Only Area/City names: an abbreviation like "PST" is
+ * ambiguous (and Intl accepts some of them), so it is still refused.
+ */
+function ianaZone(label: string): string | null {
+  const zone = label.trim();
+  if (!zone.includes('/')) return null;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
+/** How far `zone`'s wall clock is ahead of UTC at instant `t`, in ms. */
+function zoneOffsetMs(zone: string, t: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(new Date(t));
+  const n = (type: string) => Number(parts.find(p => p.type === type)?.value);
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - Math.floor(t / 1000) * 1000;
+}
+
+/** The instant `zone`'s wall clock reads year-month-day hour:minute. */
+function zonedToUtc(zone: string, year: number, month: number, day: number, hour: number, minute: number): Date {
+  const wall = Date.UTC(year, month, day, hour, minute, 0, 0);
+  // Twice: the first guess can sit on the other side of a DST change.
+  let t = wall - zoneOffsetMs(zone, wall);
+  t = wall - zoneOffsetMs(zone, t);
+  return new Date(t);
+}
+
+/** `zone`'s calendar date at `now`. */
+function zonedDate(zone: string, now: Date): { year: number; month: number; day: number } {
+  const local = new Date(now.getTime() + zoneOffsetMs(zone, now.getTime()));
+  return { year: local.getUTCFullYear(), month: local.getUTCMonth(), day: local.getUTCDate() };
+}
+
+/**
  * Matches the reset clause inside a session-limit or quota-wall error, e.g.
  * "… · resets 11:10am (UTC)" (Claude) or "… or try again at 3:45 pm." (Codex).
  *
@@ -83,8 +123,9 @@ const TIME_OF_DAY = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/;
 
 export interface ParseResetTimeOptions {
   /**
-   * Timezone label as reported by the agent. UTC (or an equivalent label) is
-   * honoured; anything else returns null rather than being silently misread.
+   * Timezone label as reported by the agent. UTC (or an equivalent label) and
+   * IANA zone names ("America/New_York") are honoured; anything else returns
+   * null rather than being silently misread.
    * When omitted or empty, UTC is assumed — that is the only form the Claude
    * Agent SDK is known to emit.
    */
@@ -137,13 +178,44 @@ export function matchResetClause(error: string | null | undefined): ResetClause 
 export function parseResetTime(timeStr: string, options: ParseResetTimeOptions = {}): Date | null {
   if (typeof timeStr !== 'string') return null;
   const { timezone, now = new Date() } = options;
+  const clock = parseClock(timeStr);
+  if (!clock) return null;
 
-  // Refuse to guess at a non-UTC reset rather than misreport it as UTC.
+  // An IANA zone is read in that zone; any other non-UTC label is refused
+  // rather than misreported as UTC.
+  let zone: string | null = null;
   if (timezone != null) {
     const label = timezone.trim().toLowerCase();
-    if (label !== '' && !UTC_ZONE_LABELS.has(label)) return null;
+    if (label !== '' && !UTC_ZONE_LABELS.has(label)) {
+      zone = ianaZone(timezone);
+      if (!zone) return null;
+    }
   }
 
+  if (zone) {
+    const today = zonedDate(zone, now);
+    let reset = zonedToUtc(zone, today.year, today.month, today.day, clock.hour, clock.minute);
+    if (reset.getTime() <= now.getTime()) {
+      reset = zonedToUtc(zone, today.year, today.month, today.day + 1, clock.hour, clock.minute);
+    }
+    return reset;
+  }
+
+  const reset = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    clock.hour, clock.minute, 0, 0,
+  ));
+  // If the reset time already passed today, it means tomorrow.
+  if (reset.getTime() <= now.getTime()) {
+    reset.setUTCDate(reset.getUTCDate() + 1);
+  }
+  return reset;
+}
+
+/** "5pm", "11:10am", "23:45" as a 24-hour clock reading, or null when it is not one. */
+function parseClock(timeStr: string): { hour: number; minute: number } | null {
   const match = timeStr.trim().toLowerCase().match(TIME_OF_DAY);
   if (!match) return null;
 
@@ -163,18 +235,7 @@ export function parseResetTime(timeStr: string, options: ParseResetTimeOptions =
     // Date.UTC would happily absorb hour 25 into the following day.
     return null;
   }
-
-  const reset = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    hour, minute, 0, 0,
-  ));
-  // If the reset time already passed today, it means tomorrow.
-  if (reset.getTime() <= now.getTime()) {
-    reset.setUTCDate(reset.getUTCDate() + 1);
-  }
-  return reset;
+  return { hour, minute };
 }
 
 export interface ExtractResetTimeOptions {
@@ -222,12 +283,17 @@ export function extractResetTime(
   // A dated reset is exact: put the clock time on that day, in the year that
   // lands nearest to now (a "Jan 2" read on Dec 30 is next year's).
   if (clause.date) {
-    const dated = new Date(Date.UTC(now.getUTCFullYear(), clause.date.month, clause.date.day,
-      reset.getUTCHours(), reset.getUTCMinutes(), 0, 0));
-    if (dated.getUTCDate() !== clause.date.day) return null; // "Feb 31"
+    const clock = parseClock(clause.time)!;
+    const zone = clause.timezone ? ianaZone(clause.timezone) : null;
+    const { month, day } = clause.date;
+    if (new Date(Date.UTC(now.getUTCFullYear(), month, day)).getUTCDate() !== day) return null; // "Feb 31"
+    const at = (year: number) => zone
+      ? zonedToUtc(zone, year, month, day, clock.hour, clock.minute)
+      : new Date(Date.UTC(year, month, day, clock.hour, clock.minute, 0, 0));
     const HALF_YEAR_MS = 183 * 24 * 60 * 60 * 1000;
-    if (dated.getTime() < now.getTime() - HALF_YEAR_MS) dated.setUTCFullYear(dated.getUTCFullYear() + 1);
-    else if (dated.getTime() > now.getTime() + HALF_YEAR_MS) dated.setUTCFullYear(dated.getUTCFullYear() - 1);
+    const dated = at(now.getUTCFullYear());
+    if (dated.getTime() < now.getTime() - HALF_YEAR_MS) return at(now.getUTCFullYear() + 1);
+    if (dated.getTime() > now.getTime() + HALF_YEAR_MS) return at(now.getUTCFullYear() - 1);
     return dated;
   }
 

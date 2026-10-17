@@ -10,12 +10,11 @@
  * branch refresh is not one either.
  */
 import { TaskStatus } from '@buildd/shared';
-import { repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
+import { repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
 
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
 type RoundSnapshot = DeliveryView['rounds'][number];
 type AttemptSnapshot = DeliveryView['ledger'][number];
-type AttemptFamily = AttemptSnapshot['family'];
 
 export type CheckState = 'passed' | 'failed' | 'running' | 'pending' | 'blocked' | 'closed' | 'skipped';
 
@@ -64,10 +63,8 @@ export interface TaskChecks {
 export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
   & Partial<Pick<DeliveryView, 'findings'>>;
 
-const FAMILY_LABEL: Record<AttemptFamily, string> = { review_fix: 'Review fix', ci: 'CI fix', conflict: 'Conflict fix', migration: 'Migration fix', trunk: 'Base fix' };
-
 function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
-  return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, status: repairPhaseOf(a, v), taskId: a.taskId };
+  return { label: repairLabelOf(a, v.ledger), status: repairPhaseOf(a, v), taskId: a.taskId };
 }
 
 /** The head an attempt put on the PR, when it proved one. */
