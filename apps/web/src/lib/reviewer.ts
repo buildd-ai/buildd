@@ -1192,7 +1192,8 @@ function renderLedeSection(lede: string): string {
 
 /** Doctrine bullets used when the task declared a concrete file scope. */
 const CONCRETE_MANIFEST_DOCTRINE = [
-  '- ONE-WORK-UNIT: The PR should touch only files in the pathManifest (plus lock files). Flag scope creep.',
+  '- ONE-WORK-UNIT: The PR should touch mostly files in the pathManifest (plus lock files). Flag genuine scope creep: changes the task description does not call for.',
+  '- OUT-OF-MANIFEST FILES ARE A NOTE, NOT request-changes, when they are (a) derived/generated files such as docs/specs/INDEX.md or bun.lock, (b) tests, docs or supporting files the task description plainly calls for or the change needs to work. No one can extend the manifest after the task is claimed, so a request-changes whose only ask is "add these files to the manifest" can never be satisfied: mention them in the summary and judge the change on its merits.',
   '- PATH-MANIFEST CONFORMANCE: Every file in pathManifest must be present in the diff. Missing = incomplete delivery.',
 ].join('\n');
 

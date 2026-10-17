@@ -211,7 +211,7 @@ describe('Landed strip', () => {
     // 02 is open, 03 is held (blocked on 02), 04 is failed: the header must
     // name the failed one apart from "open" instead of folding it in.
     const jump = container.querySelector<HTMLElement>('[data-testid="landed-strip-open-jump"]')!;
-    expect(jump.textContent).toBe('1 open · 1 failed · 1 held ›');
+    expect(jump.textContent).toBe('1 open · 1 failed · 1 waiting ›');
   });
 
   it('selecting a held task keeps its held state (gray, never mustard) while raw status stays blocked', async () => {
@@ -233,7 +233,7 @@ describe('Landed strip', () => {
     expect(d.className).toContain('border-[var(--fleet-border-mid)]');
     expect(d.className).not.toContain('border-accent');
     expect(model.tasks[dagId(spec, '08')].status).toBe('blocked');
-    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')!.textContent).toBe('1 open · 3 failed · 3 held ›');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')!.textContent).toBe('1 open · 3 failed · 3 waiting ›');
   });
 
   it('AC-7: ready, blocked and queued cells carry three different fills', async () => {
@@ -272,7 +272,7 @@ describe('Landed strip', () => {
   it('AC-15: Next open skips held cells; the header counts held apart', async () => {
     const spec = DAG_SPECS.field;
     await mount({ model: dagBoard(spec), executor: 'runner' });
-    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('2 open · 8 held ›');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('2 open · 8 waiting ›');
     await click(cells()[0]);
     const next = container.querySelector<HTMLElement>('[data-testid="landed-strip-next-open"]')!;
     const seen: number[] = [];
@@ -284,7 +284,7 @@ describe('Landed strip', () => {
     const spec = { tasks: ['A', 'B'], edges: { B: ['A'] }, states: { A: 'landed' as const }, external: { B: ['x'] } };
     await mount({ model: dagBoard(spec, { externalDeps: [{ id: 'x', title: 'other work', status: 'pending' }] }), executor: 'runner' });
     const next = container.querySelector<HTMLButtonElement>('[data-testid="landed-strip-next-open"]')!;
-    expect(next.textContent).toBe('Nothing open · 1 held');
+    expect(next.textContent).toBe('Nothing open · 1 waiting');
     expect(next.disabled).toBe(false);
     await click(cells()[0]);
     await click(next);
@@ -324,7 +324,7 @@ describe('Landed strip drawer: the selected task\'s own delivery', () => {
     expect(cells()[DELIVERY_HELD - 1].dataset.status).toBe('blocked');
     // Mission dependency progress stays the strip's own vocabulary: a red cell
     // under a fix is its failed bucket (TONE-1), the drawer says Repairing.
-    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('1 failed · 1 held ›');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')?.textContent).toBe('1 failed · 1 waiting ›');
     expect(drawer().querySelector('[data-testid="landed-strip-drawer-ordinal"]')?.textContent).toBe('34 · LEVEL 34 OF 35');
   });
 

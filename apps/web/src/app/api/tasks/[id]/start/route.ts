@@ -10,7 +10,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { roleHas } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
-import { checkMissionHeld } from '../../../workers/claim/held-gate';
+import { checkMissionStartState } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
 import { checkWorkspaceCap } from '../../../workers/claim/workspace-cap-gate';
 import { BYPASS_SUBJECT_GATE_KEY, isSubjectDead } from '@/lib/subject-gate-contract';
@@ -225,13 +225,15 @@ export async function POST(
     const taskCtx = task.context as Record<string, unknown> | null;
     const isBypassHeld = hasBypassFlag(taskCtx, BYPASS_HELD_GATE_KEY);
     if (missionId && !isBypassHeld && !forceOverride) {
-      const isHeld = await checkMissionHeld(missionId);
-      if (isHeld) {
+      const missionStartState = await checkMissionStartState(missionId);
+      if (missionStartState) {
         return NextResponse.json({
-          error: 'Task is blocked: parent mission is held. Arm the mission or use forceOverride to bypass.',
+          error: `Task is blocked: its mission is ${missionStartState === 'paused' ? 'paused' : 'not started'}. Arm the mission or use forceOverride to bypass.`,
           gateReason: 'mission_held',
           blockClass: 'policy',
           missionId,
+          // Not started or paused: the dashboard words the refusal from this.
+          missionStartState,
           canForce: true,
         }, { status: 422 });
       }

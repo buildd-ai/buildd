@@ -5,6 +5,7 @@
  * tap, or a note — POSTs the existing /api/workers/[id]/respond route) and a
  * held mission (Arm).
  */
+import { MISSION_START_COPY, type MissionStartState } from '@/lib/mission-start-state';
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
@@ -136,25 +137,28 @@ export interface HomeHeldMission {
   done: number;
   total: number;
   heldFor: string | null;
+  /** Not started (the default) or paused. */
+  startState?: MissionStartState;
 }
 
 export function HeldMissionCard({ m }: { m: HomeHeldMission }) {
   const role = m.roles.length === 1 ? `${m.roles[0]} ` : '';
+  const copy = MISSION_START_COPY[m.startState ?? 'not_started'];
   return (
     <article data-testid="needs-you-card" data-kind="held" className="card px-4 py-4 md:px-6">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="inline-flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-text-secondary">
           <span aria-hidden="true" className="inline-block h-2.5 w-2.5 border-2 border-text-secondary" />
-          Held mission
+          {copy.label}
         </span>
-        {m.heldFor && <span className="font-mono text-[11px] text-text-muted">held {m.heldFor}</span>}
+        {m.heldFor && <span className="font-mono text-[11px] text-text-muted">for {m.heldFor}</span>}
       </div>
       <h3 className="truncate font-mono text-[15px] font-semibold text-text-primary">{m.title}</h3>
       <p className="mt-1 font-mono text-[12px] text-text-muted">
         {m.ready} {role}task{m.ready === 1 ? '' : 's'} ready · {m.done}/{m.total}
       </p>
       <div className="mt-3.5 flex gap-2.5">
-        <ArmButton missionId={m.id} />
+        <ArmButton missionId={m.id} startState={m.startState} />
         <Link href={m.href} className="inline-flex min-h-11 items-center border-2 border-border-default px-3.5 font-mono text-[12.5px] text-text-primary hover:bg-surface-3 md:min-h-9">
           Open
         </Link>

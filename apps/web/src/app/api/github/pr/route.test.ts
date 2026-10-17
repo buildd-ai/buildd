@@ -3709,6 +3709,42 @@ describe('PATCH /api/github/pr', () => {
     expect(mockGithubApi).toHaveBeenCalledTimes(1); // read only, no state:closed PATCH
   });
 
+  it('body + draft:false applies both: updates the body and marks ready', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubGraphQL.mockClear();
+    mockGithubApi.mockResolvedValue({
+      number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'T', draft: true, node_id: 'PR_node',
+    });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 'new body', draft: false },
+    }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pr.draft).toBe(false);
+    expect(JSON.parse(mockGithubApi.mock.calls[0][2].body)).toEqual({ body: 'new body' });
+    expect(mockGithubGraphQL).toHaveBeenCalledTimes(1);
+    expect(String(mockGithubGraphQL.mock.calls[0][1])).toContain('markPullRequestReadyForReview');
+  });
+
+  it('draft:true is refused instead of closing the PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockClear();
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, draft: true },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
   it('closes PR successfully and returns closed PR data', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({

@@ -43,9 +43,13 @@ export function getLastServerContactAt(): number {
  * (`await claimTask` never returns) and `lastServerContactAt`, so the runner
  * silently stops claiming until restarted (observed 2026-06-23). Aborting after
  * a timeout both unblocks the loop and tears down the bad socket so the pool heals.
- * All endpoints here are short JSON calls, so 30s is a generous ceiling.
+ * Ordinary calls use 30s; claims also assemble prompts and use a separate ceiling.
  */
 const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
+// Claims include database arbitration and prompt assembly after worker creation.
+// Keep them bounded, but do not discard healthy answers at the ordinary 30s
+// ceiling. An explicit global timeout remains the operator override.
+const CLAIM_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 90_000);
 
 /** Outcome of one path-claim request — see BuilddClient.claimPaths. */
 export type PathClaimResponse =
@@ -257,6 +261,7 @@ export class BuilddClient {
     let data: any;
     try {
       data = await this.fetch('/api/workers/claim', {
+        signal: AbortSignal.timeout(CLAIM_TIMEOUT_MS),
         method: 'POST',
         body: JSON.stringify(body),
       });
@@ -699,6 +704,16 @@ export class BuilddClient {
   async listWorkspaces() {
     const data = await this.fetch('/api/workspaces');
     return data.workspaces || [];
+  }
+
+  /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
+  async getExplain(kind: 'mission' | 'task', id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/explain?${kind}Id=${encodeURIComponent(id)}`); } catch { return null; }
+  }
+
+  /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
+  async getMission(id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}`); } catch { return null; }
   }
 
   async getWorkspaceConfig(workspaceId: string): Promise<{

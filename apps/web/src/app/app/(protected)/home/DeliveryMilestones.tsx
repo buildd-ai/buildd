@@ -9,7 +9,7 @@
  */
 import Link from 'next/link';
 import type { MissionDelivery } from '@/lib/delivery-projection';
-import { DELIVERY_KIND, STATE_OF_KIND } from '@/lib/delivery-projection';
+import { DELIVERY_KIND, STATE_OF_KIND, deliveryKindLabel } from '@/lib/delivery-projection';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import MissionRow from '@/components/ui/MissionRow';
 
@@ -25,7 +25,7 @@ export function DeliveryMilestones({ missions, openMissions }: { missions: reado
         {missions.map(m => {
           const state = STATE_OF_KIND[m.kind] ?? undefined;
           const stat = m.total > 0 ? `${m.landed} of ${m.total} landed` : undefined;
-          const kind = DELIVERY_KIND[m.kind];
+          const kind = { ...DELIVERY_KIND[m.kind], label: deliveryKindLabel(m) };
           return (
             <li key={m.id} data-testid="home-delivery-row" data-kind={m.kind}>
               <MissionRow

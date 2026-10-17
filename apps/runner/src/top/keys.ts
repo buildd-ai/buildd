@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  busySlots, currentMission, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  NO_MISSION, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
@@ -149,6 +149,8 @@ export type Effect =
   | { type: 'action'; action: 'answer' | 'message' | 'pause' | 'stop'; workerId: string; taskId: string; title: string; message?: string }
   | { type: 'claim'; taskId: string; title: string }
   | { type: 'open'; taskId: string }
+  /** `s`: an interactive `claude` session about this mission or task, on this machine (talk.ts). */
+  | { type: 'talk'; kind: 'mission' | 'task'; id: string; title: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
   /** `h`: hold this runner (`on`) or resume it (R-33). */
@@ -338,6 +340,7 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     const q = queueKey({ ...state, status: null }, key, now);
     if (q) return q;
   }
+  if (key.name === 'char' && key.ch === 's') return talkKey({ ...state, status: null }, now);
   if (key.name === 'char' && 'ampxco'.includes(key.ch)) return actOnRow({ ...state, status: null }, key.ch, now);
 
   if (mode.kind === 'detail') return { state, effects: [] };
@@ -427,6 +430,25 @@ function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
   return null;
 }
 
+/**
+ * `s`: talk to the selected mission's planner, or steer the selected task's
+ * agent. In the missions pane the mission is the target; in the task list (or
+ * a task's detail) the task is.
+ */
+function talkKey(state: TopState, now: number): KeyResult {
+  if (state.view === 'queue' || state.mode.kind !== 'list' && state.mode.kind !== 'detail') {
+    return { state: refuse(state, 'Tab back to Missions to talk to one.'), effects: [] };
+  }
+  if (state.mode.kind === 'list' && state.focus === 'missions') {
+    const m = currentMission(state, now);
+    if (m.key === NO_MISSION || isFoldKey(m.key)) return { state: refuse(state, 'Pick a mission to talk to (↑↓), or → for a task.'), effects: [] };
+    return { state: info(state, `Opening Claude on "${m.title}"…`), effects: [{ type: 'talk', kind: 'mission', id: m.key, title: m.title }] };
+  }
+  const row = targetRow(state, now);
+  if (!row) return { state: refuse(state, 'Pick a task first (→ moves to the task list).'), effects: [] };
+  return { state: info(state, `Opening Claude on "${row.title}"…`), effects: [{ type: 'talk', kind: 'task', id: row.taskId, title: row.title }] };
+}
+
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);
 
 /** After a prompt, go back to the detail view if that is where it was opened. */
@@ -455,6 +477,7 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     if (failed.length > 0) return { text: failed[0], tone: 'error' };
     return { text: typeof b?.line === 'string' ? b.line : `Slots now ${effect.slots}.`, tone: 'ok' };
   }
+  if (effect.type === 'talk') return ok ? { text: 'Back from Claude.', tone: 'ok' } : { text: refusalReason(result), tone: 'error' };
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
     answer: `Answer sent to "${title}". The agent picks it up from here.`,

@@ -6,7 +6,7 @@
  * is open, its PR — with that task's actions, without leaving the screen.
  *
  * ```
- * LANDED                  1 open · 3 held ›
+ * LANDED                  1 open · 3 waiting ›
  * 6 of 10
  * ■ ■ ■ ■ ■ ▨ ▦ ░ ░ ░
  * 01 02 03 04 05 06 07 08 09 10
@@ -138,7 +138,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const nextOpenLabel = open.length > 0
     ? (target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`)
     : counts.failed > 0 ? `Nothing open · ${counts.failed} failed`
-    : held > 0 ? `Nothing open · ${held} held` : 'All tasks landed';
+    : held > 0 ? `Nothing open · ${held} waiting` : 'All tasks landed';
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
   const openJumpLabel = stripCountsLabel(counts);
 

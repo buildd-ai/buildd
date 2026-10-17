@@ -584,6 +584,7 @@ async function viewForMission(missionId: string): Promise<{
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
+    armedAt: m.armedAt ?? null,
     executor: m.executor ?? null,
     orchestrationMode: m.orchestrationMode ?? null,
     activeAgents,

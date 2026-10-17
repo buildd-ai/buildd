@@ -692,7 +692,7 @@ const PR_STATE_WORDS: Record<DeliveryDisagreement['delivery'], string> = {
   CHANGES_REQUESTED: 'waiting on requested changes',
   FIXING: 'being fixed after review',
   REPAIRING: 'being repaired',
-  BLOCKED_ON_TRUNK: 'held by a red base branch',
+  BLOCKED_ON_TRUNK: 'blocked by a red base branch',
   APPROVED: 'approved and not yet merged',
   LANDING: 'merging',
   ESCALATED: 'waiting on a person',

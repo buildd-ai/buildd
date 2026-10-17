@@ -506,6 +506,9 @@ that must be fixed on the SAME branch before merging?
 
 Judge on these criteria:
 1. ONE-WORK-UNIT ADHERENCE: The PR touches only files in the task's pathManifest. No scope creep.
+   Files outside the manifest are a note, not request-changes, when they are derived/generated
+   (docs/specs/INDEX.md, bun.lock) or tests/docs/supporting files the task description plainly
+   calls for: the manifest cannot be extended after claim, so that ask is unsatisfiable.
 2. PATH-MANIFEST CONFORMANCE: Every file in pathManifest is touched. No missing deliverables.
    Exception: a manifest of ["**"] means the task declared no file scope (the mission-task
    default). It is advisory — do NOT report files as missing from it, and do not treat it as

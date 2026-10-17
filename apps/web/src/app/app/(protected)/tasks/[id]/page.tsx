@@ -132,6 +132,10 @@ import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { statusPill } from '@/components/ui/states';
+import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components/ui/DiagnosticsDisclosure';
+import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
+import { isPlatformOperator } from '@/lib/platform-operator';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -206,6 +210,9 @@ export default async function TaskDetailPage({
   if (!access) {
     notFound();
   }
+  // Layer-3 diagnostics (gate codes, runner scheduling, overrides, exact
+  // timings): team admins of this task's team and platform operators only.
+  const diagnosticsVisible = canSeeDiagnostics({ role: access.role, operator: isPlatformOperator(user) });
 
   // These three need nothing but the task row and the access check above, and
   // nothing each other produces, so they are one wait rather than three serial
@@ -244,7 +251,7 @@ export default async function TaskDetailPage({
           where: sqlWhere(eq(missions.id, task.missionId)),
           columns: {
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
-            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
+            dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true,
             goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
             integrationBranchEnabled: true, mergePolicy: true, requiresReview: true,
           },
@@ -1345,6 +1352,7 @@ export default async function TaskDetailPage({
 
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
+    <DiagnosticsAudienceProvider visible={diagnosticsVisible}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       <div className="max-w-[1384px] w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
@@ -1600,16 +1608,20 @@ export default async function TaskDetailPage({
           );
         })()}
 
-        {/* Forced by X at T (docs/specs/force-start.md §Recording): the last dashboard Force start this task was claimed under. */}
+        {/* Forced by X at T (docs/specs/force-start.md §Recording): the last
+            dashboard Force start this task was claimed under. Override flags
+            and the exact time are diagnostics: admins and operators only. */}
         {(() => {
           const forced = lastForceStart(task.context as Record<string, unknown> | null);
           if (!forced) return null;
           return (
-            <p data-testid="task-forced-start" className="mb-6 font-mono text-meta text-text-secondary [overflow-wrap:anywhere]">
-              Force-started by {forced.userId && forced.userId === user.id ? 'you' : 'a teammate'} at{' '}
-              <ZonedTime value={forced.at} format="datetime" fallback={forced.at.slice(0, 16).replace('T', ' ')} />
-              {' '}· skipped: {[...new Set(forced.kinds.map(gateName))].join(', ').toLowerCase()}
-            </p>
+            <DiagnosticsDisclosure summary="Started early" className="mb-6">
+              <p data-testid="task-forced-start">
+                Force-started by {forced.userId && forced.userId === user.id ? 'you' : 'a teammate'} at{' '}
+                <ZonedTime value={forced.at} format="datetime" fallback={forced.at.slice(0, 16).replace('T', ' ')} />
+                {' '}· skipped: {[...new Set(forced.kinds.map(gateName))].join(', ').toLowerCase()} ({forced.kinds.join(', ')})
+              </p>
+            </DiagnosticsDisclosure>
           );
         })()}
 
@@ -1971,7 +1983,7 @@ export default async function TaskDetailPage({
                       <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
                       <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{displayTaskTitle(d.title)}</span>
                       <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
-                        {d.status === 'pending' ? 'queued' : d.status === 'in_progress' || d.status === 'assigned' ? 'claimed' : d.status}
+                        {statusPill(d.status).label}
                       </span>
                     </Link>
                   </li>
@@ -1990,21 +2002,29 @@ export default async function TaskDetailPage({
             </summary>
             <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[13px]">
               <div><dt className="text-meta text-text-muted">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
-              <div><dt className="text-meta text-text-muted">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
-              {task.backend && <div><dt className="text-meta text-text-muted">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
               <TaskModelCell summary={modelSummary} />
-              <div><dt className="text-meta text-text-muted">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
-              <div><dt className="text-meta text-text-muted">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
               <div><dt className="text-meta text-text-muted">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
               {task.category && <div><dt className="text-meta text-text-muted">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
               {task.project && <div><dt className="text-meta text-text-muted">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
               <div className="col-span-2"><dt className="text-meta text-text-muted">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
             </dl>
           </details>
+
+          {/* Runner scheduling for this task: admins and operators only. */}
+          <DiagnosticsDisclosure>
+            <dl data-testid="task-diagnostics" className="grid grid-cols-2 gap-x-6 gap-y-1">
+              <dt>Runner preference</dt><dd>{task.runnerPreference}</dd>
+              {task.backend && <><dt>Backend</dt><dd>{task.backend}</dd></>}
+              <dt>Claimed by</dt><dd className="truncate">{task.account?.name || '-'}</dd>
+              <dt>Workers</dt><dd>{taskWorkers.length}</dd>
+              {task.claimedAt && <><dt>Claimed at</dt><dd><ZonedTime value={task.claimedAt} format="datetime" /></dd></>}
+            </dl>
+          </DiagnosticsDisclosure>
         </aside>
         </div>{/* end grid */}
       </div>
     </div>
+    </DiagnosticsAudienceProvider>
     </DisplayTimezoneProvider>
   );
 }
