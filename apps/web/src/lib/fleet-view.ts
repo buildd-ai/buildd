@@ -279,8 +279,8 @@ export function buildFleetSnapshot(
     for (const iv of [...intervals].sort((a, b) => a.start - b.start)) {
       place(slots[laneOf.get(iv.id) ?? 0], byId.get(iv.id)!, iv);
     }
-    // A person's hold (`buildd hold`): shown as on hold, not idle, while in force.
-    const hold = g.hb ? activeRunnerHold(g.hb.environment, now) : null;
+    // A person's hold (`buildd hold`): shown as on hold, not idle, while in force AND the runner is online (R-33).
+    const hold = online && g.hb ? activeRunnerHold(g.hb.environment, now) : null;
     runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots, ...(hold ? { hold } : {}) });
   }
 

@@ -23,6 +23,8 @@ import type { RecentMission } from '@buildd/shared';
 export const RECENT_DAYS = 7;
 /** Bound recent deliveries only; open missions must never be truncated. */
 const MAX_DELIVERED_MISSIONS = 300;
+/** Safety cap on open missions; exceeded with a warning log. */
+const MAX_OPEN_MISSIONS = 1000;
 const OPEN_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
 
 /**
@@ -76,17 +78,25 @@ export async function loadRecentMissions(workspaceIds: string[], now = Date.now(
     extras: sqlExtras({ deliveredAt: deliveredAtSqlFor(since) }),
     orderBy: sqlOrderBy([desc(missions.updatedAt)]),
   };
+  // Both queries built from the same where logic (recentMissionsWhere).
+  const openWhere = and(inArray(missions.workspaceId, workspaceIds), inArray(missions.status, [...OPEN_STATUSES]));
+  const deliveredWhere = and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since));
   const [open, delivered] = await Promise.all([
     db.query.missions.findMany({
       ...selection,
-      where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), inArray(missions.status, [...OPEN_STATUSES]))),
+      where: sqlWhere(openWhere),
+      limit: MAX_OPEN_MISSIONS + 1, // +1 to detect overflow
     }),
     db.query.missions.findMany({
       ...selection,
-      where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since))),
+      where: sqlWhere(deliveredWhere),
       limit: MAX_DELIVERED_MISSIONS,
     }),
   ]);
+  if (open.length > MAX_OPEN_MISSIONS) {
+    console.warn(`[missions/recent] ${open.length} open missions exceed the safety cap of ${MAX_OPEN_MISSIONS}; returning the first ${MAX_OPEN_MISSIONS}`);
+    open.splice(MAX_OPEN_MISSIONS);
+  }
   return [...open, ...delivered].map(r => ({
     id: r.id,
     title: r.title,

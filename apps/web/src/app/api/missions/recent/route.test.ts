@@ -90,7 +90,7 @@ describe('GET /api/missions/recent', () => {
     expect(body.missions[3].stage).toBeNull();
   });
 
-  it('keeps stale open missions even when recent deliveries exceed the cap', async () => {
+  it('keeps stale open missions even when recent deliveries exceed the cap, but caps open missions with a safety limit', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
     mockListReachable.mockResolvedValue(['ws-1']);
     rows = [
@@ -103,7 +103,7 @@ describe('GET /api/missions/recent', () => {
     expect(body.missions.filter((m: any) => m.status !== 'completed')).toHaveLength(303);
     expect(body.missions.filter((m: any) => m.status === 'completed')).toHaveLength(300);
     const calls = mockFindMany.mock.calls.map(([args]) => args as any);
-    expect(calls[0].limit).toBeUndefined();
+    expect(calls[0].limit).toBe(1001); // MAX_OPEN_MISSIONS + 1 for overflow detection
     expect(calls[1].limit).toBe(300);
     expect(dialect.sqlToQuery(calls[0].where).params).toEqual(['ws-1', 'active', 'paused', 'budget_exhausted']);
     expect(dialect.sqlToQuery(calls[1].where).params).toContain('completed');

@@ -44,15 +44,22 @@ afterEach(() => {
 
 describe('parseHoldDuration', () => {
   test('hours, minutes, seconds, days and combinations', () => {
-    expect(parseHoldDuration('2h')).toBe(2 * 3_600_000);
-    expect(parseHoldDuration('30m')).toBe(30 * 60_000);
-    expect(parseHoldDuration('90s')).toBe(90_000);
-    expect(parseHoldDuration('1d')).toBe(86_400_000);
-    expect(parseHoldDuration('1h30m')).toBe(90 * 60_000);
-    expect(parseHoldDuration(' 1m ')).toBe(60_000);
+    expect(parseHoldDuration('2h')).toEqual({ ms: 2 * 3_600_000 });
+    expect(parseHoldDuration('30m')).toEqual({ ms: 30 * 60_000 });
+    expect(parseHoldDuration('90s')).toEqual({ ms: 90_000 });
+    expect(parseHoldDuration('1d')).toEqual({ ms: 86_400_000 });
+    expect(parseHoldDuration('1h30m')).toEqual({ ms: 90 * 60_000 });
+    expect(parseHoldDuration(' 1m ')).toEqual({ ms: 60_000 });
   });
   test('anything else is refused', () => {
     for (const bad of ['', '2', 'h', '-1h', '0m', 'soon', '2 hours', '1x']) expect(parseHoldDuration(bad)).toBeNull();
+  });
+  test('30 days is the max; longer is an error', () => {
+    const thirtyDays = 30 * 86_400_000;
+    expect(parseHoldDuration('30d')).toEqual({ ms: thirtyDays });
+    expect(parseHoldDuration('31d')).toEqual({ error: expect.stringContaining('30 days') });
+    expect(parseHoldDuration('29d1h')).toEqual({ ms: 29 * 86_400_000 + 3_600_000 });
+    expect(parseHoldDuration('30d1s')).toEqual({ error: expect.stringContaining('30 days') });
   });
 });
 

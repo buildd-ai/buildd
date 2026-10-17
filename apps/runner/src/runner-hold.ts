@@ -26,13 +26,16 @@ import type { SocketProbe } from './runner-socket';
 
 const UNIT_MS: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 };
 
-/** `2h`, `30m`, `90s`, `1d`, `1h30m` in ms; null for anything else (a bare number has no unit, so it is refused). */
-export function parseHoldDuration(raw: string): number | null {
+/** `2h`, `30m`, `90s`, `1d`, `1h30m` in ms; null for anything else (a bare number has no unit, so it is refused). Capped at 30 days. */
+export function parseHoldDuration(raw: string): { ms: number } | { error: string } | null {
   const s = raw.trim().toLowerCase();
   if (!/^(\d+[dhms])+$/.test(s)) return null;
   let ms = 0;
   for (const [, n, unit] of s.matchAll(/(\d+)([dhms])/g)) ms += Number(n) * UNIT_MS[unit];
-  return ms > 0 ? ms : null;
+  if (ms <= 0) return null;
+  const thirtyDays = 30 * 86_400_000;
+  if (ms > thirtyDays) return { error: `Hold is capped at 30 days. "${raw}" is longer.` };
+  return { ms };
 }
 
 // ── config.json ─────────────────────────────────────────────────────────────
@@ -50,12 +53,18 @@ export function readHoldFromConfig(configFile: string): RunnerHold | null {
   return parseRunnerHold(readConfigObject(configFile)?.hold);
 }
 
+/** Agent IDs that were paused by `buildd stop`. Cleared when resumed or hold is lifted. */
+export function readStoppedAgentIdsFromConfig(configFile: string): string[] {
+  const ids = readConfigObject(configFile)?.stoppedAgentIds;
+  return Array.isArray(ids) && ids.every(id => typeof id === 'string') ? ids : [];
+}
+
 /**
  * Write `hold` into config.json (null removes it), keeping every other field.
  * Throws UnreadableConfigError, writing nothing, when the file exists but is
  * not a JSON object: it holds the API key, and overwriting it would lose that.
  */
-export function saveHoldToConfig(configFile: string, hold: RunnerHold | null): void {
+export function saveHoldToConfig(configFile: string, hold: RunnerHold | null, stoppedAgentIds?: string[]): void {
   let cfg: Record<string, unknown> = {};
   if (existsSync(configFile)) {
     const existing = readConfigObject(configFile);
@@ -64,6 +73,8 @@ export function saveHoldToConfig(configFile: string, hold: RunnerHold | null): v
   }
   if (hold === null) delete cfg.hold;
   else cfg.hold = hold;
+  if (!stoppedAgentIds || stoppedAgentIds.length === 0) delete cfg.stoppedAgentIds;
+  else cfg.stoppedAgentIds = stoppedAgentIds;
   writeSecretJsonFile(configFile, cfg);
 }
 
@@ -264,10 +275,11 @@ export function holdLine(hold: RunnerHold, running: number, now: number): string
 }
 
 /** What `buildd resume` prints. */
-export function resumeLine(wasHeld: boolean, running: number): string {
+export function resumeLine(wasHeld: boolean, running: number, stillPaused?: number): string {
+  const paused = stillPaused ? ` ${stillPaused} agent${stillPaused === 1 ? ' stays' : 's stay'} paused.` : '';
   return wasHeld
-    ? `Resumed: looking for work now. ${agents(running, 'running')}`
-    : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}`;
+    ? `Resumed: this runner takes new work again. ${agents(running, 'running')}${paused}`
+    : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}${paused}`;
 }
 
 // ── the CLI ─────────────────────────────────────────────────────────────────
@@ -340,10 +352,14 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
   const now = deps.now ?? Date.now;
   let forMs: number | null = null;
   if (cmd.kind === 'hold' && cmd.forArg !== null) {
-    forMs = parseHoldDuration(cmd.forArg);
-    if (forMs === null) {
+    const parsed = parseHoldDuration(cmd.forArg);
+    if (parsed === null) {
       return { code: 64, stdout: '', stderr: `--for takes a time like 2h, 30m or 1h30m, not "${cmd.forArg}". Usage: buildd hold [--for <time>]` };
     }
+    if ('error' in parsed) {
+      return { code: 64, stdout: '', stderr: parsed.error };
+    }
+    forMs = parsed.ms;
   }
 
   const saveLocally = (prefix: string): HoldCommandResult => {
@@ -381,9 +397,19 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
   }
   const running = typeof b.running === 'number' ? b.running : 0;
   if (cmd.kind === 'resume') {
-    // R-36: resume also continues every paused agent in its own session.
-    const continued = await continuePausedAgents(deps, post);
-    const head = resumeLine(b.wasHeld !== false, running);
+    // R-36: resume also continues agents paused by `buildd stop` (R-35). Report any paused from before.
+    const stoppedAgentIds = new Set(readStoppedAgentIdsFromConfig(deps.configFile));
+    const pausedByStop = stoppedAgentIds.size > 0 ? stoppedAgentIds : undefined;
+    const continued = await continuePausedAgents(deps, post, pausedByStop);
+    // Clear the stopped agents list from config now that we've resumed.
+    if (stoppedAgentIds.size > 0) {
+      try {
+        saveHoldToConfig(deps.configFile, null, []);
+      } catch {
+        // Non-fatal; next resume will try again.
+      }
+    }
+    const head = resumeLine(b.wasHeld !== false, running, continued.stillPaused);
     return { code: continued.failed ? 1 : 0, stdout: [head, ...continued.lines].join('\n'), stderr: '' };
   }
   const hold = parseRunnerHold(b.hold) ?? { since: new Date(now()).toISOString(), until: null };
@@ -427,18 +453,23 @@ async function listAgents(deps: HoldCommandDeps): Promise<LiveAgent[] | { error:
 }
 
 /**
- * Continue every paused agent in its own session: the answer to its pause,
+ * Continue every paused agent that `buildd stop` just paused: the answer to its pause,
  * the same path as Resume on the dashboard and `a` on a paused row in top.
+ * If stopPausedAgentIds is provided, only continue those agents and report how many stay paused.
  */
 async function continuePausedAgents(
   deps: HoldCommandDeps,
   post: (path: string, body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>,
-): Promise<{ lines: string[]; failed: boolean }> {
+  stopPausedAgentIds?: Set<string>,
+): Promise<{ lines: string[]; failed: boolean; stillPaused?: number }> {
   const agents = await listAgents(deps);
   if ('error' in agents) return { lines: [`${agents.error} Paused agents were not continued; resume each with a in buildd top.`], failed: true };
+  const paused = agents.filter(x => x.paused);
+  const toContinue = stopPausedAgentIds ? paused.filter(x => stopPausedAgentIds.has(x.id)) : paused;
+  const stillPaused = stopPausedAgentIds ? paused.filter(x => !stopPausedAgentIds.has(x.id)).length : 0;
   const lines: string[] = [];
   let failed = false;
-  for (const a of agents.filter(x => x.paused)) {
+  for (const a of toContinue) {
     try {
       const r = await post(`/api/workers/${encodeURIComponent(a.id)}/answer`, { message: 'Resume' });
       if (r.status >= 200 && r.status < 300) lines.push(`Continued "${a.title}" in its own session.`);
@@ -448,7 +479,7 @@ async function continuePausedAgents(
       lines.push(`Could not continue "${a.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
     }
   }
-  return { lines, failed };
+  return { lines, failed, stillPaused: stopPausedAgentIds && stillPaused > 0 ? stillPaused : undefined };
 }
 
 // ── buildd stop (R-36) ──────────────────────────────────────────────────────
@@ -522,16 +553,28 @@ export async function runStopCommand(cmd: { yes: boolean; abort?: boolean }, dep
 
   const lines: string[] = [];
   let failed = false;
+  const stoppedAgentIds: string[] = [];
   for (const a of targets) {
     const path = `/api/workers/${encodeURIComponent(a.id)}/${abort ? 'stop' : 'pause'}`;
     const verb = abort ? 'stop' : 'pause';
     try {
       const r = await post(path, {});
-      if (r.status >= 200 && r.status < 300) lines.push(abort ? `Stopped "${a.title}".` : `Paused "${a.title}": it stops at its next safe point and keeps its session.`);
-      else { failed = true; lines.push(`Could not ${verb} "${a.title}": ${refusal(r.body, r.status)}`); }
+      if (r.status >= 200 && r.status < 300) {
+        if (!abort) stoppedAgentIds.push(a.id); // Only track paused agents, not stopped ones.
+        lines.push(abort ? `Stopped "${a.title}".` : `Paused "${a.title}": it stops at its next safe point and keeps its session.`);
+      } else { failed = true; lines.push(`Could not ${verb} "${a.title}": ${refusal(r.body, r.status)}`); }
     } catch (err) {
       failed = true;
       lines.push(`Could not ${verb} "${a.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
+    }
+  }
+  // Save the IDs of agents we paused, so `buildd resume` knows which to continue (R-35).
+  if (stoppedAgentIds.length > 0) {
+    try {
+      saveHoldToConfig(deps.configFile, null, stoppedAgentIds);
+    } catch {
+      // Non-fatal; we've held the runner and paused the agents; this just means
+      // resume won't know to focus on those agents.
     }
   }
   const tail = abort
