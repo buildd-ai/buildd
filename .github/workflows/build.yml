@@ -98,6 +98,9 @@ jobs:
       - name: Check UI copy (AI-voice ratchet)
         run: bun run copy:check
 
+      - name: Check terms catalog doc is current
+        run: bun run terms:doc --check
+
       # Open-core boundary: design/strategy prose lives in the private
       # knowledge-base repo. docs/design keeps only frontmatter stubs (plus
       # design-system.md and DESIGN-FORMAT.md); docs/plans and docs/reports
