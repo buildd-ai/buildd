@@ -211,6 +211,15 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
     expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 4, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
       .toBe('2 of 4 tasks complete · delivery 1 shipped');
   });
+
+  it('delivery 1 with a single open delivery uses delivery-specific wording', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'open', 11)] })!;
+    expect(v).toMatchObject({ state: 'open', delivery: 1, prNumber: 11 });
+    const words = describeMissionDelivery(v);
+    expect(words.heading).toBe('Delivery 1');
+    expect(words.line).toContain("Delivery 1's work ships in this PR");
+    expect(words.earlier).toBeNull();
+  });
 });
 
 // Task fbc93ebd (kernel audit F6): a closed integration PR whose work is

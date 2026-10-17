@@ -136,6 +136,7 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     handoffCause: i.handoff?.cause ?? null,
     handoffReason: i.handoff?.reason ?? null,
     detail: i.escalated?.reason ?? i.kernel?.detail ?? i.kernel?.headline ?? null,
+    reviewHistory: why === 'review_exhausted' ? i.kernel?.headline ?? null : null,
     migrationCollision: i.landingStall === 'migration_collision',
     landingStranded: i.landingStall === 'stranded',
     headSha: i.headSha ?? null,
