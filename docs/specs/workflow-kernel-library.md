@@ -676,15 +676,23 @@ recorded as such, never as an approval.
 - A PR with no delivery is not merged by a buildd door. A door asked to merge
   one opens (or adopts) its delivery first; "legacy" merges end at slice S3.
 - GitHub enforces the verdict: on every kernel-owned PR head the kernel's
-  `publish_landing_status` effect publishes the commit status `buildd/landing`.
-  It is `success` only when the kernel would land that head (approved or
-  landing, covered, no open verdict), and `failure` while a required finding is
-  open or review is missing. One effect per delivery version; only the newest
+  `publish_landing_status` effect publishes the commit status
+  `Buildd / Review approval` (also under its former name `buildd/landing`,
+  written with the same answer until nothing reads it). It is `success` only
+  when the kernel would land that head (approved or landing, covered, no open
+  verdict), `pending` while review of that head has not finished (so ongoing
+  review never reads as failing CI), and `failure` while a required finding is
+  open, a verdict stands against the head, or a person has to decide. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
-  never leaves a success standing. CI is not part of it: CI has its own checks,
-  and the merge rails never read `buildd/landing` as CI. Making it a required
-  check on trunk is an owner decision, taken once every open PR carries it.
+  never leaves a success standing. It is one GitHub App and one commit-status
+  check, separate from CI: no second App and no native GitHub self-approval.
+  CI is not part of it: CI has its own checks,
+  and the merge rails never read either name as CI. Making `Buildd / Review approval` a required
+  check on trunk is an owner decision (today `main` requires `build` and
+  `release candidate verified`, `dev` has no rule, and admins are not
+  enforced, so a manual GitHub merge on `dev` over an open finding is not
+  blocked; it is recorded as an external merge, AC-15), taken once every open PR carries it.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
