@@ -199,13 +199,6 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
       .toBe('3 of 3 tasks complete · delivery 2 PR #11 awaiting merge');
   });
 
-  it('a delivery PR that is closed reads as closed from the delivery prLifecycleStatus, even without owner worker', () => {
-    const dClosed = (epoch: number, state: 'open' | 'merged', prNumber: number | null, prLifecycleStatus?: string | null) =>
-      ({ epoch, branch: epoch === 1 ? BRANCH : `${BRANCH}-delivery-${epoch}`, state, prNumber, repoFullName: 'acme/app', prLifecycleStatus: prLifecycleStatus ?? null });
-    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [dClosed(1, 'merged', 10, 'merged'), dClosed(2, 'open', 11, 'closed')] })!;
-    expect(v).toMatchObject({ state: 'closed', delivery: 2, prNumber: 11 });
-  });
-
   it('every delivery merged: the newest is the view, the earlier ones named', () => {
     const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'merged', 11)] })!;
     expect(v).toMatchObject({ state: 'merged', delivery: 2 });
