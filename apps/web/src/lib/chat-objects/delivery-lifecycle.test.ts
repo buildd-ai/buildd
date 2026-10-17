@@ -5,7 +5,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 
 let view: any = null;
-const worker = { id: 'w1', taskId: 't1', status: 'completed', runner: null, startedAt: null, completedAt: null, currentAction: null,
+let worker: any = { id: 'w1', taskId: 't1', status: 'completed', runner: null, startedAt: null, completedAt: null, currentAction: null,
   waitingFor: null, prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', mergedAt: null, prLifecycleStatus: 'pr_open',
   milestones: [], turns: 1, updatedAt: null, error: null, linesAdded: 1, linesRemoved: 1 };
 mock.module('@buildd/core/db', () => ({
@@ -34,8 +34,18 @@ describe('chat objects read the delivery', () => {
     expect(t?.worker?.mergedAt).not.toBeNull();
     expect((await loadPrObject('w1', 'u'))?.state).toBe('merged');
   });
+  it('AC-26: a merged worker row reads as not merged while the delivery is in review', async () => {
+    worker = { ...worker, mergedAt: new Date('2026-01-01'), prLifecycleStatus: 'merged' };
+    view = { ownerTaskId: 't1', prNumber: 7, state: 'AWAITING_REVIEW', prState: 'ci_passed', mergedAt: null, headline: 'Review queued', repoFullName: 'o/r' };
+    const t = await loadTaskObject('t1', 'u');
+    expect(t?.worker?.prLifecycleStatus).toBe('ci_green');
+    expect(t?.worker?.mergedAt).toBeNull();
+    expect((await loadPrObject('w1', 'u'))?.state).not.toBe('merged');
+    expect((await loadPrObject('w1', 'u'))?.mergedAt).toBeNull();
+  });
   it('without a delivery the worker columns stand', async () => {
     view = null;
+    worker = { ...worker, mergedAt: null, prLifecycleStatus: 'pr_open' };
     const t = await loadTaskObject('t1', 'u');
     expect(t?.worker?.prLifecycleStatus).toBe('pr_open');
     expect(t?.worker?.mergedAt).toBeNull();

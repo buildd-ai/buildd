@@ -44,6 +44,21 @@ export interface ActivityData {
   history: Episode[];
 }
 
+/**
+ * The rows Activity projects, with each kernel-owned delivery's merged/open/closed
+ * reading in place of its PR worker's columns. Pure; tasks without a delivery are untouched.
+ */
+export function overlayActivityRows<W extends object, M extends { tasks?: unknown[] | null }>(input: {
+  workersByTask: ReadonlyMap<string, readonly W[]>;
+  missions: readonly M[];
+  views: Parameters<typeof overlayDeliveryLifecycle>[1];
+}): { workersByTask: Map<string, W[]>; missions: M[] } {
+  const rows = [...input.workersByTask].map(([id, workers]) => ({ id, workers: [...workers] as unknown as Array<Record<string, unknown>> }));
+  const workersByTask = new Map(overlayDeliveryLifecycle(rows, input.views).map(t => [t.id, t.workers as unknown as W[]] as const));
+  const missions = input.missions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle((m.tasks ?? []) as Array<{ id: string }>, input.views) as unknown as M['tasks'] }));
+  return { workersByTask, missions };
+}
+
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
 /** Recent roots: the History window. Live work outside it is added by `loadLiveRootIds`. */
@@ -148,10 +163,10 @@ export async function loadActivity(input: {
 
   const byTask = new Map<string, typeof workerRows>();
   for (const w of workerRows) if (w.taskId) byTask.set(w.taskId, [...(byTask.get(w.taskId) ?? []), w]);
-  const lifecycleByTask = overlayDeliveryLifecycle(ids.map(id => ({ id, workers: byTask.get(id) ?? [] })), views);
-  for (const t of lifecycleByTask) byTask.set(t.id, t.workers as typeof workerRows);
+  const overlaid = overlayActivityRows({ workersByTask: byTask, missions: missionRows as any[], views });
+  for (const [id, ws] of overlaid.workersByTask) byTask.set(id, ws as typeof workerRows);
 
-  const deliveries = (missionRows as any[]).map(m => missionDeliveryOf({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], views) }, rules));
+  const deliveries = overlaid.missions.map(m => missionDeliveryOf(m, rules));
 
   const tasks: ActivityTaskInput[] = input.tasks.map(t => {
     const ws = byTask.get(t.id) ?? [];
