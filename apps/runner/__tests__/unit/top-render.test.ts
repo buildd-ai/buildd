@@ -317,9 +317,9 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
     for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 28]] as const) {
       const left = text(frame(withProgress(AC14), cols, rows)).split('\n').map(l => l.slice(0, lw));
       const sel = left.find(l => l.includes('▸'))!;
-      expect(sel).toMatch(/building 2\/8 $/);
+      expect(sel).toMatch(/building 8\/15 $/);
       // The title is what gives way, never the counts.
-      expect(sel).toMatch(cols === 80 ? /▸ Runn… building 2\/8/ : /▸ Runner TUI +building 2\/8/);
+      expect(sel).toMatch(cols === 80 ? /▸ Run… building 8\/15/ : /▸ Runner TUI +building 8\/15/);
       expect(left.find(l => l.includes('Specs import'))).toMatch(/1\/2 $/);
       expect(left.filter(l => /[■▶▢◐]/.test(l))).toEqual([]);
     }

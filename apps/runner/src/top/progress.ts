@@ -63,6 +63,16 @@ export function progressCounts(cells: readonly ProgressCell[]): string {
   return countsByGroup(cells).map(g => groupWord(g.group, g.cells.length)).join(' · ');
 }
 
+/** Count of done cells (those in the 'done' group). */
+export function progressDone(cells: readonly ProgressCell[]): number {
+  return cells.filter(c => c.group === 'done').length;
+}
+
+/** Total count of all cells. */
+export function progressTotal(cells: readonly ProgressCell[]): number {
+  return cells.length;
+}
+
 function countsByGroup(cells: readonly ProgressCell[]): Array<{ group: ProgressGroup; cells: ProgressCell[] }> {
   return GROUPS.map(group => ({ group, cells: cells.filter(c => c.group === group) })).filter(g => g.cells.length > 0);
 }
