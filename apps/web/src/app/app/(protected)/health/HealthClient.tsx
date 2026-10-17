@@ -856,7 +856,7 @@ export function HealthClient({
                         <div className="flex items-center gap-2 flex-wrap">
                           <p data-testid="health-runner-name" className="text-sm text-text-primary truncate">{name}</p>
                           {tokenName && (
-                            <span className="text-[11px] text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
+                            <span className="text-meta text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
                           )}
                           <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}

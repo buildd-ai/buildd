@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import type { FleetRunner, FleetSlotWorker, FleetSnapshot } from '@buildd/shared';
 import { elapsedLabel } from '@/lib/home-agents';
-import { runnerBusyLine } from '@/lib/fleet-view';
+import { runnerBusyLine } from '@/lib/runner-busy-line';
 import { readableRunName } from '@/lib/run-name';
 import type { LaneMission } from './runner-lanes';
 
