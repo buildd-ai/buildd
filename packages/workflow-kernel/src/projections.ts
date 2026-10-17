@@ -512,7 +512,7 @@ const REPAIR_FAMILY_LABEL: Record<AttemptFamily, string> = { review_fix: 'Review
  * row also takes, so the label can't run past the budget ("4 of 3"). A skipped row spent nothing
  * and has no number.
  */
-export function repairLabelOf(a: AttemptSnapshot, ledger: AttemptSnapshot[]): string {
+export function repairLabelOf(a: AttemptSnapshot, ledger: AttemptSnapshot[], o: { upTo?: boolean } = {}): string {
   const n = attemptOrdinal(ledger, a);
-  return n == null ? `${REPAIR_FAMILY_LABEL[a.family]}, not started` : `${REPAIR_FAMILY_LABEL[a.family]} ${n} of ${a.maxAttempts}`;
+  return n == null ? `${REPAIR_FAMILY_LABEL[a.family]}, not started` : `${REPAIR_FAMILY_LABEL[a.family]} ${n} of ${o.upTo ? 'up to ' : ''}${a.maxAttempts}`;
 }

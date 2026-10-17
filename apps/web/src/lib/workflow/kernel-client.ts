@@ -413,7 +413,7 @@ async function submitUntil<K extends KernelOp>(
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
       throw new KernelCommandFailedError(String(answer.error ?? 'unknown error'), opts.idempotencyKey);
     }
-    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable')) {
+    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable' || answer?.code === 'installation_unavailable')) {
       // Refused before the claim: this request ran nothing (earlier ones may have; mayHaveApplied keeps that).
       // One more try, then the answer: a database that is down now is not back within a door's budget.
       why = `answered 503 ${String(answer.code)}`;
@@ -568,6 +568,16 @@ export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 
  */
 export async function observeCiFailure(p: KernelOps['observe_ci_failure']['input'], c: DoorCall): Promise<KernelOps['observe_ci_failure']['result']> {
   return doorOrHereOnSkew('observe_ci_failure', p, c, `the CI failure on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
+
+/**
+ * A green head from the check_suite success webhook: CiGreenObserved ends a CI repair bound to it, and
+ * outside a repair it is recorded as a CiObserved reading; applied where the kernel is hosted (AC-9).
+ * GitHub sends the green once, so during release skew it is applied here (`doorOrHereOnSkew`) rather
+ * than leave a repair waiting on a green nobody records.
+ */
+export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], c: DoorCall): Promise<KernelOps['observe_ci_green']['result']> {
+  return doorOrHereOnSkew('observe_ci_green', p, c, `the green CI on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
 }
 
 /** A door's caller-supplied idempotency key, when the request carries one. */

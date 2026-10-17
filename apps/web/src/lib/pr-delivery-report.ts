@@ -28,7 +28,8 @@ export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
     .sort((a, b) => a.family.localeCompare(b.family) || a.attemptNo - b.attemptNo)
     .map(a => {
       const phase = repairPhaseOf(a, v);
-      return { label: repairLabelOf(a, ledger), phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
+      // get_pr says "of up to" (#5006); N counts the attempts that ran (295486ba).
+      return { label: repairLabelOf(a, ledger, { upTo: true }), phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
     });
   return {
     state: v.state,

@@ -220,33 +220,31 @@ function errorMessage(err: unknown): string {
  * (queued or indexed) is not queued again, and a retry that failed never
  * undoes a stored object, which is still in the bucket.
  *
- * Read then write, with no unique index behind it: rows recorded before this
- * existed may already repeat an object, and an index would have to delete
- * them at migration time. A capture runs as one leased effect, so two captures
- * of one object at the same moment are not expected.
+ * One upsert per row on the unique index evidence_objects_object_task_unique,
+ * so the database holds this even when two captures of one object overlap
+ * (a process suspended past its effect lease): there is no read before the
+ * write for them to race on.
  */
 export async function recordCiJobLogEvidenceRows(rows: EvidenceObjectInsert[]): Promise<void> {
   const { db } = await import('@buildd/core/db');
   const { evidenceObjects } = await import('@buildd/core/db/schema');
-  const { and, eq } = await import('drizzle-orm');
+  const { sql } = await import('drizzle-orm');
   for (const row of rows) {
-    const same = and(eq(evidenceObjects.objectKey, row.objectKey), eq(evidenceObjects.taskId, row.taskId));
-    const prior = await db.query.evidenceObjects.findFirst({
-      where: sqlWhere(same),
-      columns: { id: true, uploadState: true, indexState: true },
-    });
-    if (!prior) {
-      await db.insert(evidenceObjects).values(row);
-      continue;
-    }
-    if (prior.uploadState === 'stored' && row.uploadState !== 'stored') continue;
-    const indexed = prior.indexState === 'queued' || prior.indexState === 'indexed';
-    await db.update(evidenceObjects)
-      .set({
-        backendId: row.backendId, bytes: row.bytes, sha256: row.sha256, uploadState: row.uploadState,
-        indexState: indexed ? prior.indexState : row.indexState, expiresAt: row.expiresAt, updatedAt: new Date(),
-      })
-      .where(eq(evidenceObjects.id, prior.id));
+    await db.insert(evidenceObjects).values(row)
+      .onConflictDoUpdate({
+        target: [evidenceObjects.objectKey, evidenceObjects.taskId],
+        set: {
+          backendId: sql`excluded.backend_id`,
+          bytes: sql`excluded.bytes`,
+          sha256: sql`excluded.sha256`,
+          uploadState: sql`excluded.upload_state`,
+          indexState: sql`CASE WHEN ${evidenceObjects.indexState} IN ('queued', 'indexed') THEN ${evidenceObjects.indexState} ELSE excluded.index_state END`,
+          expiresAt: sql`excluded.expires_at`,
+          updatedAt: sql`now()`,
+        },
+        // A failed retry leaves a stored row exactly as it was.
+        setWhere: sql`NOT (${evidenceObjects.uploadState} = 'stored' AND excluded.upload_state <> 'stored')`,
+      });
   }
 }
 
