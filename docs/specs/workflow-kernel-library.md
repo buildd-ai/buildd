@@ -360,7 +360,17 @@ the control plane, authenticated as the caller).
     `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
     outside a repair, from the `check_suite` success webhook as a `system`
     principal; the same skew rule applies, so a repair is never left waiting
-    on a green GitHub sends once). The same
+    on a green GitHub sends once), and
+    `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
+    PATCH: a kernel round's verdict, or one from outside the rounds on a PR
+    the kernel owns) and `claim_fix` (T9 from the claim route, one request in
+    place of the seam's own reads), each for the caller that reported it,
+    with the same skew rule; each names its workspace on the input, and the
+    host acts only on a delivery of that workspace (a verdict for another
+    workspace's delivery is refused, never read as a release to legacy). A
+    claim request's fix claims share one control-plane budget; once it is
+    spent the next fix candidate defers at once as `kernel_unavailable` and
+    the rest of the batch is claimed. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -553,10 +563,10 @@ the control plane, authenticated as the caller).
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
 
-**Switching over** (owner/operator steps, NOT DONE yet). Merging and
-releasing this code changes nothing on its own: without the secret the web
-host keeps applying commands and draining exactly as before. The order
-matters: the control plane first, then the web host.
+**Switching over** (owner/operator steps, DONE; see the record after the
+steps). Merging and releasing this code changed nothing on its own: without the
+secret the web host keeps applying commands and draining exactly as before. The
+order matters: the control plane first, then the web host.
 
 1. Set `KERNEL_COMMAND_SECRET` on the control plane Worker (a Worker secret),
    and run `wrangler triggers deploy` for it from an account login so its cron
@@ -567,6 +577,15 @@ matters: the control plane first, then the web host.
 3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
    their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
    `workflow_transitions` rows from doors carry `host = control-plane`.
+
+**Record (2026-10-17, S8 and the follow-up check).** The switch is made.
+Confirmed from outside: the control plane's health reports `mode: own, kernel:
+own`, and `/api/deploy-identity` reports the control plane in mode `own` with
+`lockstep: true`, on the release then in production (v0.362.0). Not confirmed
+(S8 had no database read): the `kernel-floor` cron runs naming the control plane
+as host, `/api/cron/pr-reconcile` reporting `kernelSkipped`, and `host =
+control-plane` on new `workflow_transitions` rows. Step 3 above stays the check
+for those until someone with a read of the table records it.
 
 The other order is safe but does nothing yet: a web host with the secret
 follows the Worker's health `kernel` field, which reads `own` only when the
@@ -1215,7 +1234,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render

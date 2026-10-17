@@ -605,6 +605,28 @@ export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], 
   return doorOrHereOnSkew('observe_ci_green', p, c, `the green CI on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
 }
 
+/**
+ * T6 from the worker PATCH: a kernel review round's verdict, applied where the kernel is hosted (AC-9).
+ * The runner reports a verdict once, so during release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function recordReviewVerdict(p: KernelOps['record_review_verdict']['input'], c: DoorCall): Promise<KernelOps['record_review_verdict']['result']> {
+  return doorOrHereOnSkew('record_review_verdict', p, c, `reviewer ${p.reviewerTask.id}'s verdict`);
+}
+
+/** 00d288fd from the worker PATCH: a verdict from outside the kernel's rounds, adopted where the kernel is hosted (AC-9). */
+export async function adoptReviewVerdict(p: KernelOps['adopt_review_verdict']['input'], c: DoorCall): Promise<KernelOps['adopt_review_verdict']['result']> {
+  return doorOrHereOnSkew('adopt_review_verdict', p, c, `reviewer ${p.reviewerTaskId}'s verdict on delivery ${p.deliveryId}`);
+}
+
+/**
+ * T9 from the claim route: a fix claim, revalidated and applied where the kernel is hosted (AC-9). On the
+ * claim's hot path it is one request in place of the seam's own reads, never one more. During release
+ * skew it is applied here, so a claim is never held up by an older control plane.
+ */
+export async function claimFix(task: KernelOps['claim_fix']['input']['task'], c: DoorCall): Promise<KernelOps['claim_fix']['result']> {
+  return doorOrHereOnSkew('claim_fix', { task, workspaceId: task.workspaceId }, c, `fix task ${task.id}'s claim`);
+}
+
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {
   const k = req.headers.get('idempotency-key')?.trim();
