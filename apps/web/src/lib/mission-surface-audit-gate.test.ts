@@ -10,9 +10,14 @@ mock.module('@buildd/core/db', () => ({
       missionNotes: { findMany: async () => waiverNotes },
       workspaces: { findFirst: async () => repoRow },
       tasks: { findMany: async () => [] },
-      workflowDeliveries: { findMany: async () => deliveryRows },
     },
   },
+}));
+
+mock.module('./workflow/delivery-view', () => ({
+  deliveryPrStates: async (ws: string, prs: number[]) => deliveryRows
+    .filter(r => r.workspaceId === ws && prs.includes(r.prNumber as number))
+    .map(r => ({ prNumber: r.prNumber, state: r.mergedAt ? 'MERGED' : 'OPEN', mergedAt: r.mergedAt ?? null, repoFullName: r.repoFullName ?? null })),
 }));
 
 const mockGithubApi = mock(async (_installationId: number, _path: string): Promise<unknown> => []);

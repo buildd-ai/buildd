@@ -269,16 +269,19 @@ export async function deliveryPrStates(
   workspaceId: string,
   prNumbers: number[],
   exec: Exec = dbExec,
-): Promise<Array<{ prNumber: number; state: string; mergedAt: string | null }>> {
+): Promise<Array<{ prNumber: number; state: string; mergedAt: string | null; repoFullName: string | null }>> {
   const nums = [...new Set(prNumbers.filter((n) => Number.isInteger(n)))];
   if (nums.length === 0) return [];
   const res = await exec(sql`-- workflow:delivery_pr_states
-SELECT d.pr_number AS "prNumber", d.state AS state, d.merged_at AS "mergedAt"
+SELECT d.pr_number AS "prNumber", d.state AS state, d.merged_at AS "mergedAt", d.repo_full_name AS "repoFullName"
 FROM workflow_deliveries d
 WHERE d.workspace_id = ${workspaceId}
   AND d.pr_number IN (SELECT x::int FROM jsonb_array_elements_text(${JSON.stringify(nums)}::jsonb) x)`);
-  return ((res.rows ?? []) as Array<{ prNumber: unknown; state: unknown; mergedAt: unknown }>).flatMap(r =>
-    r.prNumber == null || typeof r.state !== 'string' ? [] : [{ prNumber: Number(r.prNumber), state: r.state, mergedAt: r.mergedAt == null ? null : String(r.mergedAt) }]);
+  return ((res.rows ?? []) as Array<{ prNumber: unknown; state: unknown; mergedAt: unknown; repoFullName: unknown }>).flatMap(r =>
+    r.prNumber == null || typeof r.state !== 'string' ? [] : [{
+      prNumber: Number(r.prNumber), state: r.state, mergedAt: r.mergedAt == null ? null : String(r.mergedAt),
+      repoFullName: typeof r.repoFullName === 'string' && r.repoFullName ? r.repoFullName : null,
+    }]);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missionNotes, tasks, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -19,6 +19,7 @@ import {
   type VisualImpactAssessment,
 } from './workflow/visual-review-impact';
 import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
+import { deliveryPrStates } from './workflow/delivery-view';
 import { getCachedPrUiFiles, setCachedPrUiFiles } from './redis';
 
 /**
@@ -175,15 +176,11 @@ async function loadPrMergeState(prs: Map<number, string>): Promise<Map<string, P
   const out = new Map<string, PrMergeState>();
   if (prs.size === 0) return out;
   try {
-    const rows = await db.query.workflowDeliveries.findMany({
-      where: sqlWhere(and(
-        inArray(workflowDeliveries.workspaceId, [...new Set(prs.values())]),
-        inArray(workflowDeliveries.prNumber, [...prs.keys()]),
-      )),
-      columns: { workspaceId: true, repoFullName: true, prNumber: true, mergedAt: true },
-    });
-    for (const r of rows) {
-      if (r.prNumber == null) continue;
+    const byWorkspace = new Map<string, number[]>();
+    for (const [n, ws] of prs) byWorkspace.set(ws, [...(byWorkspace.get(ws) ?? []), n]);
+    const perWorkspace = await Promise.all([...byWorkspace].map(async ([ws, nums]) =>
+      (await deliveryPrStates(ws, nums)).map(r => ({ ...r, workspaceId: ws }))));
+    for (const r of perWorkspace.flat()) {
       out.set(`${r.workspaceId}#${(r.repoFullName ?? '').toLowerCase()}#${r.prNumber}`, { merged: !!r.mergedAt });
     }
   } catch (err) {
