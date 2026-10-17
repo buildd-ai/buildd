@@ -12,13 +12,18 @@ import { LATEST_WORKERS_PER_TASK, stageContextSql, stageWorkersPredicate } from 
 const dialect = new PgDialect();
 
 describe('stageContextSql', () => {
-  const { sql: text } = dialect.sqlToQuery(stageContextSql);
+  const { sql: text, params } = dialect.sqlToQuery(stageContextSql);
+  /** The key bound at `$n`. Keys are bound parameters, never inlined text. */
+  const keyAt = (n: string) => params[Number(n) - 1];
 
   it('projects each key deliverableRole reads, and only those', () => {
     const all = [...DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers, ...DELIVERABLE_ROLE_CONTEXT_KEYS.values];
-    for (const k of all) expect(text).toContain(`'${k}'`);
-    const projected = [...text.matchAll(/(?<!-> )'([A-Za-z]+)',/g)].map(m => m[1]);
-    expect(projected.sort()).toEqual([...all].sort());
+    // A built key is a parameter not preceded by `->`; a read key follows `->`.
+    const built = [...text.matchAll(/(?<!-> )\$(\d+)::text,/g)].map(m => keyAt(m[1]));
+    const read = [...text.matchAll(/->\s*\$(\d+)::text/g)].map(m => keyAt(m[1]));
+    expect([...built].sort()).toEqual([...all].sort());
+    expect([...new Set(read)].sort()).toEqual([...all].sort());
+    expect(text).not.toMatch(/'[A-Za-z]+'\s*,/);
   });
 
   it('never selects the whole context: every reference is a key read', () => {
@@ -27,9 +32,9 @@ describe('stageContextSql', () => {
   });
 
   it('reduces an object marker to an empty object, so a large marker never travels', () => {
-    for (const k of DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers) {
-      expect(text).toMatch(new RegExp(`jsonb_typeof\\("tasks"\\."context"\\s*->\\s*'${k}'\\)\\s*=\\s*'object'\\s+then\\s+'\\{\\}'::jsonb`));
-    }
+    const reduced = [...text.matchAll(/jsonb_typeof\("tasks"\."context"\s*->\s*\$(\d+)::text\)\s*=\s*'object'\s+then\s+'\{\}'::jsonb/g)]
+      .map(m => keyAt(m[1]));
+    expect([...reduced].sort()).toEqual([...DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers].sort());
   });
 });
 

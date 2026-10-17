@@ -20,12 +20,12 @@ import { DELIVERABLE_ROLE_CONTEXT_KEYS } from '@buildd/core/mission-helpers';
 
 export const LATEST_WORKERS_PER_TASK = 3;
 
-const contextKey = (k: string) => sql`${tasks.context} -> ${sql.raw(`'${k}'`)}`;
+const contextKey = (k: string) => sql`${tasks.context} -> ${k}::text`;
 
 const projected: SQL[] = [
   ...DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers.map(k =>
-    sql`${sql.raw(`'${k}'`)}, case when jsonb_typeof(${contextKey(k)}) = 'object' then '{}'::jsonb end`),
-  ...DELIVERABLE_ROLE_CONTEXT_KEYS.values.map(k => sql`${sql.raw(`'${k}'`)}, ${contextKey(k)}`),
+    sql`${k}::text, case when jsonb_typeof(${contextKey(k)}) = 'object' then '{}'::jsonb end`),
+  ...DELIVERABLE_ROLE_CONTEXT_KEYS.values.map(k => sql`${k}::text, ${contextKey(k)}`),
 ];
 
 /** `tasks.context` reduced to what the stage reads; `{}` when none of it is set. */
