@@ -542,6 +542,92 @@ export function pendingEpochSteps(v: Pick<MissionEpochView, 'epochs'>): EpochSte
   return out;
 }
 
+// ── When a delivery branch is finished ──────────────────────────────────────
+
+/**
+ * What the host read about an open delivery whose PR may have closed (task
+ * fbc93ebd). Every field is a fresh read; a missing one is the cautious answer.
+ */
+export interface BranchFinishFacts {
+  /** The delivery's PR, read from GitHub now, is closed and did not merge. */
+  prClosedUnmerged: boolean;
+  /** The merged PR recorded as carrying the closed PR's work (a supersession edge), if any. */
+  supersededBy: number | null;
+  /** Everything on the branch is already in trunk (a fresh content check); null when unread. */
+  containedInTrunk: boolean | null;
+  /** Another open PR from this branch into trunk: a successor delivery PR. */
+  successorOpen: boolean;
+}
+
+export type FinishedReason =
+  /** The mission is completed or archived. */
+  | 'mission_terminal'
+  /** The delivery's PR merged into trunk. */
+  | 'shipped'
+  /** A shipped delivery whose branch is confirmed gone. */
+  | 'retired'
+  /** The PR closed unmerged and its work is recorded as landed in another merged PR. */
+  | 'superseded'
+  /** The PR closed unmerged and everything on the branch is already in trunk. */
+  | 'contained_in_trunk';
+
+export type BranchFinished =
+  | { finished: true; reason: FinishedReason; satisfiedByPr: number | null }
+  | { finished: false; reason: 'branch_reused' | 'no_delivery_pr' | 'delivery_pr_live' | 'successor_open' | 'closed_work_unaccounted' };
+
+/**
+ * Is this delivery's branch finished: nothing will ever reach trunk from it
+ * again, so a refresh onto it has nothing left to do?
+ *
+ * Closing the integration PR is not enough on its own: the branch is still the
+ * mission's, a new PR can open from it, and a refresh onto it stays valid. It
+ * is finished only when the mission is closed, the delivery shipped (or its
+ * branch retired), or the closed PR was superseded with no successor: its
+ * work is recorded as landed in another merged PR, or a content check shows
+ * it is already in trunk, and no other PR from the branch into trunk is open.
+ * `satisfiedByPr` is the merged PR that carries the branch's work, when one is
+ * known. Pure: the host reads the facts.
+ */
+export function deliveryBranchFinished(
+  v: Pick<MissionEpochView, 'terminal' | 'epochs'>,
+  e: EpochSnapshot,
+  facts: Partial<BranchFinishFacts> = {},
+): BranchFinished {
+  if (v.terminal) {
+    return { finished: true, reason: 'mission_terminal', satisfiedByPr: e.state === 'merged' ? e.prNumber : facts.supersededBy ?? null };
+  }
+  if (e.retiredAt) return { finished: true, reason: 'retired', satisfiedByPr: e.prNumber };
+  if (e.state === 'merged') {
+    return sharesBranchWithLater(v, e) ? { finished: false, reason: 'branch_reused' } : { finished: true, reason: 'shipped', satisfiedByPr: e.prNumber };
+  }
+  if (e.prNumber == null) return { finished: false, reason: 'no_delivery_pr' };
+  return openDeliveryFinished(facts);
+}
+
+/**
+ * The open-delivery half of `deliveryBranchFinished`, for a delivery that has
+ * a PR: a surface that holds only the PR's row (no epoch) asks this directly.
+ */
+export function openDeliveryFinished(facts: Partial<BranchFinishFacts>): BranchFinished {
+  if (!facts.prClosedUnmerged) return { finished: false, reason: 'delivery_pr_live' };
+  if (facts.successorOpen) return { finished: false, reason: 'successor_open' };
+  if (facts.supersededBy != null) return { finished: true, reason: 'superseded', satisfiedByPr: facts.supersededBy };
+  if (facts.containedInTrunk === true) return { finished: true, reason: 'contained_in_trunk', satisfiedByPr: null };
+  return { finished: false, reason: 'closed_work_unaccounted' };
+}
+
+/** Why a finished branch is finished, as the clause after "the branch is finished:". */
+export function finishedBranchWhy(f: Extract<BranchFinished, { finished: true }>, ctx: { prNumber: number | null; trunk: string }): string {
+  const pr = ctx.prNumber != null ? `its PR #${ctx.prNumber}` : 'its PR';
+  switch (f.reason) {
+    case 'mission_terminal': return 'the mission is closed';
+    case 'shipped': return `${pr} merged into \`${ctx.trunk}\``;
+    case 'retired': return `${pr} merged into \`${ctx.trunk}\` and the branch is gone`;
+    case 'superseded': return `${pr} closed without merging and its work landed in #${f.satisfiedByPr}`;
+    case 'contained_in_trunk': return `${pr} closed without merging and everything on it is already in \`${ctx.trunk}\``;
+  }
+}
+
 // ── Mission completion's input ──────────────────────────────────────────────
 
 /**

@@ -212,3 +212,33 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
       .toBe('2 of 4 tasks complete · delivery 1 shipped');
   });
 });
+
+// Task fbc93ebd (kernel audit F6): a closed integration PR whose work is
+// recorded as landed elsewhere finishes the branch, and the surface says so.
+describe('a finished delivery branch', () => {
+  const owner = (supersededByPrNumber: number | null): MissionPrTaskLike => ({
+    id: 'task-mission-pr', title: 'Ship mission: Ship the thing', taskClass: 'bookkeeping',
+    workers: [{ prUrl: 'https://github.com/acme/app/pull/40', prNumber: 40, mergedAt: null, prLifecycleStatus: 'closed', supersededByPrNumber }],
+  });
+  const delivery = { epoch: 1, branch: BRANCH, state: 'open' as const, prNumber: 40, repoFullName: 'acme/app' };
+
+  it('closed and superseded: the line names where the work landed and that nothing more ships from the branch', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61)], deliveries: [delivery] })!;
+    expect(v).toMatchObject({ state: 'closed', finished: { reason: 'superseded', satisfiedByPr: 61 } });
+    expect(describeMissionDelivery(v).line).toBe("Delivery 1's PR closed without merging and its work landed in #61. This branch is finished: nothing more ships from it.");
+    expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 2, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
+      .toBe('2 of 2 tasks complete · mission PR #40 closed, work landed in #61');
+  });
+
+  it('closed with nothing recorded: not finished, the old words', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(null)], deliveries: [delivery] })!;
+    expect(v.state).toBe('closed');
+    expect(v.finished).toBeUndefined();
+    expect(describeMissionDelivery(v).line).toBe("Delivery 1's PR was closed without merging, so its work is only on this branch.");
+  });
+
+  it('without delivery records the owner row decides the same way', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [owner(61)] })!;
+    expect(v).toMatchObject({ state: 'closed', finished: { reason: 'superseded', satisfiedByPr: 61 } });
+  });
+});

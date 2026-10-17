@@ -963,6 +963,25 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor; a refresh with work of its own, or anything unreadable, holds the
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
+- When a delivery branch is finished (`deliveryBranchFinished`, task fbc93ebd):
+  the mission is completed or archived; the delivery merged (and no later
+  delivery reuses its branch) or its branch retired; or its PR closed unmerged
+  and was superseded with no successor, meaning the closed PR's work is
+  recorded as landed in another merged PR, or a content check shows the branch
+  already in trunk, and no other PR from the branch into trunk is open.
+  Closing the integration PR alone does not finish the branch: it is still the
+  mission's, a new PR can open from it, and a refresh onto it stays valid.
+- On a finished open delivery, every reconcile settles the refresh PRs still
+  based on its branch (`settleFinishedBranch`): each is closed with a comment
+  saying why the branch is finished, and recorded as superseded by the merged
+  PR that carries the branch's work when one is known; a refresh filed for the
+  branch that never started is cancelled. With no such PR (the branch is in
+  trunk, but no row says through which PR) one mission note asks a person
+  where to record the closed PRs. Task PRs on the branch are never touched.
+  The settlement reads only as far as it needs: an open or merged delivery PR
+  stops at one read, and the content check runs only when a refresh is left
+  to settle. The mission-PR line says a finished branch in words: the closed
+  PR, where its work landed, and that nothing more ships from the branch.
 - Projection (S6c): the mission page and `manage_missions get` read the
   delivery records. The mission-PR line is the current delivery ("Delivery 2"),
   with shipped deliveries named beside it ("Delivery 1 merged (#n)"), never a
@@ -987,6 +1006,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
+- AC-33: GIVEN an open delivery whose integration PR closed unmerged, with an
+  open refresh PR on its branch WHEN the delivery is reconciled THEN the
+  refresh PR stays open while the closed PR's work is neither recorded as
+  landed elsewhere nor in trunk, and is closed with a comment (and recorded as
+  superseded by that merged PR, when there is one) once it is; a successor PR
+  from the branch keeps it open (the #4909/#4913 sequence).
 
 | AC | Test |
 | --- | --- |
@@ -994,6 +1019,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Criterion AC-33 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a finished delivery branch" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
