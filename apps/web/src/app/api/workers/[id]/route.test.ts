@@ -11317,7 +11317,7 @@ describe('PATCH /api/workers/[id]', () => {
       // Pushover fired
       expect(mockNotify).toHaveBeenCalledTimes(1);
       expect(mockNotify.mock.calls[0][0]).toMatchObject({
-        title: expect.stringContaining('#42'),
+        urlTitle: 'PR #42',
       });
     });
 

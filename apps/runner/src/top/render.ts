@@ -9,9 +9,9 @@
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
+import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
+  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
   NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
@@ -160,8 +160,9 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version },
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version: '' },
+    // R-43: "3 of 6 busy".
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version },
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version: '' },
     { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
     { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
   ];
@@ -186,13 +187,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
-const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -519,9 +520,16 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   // A person's hold (R-33): its own line straight under the header, in the
   // accent: a choice the person made, not a fault.
   const ownLine = holdLine(state, now);
+  // What the claim loop did last, or that it is looking now (task 9e12f377).
   const ownHold = ownLine ? [p.fg('accent', fit(' ' + ownLine, cols))] : [];
+  // What the claim loop did last, or that it is looking now (task 9e12f377);
+  // not while held, and not when the provider line above already says why.
+  const loopText = ownLine ? null : claimLoopLine(state, now);
+  const loopLine = loopText && !(holdLines.length > 0 && state.claimOutcomes.broad?.reason === 'budget_exhausted')
+    ? [p.fg('muted', fit(' ' + loopText, cols))]
+    : [];
   // The line under the header: Missions | Queue (R-26), then what is shown and the keys that change it (R-23).
-  const filterRow = tabLine(state, cols, p);
+  const filterRow = tabLine(state, cols, now, p);
   // R-39, R-42: the routes this runner runs on, then today's dollars per bucket.
   // A route that does not work is a warning on its own line, with where to fix it.
   const runsOnText = runsOn(state, now);
@@ -531,7 +539,7 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
     ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
     ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
   ];
-  const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length);
+  const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length - loopLine.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
@@ -539,21 +547,29 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
       : state.view === 'queue'
         ? queueBody(state, cols, bodyH, now, p)
         : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, now, p), ...ownHold, ...routeLines, filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, now, p), ...ownHold, ...routeLines, filterRow, ...holdLines, ...loopLine, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }
 
 // ── Queue view (R-26) ───────────────────────────────────────────────────────
 
 /** ` [ Missions ]  Queue` with the filter line beside it; the filter is cut, never the tabs. */
-function tabLine(state: TopState, cols: number, p: Palette): string {
+function tabLine(state: TopState, cols: number, now: number, p: Palette): string {
   const missions = state.view === 'missions' ? '[ Missions ]' : 'Missions';
   const queue = state.view === 'queue' ? '[ Queue ]' : 'Queue';
   const tabs = ` ${missions}  ${queue}`;
   const filter = filterLine(state);
-  const room = cols - textWidth(tabs) - 3;
+  // R-26: the Queue counts slots on its own line, with the keys that change them.
+  // Widest that leaves the filter whole: with the keys, then without, then only the free count.
+  const summary = slotsSummary(state, now);
+  const variants = state.view === 'queue'
+    ? [`${summary}   - fewer  + more `, `${summary} `, `${summary.replace(/ · \d+ running/, '')} `]
+    : [''];
+  const fits = (r: string) => textWidth(tabs) + 3 + textWidth(filter) + 2 + textWidth(r) <= cols;
+  const right = variants.find(fits) ?? (textWidth(tabs) + 3 + 12 + textWidth(variants[variants.length - 1]) <= cols ? variants[variants.length - 1] : '');
+  const room = cols - textWidth(tabs) - 3 - textWidth(right);
   const tail = room > 0 ? '   ' + fit(filter, room) : '';
   const paint = (label: string, active: boolean) => p.fg(active ? 'accent' : 'muted', label);
-  const line = ' ' + paint(missions, state.view === 'missions') + '  ' + paint(queue, state.view === 'queue') + p.fg('muted', tail);
+  const line = ' ' + paint(missions, state.view === 'missions') + '  ' + paint(queue, state.view === 'queue') + p.fg('muted', tail) + (right ? p.fg('muted', right) : '');
   return fitAnsi(line, cols, p);
 }
 
@@ -572,7 +588,8 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
   const mission = cols < 60 ? 12 : 17;
-  const starts = cols < 60 ? 10 : 13;
+  // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
+  const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
   const fixed = 1 + POS_W + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
@@ -595,8 +612,9 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
   const primary: PaletteToken = selected ? 'selectedText' : row.position === null ? 'muted' : 'text';
   // Every column is cut with "…" and followed by a space (R-21).
   const col = (s: string, w: number) => fit(s, w - 1) + ' ';
-  // A start held to a time stands out; "next" and "after N" do not.
-  const timed = (row.position !== null || row.held === true) && row.starts !== 'next' && !row.starts.startsWith('after') && row.starts !== '-';
+  // "now" is in the accent; a start held to a time stands out; a wait in words does not.
+  const now = row.position !== null && row.starts === 'now';
+  const timed = (row.position !== null || row.held === true) && /\d\d:\d\d/.test(row.starts);
   const line =
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
@@ -604,7 +622,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
-    p.fg(timed ? 'warning' : 'muted', fit(row.starts, c.starts));
+    p.fg(now ? 'accent' : timed ? 'warning' : 'muted', fit(row.starts, c.starts));
   return selected ? p.selectedBg(line) : line;
 }
 
@@ -621,7 +639,11 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });
-    for (const r of section.rows) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+    for (const r of section.rows) {
+      lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+      // Under the selected row: the work it starts alongside (I-38).
+      if (sel?.taskId === r.taskId && r.alongside) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.alongside, cols)) });
+    }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Held, each on its own', cols)) });

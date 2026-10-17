@@ -31,6 +31,9 @@ export interface SoftHolderRow {
   /** The holder's newest worker status; null before it ever started. */
   workerStatus: string | null;
   title: string | null;
+  /** Pending holders only matter if they can start: a future floor or a held mission means they cannot. */
+  startAt?: Date | string | null;
+  missionHeld?: boolean;
 }
 
 export type SoftOverlapVerdict =
@@ -39,6 +42,21 @@ export type SoftOverlapVerdict =
 
 /** What a Jev-decided soft overlap shares: one file on both sides, or only a directory. */
 export type SoftOverlapKind = 'same_file' | 'prefix';
+
+/**
+ * A pending holder that cannot start itself (a future `startAt`, a held
+ * mission, a person's hold on the task) is not working on its files, so it holds nobody off them. The one
+ * test every overlap kind uses: soft overlap here, open PR and live lease in
+ * ./overlap-policy.
+ */
+export function holderCannotStart(
+  h: { status: string; startAt?: Date | string | null; missionHeld?: boolean | null; taskHeld?: boolean | null },
+  now: Date = new Date(),
+): boolean {
+  if (h.status !== 'pending') return false;
+  if (h.missionHeld || h.taskHeld) return true;
+  return !!h.startAt && new Date(h.startAt).getTime() > now.getTime();
+}
 
 /** Every soft holder named by the candidates, for one batched read. */
 export function softOverlapHolderIds(candidates: ReadonlyArray<{ id: string; pathDeclaration?: unknown }>): Set<string> {
@@ -54,7 +72,7 @@ export function softOverlapHolderIds(candidates: ReadonlyArray<{ id: string; pat
 export function evaluateSoftOverlaps(
   task: { id: string; pathManifest: string[] | null | undefined; pathDeclaration?: unknown },
   holders: ReadonlyMap<string, SoftHolderRow> | null,
-  opts: { isHardSurface: (paths: string[], kind: ManifestOverlapKind) => boolean; repairSubjectPrs?: Array<{ pathManifest?: string[] | null; prNumber?: number | null }> },
+  opts: { now?: Date; isHardSurface: (paths: string[], kind: ManifestOverlapKind) => boolean; repairSubjectPrs?: Array<{ pathManifest?: string[] | null; prNumber?: number | null }> },
 ): SoftOverlapVerdict[] {
   const out: SoftOverlapVerdict[] = [];
   for (const e of readSoftOverlaps(task.pathDeclaration)) {
@@ -65,6 +83,9 @@ export function evaluateSoftOverlaps(
     }
     const h = holders.get(e.taskId);
     if (!h || isTerminalTaskStatus(h.status)) continue;
+    // A pending holder that cannot start (future startAt, held mission) is not
+    // working on those files; it must not hold others off them.
+    if (holderCannotStart(h, opts.now)) continue;
     // Converted legacy edges still pass through the migration mutex below.
     // Exclude the inverse open-PR wait first, exactly as repair dispatch does.
     if (h.status === 'pending' && findBlockingPr(h.pathManifest ?? [], opts.repairSubjectPrs ?? [])) continue;

@@ -181,7 +181,11 @@ closes as `skipped:no_destination`. The runner chain today:
 1. Task gone → `skipped:task_gone`. Not `pending` → `skipped:status_<status>`.
    Future `start_at` → `skipped:start_at_future`.
 2. A `targetLocalUiUrl` hint (manual start on a chosen runner) → only a
-   targeted `TASK_ASSIGNED`. No webhook.
+   targeted `TASK_ASSIGNED`. No webhook. Only a person sets this hint (the
+   routes refuse it from API keys and per-task tokens), and the hint records
+   it as `byPerson: true`; the event carries `byPerson`, read from the outbox
+   row and never from a relay payload. A held runner runs a targeted
+   assignment only when `byPerson` is true.
 3. Workspace webhook, when `webhookWants` passes: enabled with a url,
    subscribed (see invariant 9), `runnerPreference` matches, `start_at` not
    in the future, and `isTaskNotHeldOrLocal`. The held gate is asked only
@@ -256,7 +260,8 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - AC-14: GIVEN the webhook returns non-2xx or times out THEN the Pusher
   broadcast is sent and the row is marked delivered via `pusher`.
 - AC-15: GIVEN a delivery hint `targetLocalUiUrl` THEN exactly one targeted
-  `TASK_ASSIGNED` is sent, with no webhook.
+  `TASK_ASSIGNED` is sent, with no webhook, and its `byPerson` is true only
+  when the hint says so.
 - AC-16: WHEN Pusher reports `failed` THEN delivery throws and the drain calls
   `markDispatchFailed` with the row's attempt count. WHEN Pusher is
   unconfigured THEN the row counts as delivered.

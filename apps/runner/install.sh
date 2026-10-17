@@ -834,6 +834,22 @@ if ! mergiraf_provision; then
   echo -e "${YELLOW}  Install manually: https://mergiraf.org/installation.html${NC}"
 fi
 
+# --- isolation check: begin ---
+# Whether tasks on this host will run sandboxed, and if not why and what the
+# operator can do. Runs the installed runner's own probe (src/isolation-check.ts),
+# the one `buildd doctor` and the heartbeat use, so the installer cannot say
+# something Health contradicts. It only reads the host: it never installs
+# bubblewrap or changes a sysctl, AppArmor or container setting. Reduced
+# isolation is not an install failure.
+isolation_check() {
+  echo -e "${GREEN}Checking task isolation...${NC}"
+  if ! bun --no-env-file run "$1/apps/runner/src/isolation-check.ts" 2>/dev/null; then
+    echo -e "${YELLOW}Could not check task isolation; run 'buildd --doctor' to see it.${NC}"
+  fi
+}
+# --- isolation check: end ---
+isolation_check "$INSTALL_DIR"
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 

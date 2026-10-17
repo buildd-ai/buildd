@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { COPY_RULES, copyViolations, settingsDescriptionProblems } from '../packages/core/copy-rules';
-import { extractCopy, findRegressions, inScope, parseBaseline, readSources, scanSources, serializeBaseline, updatedBaseline } from './copy-check';
+import { extractCopy, extractNotifyCopy, findRegressions, inScope, parseBaseline, readSources, scanSources, serializeBaseline, updatedBaseline } from './copy-check';
 
 const OLD = 'apps/web/src/app/app/(protected)/settings/old.tsx';
 const NEW = 'apps/web/src/app/app/(protected)/settings/new.tsx';
@@ -73,14 +73,31 @@ describe('copy rules', () => {
     expect(ids('Runners: tokens and cloud.')).not.toContain('em-dash');
   });
 
-  it('holds a Settings description to one short fact', () => {
-    expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
-    expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);
-    expect(settingsDescriptionProblems('Manage keys. They are used for chat.')).toContain('more-than-one-sentence');
-    expect(settingsDescriptionProblems('Manage keys')).toContain('missing-full-stop');
-    expect(settingsDescriptionProblems('Manage the plan, monitor spending, set daily limits, review invoices, export usage and update billing contacts.')).toContain('too-long');
-    expect(settingsDescriptionProblems('Your own model keys, used when the team lets personal keys pay.')).toEqual(expect.arrayContaining(['conditional-policy', 'object-pays']));
+  it('flags "Failed to" and a bare "Something went wrong"', () => {
+    for (const t of ['Failed to save', 'Failed to update mission', 'Something went wrong', 'Something went wrong.']) expect(ids(t)).toContain('failed-to');
+    for (const t of ['Could not save the mission. Try again.', 'Something went wrong loading this page.']) expect(ids(t)).not.toContain('failed-to');
   });
+
+  it('flags a shouting tag: two or more ALL-CAPS words in a row', () => {
+    for (const t of ['PR #N: BASE REWRITTEN · cherry-pick?', 'BUILD FAILED on dev', 'Status: NOT SHIPPED', 'MISSION PR · NOT OPENED']) {
+      expect(ids(t)).toContain('shouting-tag');
+    }
+  });
+
+  it('leaves acronyms alone: PR, CI, API, URL and friends', () => {
+    for (const t of ['PR CI is red.', 'Set the API URL first.', 'CI API PR URL', 'Open the PR on GitHub.', 'Resets at 14:00 UTC.', 'A newer PR replaces this one. Close it?', 'Prod has NOT shipped.', 'Paste the MCP URL.', 'GET, OPTIONS']) {
+      expect(ids(t)).not.toContain('shouting-tag');
+    }
+  });
+
+  it('holds a Settings description to one short fact', () => {
+  expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
+  expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);
+  expect(settingsDescriptionProblems('Manage keys. They are used for chat.')).toContain('more-than-one-sentence');
+  expect(settingsDescriptionProblems('Manage keys')).toContain('missing-full-stop');
+  expect(settingsDescriptionProblems('Manage the plan, monitor spending, set daily limits, review invoices, export usage and update billing contacts.')).toContain('too-long');
+  expect(settingsDescriptionProblems('Your own model keys, used when the team lets personal keys pay.')).toEqual(expect.arrayContaining(['conditional-policy', 'object-pays']));
+});
 
   it('counts an explanation rendered twice in one file', () => {
     const tsx = `export const A = () => <div><p>Uses your team key for every agent you start.</p><details><p>Uses your team key for every agent you start.</p></details></div>;`;
@@ -122,12 +139,13 @@ describe('extractCopy', () => {
     ]);
   });
 
-  it('never reads comments, imports, class lists, hrefs or console output', () => {
+  it('never reads comments, imports, class lists, hrefs, console output or sql templates', () => {
     const src = [
       "import x from 'no bucket of your own yet';",
       '// No bucket of your own yet.',
       'const c = <div className="px-4 py-2 text-text-muted" href="/app/settings/storage" />;',
       "console.error('No bucket of your own yet.');",
+      "const q = sql`${col} IS NOT NULL AND status NOT IN ('closed')`;",
     ].join('\n');
     expect(extractCopy(NEW, src)).toEqual([]);
   });
@@ -154,7 +172,53 @@ describe('extractCopy', () => {
   it('the tree has tagged lib/ copy modules, and readSources picks them up', () => {
     const libs = readSources().filter((s) => s.path.startsWith('apps/web/src/lib/'));
     expect(libs.map((s) => s.path)).toContain('apps/web/src/lib/mission-portfolio.ts');
-    expect(libs.every((s) => s.content.includes('@ui-copy'))).toBe(true);
+    expect(libs.every((s) => s.content.includes('@ui-copy') || s.content.includes('notifyTeamOf('))).toBe(true);
+  });
+});
+
+describe('notification copy', () => {
+  const LIB = 'apps/web/src/lib/conflict-retry.ts';
+  const ROUTE = 'apps/web/src/app/api/workers/[id]/route.ts';
+  const src = [
+    "const prompt = `You are an agent. BASE REWRITTEN \u2014 nothing to configure.`;",
+    'void notifyTeamOf({ taskId }, \'needsAttention\', {',
+    '  title: `PR #${n}: BASE REWRITTEN · cherry-pick?`,',
+    "  message: ok ? `${t}\\nNothing to configure.` : 'Retry it.',",
+    "  url, urlTitle: `PR #${n}`, priority: 1,",
+    '});',
+  ].join('\n');
+
+  it('reads title, message and urlTitle of a notifyTeamOf payload, and nothing else in the file', () => {
+    expect(extractNotifyCopy(LIB, src)).toEqual([
+      { line: 3, text: 'PR #N: BASE REWRITTEN · cherry-pick?' },
+      { line: 4, text: 'N Nothing to configure.' },
+      { line: 4, text: 'Retry it.' },
+      { line: 5, text: 'PR #N' },
+    ]);
+  });
+
+  it('scans notify payloads in untagged lib/ modules and API routes, never their prompts', () => {
+    for (const path of [LIB, ROUTE]) {
+      const { counts } = scanSources([{ path, content: src }]);
+      expect(counts['shouting-tag'][path]).toBe(1);
+      expect(counts.reassurance[path]).toBe(1);
+      expect(counts['em-dash'][path]).toBeUndefined();
+    }
+    expect(scanSources([{ path: 'apps/web/src/lib/conflict-retry.test.ts', content: src }]).counts['shouting-tag']).toEqual({});
+  });
+
+  it('readSources picks up notify modules and routes', () => {
+    const paths = readSources().map((s) => s.path);
+    for (const p of ['apps/web/src/lib/conflict-retry.ts', 'apps/web/src/lib/release/subscribers.ts', 'apps/web/src/lib/auto-merge.ts', 'apps/web/src/app/api/cron/stall-notify/route.ts']) {
+      expect(paths).toContain(p);
+    }
+  });
+
+  it('no notification title in the tree leads with a PR number or shouts', () => {
+    const titles = readSources().filter((s) => s.content.includes('notifyTeamOf(')).flatMap(({ path, content }) => extractNotifyCopy(path, content, ['title']).map((s) => `${path}:${s.line} ${s.text}`));
+    expect(titles.length).toBeGreaterThan(10);
+    expect(titles.filter((t) => /#N\b/.test(t.slice(t.indexOf(' ') + 1)))).toEqual([]);
+    expect(titles.filter((t) => copyViolations(t.slice(t.indexOf(' ') + 1)).some((r) => r.id === 'shouting-tag' || r.id === 'em-dash'))).toEqual([]);
   });
 });
 

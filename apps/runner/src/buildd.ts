@@ -202,7 +202,10 @@ export class BuilddClient {
    */
   async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
     const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
-    if (!data || data.error) return null;
+    // Only the 404 body (`{ error }`, no status) means gone. A worker row has
+    // its own `error` column: a question park writes `needs_input: …` there,
+    // and reading that as a 404 made reconcile forget every parked question.
+    if (!data || (typeof data.status !== 'string' && data.error)) return null;
     if (typeof data.status !== 'string') {
       throw new Error(`getWorkerRemote(${id}): response missing status field`);
     }
@@ -1099,6 +1102,12 @@ export class BuilddClient {
      * label when the field is absent.
      */
     modelAuth?: HeartbeatModelAuth | null,
+    /**
+     * This runner's slots: how many agents it runs at once (`buildd slots`,
+     * spec c7410e76 R-43). The dashboard's runner list shows it. Omitted by
+     * older callers; the server then keeps the account's default.
+     */
+    maxConcurrent?: number,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
@@ -1142,6 +1151,7 @@ export class BuilddClient {
       payload.modelAuthSource = modelAuth.source;
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
+    if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent > 0) payload.maxConcurrent = maxConcurrent;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { siblingOutcomeFor, summarizeSoftStartReadout, type SoftStartForReadout } from '../orchestration-soft-start-readout';
+import { siblingOutcomeFor, summarizeOverlapStartConflicts, summarizeSoftStartReadout, type SoftStartForReadout } from '../orchestration-soft-start-readout';
 
 const WS = 'ws-1';
 const t0 = new Date('2026-10-01T10:00:00Z');
@@ -98,4 +98,36 @@ it('splits soft starts by actor, gate, area and fingerprint', () => {
   expect(rule.cells).toHaveLength(2);
   expect(rule.cells[0]).toMatchObject({ actor: 'rule_start_clean', attributableUnsafeRate: 0 });
   expect(rule.cells[1].calibration.excludedStale).toBe(1);
+});
+
+describe('summarizeOverlapStartConflicts', () => {
+  it('reports, by area class and gate, the share of overlap STARTs whose PR later hit a merge conflict', () => {
+    const out = summarizeOverlapStartConflicts({
+      starts: [
+        start({ id: 'p1', taskId: 'safe', gate: 'open_pr_overlap', areaClass: 'other' }),
+        start({ id: 'p2', taskId: 'bad', gate: 'open_pr_overlap', areaClass: 'other' }),
+        start({ id: 'l1', taskId: 'safe', gate: 'lease_overlap', areaClass: 'other' }),
+        start({ id: 's1', taskId: 'open', gate: 'soft_overlap', areaClass: 'core/db' }),
+      ],
+      outcome: outcome(),
+      probes: [],
+    });
+    expect(out.total).toMatchObject({ starts: 4, observed: 3, conflicted: 1, pending: 1 });
+    expect(out.total.conflictShare).toBeCloseTo(1 / 3);
+    const at = (areaClass: string, gate: string) => out.cells.find(c => c.areaClass === areaClass && c.gate === gate);
+    expect(at('other', 'open_pr_overlap')).toMatchObject({ starts: 2, observed: 2, conflicted: 1, conflictShare: 0.5 });
+    expect(at('other', 'lease_overlap')).toMatchObject({ starts: 1, conflicted: 0, conflictShare: 0 });
+    expect(at('other', 'all')).toMatchObject({ starts: 3, conflicted: 1 });
+    // A start still running is pending, never a clean one.
+    expect(at('core/db', 'soft_overlap')).toMatchObject({ starts: 1, observed: 0, pending: 1, conflictShare: null });
+    expect(out.cells.map(c => `${c.areaClass}/${c.gate}`)).toEqual([
+      'core/db/all', 'core/db/soft_overlap', 'other/all', 'other/lease_overlap', 'other/open_pr_overlap',
+    ]);
+  });
+
+  it('has an empty total rather than none', () => {
+    expect(summarizeOverlapStartConflicts({ starts: [], outcome: outcome(), probes: [] })).toEqual({
+      cells: [], total: { areaClass: 'all', gate: 'all', starts: 0, observed: 0, conflicted: 0, pending: 0, conflictShare: null },
+    });
+  });
 });

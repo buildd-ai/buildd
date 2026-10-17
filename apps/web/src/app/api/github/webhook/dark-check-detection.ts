@@ -175,8 +175,8 @@ export async function detectDarkChecks({
             );
 
           void notifyTeamOf({ workspaceId }, 'needsAttention', {
-            title: `Dark check detected — ${workspaceName}`,
-            message: `Required check '${checkName}' has been Skipped on ${newCount} consecutive closed PRs — may be misconfigured.`,
+            title: `A required check is always skipped in ${workspaceName}`,
+            message: `Required check '${checkName}' has been Skipped on ${newCount} consecutive closed PRs. It may be misconfigured.`,
             priority: 0,
           });
 

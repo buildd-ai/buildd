@@ -290,6 +290,17 @@ export const DECISION_HEALTH_MAX_ROWS = 5_000;
  * reads (decision-feature-health.ts), with the agent audit grades on them.
  * Unlike a page, this covers every capability, so a quiet feature still shows.
  */
+/**
+ * The outcome labels a health readout reads: every source on the window's rows.
+ * Not only the agent audit grades: an adapter's labels (post-session analysis,
+ * strand follow-up, ...) are what the feature's own objective scores, and
+ * `coverage.labelled` counts every source. Filtering to audit sources here made
+ * the all-features readout say 0 labelled where the per-capability one did not.
+ */
+export function decisionHealthOutcomesWhere(f: Pick<DecisionLedgerFilters, 'teamId' | 'workspaceId' | 'since' | 'until'>) {
+  return and(eq(decisionOutcomes.teamId, f.teamId), decisionLedgerWhere(f));
+}
+
 export async function readDecisionHealthRows(f: Pick<DecisionLedgerFilters, 'teamId' | 'workspaceId' | 'since' | 'until'>) {
   const rows = await db.select({
     id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, applied: decisionRecords.applied,
@@ -301,10 +312,13 @@ export async function readDecisionHealthRows(f: Pick<DecisionLedgerFilters, 'tea
     .limit(DECISION_HEALTH_MAX_ROWS + 1);
   const page = rows.slice(0, DECISION_HEALTH_MAX_ROWS);
   const outcomes = page.length
-    ? await db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+    ? await db.select({
+      decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label,
+      value: decisionOutcomes.value, metadata: decisionOutcomes.metadata,
+    })
       .from(decisionOutcomes)
       .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
-      .where(and(eq(decisionOutcomes.teamId, f.teamId), inArray(decisionOutcomes.source, ['agent_audit', 'agent_audit_rule']), decisionLedgerWhere(f)))
+      .where(decisionHealthOutcomesWhere(f))
       .orderBy(decisionOutcomes.recordedAt)
     : [];
   return {

@@ -1,4 +1,4 @@
-import { canonicalToolName } from '@buildd/shared';
+import { canonicalToolName, decideTaskIsolation, reducedIsolationOptedIn, taskCodexSandboxMode, taskIsolationRequirement, type TaskIsolationDecision } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
@@ -74,6 +74,7 @@ import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
+import { claudeSessionSandbox, decideConfinementRestart, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, isolationModeLabel, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
@@ -85,6 +86,8 @@ import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, get
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
 import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
+import { SlotPauseQueue, slotResumes } from './runner-slots';
+import { ClaimRefusalBackoff } from './claim-refusal-backoff';
 import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, commitShutdownCheckpoint } from './restart-resume';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
@@ -104,7 +107,7 @@ import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTE
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
 import { applyMachineLoginPolicy, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
-import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision, RunnerIsolationRecord } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import { heartbeatRunnerName, withRunnerName } from './runner-name';
 import {
@@ -230,7 +233,17 @@ export function __resetBwrapSupportForTest(): void {
   _bwrapSupported = null;
   _bwrapProbeAt = null;
   _mountIsolationBwrapSupported = null;
+  _isolationHost = null;
+  _seatbeltSupported = null;
+  _bwrapFailure = null;
 }
+// The isolation record's other inputs (./isolation-probe), cached per process
+// like the bwrap probe. A probe is this process's own: R-11 reads one older
+// than the process start as unknown.
+const PROCESS_STARTED_AT = processStartedAt();
+let _isolationHost: ReturnType<typeof detectHostPlatform> | null = null;
+let _seatbeltSupported: boolean | null = null;
+let _bwrapFailure: BwrapProbeFailure | null = null;
 // The pre-spawn model-auth check (host-seat.ts claudeModelAuthMissing).
 let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
 /**
@@ -256,6 +269,41 @@ export function isBwrapSupported(): boolean {
     }
   }
   return _bwrapSupported;
+}
+
+/**
+ * The confinement each backend can apply on this host (Living Spec "Runner
+ * isolation", R-2). Claude's sandbox, its env scrub and Codex's sandbox mode
+ * are decided from this, never from the bwrap boolean alone: on macOS bwrap is
+ * always absent and both CLIs confine with Seatbelt (R-6).
+ *
+ * Built fresh on each call from cached probes, so a runtime bwrap denial that
+ * flips isBwrapSupported() shows in the next heartbeat.
+ */
+export function getIsolationRecord(): RunnerIsolationRecord {
+  const bwrapOk = isBwrapSupported(); // runs and caches the probe, and sets its time
+  // The same function doctor and install.sh call (R-8), over this process's cached probes.
+  return probeIsolationRecord({
+    host: () => (_isolationHost ??= detectHostPlatform()),
+    optOut: () => process.env.BUILDD_DISABLE_SANDBOX === '1',
+    bwrap: (): BwrapProbeResult => {
+      if (bwrapOk) return { ok: true };
+      if (_bwrapFailure === null) _bwrapFailure = diagnoseClaudeBwrapFailure();
+      return { ok: false, reason: _bwrapFailure };
+    },
+    seatbelt: () => {
+      if (_seatbeltSupported === null) {
+        _seatbeltSupported = probeSeatbelt();
+        if (!_seatbeltSupported) console.log('[runner] macOS Seatbelt (sandbox-exec) did not start — Claude and Codex run unconfined');
+      }
+      return _seatbeltSupported;
+    },
+    reducedOptIn: () => reducedIsolationOptedIn(process.env),
+  }, {
+    probeAt: () => _bwrapProbeAt ?? new Date().toISOString(),
+    processStartedAt: PROCESS_STARTED_AT,
+    runnerVersion: RUNNER_VERSION,
+  });
 }
 
 /**
@@ -1116,6 +1164,13 @@ export class WorkerManager {
     return { runner: this.config.localUiUrl, skills: advertisedRoleSlugs(this.environment) ?? [] };
   }
 
+  /** Broad claims in flight right now (`buildd top`: "Looking for work…"). */
+  private lookingForWork = 0;
+
+  isLookingForWork(): boolean {
+    return (this.lookingForWork || 0) > 0;
+  }
+
   /** Keep a claim outcome and tell `top` (one `claim_outcome` frame; no taskId = the broad claim). */
   private noteClaimOutcome(taskId: string | null, outcome: ClaimOutcome): void {
     if (taskId) {
@@ -1202,6 +1257,15 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Environment as sent on a claim: the scan plus this process's isolation
+   * record, which the claim route decides each task's isolation against
+   * (Living Spec "Runner isolation", R-4). Runs the probes if they have not run.
+   */
+  private claimEnvironment(env: WorkerEnvironment | undefined): WorkerEnvironment | undefined {
+    return env ? { ...env, isolation: getIsolationRecord() } : env;
+  }
+
   /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
@@ -1214,6 +1278,8 @@ export class WorkerManager {
     env = withRunnerName(env, heartbeatRunnerName());
     // A person's hold (R-35): the server refuses broad claims and the dashboard shows it.
     if (!this.config.singleTask) env = withRunnerHold(env, currentRunnerHold());
+    // The confinement per backend and mode (R-3); the probe has run by now.
+    if (env && getBwrapProbeAt() !== null) env = { ...env, isolation: getIsolationRecord() };
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -1242,6 +1308,74 @@ export class WorkerManager {
     await this.sendHeartbeat();
   }
 
+  /** Broadcast assignments the server just refused (claim-refusal-backoff.ts). */
+  private _refusalBackoff?: ClaimRefusalBackoff;
+  private get refusalBackoff(): ClaimRefusalBackoff {
+    return (this._refusalBackoff ??= new ClaimRefusalBackoff());
+  }
+
+  /** Slots raised, or the hold lifted: every refused assignment may read differently now. */
+  resetRefusalBackoff(): void {
+    this.refusalBackoff.reset();
+  }
+
+  /** Agents paused to free a slot (`buildd slots --pause`, `p` in top); they continue oldest first (R-45). */
+  private _slotPauses?: SlotPauseQueue;
+  get slotPauses(): SlotPauseQueue {
+    // Lazy: some harnesses build the manager with Object.create (no field initializers).
+    return (this._slotPauses ??= new SlotPauseQueue());
+  }
+  /** Slot-paused agents told to continue and not yet working again: they hold their slot meanwhile. */
+  private _slotResuming?: Map<string, number>;
+  private get slotResuming(): Map<string, number> {
+    return (this._slotResuming ??= new Map());
+  }
+
+  /**
+   * Set how many agents run at once (`buildd slots`, + / - in top; R-43, R-44).
+   * The caller saves it in config.json. The next heartbeat reports it; a raise
+   * claims for the new free slots straight away.
+   */
+  setSlots(slots: number): void {
+    const raised = slots > this.config.maxConcurrent;
+    this.config.maxConcurrent = slots;
+    this.emit({ type: 'slots', maxConcurrent: slots });
+    void this.sendHeartbeat();
+    if (raised) {
+      this.refusalBackoff.reset();
+      this.claimPendingTasks().catch(() => {});
+    }
+  }
+
+  /** Busy slots: working agents, plus slot-paused ones continuing right now. */
+  private busySlotCount(): number {
+    const now = Date.now();
+    for (const [id, at] of this.slotResuming) {
+      const w = this.workers.get(id);
+      if (!w || w.status !== 'waiting' || now - at > 60_000) this.slotResuming.delete(id);
+    }
+    const working = Array.from(this.workers.values()).filter(w => w.status === 'working' || w.status === 'stale').length;
+    return working + this.slotResuming.size;
+  }
+
+  /** Continue slot-paused agents on `free` slots, oldest pause first; returns how many. */
+  private async continueSlotPaused(free: number): Promise<number> {
+    if (free <= 0 || this.slotPauses.size === 0) return 0;
+    const ids = slotResumes(this.slotPauses, id => {
+      const w = this.workers.get(id);
+      return !!w && w.status === 'waiting' && w.waitingFor?.type === 'pause';
+    }, free);
+    let n = 0;
+    for (const id of ids) {
+      this.slotPauses.remove(id);
+      this.slotResuming.set(id, Date.now());
+      console.log(`[Worker ${id}] A slot freed: continuing in its own session`);
+      if (await this.sendMessage(id, 'Resume').catch(() => false)) n++;
+      else this.slotResuming.delete(id);
+    }
+    return n;
+  }
+
   // Send heartbeat to server announcing this runner instance is alive and ready
   /**
    * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
@@ -1258,8 +1392,9 @@ export class WorkerManager {
 
   private async sendHeartbeat() {
     try {
-      // A paused worker holds no slot (pause.ts); a question still does.
-      const activeCount = Array.from(this.workers.values()).filter(holdsRunnerSlot).length;
+      // A paused worker holds no slot (pause.ts), nor a question whose session
+      // ended; one asked inside a live session still does.
+      const activeCount = Array.from(this.workers.values()).filter(w => holdsRunnerSlot(w, this.sessions.has(w.id))).length;
       // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
       // liveness while a worker sits inside one long silent tool call — the case
       // where `updatedAt` freezes and the server could not tell a busy worker
@@ -1271,8 +1406,11 @@ export class WorkerManager {
         .filter(w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting')
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
-      const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth });
+      // The legacy boolean, for servers that predate environment.isolation:
+      // whether Claude is confined here, not whether bwrap is installed, so a
+      // macOS runner on Seatbelt no longer reads as "user namespaces denied".
+      const sandboxEnabled = probeAt !== null ? isConfined(getIsolationRecord().claude) : null;
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1864,11 +2002,14 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    const activeWorkers = Array.from(this.workers.values()).filter(
-      w => w.status === 'working' || w.status === 'stale'
-    );
-    const slots = this.config.maxConcurrent - activeWorkers.length;
+    let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
+    // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
+    // Only awaited when there are any, so the claim below starts in the same tick otherwise.
+    if (this.slotPauses.size > 0) {
+      slots -= await this.continueSlotPaused(slots);
+      if (slots <= 0) return [];
+    }
 
     try {
       // No specific workspace: this is the autonomous cross-workspace poll. Opt
@@ -1885,9 +2026,13 @@ export class WorkerManager {
           expiresAt: string | null;
         }>;
       };
+      // `buildd top` says "Looking for work…" while this is out (R-26 claim-loop line).
+      this.lookingForWork = (this.lookingForWork || 0) + 1;
+      this.emit({ type: 'claim_loop', looking: true });
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, withRunnerHold(this.environment, currentRunnerHold())));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold()))));
       } catch (err: any) {
+        this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
         if (status === 0) {
@@ -1902,6 +2047,7 @@ export class WorkerManager {
         this.onClaimServerErrorStreak(status);
         throw err;
       }
+      this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
       this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
@@ -1946,7 +2092,7 @@ export class WorkerManager {
       }
 
       // `buildd top` reads what held this claim (R-25), or that nothing did.
-      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed', started: claimed.length } : outcomeFromDiagnostics(diagnostics, Date.now()));
       for (const cw of claimed) if (cw?.taskId) this.claimOutcomes.clearTask(cw.taskId);
 
       if (claimed.length === 0) {
@@ -2301,6 +2447,9 @@ export class WorkerManager {
       console.log(`[WorkerManager] Draining for update — not claiming task ${task.id}`);
       return null;
     }
+    // The claim storm: a broadcast assignment the server just refused for a
+    // reason that has not moved is not claimed again (claim-refusal-backoff.ts).
+    if (!opts.byPerson && this.refusalBackoff.skip(task.id, Date.now())) return null;
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
     // pausedContextFor fails toward claiming when the payload carries no
@@ -2332,7 +2481,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment));
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment)));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -2341,7 +2490,10 @@ export class WorkerManager {
       throw err;
     }
     const { workers: claimed, diagnostics } = claimResult;
-    this.noteClaimOutcome(task.id, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+    const outcome: ClaimOutcome = claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now());
+    this.noteClaimOutcome(task.id, outcome);
+    if (claimed.length > 0) this.refusalBackoff.clear(task.id);
+    else this.refusalBackoff.refused(task.id, outcome.exclusion ?? outcome.reason, outcome.holderTaskId ?? null, outcome.at);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({
@@ -2711,7 +2863,11 @@ export class WorkerManager {
           },
           // Cloud: the install runs behind the agent session (deps-gate.ts).
           // A host runner installs inline, as before.
-          { deferInstall: isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER !== 'deps' },
+          {
+            deferInstall: isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER !== 'deps',
+            // `buildd top` shows a starting agent's setup step in words.
+            onStep: (words) => { worker.currentAction = words; this.emit({ type: 'worker_update', worker }); },
+          },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -4121,6 +4277,19 @@ export class WorkerManager {
       if (missingModelAuth) {
         throw Object.assign(new Error(missingModelAuth), { modelAuthMissing: true });
       }
+      // Isolation (Living Spec "Runner isolation", R-4, R-5): the claim
+      // decided this against the record sent with it; decide again against
+      // the record as it is now, so a probe that flipped since (a mid-run
+      // bwrap denial on another task) never starts this one with less. A task
+      // with no stamp is held to protected. Refused = the attempt fails with
+      // the cause; it never runs reduced without the operator's opt-in.
+      const isolationBackend = isCodexTask ? 'codex' as const : 'claude' as const;
+      const isolationDecision = this.decideSessionIsolation(task, isolationBackend);
+      if (!isolationDecision.ok) {
+        throw new Error(`Not started: ${isolationDecision.message}${isolationDecision.remedy.length > 0 ? ` ${isolationDecision.remedy.join(' ')}` : ''}`);
+      }
+      this.addMilestone(worker, { type: 'status', label: isolationModeLabel(isolationDecision, isolationBackend, getIsolationRecord().platform), ts: Date.now() });
+      sessionLog(worker.id, isolationDecision.mode === 'reduced' ? 'warn' : 'info', 'isolation_mode', `requirement=${isolationDecision.requirement} mode=${isolationDecision.mode} backend=${isolationBackend} mechanism=${isolationDecision.confinement.mechanism}`, task.id);
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
         console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
@@ -4525,6 +4694,8 @@ export class WorkerManager {
         // setupWorktree now defers its own install to that same case, so there
         // is one owner each and no double install. The pass is cached per
         // (baseCommit, manifestHash), so the cost is once per base per runner.
+        worker.currentAction = 'Checking the environment';
+        this.emit({ type: 'worker_update', worker });
         const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
@@ -4718,18 +4889,16 @@ export class WorkerManager {
         }
       }
 
-      // Build sandbox config from workspace config.
-      // If bwrap user namespaces are unavailable on this kernel, force sandbox
-      // disabled so Claude Code doesn't attempt bwrap and fail every Bash call.
-      const sandboxConfig = !isBwrapSupported()
-        ? { enabled: false }
-        : (gitConfig?.sandbox?.enabled ? gitConfig.sandbox : undefined);
-
-      // Claude Code also uses bwrap for subprocess env scrubbing independently of the
-      // sandbox feature. When bwrap namespaces are unavailable, disable scrubbing too
-      // so shell commands don't fail with "No permissions to create a new namespace"
-      // even on tasks that have sandbox disabled.
-      if (!isBwrapSupported()) {
+      // Build sandbox config from workspace config, against the confinement
+      // Claude actually has on this host (Seatbelt on macOS, bwrap on Linux).
+      // Where it has none, force the sandbox off so Claude Code doesn't fail
+      // every Bash call trying to start it, and turn off the subprocess env
+      // scrub, which on Linux needs bwrap independently of the sandbox feature
+      // ("No permissions to create a new namespace"). The bwrap probe alone
+      // never decides this: on macOS it always fails and Seatbelt works.
+      const claudeSandbox = claudeSessionSandbox(getIsolationRecord().claude, gitConfig?.sandbox);
+      const sandboxConfig = claudeSandbox.sandbox;
+      if (claudeSandbox.disableEnvScrub) {
         cleanEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '0';
       }
 
@@ -5328,7 +5497,9 @@ export class WorkerManager {
         ...(resumeSessionId && taskBackend === 'codex' ? { resumeThreadId: resumeSessionId } : {}),
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         ...(task.outputSchema ? { outputSchema: task.outputSchema as Record<string, unknown> } : {}),
-        bwrapSupported: isBwrapSupported(),
+        sandboxConfinement: getIsolationRecord().codex[taskSandboxMode ?? 'workspace-write'],
+        // R-5: danger-full-access only for a run decided reduced above.
+        allowReducedConfinement: isolationDecision.mode === 'reduced',
         onProgress: async (msg: unknown) => {
           const sdkMsg = msg as any;
           // Capture result metadata for post-loop handling
@@ -6050,6 +6221,23 @@ export class WorkerManager {
         backgroundAgentMs: failBgMs,
       };
 
+      // R-7: a mid-run confinement failure restarts with less only for a
+      // trusted_local task on an opted-in runner, as a recorded degradation.
+      // A protected task's attempt fails with the cause instead.
+      if (isAbortError && worker.bwrapRetryPending) {
+        const backendForRestart = (task.backend || 'claude') === 'codex' ? 'codex' as const : 'claude' as const;
+        const verdict = decideConfinementRestart(this.decideSessionIsolation(task, backendForRestart), backendForRestart);
+        if (verdict.restart) {
+          this.addMilestone(worker, { type: 'status', label: verdict.label, ts: Date.now() });
+          sessionLog(worker.id, 'warn', 'isolation_degraded', verdict.label, worker.taskId);
+        } else {
+          worker.bwrapRetryPending = false;
+          worker.error = verdict.error;
+          console.warn(`[Worker ${worker.id}] ${verdict.error}`);
+          this.addMilestone(worker, { type: 'status', label: 'isolation: confinement failed mid-run; attempt failed, not restarted reduced', ts: Date.now() });
+        }
+      }
+
       if (isAbortError && worker.bwrapRetryPending) {
         // bwrap namespace denied mid-run: sandbox is already disabled globally
         // (_bwrapSupported = false). Don't mark as Failed — restart the session
@@ -6289,6 +6477,9 @@ export class WorkerManager {
       if (!bwrapRetryAfterCleanup) this.recordCanaryOutcome(worker, task.roleSlug);
 
       this.noteLoginOutcome(worker);
+
+      // A task refused while waiting for this one, or for a free slot, may start now.
+      if (worker.status === 'done' || worker.status === 'error') this.refusalBackoff.agentEnded(worker.taskId);
 
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
@@ -7362,6 +7553,16 @@ export class WorkerManager {
       ts: Date.now(),
     });
     try { storeSaveWorker(holder); } catch { /* best effort */ }
+  }
+
+  /** R-4, R-5: the task's isolation requirement decided against this process's record now. */
+  private decideSessionIsolation(task: BuilddTask, backend: 'claude' | 'codex'): TaskIsolationDecision {
+    return decideTaskIsolation({
+      requirement: taskIsolationRequirement(task.context),
+      record: getIsolationRecord(),
+      backend,
+      codexMode: taskCodexSandboxMode(task.kind, task.context),
+    });
   }
 
   private addMilestone(worker: LocalWorker, milestone: Milestone) {

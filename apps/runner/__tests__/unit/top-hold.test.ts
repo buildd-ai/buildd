@@ -62,7 +62,7 @@ describe('h', () => {
   test('pressed again resumes', () => {
     const r = handleKey(held(fixtureState()), { name: 'char', ch: 'h' }, NOW);
     expect(r.effects).toEqual([{ type: 'hold', on: false }]);
-    expect(r.state.status?.text).toBe('Resuming: this runner takes new work again…');
+    expect(r.state.status?.text).toBe('Resuming: looking for work now…');
   });
 
   test('works in the Queue view and the detail view too', () => {
@@ -79,7 +79,7 @@ describe('h', () => {
 
   test('the result line', () => {
     expect(actionResultText({ type: 'hold', on: true }, { status: 200, body: { running: 2 } }).text).toBe('On hold: nothing new starts, 2 running finish. h resumes.');
-    expect(actionResultText({ type: 'hold', on: false }, { status: 200, body: { running: 2 } }).text).toBe('Resumed: this runner takes new work again.');
+    expect(actionResultText({ type: 'hold', on: false }, { status: 200, body: { running: 2 } }).text).toBe('Resumed: looking for work now.');
     expect(actionResultText({ type: 'hold', on: true }, { status: 404, body: { error: 'Not found' } }).text).toBe('Hold refused: Not found (HTTP 404)');
   });
 });

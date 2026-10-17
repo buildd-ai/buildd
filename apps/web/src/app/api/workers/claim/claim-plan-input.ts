@@ -27,6 +27,7 @@ import {
   type PlannerThresholds,
 } from '@buildd/core/claim-planner';
 import { findStackedPrs, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { leaseOverlapHolds, overlapHolds, workspaceHardSurface } from './overlap-policy';
 
 export type ClaimPlannerMode = 'off' | 'record' | 'apply';
 
@@ -294,6 +295,25 @@ export function buildClaimPlanInput(src: ClaimPlanSource): ClaimPlanContext {
     }
   }
 
+  // The claim loop's overlap policy (./overlap-policy), so the planner never
+  // orders a task behind work it would only share mergeable files with.
+  const gitConfigOf = new Map<string, unknown>();
+  for (const t of src.candidates) if (!gitConfigOf.has(t.workspaceId)) gitConfigOf.set(t.workspaceId, t.workspace?.gitConfig ?? null);
+  const planOverlapHolds: NonNullable<ClaimPlanInput['overlapHolds']> = (shared, kind) => {
+    const byWorkspace = new Map<string, string[]>();
+    for (const p of shared) {
+      const slash = p.indexOf('/');
+      if (slash < 0) return true;
+      const ws = p.slice(0, slash);
+      byWorkspace.set(ws, [...(byWorkspace.get(ws) ?? []), p.slice(slash + 1)]);
+    }
+    for (const [ws, paths] of byWorkspace) {
+      const gitConfig = (gitConfigOf.get(ws) ?? null) as Parameters<typeof workspaceHardSurface>[0];
+      if (kind === 'lease' ? leaseOverlapHolds(paths, gitConfig) : overlapHolds(paths, 'exact_file', workspaceHardSurface(gitConfig))) return true;
+    }
+    return false;
+  };
+
   return {
     input: {
       candidates,
@@ -302,6 +322,7 @@ export function buildClaimPlanInput(src: ClaimPlanSource): ClaimPlanContext {
       pressure: src.pressure,
       thresholds: src.thresholds,
       overlapAnswers,
+      overlapHolds: planOverlapHolds,
     },
     inFlightMeta,
   };

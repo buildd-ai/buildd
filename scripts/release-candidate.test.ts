@@ -236,6 +236,20 @@ describe('cut: the first candidate', () => {
     expect(pr.body).toContain('`release candidate verified`');
     expect(pr.body).toContain('`build`');
   });
+
+  test('a dev commit that lands after the cut is never listed as included, even when the body is rewritten', () => {
+    const f = fixture();
+    const source = devCommit(f, 'feat: something new (#11)');
+    expect(cut(f, source).status).toBe(0);
+    devCommit(f, 'fix: lands after the cut (#12)');
+    // A rerun against the moved dev head only refreshes the excluded section.
+    expect(cut(f, 'origin/dev').status).toBe(0);
+    const [pr] = prs(f);
+    const included = pr.body.slice(pr.body.indexOf('### Included pull requests'), pr.body.indexOf('### Not in this candidate'));
+    expect(included).toContain('#11');
+    expect(included).not.toContain('#12');
+    expect(pr.body.slice(pr.body.indexOf('### Not in this candidate'))).toContain('#12');
+  });
 });
 
 describe('cut: re-runs never move an existing candidate', () => {

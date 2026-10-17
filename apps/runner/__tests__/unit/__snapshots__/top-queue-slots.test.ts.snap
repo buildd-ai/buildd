@@ -1,0 +1,71 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row's reason, the claim-loop line 1`] = `
+" buildd · atlas · 2 workspaces · Buildd       1 of 9 busy · ● online · v0.358.1 
+ Missions  [ Queue ]   t team: all · w workspace: all          9 slots · 8 free 
+ Looked for work 14:58 · started 3                                              
+────────────────────────────────────────────────────────────────────────────────
+ Buildd · next for this runner       mission          starts                    
+› 1 feat(runner): top says why noth… (no mission)     now                       
+  2 feat: recovery page, impact-ran… (no mission)     now                       
+  3 test: operator recovery end to … (no mission)     now                       
+  4 fix(runner): hold --for ceiling  Runner terminal  when #1 ends (same files) 
+  5 refactor(schema): drop incident… Root causes      after its dependency      
+  6 feat(insights): estimation dash… (no mission)     now                       
+ Held, each on its own                                                          
+    fix(ci): dev is red              rechecks the re… Wed 17:00                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move c claim o web tab missions t team w workspace / filter ? help q quit   "
+`;
+
+exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row's reason, the claim-loop line 1`] = `
+" buildd · atlas · 2 workspaces · Buildd                                               1 of 9 busy · ● online · v0.358.1 
+ Missions  [ Queue ]   t team: all · w workspace: all                    9 slots · 1 running · 8 free   - fewer  + more 
+ Looked for work 14:58 · started 3                                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Buildd · next for this runner                  workspace    mission          est.  starts                              
+› 1 feat(runner): top says why nothing started  buildd       (no mission)     13m   now                                 
+  2 feat: recovery page, impact-ranked queue    acme-portal  (no mission)     -     now                                 
+  3 test: operator recovery end to end          acme-portal  (no mission)     -     now                                 
+  4 fix(runner): hold --for ceiling             buildd       Runner terminal  9m    when #1 ends (same files)           
+  5 refactor(schema): drop incident tables      buildd       Root causes      14m   after its dependency                
+  6 feat(insights): estimation dashboard        acme-portal  (no mission)     7m    now                                 
+ Held, each on its own                                                                                                  
+    fix(ci): dev is red                         buildd       rechecks the re… -     Wed 17:00                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  c claim  h hold  +- slots  o web  tab missions  t team  w workspace  / filter  ? help  q quit                 "
+`;

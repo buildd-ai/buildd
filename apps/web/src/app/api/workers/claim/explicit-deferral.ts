@@ -31,7 +31,7 @@ export function describeExplicitDeferral(
       const pr = num(detail.prNumber);
       const blocker = str(detail.blockingTaskId);
       const what = pr ? `open PR #${pr}` : blocker ? `an active claim held by task ${blocker}` : 'another task\'s files';
-      return { code: reason, detail: `Its files overlap ${what}. ${FORCE_HINT}` };
+      return { code: reason, detail: `Its files overlap ${what}. ${FORCE_HINT}`, ...(blocker ? { holderTaskId: blocker } : {}) };
     }
     case 'advisory_manifest': {
       const peer = str(detail.blockingPeer);
@@ -50,6 +50,7 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `Its declared scope overlaps in-flight task ${holder ?? '(unknown)'}${paths.length ? ` on ${paths.join(', ')}` : ''}, and ${why}. It starts when that task finishes or a START is decided. ${FORCE_HINT}`,
+        ...(holder ? { holderTaskId: holder } : {}),
       };
     }
     case 'mission_budget':
@@ -178,6 +179,14 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `${message ?? 'Its model tier is above the model-tier maximum that applies to it.'} ${remedy ?? 'Lower the task tier, or ask a team admin to raise the maximum.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
+    case 'isolation_unenforced': {
+      const message = str(detail.message);
+      const remedy = Array.isArray(detail.remedy) ? (detail.remedy as unknown[]).filter((m): m is string => typeof m === 'string') : [];
+      return {
+        code: reason,
+        detail: `${message ?? "This runner cannot confine the task as its isolation policy requires."} It stays queued for a runner that can${remedy.length > 0 ? `; the runner operator can fix this one: ${remedy.join(' ')}` : ''}.`,
       };
     }
     case 'hosted_runner_hours': {

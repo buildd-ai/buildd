@@ -20,9 +20,10 @@ describe('queue sections (R-26)', () => {
     expect(one.teamName).toBe('Team One');
     expect(one.rows.map(r => [r.position, r.title, r.workspace, r.mission, r.est, r.starts])).toEqual([
       [1, 'fix(kernel): review composition', 'alpha', 'Workflow kernel', '40m', 'Thu 00:00'],
-      [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'after 1'],
-      [3, 'chore(web): cache /fonts', 'alpha', '(no mission)', '15m', 'after 2'],
-      [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'after 3'],
+      // One of 3 slots is free (2 agents run): the first row nothing holds starts now.
+      [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'now'],
+      [3, 'chore(web): cache /fonts', 'alpha', '(no mission)', '15m', 'when a slot frees'],
+      [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'after its dependency'],
     ]);
     // A start time of its own is held, listed after the queue with its reason.
     expect(one.held.map(r => [r.position, r.title, r.mission, r.starts])).toEqual([
@@ -31,10 +32,30 @@ describe('queue sections (R-26)', () => {
     // The organizer's planning run is not work (R-22).
     expect(one.rows.map(r => r.taskId)).not.toContain('q-plan');
     expect(two.teamName).toBe('Team Two');
-    expect(two.rows.map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'next']]);
+    // The free slot went to Team One's row ahead of it in the claim order.
+    expect(two.rows.map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'when a slot frees']]);
   });
 
-  test('a retry floor far out is held with its reason and does not count toward "after N"', () => {
+  test('a row sharing only mergeable files with other work says it starts alongside it (I-38)', () => {
+    const t = QUEUE.teams[0];
+    const queue = { ...QUEUE, teams: [{ ...t, queue: t.queue.map(q =>
+      q.id === 'q-intake' ? { ...q, alongside: { prNumber: 41, holderTaskId: 'pr-task' } }
+        : q.id === 'q-fonts' ? { ...q, alongside: { prNumber: null, holderTaskId: 'q-review' } }
+          : q.id === 'q-docs' ? { ...q, alongside: { prNumber: 42, holderTaskId: null } }
+            : q) }, QUEUE.teams[1]] };
+    const s = reduce(queueState(), { type: 'queue', queue });
+    const [one] = queueSections(s, NOW);
+    const by = new Map(one.rows.map(r => [r.taskId, r]));
+    expect(by.get('q-intake')).toMatchObject({ starts: 'now', alongside: 'starts alongside #41 (same files, merges at the end)' });
+    // No PR: the holder by title.
+    expect(by.get('q-fonts')?.alongside).toBe('starts alongside "fix(kernel): review com…" (same files, merges at the end)');
+    // A row something holds says what it waits for, not alongside.
+    expect(by.get('q-docs')?.starts).toBe('after its dependency');
+    expect(by.get('q-docs')?.alongside).toBeUndefined();
+    expect(by.get('q-review')?.alongside).toBeUndefined();
+  });
+
+  test('a retry floor far out is held with its reason and takes no free slot', () => {
     const far = new Date(NOW + 6 * 24 * 3_600_000).toISOString();
     const t = QUEUE.teams[0];
     const queue = { ...QUEUE, teams: [{ ...t, queue: [
@@ -43,7 +64,7 @@ describe('queue sections (R-26)', () => {
     ] }, QUEUE.teams[1]] };
     const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
     const [one] = queueSections(s, NOW);
-    expect(one.rows.map(r => [r.position, r.starts])).toEqual([[1, 'next'], [2, 'after 1']]);
+    expect(one.rows.map(r => [r.position, r.starts])).toEqual([[1, 'now'], [2, 'when a slot frees']]);
     expect(one.held).toHaveLength(1);
     expect(one.held[0].reason).toMatch(/^retries after failures, /);
     expect(one.held[0].held).toBe(true);
@@ -58,10 +79,10 @@ describe('queue sections (R-26)', () => {
     ]);
   });
 
-  test('without a claim outcome holding it, position 1 is next', () => {
+  test('without a claim outcome holding it, position 1 starts now on the free slot', () => {
     let s = queueState();
     s = { ...s, claimOutcomes: { tasks: {}, broad: null } };
-    expect(queueSections(s, NOW)[0].rows[0].starts).toBe('next');
+    expect(queueSections(s, NOW)[0].rows[0].starts).toBe('now');
   });
 
   test('t narrows to one team and w to one workspace (R-23)', () => {
@@ -92,7 +113,7 @@ describe('the queue follows the server (AC-12)', () => {
     };
     const next = reduce(s, { type: 'queue', queue: after });
     const [one] = queueSections(next, NOW);
-    expect(one.rows[0]).toMatchObject({ position: 1, title: 'feat(intake): one intake door', starts: 'next' });
+    expect(one.rows[0]).toMatchObject({ position: 1, title: 'feat(intake): one intake door', starts: 'now' });
     expect(one.notFor[0]).toMatchObject({ title: 'fix(kernel): review composition', reason: 'another runner' });
   });
 

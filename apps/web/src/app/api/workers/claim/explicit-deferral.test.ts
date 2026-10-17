@@ -10,7 +10,7 @@ const ALL: DeferralReason[] = [
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
   'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
-  'tier_policy', 'delegation_unmet',
+  'tier_policy', 'delegation_unmet', 'isolation_unenforced',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -65,6 +65,16 @@ describe('describeExplicitDeferral', () => {
     expect(env).toContain('mailer');
     expect(env).toContain('A_KEY, B_ID');
     expect(env).toContain('role_env_secret');
+  });
+
+  // Spec c7410e76 R-26/AC-30: buildd top names the task a refused row waits
+  // for, so the holder is a field, not only a UUID inside the sentence.
+  it('names the task an overlap waits for as a field', () => {
+    expect(describeExplicitDeferral('soft_overlap', { holderTaskId: 'holder-1', paths: ['a.ts'], verdict: 'HOLD' }).holderTaskId).toBe('holder-1');
+    expect(describeExplicitDeferral('path_overlap', { blockingTaskId: 'blocker-1', prNumber: null }).holderTaskId).toBe('blocker-1');
+    expect(describeExplicitDeferral('path_overlap', { prNumber: 12 }).holderTaskId).toBeUndefined();
+    expect(describeExplicitDeferral('soft_overlap', {}).holderTaskId).toBeUndefined();
+    expect(describeExplicitDeferral('advisory_manifest', { blockingPeer: 'peer-task' }).holderTaskId).toBeUndefined();
   });
 
   it('points at force: true only where the override actually applies', () => {

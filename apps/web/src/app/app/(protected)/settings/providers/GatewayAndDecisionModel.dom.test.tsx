@@ -29,7 +29,7 @@ const { describeControls } = await import('../_lib/form-controls');
 let gateway: unknown = null;
 let decisionModel: unknown = null;
 let decisionModelOverrides: unknown = undefined;
-let switches: { lines: Array<{ id: string; text: string }>; canUndo: boolean } = { lines: [], canUndo: false };
+let switches: { lines: Array<{ id: string; kind?: string; text: string }>; canUndo: boolean } = { lines: [], canUndo: false };
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 
 beforeEach(() => {
@@ -92,6 +92,21 @@ describe('GatewayAndDecisionModel', () => {
     switches = { lines: [{ id: 's1', text: 'Start or wait now uses Clef' }], canUndo: true };
     await mount();
     await click(host.querySelector('[data-testid="decision-model-switch-undo"]'));
+    expect(writes.at(-1)).toEqual({ url: '/api/teams/t/decision-model-switches', method: 'POST', body: { switchId: 's1', action: 'undo' } });
+  });
+
+  it('says a decision\'s model once: a switch to it marks its override line, with Undo beside it', async () => {
+    decisionModelOverrides = [
+      { kind: 'task_category', label: 'Task category', endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' },
+      { kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', endpoint: 'systemone', model: 'clef', via: 'cloudflare' },
+    ];
+    switches = { lines: [{ id: 's1', kind: 'buildd.orchestration_claim_hold', text: 'Start or wait now uses Clef' }], canUndo: true };
+    await mount();
+    const lines = [...host.querySelectorAll('[data-testid="decision-model-overrides"] li')].map((li) => li.textContent);
+    expect(lines).toEqual(['Task category uses qwen3-8b', 'Start or wait uses Clef · switched by builddUndo']);
+    expect(host.querySelector('[data-testid="decision-model-switches"]')).toBeNull();
+    expect(host.textContent?.match(/Clef/g)?.length).toBe(1);
+    await click(host.querySelector('[data-testid="decision-model-overrides"] [data-testid="decision-model-switch-undo"]'));
     expect(writes.at(-1)).toEqual({ url: '/api/teams/t/decision-model-switches', method: 'POST', body: { switchId: 's1', action: 'undo' } });
   });
 

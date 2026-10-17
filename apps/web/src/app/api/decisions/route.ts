@@ -10,6 +10,7 @@ import { computeFeatureHealth, featureHealthByCapability } from '@buildd/core/de
 import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
+import { healthObjectiveLookup } from '@/lib/decision-health-objectives';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const WINDOWS = { '24h': 1, '7d': 7, '30d': 30 } as const;
@@ -79,7 +80,7 @@ export async function GET(req: NextRequest) {
   if (params.get('features') === '1') {
     try {
       const read = await readDecisionHealthRows({ teamId: match.teamId, workspaceId: match.id, since, until });
-      const features = [...featureHealthByCapability(read.rows, read.outcomes)].map(([id, health]) => ({ capability: id, health }));
+      const features = [...featureHealthByCapability(read.rows, read.outcomes, { objectiveFor: await healthObjectiveLookup() })].map(([id, health]) => ({ capability: id, health }));
       return NextResponse.json({
         status: features.length ? 'OK' : 'NO_DATA',
         workspaceId: match.id,
@@ -87,6 +88,10 @@ export async function GET(req: NextRequest) {
         since: since.toISOString(),
         until: (until ?? new Date()).toISOString(),
         truncated: read.truncated,
+        // A truncated read is the newest DECISION_HEALTH_MAX_ROWS decisions, so the counts are a sample.
+        sample: read.truncated
+          ? { complete: false, rows: read.rows.length, note: `Counts cover the newest ${read.rows.length} decisions in this window, not all of them. Narrow since/until to read an older part.` }
+          : { complete: true, rows: read.rows.length, note: null },
         features,
       });
     } catch (err) {
@@ -158,7 +163,7 @@ export async function GET(req: NextRequest) {
     nextUntil: page.truncated && oldest ? new Date(oldest).toISOString() : null,
     summary: summarizeDecisionLedger(page.rows, page.outcomes.length),
     health: capability
-      ? computeFeatureHealth(page.rows.map(r => ({ ...r, verdict: r.verdict ?? null, overridden: r.overriddenAt != null })), page.outcomes)
+      ? computeFeatureHealth(page.rows.map(r => ({ ...r, verdict: r.verdict ?? null, overridden: r.overriddenAt != null })), page.outcomes, { objective: (await healthObjectiveLookup())(capability) })
       : null,
     decisions,
   });

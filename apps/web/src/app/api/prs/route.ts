@@ -26,10 +26,13 @@ export async function GET(req: NextRequest) {
   const parsed = parsePrListState(sp.get('state'));
   if ('error' in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
-  // Same reach rule as the task list: an account's team's open workspaces plus
-  // its links, or a user's teams' workspaces. A requested workspace outside it
-  // lists nothing, without saying whether it exists.
-  let workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
+  // Task-token reach comes from its bound workspace, as in explain/get_pr,
+  // without depending on an account-wide listing that may omit it or fail.
+  // Other callers use their team's open workspaces plus links, or user teams.
+  // A requested workspace outside reach lists nothing.
+  let workspaceIds = apiAccount?.taskScope
+    ? [apiAccount.taskScope.workspaceId]
+    : await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
   if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
   const requested = sp.get('workspaceId');
   if (requested) workspaceIds = workspaceIds.filter(id => id === requested);

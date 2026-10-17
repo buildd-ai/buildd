@@ -21,7 +21,7 @@
 import { afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
+import { assertDbConfigured, confinedRunnerEnvironment, q, seedMission, seedTask, seedWorkspace } from './harness';
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
 mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
@@ -489,7 +489,9 @@ describe('revocation and membership loss, mid-session', () => {
 
 describe('claims', () => {
   const claim = (s: S, body: Record<string, unknown>, bound: string | null) =>
-    claimRoute.POST(req(s, '/api/workers/claim', { method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 5, ...body }, bound }));
+    claimRoute.POST(req(s, '/api/workers/claim', {
+      method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 5, environment: confinedRunnerEnvironment(), ...body }, bound,
+    }));
   const claimedTaskIds = async (res: Response) => ((await res.json()) as { workers?: Array<{ taskId: string }> }).workers?.map(w => w.taskId) ?? [];
 
   test('a bound claim takes only the granted workspace\'s task, never an open sibling\'s', async () => {

@@ -1,3 +1,5 @@
+import type { BackendConfinement } from '@buildd/shared'
+
 export interface AgentBackend {
   runStreamed(opts: RunStreamedOpts): AsyncIterable<BackendEvent>
 }
@@ -31,13 +33,20 @@ export interface RunStreamedOpts {
    */
   resumeThreadId?: string
   /**
-   * Whether bwrap user namespaces are available on this runner (from
-   * checkBwrapSupport() in env-scan.ts, cached in workers.ts). Used by the
-   * Codex backend to select the correct sandbox mode: workspace-write requires
-   * bwrap; when unavailable the backend falls back to danger-full-access with
-   * a warning so shell commands can run. Defaults to true if not provided.
+   * The confinement the runner probed for this backend in this sandboxMode
+   * (../isolation-probe: Seatbelt on macOS, bwrap on Linux). The Codex backend
+   * keeps the requested mode whenever it is confined; with no confinement it
+   * falls back to danger-full-access with a warning naming the cause, so shell
+   * commands can run. Omitted = treated as confined.
    */
-  bwrapSupported?: boolean
+  sandboxConfinement?: BackendConfinement
+  /**
+   * The run was decided `reduced` (Living Spec "Runner isolation", R-5): a
+   * trusted_local task on a runner whose operator opted in. Only then may an
+   * unconfined Codex fall back to danger-full-access; without it the backend
+   * refuses to start rather than run with less confinement.
+   */
+  allowReducedConfinement?: boolean
 }
 
 export type BackendEvent =

@@ -264,7 +264,7 @@ describe('connect: one input, the format decides', () => {
     expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
   });
 
-  it('the decisions fixture shows overrides and a switch line, and Undo writes nothing', async () => {
+  it('the decisions fixture shows overrides, the switched one with Undo, and Undo writes nothing', async () => {
     const { MODELS_QA_DECISIONS } = await import('../models/qa-state');
     host = document.createElement('div');
     document.body.append(host);
@@ -274,9 +274,9 @@ describe('connect: one input, the format decides', () => {
     await flush();
     await flush();
     expect($('[data-testid="decision-model-overrides"]')!.querySelectorAll('li').length).toBeGreaterThan(0);
-    expect($('[data-testid="decision-model-switches"]')).toBeTruthy();
+    expect($('[data-testid="decision-model-switches"]')).toBeNull();
     calls.length = 0;
-    await click($('[data-testid="decision-model-switch-undo"]'));
+    await click($('[data-testid="decision-model-overrides"] [data-testid="decision-model-switch-undo"]'));
     expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
     expect(calls.some((c) => c.url.includes('decision-model-switches'))).toBe(false);
   });

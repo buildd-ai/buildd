@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, missions } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { requestingPerson } from '@/lib/request-person';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -41,7 +42,10 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * - Optionally targets a specific runner instance
  *
  * Body:
- * - targetLocalUiUrl?: string - Specific runner to assign to (optional)
+ * - targetLocalUiUrl?: string - Specific runner to assign to (optional). A
+ *   person's call only (dashboard, or the person's own OAuth session): the
+ *   runner runs a Start aimed at it even while on hold (spec c7410e76 R-34), so
+ *   an API key or per-task token sending it is refused 403.
  * - forceOverride?: boolean - lift the policy gates above (startAt, deps, holds, budget, subject)
  * - capExempt?: boolean - run past the workspace cap this once
  * - force?: { kinds: WaitingKind[], reasonsDigest, note? } - Force start past the
@@ -87,6 +91,10 @@ export async function POST(
   try {
     const body = await req.json().catch(() => ({}));
     const { targetLocalUiUrl, forceOverride, capExempt } = body;
+    const byPerson = !!requestingPerson(authType === 'session' ? { id: userId } : null, sessionAccount);
+    if (targetLocalUiUrl && !byPerson) {
+      return NextResponse.json({ error: 'Only a person can start a task on a specific runner; start it without targetLocalUiUrl.' }, { status: 403 });
+    }
     const forceRaw = (body.force && typeof body.force === 'object' ? body.force
       : body.forceCoordination && typeof body.forceCoordination === 'object' ? body.forceCoordination
       : null) as { kinds?: unknown; reasonsDigest?: unknown; note?: unknown } | null;
@@ -474,7 +482,7 @@ export async function POST(
     // route did not override. Delivery sends the (targeted) TASK_ASSIGNED.
     // A force start is honoured by THAT claim (a runner's), never by a claim
     // made here: this route creates no worker.
-    await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null });
+    await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null, ...(targetLocalUiUrl ? { byPerson } : {}) });
 
     return NextResponse.json({
       started: true,

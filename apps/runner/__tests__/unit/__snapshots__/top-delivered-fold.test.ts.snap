@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead of every delivered mission 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+" buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Pair on the parser · local session                      
@@ -28,7 +28,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead
 `;
 
 exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its own row with the day delivered 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+" buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Delivered this week · 4                                 
@@ -55,7 +55,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its
 `;
 
 exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with its day, the fold untouched 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+" buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Billing export · delivered Mar 8 (filter: billing)      
@@ -82,7 +82,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with
 `;
 
 exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instead of every delivered mission 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                        0 of 3 busy · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ Pair on the parser · local session                                                        
@@ -125,7 +125,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instea
 `;
 
 exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on its own row with the day delivered 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                        0 of 3 busy · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ Delivered this week · 4                                                                   
@@ -168,7 +168,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on it
 `;
 
 exports[`frames (R-7, R-21, AC-10) 120x40 filtering: a delivered match shows with its day, the fold untouched 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                        0 of 3 busy · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ Billing export · delivered Mar 8 (filter: billing)                                        

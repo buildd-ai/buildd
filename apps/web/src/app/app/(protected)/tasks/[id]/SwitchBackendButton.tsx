@@ -49,12 +49,12 @@ export default function SwitchBackendButton({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Failed to switch backend');
+        setError(data.error || 'Could not switch backend. Try again.');
         return;
       }
       router.refresh();
     } catch {
-      setError('Failed to switch backend');
+      setError('Could not switch backend.');
     } finally {
       setPending(null);
     }

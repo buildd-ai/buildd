@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.358.1",
+  "version": "0.360.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -159,6 +159,7 @@
     "./orchestration-claim-risk": "./orchestration-claim-risk.ts",
     "./orchestration-claim-risk-eval": "./orchestration-claim-risk-eval.ts",
     "./orchestration-claim-source": "./orchestration-claim-source.ts",
+    "./orchestration-soft-start-readout": "./orchestration-soft-start-readout.ts",
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./decision-feature-modes": "./decision-feature-modes.ts",
     "./owner-feature-switches": "./owner-feature-switches.ts",
@@ -264,6 +265,7 @@
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
+    "./unmergeable-surfaces": "./unmergeable-surfaces.ts",
     "./waiting-reason": "./waiting-reason.ts",
     "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
