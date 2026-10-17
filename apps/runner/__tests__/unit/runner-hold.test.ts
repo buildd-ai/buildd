@@ -250,7 +250,7 @@ describe('runHoldCommand', () => {
       configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
       get: async () => ({ status: 200, body: { workers: [
         { id: 'w1', taskTitle: 'name override', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
-        { id: 'w2', taskTitle: 'installer hint', status: 'waiting', waitingFor: { type: 'question', prompt: 'Which?' } },
+        { id: 'w2', taskTitle: 'manually paused', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
         { id: 'w3', taskTitle: 'single instance', status: 'working' },
       ] } }),
       post: async (path, body) => { posts.push({ path, body }); return { status: 200, body: { hold: null, wasHeld: true, running: 1 } }; },
