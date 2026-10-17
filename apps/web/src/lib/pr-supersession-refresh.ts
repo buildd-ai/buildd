@@ -182,8 +182,10 @@ export async function retireSupersededRefreshPr(opts: {
   older: RefreshPr;
   newer: RefreshPr;
   api?: Api;
+  clearDeferral?: (taskId: string) => Promise<void>;
 }): Promise<RetireOutcome> {
   const api = opts.api ?? githubApi;
+  const clearDeferral = opts.clearDeferral ?? clearRefreshDeferral;
   const { installationId, older, newer } = opts;
   const keep = (reason: string, transient = false): RetireOutcome => {
     if (!transient) {
@@ -241,7 +243,7 @@ export async function retireSupersededRefreshPr(opts: {
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);
     // Clear the deferral on successful record, so future outages start fresh
-    if (older.taskId) await clearRefreshDeferral(older.taskId).catch((err) => console.error(`[pr-supersession-refresh] #${older.prNumber}: could not clear its deferral:`, err));
+    if (older.taskId) await clearDeferral(older.taskId).catch((err) => console.error(`[pr-supersession-refresh] #${older.prNumber}: could not clear its deferral:`, err));
   } catch (err) {
     const reason = `retire failed: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[pr-supersession-refresh] #${older.prNumber}: ${reason}`);
@@ -331,10 +333,13 @@ export async function sweepSupersededRefreshPrs(
     load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api;
     /** Keep a PR's deferral on its task (and, once it ran out, the flag that stops the sweep retrying). */
     saveDeferral?: (taskId: string, state: DeferralState, exhausted: boolean) => Promise<void>;
+    /** Clear a PR's deferral when a tick succeeds, so future outages start fresh. */
+    clearDeferral?: (taskId: string) => Promise<void>;
   } = {},
 ): Promise<RefreshSupersessionSweepResult> {
   const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0, deferralExhausted: 0 };
   const saveDeferral = deps.saveDeferral ?? saveRefreshDeferral;
+  const clearDeferral = deps.clearDeferral ?? clearRefreshDeferral;
   const { open, merged } = await (deps.load ?? loadRefreshPrs)(now);
   const installation = deps.installation ?? ((repo: string) => installationIdForRepo(repo).catch(() => null));
   const cache = new Map<string, number | null>();
@@ -354,7 +359,7 @@ export async function sweepSupersededRefreshPrs(
 
     let done = false;
     for (const newer of successors) {
-      const out = await retireSupersededRefreshPr({ installationId, older, newer, api: deps.api }).catch((err): RetireOutcome => {
+      const out = await retireSupersededRefreshPr({ installationId, older, newer, api: deps.api, clearDeferral }).catch((err): RetireOutcome => {
         console.error(`[pr-supersession-refresh] sweep failed for #${older.prNumber}:`, err);
         return { outcome: 'kept', prNumber: older.prNumber, reason: 'error' };
       });
