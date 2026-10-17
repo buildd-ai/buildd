@@ -60,7 +60,7 @@ export class CodexBackend implements AgentBackend {
     }
 
     const auth = this.resolveAuth(opts);
-    const sandbox = this.mapSandboxMode(opts.sandboxMode, opts.sandboxConfinement);
+    const sandbox = this.mapSandboxMode(opts.sandboxMode, opts.sandboxConfinement, opts.allowReducedConfinement === true);
     const prompt = await this.resolvePrompt(opts.prompt);
     const modelId = opts.model || 'codex';
     const signal = opts.signal;
@@ -360,21 +360,29 @@ export class CodexBackend implements AgentBackend {
     );
   }
 
-  private mapSandboxMode(mode?: 'read-only' | 'workspace-write', confinement?: BackendConfinement): string {
+  private mapSandboxMode(mode?: 'read-only' | 'workspace-write', confinement?: BackendConfinement, allowReduced = false): string {
     // Both 'read-only' and 'workspace-write' rely on the host mechanism
     // (Seatbelt on macOS, bwrap on Linux) to enforce the restriction —
     // 'read-only' is not a no-op passed straight to the CLI. On a host with no
     // confinement for Codex, staying on either mode fails every exec_command
-    // before it runs, so both fall back together; only 'danger-full-access'
-    // skips the sandbox entirely. The bwrap probe alone never decides this:
-    // on macOS bwrap is always absent and Seatbelt works.
+    // before it runs, so the only way to run is 'danger-full-access', which
+    // skips the sandbox entirely. That is allowed only for a run the runner
+    // decided reduced (a trusted_local task, operator opt-in: Living Spec
+    // "Runner isolation", R-5, AC-5); anything else refuses to start. The
+    // bwrap probe alone never decides this: on macOS Seatbelt works.
     if (confinement && confinement.mechanism === 'none') {
       const platform = process.platform === 'darwin' ? 'darwin' : 'linux';
       const reason = confinement.reason ?? 'backend_probe_failed';
       const fix = isolationRemediation(reason, platform);
+      const cause = `no sandbox available for ${mode || 'workspace-write'}: ${isolationReasonText(reason, platform)}.`;
+      if (!allowReduced) {
+        throw new Error(
+          `[CodexBackend] ${cause} Not running with danger-full-access: this run was not decided reduced.` +
+          (fix.length ? ` To restore it: ${fix.join(' ')}` : ''),
+        );
+      }
       console.warn(
-        `[CodexBackend] no sandbox available for ${mode || 'workspace-write'}: ${isolationReasonText(reason, platform)}. ` +
-        'Falling back to danger-full-access (write isolation reduced).' +
+        `[CodexBackend] ${cause} Running with danger-full-access (reduced, operator opt-in).` +
         (fix.length ? ` To restore it: ${fix.join(' ')}` : ''),
       );
       return 'danger-full-access';

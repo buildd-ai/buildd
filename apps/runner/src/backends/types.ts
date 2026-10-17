@@ -40,6 +40,13 @@ export interface RunStreamedOpts {
    * commands can run. Omitted = treated as confined.
    */
   sandboxConfinement?: BackendConfinement
+  /**
+   * The run was decided `reduced` (Living Spec "Runner isolation", R-5): a
+   * trusted_local task on a runner whose operator opted in. Only then may an
+   * unconfined Codex fall back to danger-full-access; without it the backend
+   * refuses to start rather than run with less confinement.
+   */
+  allowReducedConfinement?: boolean
 }
 
 export type BackendEvent =
