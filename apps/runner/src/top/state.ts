@@ -271,11 +271,12 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       // Keep the last good list when a new one is partial (R-19): same count but
       // lost team info indicates a partial fetch (timeout mid-stream or degraded API).
       // Accept legitimate changes like fewer workspaces (one deleted) or empty 200s.
+      // Also allow when all workspaces have no team info (not a partial fetch).
       if (workspaces.length === state.workspaces.length && workspaces.length > 0) {
         const oldTeamCount = new Set(state.workspaces.map(teamKey).filter(Boolean)).size;
         const newTeamCount = new Set(workspaces.map(teamKey).filter(Boolean)).size;
-        if (oldTeamCount > 0 && newTeamCount < oldTeamCount) {
-          return state; // Partial list (same workspaces, lost team info); keep old
+        if (oldTeamCount > 0 && newTeamCount > 0 && newTeamCount < oldTeamCount) {
+          return state; // Partial list (same workspaces, lost some team info); keep old
         }
       }
       let next = { ...state, workspaces };
