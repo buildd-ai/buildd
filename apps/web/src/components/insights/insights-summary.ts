@@ -20,12 +20,43 @@ export const TIME_LABEL: Record<TimeCategory, string> = {
   release: 'Waiting for a release',
 };
 
+const DAY = 24 * HOUR;
+
+/** Windows are rolling: the last N x 24 hours up to now, never a calendar week or month. */
 const PERIOD: Record<FlowWindow, { now: string; before: string }> = {
-  '7d': { now: 'this week', before: 'last week' },
+  '7d': { now: 'in the last 7 days', before: 'the 7 days before' },
   '30d': { now: 'in the last 30 days', before: 'the 30 days before' },
 };
 
-/** "Shipped 12 tasks this week, up 20% on last week; median 5h from start to production." */
+export interface FormatOptions { timeZone?: string; locale?: string }
+
+const stamp = (t: number, o: FormatOptions) =>
+  new Date(t).toLocaleString(o.locale, { timeZone: o.timeZone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+/** "Oct 10, 2:00 PM to Oct 17, 2:00 PM": the exact span, in the reader's zone. */
+export function formatSpan(from: number, to: number, o: FormatOptions = {}): string {
+  return `${stamp(from, o)} to ${stamp(to, o)}`;
+}
+
+/**
+ * The line under the shipping sentence: the exact current and previous spans,
+ * and that they roll with the clock. For a 7-day view the bars repeat the same
+ * weekday a week earlier; for 30 days they do not, so only totals compare.
+ */
+export function comparisonCaption(series: FlowSeries, window: FlowWindow, o: FormatOptions = {}): string {
+  const { from, to } = series.window;
+  const days = window === '7d' ? 7 : 30;
+  const prev = series.previous?.window;
+  const current = `Rolling ${days} days: ${formatSpan(from, to, o)}.`;
+  const before = prev ? ` Compared with ${formatSpan(prev.from, prev.to, o)}.` : '';
+  const bars = ` Each bar covers 24 hours starting at ${new Date(from).toLocaleTimeString(o.locale, { timeZone: o.timeZone, hour: 'numeric', minute: '2-digit' })}, so bars do not follow calendar days.`;
+  const align = window === '7d'
+    ? ' Faint bars are the same weekday a week earlier.'
+    : series.previous ? ' The 30 days before are compared in total, since their weekdays do not line up.' : '';
+  return current + before + bars + align;
+}
+
+/** "Shipped 12 tasks in the last 7 days, up 20% on the 7 days before (10); median 5h from first agent start to production." */
 export function shippingSentence(series: FlowSeries, window: FlowWindow): string {
   const n = series.headline.shippedTasks;
   const prev = series.previous?.shippedTasks;
@@ -36,18 +67,23 @@ export function shippingSentence(series: FlowSeries, window: FlowWindow): string
     else if (n === prev) compare = `, the same as ${before}`;
     else {
       const pct = Math.round((Math.abs(n - prev) / prev) * 100);
-      compare = n === 0 ? `, ${countOf(prev, 'task')} ${before}` : `, ${n > prev ? 'up' : 'down'} ${pct}% on ${before}`;
+      if (n === 0) compare = `, ${countOf(prev, 'task')} ${before}`;
+      else if (pct === 0) compare = `, about the same as ${before} (${prev})`;
+      else compare = `, ${n > prev ? 'up' : 'down'} ${pct}% on ${before} (${prev})`;
     }
   }
   const head = n === 0 ? `No tasks shipped ${now}${compare}` : `Shipped ${countOf(n, 'task')} ${now}${compare}`;
   const median = series.headline.medianStartToProdMs;
-  return median != null && n > 0 ? `${head}; median ${formatDuration(median)} from start to production.` : `${head}.`;
+  return median != null && n > 0 ? `${head}; median ${formatDuration(median)} from first agent start to production.` : `${head}.`;
 }
 
 export interface TimeRow {
   category: TimeCategory;
   label: string;
+  /** Cumulative across tasks: a detail beside the median, never the headline. */
   ms: number;
+  medianMs: number;
+  p90Ms: number;
   /** Of all task time in the window, 0..1. */
   share: number;
   tasks: number;
@@ -69,50 +105,78 @@ export function timeRows(series: FlowSeries): TimeRow[] {
       category: r.category,
       label: TIME_LABEL[r.category],
       ms: r.ms,
+      medianMs: r.medianMs,
+      p90Ms: r.p90Ms,
       share: total > 0 ? r.ms / total : 0,
       tasks: r.tasks,
       href: timeTaskListHref(series, r.category),
     }));
 }
 
-/** Up to three plain sentences naming what held work up most, largest first. Running is work, not a stall. */
+/**
+ * Up to three plain sentences naming what held work up, as how many tasks and
+ * how long each waited (median and 90th percentile), never one summed total:
+ * "40 days of waiting" reads as a wall-clock delay and is not. Ordered by
+ * cumulative time so the biggest drains lead. Running is work, not a stall.
+ */
 export function stallSentences(series: FlowSeries): string[] {
   return series.time
     .filter(r => r.category !== 'running' && r.ms > 0 && r.tasks > 0)
     .sort((a, b) => b.ms - a.ms || TIME_CATEGORIES.indexOf(a.category) - TIME_CATEGORIES.indexOf(b.category))
     .slice(0, 3)
     .map(r => {
-      const h = formatDuration(r.ms);
-      const longest = r.tasks > 1 ? `; the longest was ${formatDuration(r.longestMs)}` : '';
+      // One item: say how long. Several: median and 90th percentile per item.
+      const tail = r.tasks === 1 ? ` for ${formatDuration(r.ms)}` : `: median ${formatDuration(r.medianMs)}, 90th percentile ${formatDuration(r.p90Ms)}`;
       switch (r.category) {
-        case 'needs_input': return `${countOf(r.tasks, 'task')} needed input for ${h} in all${longest}.`;
-        case 'ci': return `${countOf(r.tasks, 'PR')} waited ${h} for CI runs that failed or are still going${longest}.`;
-        case 'review': return `${countOf(r.tasks, 'PR')} sat in review for ${h}${longest}.`;
-        case 'runner': return `${countOf(r.tasks, 'task')} waited ${h} for a runner to pick them up${longest}.`;
-        case 'retry': return `Fixing failures took ${h} of agent time on ${countOf(r.tasks, 'task')}.`;
-        case 'release': return `${countOf(r.tasks, 'merged task')} waited ${h} for a release${longest}.`;
-        default: return `${TIME_LABEL[r.category]}: ${h}.`;
+        case 'needs_input': return `${countOf(r.tasks, 'task')} had a question waiting${tail}.`;
+        case 'ci': return `${countOf(r.tasks, 'PR')} waited on CI runs that failed or are still going${tail}.`;
+        case 'review': return `${countOf(r.tasks, 'PR')} sat in review${tail}.`;
+        case 'runner': return `${countOf(r.tasks, 'task')} waited for a runner to pick them up${tail}.`;
+        case 'retry': return `${countOf(r.tasks, 'task')} needed another attempt after a failure${tail}.`;
+        case 'release': return `${countOf(r.tasks, 'merged task')} waited for a release${tail}.`;
+        default: return `${TIME_LABEL[r.category]}: ${formatDuration(r.ms)}.`;
       }
     });
 }
 
-export interface DayBar { start: number; end: number; label: string; shipped: number; lost: number; prevShipped: number | null; prevLost: number | null }
+export interface DayBar {
+  start: number;
+  end: number;
+  label: string;
+  /** Exact span, e.g. "Sat Oct 10, 2:00 PM to Sun Oct 11, 2:00 PM". */
+  range: string;
+  /** Shorter than 24 hours: the window cut it. Drawn as such, never as a full day. */
+  partial: boolean;
+  shipped: number;
+  lost: number;
+  prevShipped: number | null;
+  prevLost: number | null;
+}
 
-/** One bar per 24 hours, with the same slice of the window before alongside. */
-export function dayBars(series: FlowSeries, window: FlowWindow): DayBar[] {
-  const prev = series.previous?.days ?? null;
+/**
+ * One bar per 24 hours of the rolling window. The same slice of the window
+ * before sits alongside only when it is the same weekday (7 days earlier); a
+ * 30-day window shifts weekdays, so it compares in total instead.
+ */
+export function dayBars(series: FlowSeries, window: FlowWindow, o: FormatOptions = {}): DayBar[] {
+  const prev = window === '7d' ? series.previous?.days ?? null : null;
+  const dayStamp = (t: number) => new Date(t).toLocaleString(o.locale, { timeZone: o.timeZone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   return series.days.map((d, i) => {
-    const mid = new Date(d.start + (d.end - d.start) / 2);
+    const p = prev?.[i];
+    const aligned = p != null && p.start === d.start - 7 * DAY;
     return {
       start: d.start,
       end: d.end,
+      // Named by the day the slice starts, in the reader's zone.
       label: window === '7d'
-        ? mid.toLocaleDateString(undefined, { weekday: 'short' })
-        : mid.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+        ? new Date(d.start).toLocaleDateString(o.locale, { timeZone: o.timeZone, weekday: 'short' })
+        : new Date(d.start).toLocaleDateString(o.locale, { timeZone: o.timeZone, month: 'short', day: 'numeric' }),
+      range: `${dayStamp(d.start)} to ${dayStamp(d.end)}`,
+      partial: d.end - d.start < DAY,
       shipped: d.shipped,
       lost: d.lost,
-      prevShipped: prev?.[i]?.shipped ?? null,
-      prevLost: prev?.[i]?.lost ?? null,
+      prevShipped: aligned ? p!.shipped : null,
+      prevLost: aligned ? p!.lost : null,
     };
   });
 }
