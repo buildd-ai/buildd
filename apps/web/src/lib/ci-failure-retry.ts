@@ -31,6 +31,7 @@ import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigg
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { githubApi } from '@/lib/github';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
@@ -648,6 +649,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // of the task it re-attempts.
   const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
+  const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
   const [newTask] = await db
     .insert(tasks)
     .values({
@@ -664,6 +667,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       taskClass: retryTask.taskClass,
       status: 'pending',
       priority: 7, // CI fix is urgent
+      pathManifest: repairPathManifest((task as { pathManifest?: string[] | null }).pathManifest ?? null, repairFiles),
       ...subjectObservation.taskValues,
     })
     .onConflictDoNothing()

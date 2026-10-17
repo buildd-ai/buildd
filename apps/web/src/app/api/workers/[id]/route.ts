@@ -1,3 +1,4 @@
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
@@ -6228,6 +6229,8 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
       // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
       // partial unique index so a second reviewer completion on the same headSha is a
       // no-op. A new headSha after the fix push starts a fresh cycle (new row).
@@ -6272,7 +6275,7 @@ async function handleReviewerOutcomeIfNeeded(
             workerBranch,
             ...lineageStamp(originalTask, [prNumber]),
           },
-          pathManifest: originalTask.pathManifest,
+          pathManifest: repairPathManifest(originalTask.pathManifest as string[] | null, repairFiles),
           release: 'false',
           priority: 8,
           status: 'pending',
