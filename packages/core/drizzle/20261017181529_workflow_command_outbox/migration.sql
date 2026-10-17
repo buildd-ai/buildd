@@ -1,7 +1,7 @@
 CREATE TABLE "workflow_command_outbox" (
 	"idempotency_key" text PRIMARY KEY,
 	"op" text NOT NULL,
-	"input" jsonb NOT NULL,
+	"command_input" jsonb NOT NULL,
 	"principal" jsonb NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"prior_unknown" boolean DEFAULT false NOT NULL,

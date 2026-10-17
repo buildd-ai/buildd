@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "a7fdeacb-8d88-47f9-9007-03d81c63d906",
+  "id": "8d336bdf-c318-4944-9f25-6d32f05066d6",
   "prevIds": [
-    "797fad5c-2c25-4e29-9782-a5d7907c6812"
+    "9a6f8b2a-15cb-4b85-8b13-2f1e86c236b3"
   ],
   "ddl": [
     {
@@ -29288,7 +29288,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "input",
+      "name": "command_input",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_command_outbox"
@@ -34515,6 +34515,34 @@
       "method": "btree",
       "concurrently": false,
       "name": "evidence_objects_scout_run_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "evidence_objects"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "object_key",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "task_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "evidence_objects_object_task_unique",
       "entityType": "indexes",
       "schema": "public",
       "table": "evidence_objects"

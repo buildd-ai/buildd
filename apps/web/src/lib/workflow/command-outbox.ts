@@ -105,7 +105,7 @@ export function postgresCommandOutbox(exec: Exec = dbExec): CommandOutbox {
   return {
     async park(p) {
       const rows = rowsOf(await exec(sql`-- workflow:command_park
-INSERT INTO workflow_command_outbox (idempotency_key, op, input, principal, prior_unknown, last_error)
+INSERT INTO workflow_command_outbox (idempotency_key, op, command_input, principal, prior_unknown, last_error)
 VALUES (${p.key}::text, ${p.op}::text, ${JSON.stringify(p.input ?? {})}::jsonb, ${JSON.stringify(p.principal)}::jsonb, ${p.priorUnknown}::boolean, ${p.why}::text)
 ON CONFLICT (idempotency_key) DO UPDATE SET
   prior_unknown = workflow_command_outbox.prior_unknown OR EXCLUDED.prior_unknown,
@@ -126,10 +126,10 @@ WHERE o.idempotency_key IN (
   LIMIT ${limit}::int
   FOR UPDATE SKIP LOCKED
 ) AND o.status = 'pending' AND (o.lease_until IS NULL OR o.lease_until < clock_timestamp())
-RETURNING o.idempotency_key, o.op, o.input, o.principal, o.prior_unknown, o.attempt_count`));
+RETURNING o.idempotency_key, o.op, o.command_input, o.principal, o.prior_unknown, o.attempt_count`));
       return rows.map((r) => ({
         key: String(r.idempotency_key), op: String(r.op),
-        input: parseJson(r.input) as Record<string, unknown>, principal: parseJson(r.principal) as KernelPrincipal,
+        input: parseJson(r.command_input) as Record<string, unknown>, principal: parseJson(r.principal) as KernelPrincipal,
         priorUnknown: r.prior_unknown === true, attempt: Number(r.attempt_count),
       })).sort((a, b) => a.key.localeCompare(b.key));
     },

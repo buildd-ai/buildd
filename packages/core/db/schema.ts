@@ -5737,7 +5737,8 @@ export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 export const workflowCommandOutbox = pgTable('workflow_command_outbox', {
   idempotencyKey: text('idempotency_key').primaryKey(),
   op: text('op').notNull(),
-  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  /** The op's input, as the door sent it. */
+  commandInput: jsonb('command_input').$type<Record<string, unknown>>().notNull(),
   /** The principal the door vouched for, as sent: the control plane re-checks its reach on every re-submission. */
   principal: jsonb('principal').$type<Record<string, unknown>>().notNull(),
   status: text('status').default('pending').notNull().$type<'pending' | 'done' | 'dead'>(),
