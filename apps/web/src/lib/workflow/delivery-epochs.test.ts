@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { applyEpochOpsSql, contentContained, epochStepsMayComplete, missionEpochsSql, settleLeaseSql, settleReleaseSql, type GithubApi } from './delivery-epochs';
+import { applyEpochOpsSql, contentContained, epochStepsMayComplete, missionEpochsSql, settleFinishedBranch, settleLeaseSql, settleReleaseSql, type EpochDeps, type GithubApi } from './delivery-epochs';
+import type { EpochSnapshot, MissionEpochView } from '@buildd/workflow-kernel/delivery-epochs';
 
 const dialect = new PgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
@@ -137,5 +138,156 @@ describe('epochStepsMayComplete (S4b): the epoch path asks the completion writer
     expect(epochStepsMayComplete([{ step: 'settle', epoch: 1, outcome: 'in_flight' }])).toBe(false);
     expect(epochStepsMayComplete([{ step: 'retire', epoch: 1, outcome: 'retired:noop:already' }])).toBe(false);
     expect(epochStepsMayComplete([{ step: 'cut_branch', epoch: 2, outcome: 'created:applied:ok' }])).toBe(false);
+  });
+});
+
+// Task fbc93ebd (kernel audit F6): a refresh PR onto a delivery whose
+// integration PR closed unmerged stayed open forever. Settlement now closes
+// refresh PRs once the branch is finished, and only then.
+describe('settleFinishedBranch', () => {
+  const BR = 'mission/x';
+  const repo = { workspaceId: 'w', installationId: 1, repoFullName: 'o/r', trunk: 'dev' };
+  const epoch: EpochSnapshot = {
+    id: 'e1', missionId: 'm1', epoch: 1, branch: BR, state: 'open', version: 2, origin: 'adopted', cutFromSha: null,
+    branchReadyAt: null, predecessorId: null, scopeVersion: 1, repoFullName: 'o/r', prNumber: 40, ownerTaskId: 'own',
+    mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, settlement: null, settledAt: null, retiredAt: null, movedPrs: [],
+  };
+  const view = (terminal = false): MissionEpochView => ({ missionId: 'm1', integrationBranch: BR, terminal, scopeVersion: 1, epochs: [epoch], work: { unfinishedTasks: 0, openTaskPrs: 0 } });
+
+  function world(opts: { deliveryPr?: unknown; successors?: number[]; contained?: boolean; supersededBy?: number | null; refreshHead?: string; failRecord?: number } = {}) {
+    const calls: string[] = [];
+    const comments: Array<{ pr: number; body: string }> = [];
+    const closed: number[] = [];
+    const api: GithubApi = async (_i, path, init) => {
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${path}`);
+      if (method === 'GET' && path === '/repos/o/r/pulls/40') return opts.deliveryPr ?? { state: 'closed', merged: false };
+      if (method === 'GET' && path.startsWith('/repos/o/r/pulls?state=open&base=mission%2Fx')) {
+        return [...(closed.includes(50) ? [] : [{ number: 50, head: { sha: 'r1' }, base: { ref: BR } }]), { number: 51, head: { sha: 't1' }, base: { ref: BR } }];
+      }
+      if (method === 'GET' && path.startsWith('/repos/o/r/pulls?state=open&head=')) {
+        return (opts.successors ?? []).map((n) => ({ number: n }));
+      }
+      if (path === '/repos/o/r/git/ref/heads/mission/x') return { object: { sha: 'B' } };
+      if (path === '/repos/o/r/git/ref/heads/dev') return { object: { sha: 'T' } };
+      if (path.includes('/compare/')) return { status: opts.contained ? 'ahead' : 'diverged' };
+      if (path.endsWith('/git/refs') && method === 'POST') return {};
+      if (path.endsWith('/merges')) throw new Error('GitHub API error: 409 conflict');
+      if (method === 'GET' && path === '/repos/o/r/pulls/50') return { state: 'open', head: { sha: opts.refreshHead ?? 'r1' } };
+      if (method === 'POST' && path.endsWith('/comments')) { comments.push({ pr: Number(path.split('/').at(-2)), body: JSON.parse(String(init!.body)).body }); return {}; }
+      if (method === 'PATCH' && /\/pulls\/\d+$/.test(path)) { closed.push(Number(path.split('/').at(-1))); return {}; }
+      if (method === 'DELETE') return {};
+      return null;
+    };
+    const superseded: Array<{ prNumber: number; by: number }> = [];
+    const cancelled: string[] = [];
+    const notes: string[] = [];
+    let failRecord = opts.failRecord ?? 0;
+    const deps: EpochDeps = {
+      refreshPrsOf: async () => new Set([50]),
+      // The rows: a refresh closed on the branch whose resolution is not recorded yet.
+      unsettledClosedRefreshesOf: async () => (closed.includes(50) && !superseded.some((x) => x.prNumber === 50) && !notes.length ? [50] : []),
+      supersessionOf: async () => (opts.supersededBy != null ? { prNumber: opts.supersededBy, url: null } : null),
+      obsoleteRefreshTasksOf: async () => ['t-unstarted'],
+      cancelTask: async (id) => { cancelled.push(id); },
+      recordSupersession: async (p) => {
+        if (failRecord > 0) { failRecord--; throw new Error('kernel unavailable'); }
+        superseded.push({ prNumber: p.prNumber, by: p.satisfiedBy.prNumber });
+      },
+      noteOnce: async (_m, title, body) => { notes.push(`${title}\n${body}`); },
+      newId: () => 'fixed-id-0000',
+    };
+    return { api, deps, calls, comments, closed, superseded, cancelled, notes };
+  }
+
+  it('the #4913 shape: the integration PR closed and its work landed elsewhere, so its refresh PR is closed and points there', async () => {
+    const w = world({ supersededBy: 61 });
+    const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(r.outcome).toBe('finished:superseded:closed=1:cancelled=1:recorded=1');
+    expect(w.closed).toEqual([50]);
+    expect(w.comments).toHaveLength(1);
+    expect(w.comments[0]!.body).toContain('its PR #40 closed without merging and its work landed in #61');
+    expect(w.superseded).toEqual([{ prNumber: 50, by: 61 }]);
+    expect(w.cancelled).toEqual(['t-unstarted']);
+    expect(w.notes).toEqual([]);
+    // A task PR on the branch is never touched by this settlement.
+    expect(w.calls.some((c) => c.includes('/pulls/51'))).toBe(false);
+  });
+
+  it('the #4909 shape: the branch is already in trunk, so the refresh PR is closed and a person is asked where to record it', async () => {
+    const w = world({ contained: true });
+    const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(r.outcome).toBe('finished:contained_in_trunk:closed=1:cancelled=1');
+    expect(w.closed).toEqual([50]);
+    expect(w.superseded).toEqual([]);
+    expect(w.notes).toHaveLength(1);
+    expect(w.notes[0]).toContain('#50');
+  });
+
+  it('closing the integration PR alone settles nothing: a refresh onto the branch may still be wanted', async () => {
+    const w = world({ contained: false });
+    const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(r.outcome).toBe('not_finished:closed_work_unaccounted');
+    expect(w.closed).toEqual([]);
+    expect(w.cancelled).toEqual([]);
+  });
+
+  it('an open or merged delivery PR stops at one read', async () => {
+    for (const pr of [{ state: 'open', merged: false }, { state: 'closed', merged: true }]) {
+      const w = world({ deliveryPr: pr, supersededBy: 61 });
+      const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+      expect(r.outcome).toBe('skip:delivery_pr_live');
+      expect(w.calls).toEqual(['GET /repos/o/r/pulls/40']);
+    }
+  });
+
+  it('a successor PR from the branch keeps it live', async () => {
+    const w = world({ supersededBy: 61, successors: [70] });
+    const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(r.outcome).toBe('not_finished:successor_open');
+    expect(w.closed).toEqual([]);
+  });
+
+  it('a refresh PR pushed to since it was listed is left for the next pass', async () => {
+    const w = world({ supersededBy: 61, refreshHead: 'moved' });
+    const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(r.outcome).toBe('finished:superseded:closed=0:cancelled=1:recorded=0:skipped=1');
+    expect(w.closed).toEqual([]);
+  });
+
+  // Review of #5021, finding 1: a record that fails after the close is not lost
+  // because the PR no longer lists as open.
+  it('a supersession that fails after the close is recorded on the next pass, from the rows', async () => {
+    const w = world({ supersededBy: 61, failRecord: 1 });
+    const first = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(first.outcome).toBe('finished:superseded:closed=1:cancelled=1:recorded=0');
+    expect(w.closed).toEqual([50]);
+    expect(w.superseded).toEqual([]);
+    const second = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(second.outcome).toBe('finished:superseded:closed=0:cancelled=1:resettled=1:recorded=1');
+    expect(w.closed).toEqual([50]);
+    expect(w.superseded).toEqual([{ prNumber: 50, by: 61 }]);
+    // Settled: a third pass finds nothing left.
+    expect((await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, obsoleteRefreshTasksOf: async () => [] })).outcome).toBe('skip:nothing_to_settle');
+  });
+
+  it('a note that fails after the close is posted on the next pass', async () => {
+    const w = world({ contained: true });
+    let fail = true;
+    const noteOnce: EpochDeps['noteOnce'] = async (m, t, b) => { if (fail) { fail = false; throw new Error('db'); } await w.deps.noteOnce!(m, t, b); };
+    await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, noteOnce });
+    expect(w.notes).toEqual([]);
+    const second = await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, noteOnce });
+    expect(second.outcome).toBe('finished:contained_in_trunk:closed=0:cancelled=1:resettled=1');
+    expect(w.notes).toHaveLength(1);
+    expect(w.notes[0]).toContain('#50');
+  });
+
+  it('a closed mission finishes the branch without reading its PR, and asks nobody', async () => {
+    const w = world({});
+    const r = await settleFinishedBranch(w.api, repo, view(true), epoch, w.deps);
+    expect(r.outcome).toBe('finished:mission_terminal:closed=1:cancelled=1');
+    expect(w.calls).not.toContain('GET /repos/o/r/pulls/40');
+    expect(w.notes).toEqual([]);
   });
 });
