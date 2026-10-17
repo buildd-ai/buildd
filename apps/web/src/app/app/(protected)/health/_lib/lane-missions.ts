@@ -27,6 +27,7 @@ export interface LaneMissionRow {
   title: string;
   status: string;
   isHeld?: boolean | null;
+  armedAt?: Date | string | null;
   integrationBranchEnabled?: boolean | null;
   tasks: readonly MissionTaskRow[];
 }
@@ -36,7 +37,7 @@ export function summarizeLaneMissions(rows: readonly LaneMissionRow[]): Record<s
   for (const m of rows) {
     const d = projectMissionDelivery({
       id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
-      isHeld: m.isHeld ?? false, integrationBranch: m.integrationBranchEnabled === true, tasks: m.tasks,
+      isHeld: m.isHeld ?? false, armedAt: m.armedAt ?? null, integrationBranch: m.integrationBranchEnabled === true, tasks: m.tasks,
     }, missionHelpers);
     out[m.id] = { title: m.title, landed: d.landed, total: d.total };
   }
@@ -49,7 +50,7 @@ export async function loadLaneMissions(fleet: FleetSnapshot, teamId: string | nu
   if (ids.length === 0) return {};
   const rows = await db.query.missions.findMany({
     where: sqlWhere(teamId ? and(inArray(missions.id, ids), eq(missions.teamId, teamId)) : inArray(missions.id, ids)),
-    columns: { id: true, title: true, status: true, isHeld: true, integrationBranchEnabled: true },
+    columns: { id: true, title: true, status: true, isHeld: true, armedAt: true, integrationBranchEnabled: true },
     with: {
       tasks: {
         columns: MISSION_TASK_BASE_COLUMNS,

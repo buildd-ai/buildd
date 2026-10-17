@@ -38,7 +38,7 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
     db.query.missions.findMany({
       where: sqlWhere(and(inArray(missions.id, missionIds), inArray(missions.workspaceId, workspaceIds))),
       columns: {
-        id: true, status: true, isHeld: true, integrationBranchEnabled: true, workingBranch: true,
+        id: true, status: true, isHeld: true, armedAt: true, integrationBranchEnabled: true, workingBranch: true,
         goalCriteria: true, goalCriteriaState: true, mergePolicy: true, releasedAt: true,
       },
       with: { workspace: { columns: { name: true, gitConfig: true, releaseConfig: true } } },

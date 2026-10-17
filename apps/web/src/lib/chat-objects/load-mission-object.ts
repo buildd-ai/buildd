@@ -140,6 +140,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
   const state = deriveMissionStateView({
     status: mission.status,
     isHeld: m.isHeld === true,
+    armedAt: m.armedAt ?? null,
     executor: m.executor ?? null,
     orchestrationMode: (mission.orchestrationMode as string | null) ?? 'auto',
     activeAgents,

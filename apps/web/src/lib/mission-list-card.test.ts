@@ -204,15 +204,21 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(live.recurring).toBeNull();
   });
 
-  it('a held mission is Held, with its ready work', () => {
+  it('a held mission that never started is Not started, with its ready work', () => {
     const row: ListMissionRow = {
       id: 'm4', title: 'Spec first', status: 'paused', isHeld: true,
       tasks: [task('spec', { roleSlug: 'writer' })],
     };
     const card = build(row);
     expect(card.kind).toBe('held');
-    expect(card.status).toEqual({ label: 'Held', tone: 'warning' });
-    expect(card.held).toMatchObject({ ready: 1, roles: ['writer'] });
+    expect(card.status).toEqual({ label: 'Not started', tone: 'warning' });
+    expect(card.held).toMatchObject({ ready: 1, roles: ['writer'], startState: 'not_started' });
+  });
+
+  it('a held mission that ran before is Paused', () => {
+    const card = build({ id: 'm4p', title: 'Spec first', status: 'active', isHeld: true, armedAt: new Date(NOW - 86_400_000), tasks: [task('spec')] });
+    expect(card.status).toEqual({ label: 'Paused', tone: 'warning' });
+    expect(card.held?.startState).toBe('paused');
   });
 
   // executor='local' (task 09ed6675): the tasks run in a person's session.
@@ -280,7 +286,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     };
     const card = build(row);
     expect(card.kind).toBe('held');
-    expect(card.status).toEqual({ label: 'Held', tone: 'warning' });
+    expect(card.status).toEqual({ label: 'Not started', tone: 'warning' });
   });
 
   it('a completed mission is a done row with PRs, fixes and duration', () => {

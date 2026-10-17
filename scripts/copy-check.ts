@@ -177,6 +177,9 @@ export function copyOf(path: string, content: string): CopyString[] {
 export interface Violation { file: string; line: number; rule: CopyRuleId; text: string }
 export type Counts = Record<CopyRuleId, Record<string, number>>;
 
+/** Operator screens speak the system's vocabulary on purpose; state-jargon does not apply there. */
+export const OPERATOR_PATH = /\/\(protected\)\/health\//;
+
 export function scanSources(sources: { path: string; content: string }[]): { counts: Counts; violations: Violation[] } {
   const counts = Object.fromEntries(COPY_RULES.map((r) => [r.id, {}])) as Counts;
   const violations: Violation[] = [];
@@ -184,6 +187,7 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
     const seen = new Set<string>();
     for (const s of copyOf(path, content)) {
       for (const rule of copyViolations(s.text)) {
+        if (rule.id === 'state-jargon' && OPERATOR_PATH.test(path)) continue;
         violations.push({ file: path, line: s.line, rule: rule.id, text: s.text });
         counts[rule.id][path] = (counts[rule.id][path] ?? 0) + 1;
       }

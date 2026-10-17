@@ -31,7 +31,8 @@ export type CopyRuleId =
   | 'trailing-filler'
   | 'em-dash'
   | 'failed-to'
-  | 'shouting-tag';
+  | 'shouting-tag'
+  | 'state-jargon';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -223,6 +224,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'A run of capitals is a status badge shouting, not a sentence. Say it in sentence case. Acronyms (PR, CI, API, URL) are fine.',
     bad: 'PR #12: BASE REWRITTEN · cherry-pick?',
     good: 'The base branch was rewritten. Cherry-pick your commits onto it.',
+  },
+  {
+    id: 'state-jargon',
+    name: 'Internal state word',
+    test: re(/^held\b|\bheld (?:for|by|until|back|at)\b|\bon hold\b|\b(?:dis)?arm(?:ed|s|ing)?\b|\bforce[- ]override\b|\b(?:un)?claimed\b|\bclaim (?:loop|limit|gate|window)\b|\bpoll(?:s|ed|ing)?\b|\bheartbeats?\b|\blease[sd]?\b|\b(?:waiting_input|in_progress|awaiting_review|needs_input|pr_open)\b/i),
+    why: 'Held, armed, claimed, polled, leased and raw status values are how the system talks to itself. Say what is happening in the reader\u2019s terms. Operator screens (Health) are exempt by path.',
+    bad: 'Held for review until the gate is armed.',
+    good: 'Waiting for review.',
   },
   {
     id: 'duplicate-explanation',

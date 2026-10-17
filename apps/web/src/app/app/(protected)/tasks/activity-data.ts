@@ -87,10 +87,10 @@ export async function loadLiveRootIds(workspaceIds: readonly string[]): Promise<
  * The mission projection exactly as the Missions page builds it
  * (missions/page.tsx): same fields, same rules.
  */
-export function missionDeliveryOf(obj: { id: string; title: string; status: string; isHeld?: boolean | null; integrationBranchEnabled?: boolean | null; tasks?: unknown[] }, rules: MissionTaskRules): MissionDelivery {
+export function missionDeliveryOf(obj: { id: string; title: string; status: string; isHeld?: boolean | null; armedAt?: Date | string | null; integrationBranchEnabled?: boolean | null; tasks?: unknown[] }, rules: MissionTaskRules): MissionDelivery {
   return projectMissionDelivery({
     id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
-    isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
+    isHeld: obj.isHeld ?? false, armedAt: obj.armedAt ?? null, integrationBranch: obj.integrationBranchEnabled === true,
     tasks: (obj.tasks ?? []) as never,
   }, rules);
 }
@@ -123,7 +123,7 @@ export async function loadActivity(input: {
     }),
     missionIds.length === 0 ? [] : db.query.missions.findMany({
       where: sqlWhere(and(inArray(missions.id, missionIds), ne(missions.status, 'completed'))),
-      columns: { id: true, title: true, status: true, isHeld: true, integrationBranchEnabled: true },
+      columns: { id: true, title: true, status: true, isHeld: true, armedAt: true, integrationBranchEnabled: true },
       with: {
         tasks: {
           columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, taskClass: true },

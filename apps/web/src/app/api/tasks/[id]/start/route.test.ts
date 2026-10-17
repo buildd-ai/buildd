@@ -833,7 +833,24 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.gateReason).toBe('mission_held');
     expect(data.missionId).toBe('mission-1');
     expect(data.canForce).toBe(true);
+    expect(data.missionStartState).toBe('not_started');
     expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('says a held mission that already ran is paused, not not-started', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123', title: 'Paused Task', status: 'pending', workspaceId: 'ws-1', missionId: 'mission-1',
+      dependsOn: null, roleSlug: null, context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: null, maxConcurrentTasks: 3 },
+    });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', armedAt: new Date('2026-10-01T00:00:00Z') });
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('mission_held');
+    expect(data.missionStartState).toBe('paused');
   });
 
   // executor='local' (task 09ed6675): Start would broadcast to runners that

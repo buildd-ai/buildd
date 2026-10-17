@@ -8,6 +8,7 @@ import {
   getGateReasonTitle,
   getGateReasonSubtitle,
   formatFleetStatus,
+  getGateBypassLabel,
   type RunnerFleetStatus,
 } from '@/lib/task-actions';
 
@@ -15,7 +16,7 @@ describe('task-actions shared helpers', () => {
   describe('getGateReasonTitle', () => {
     it('uses the full-page wording for each gate', () => {
       expect(getGateReasonTitle({ gateReason: 'mission_local' })).toBe('Runs from a local session');
-      expect(getGateReasonTitle({ gateReason: 'mission_held' })).toBe('Blocked: parent mission is held');
+      expect(getGateReasonTitle({ gateReason: 'mission_held' })).toBe('Mission not started');
       expect(getGateReasonTitle({ gateReason: 'unmerged_dep_pr' })).toBe('Blocked: dependency PR not merged');
       expect(getGateReasonTitle({ gateReason: 'mission_budget_exhausted' })).toBe('Blocked: mission budget exhausted');
     });
@@ -37,14 +38,50 @@ describe('task-actions shared helpers', () => {
       expect(subtitle).toContain('"Force start" hands this task to a runner');
     });
 
-    it('mission_held and mission_budget_exhausted point at force start', () => {
-      expect(getGateReasonSubtitle({ gateReason: 'mission_held' })).toContain('bypasses the hold');
+    it('mission_budget_exhausted points at force start', () => {
       expect(getGateReasonSubtitle({ gateReason: 'mission_budget_exhausted' })).toContain('force-start this task');
     });
+  });
+
+  describe('mission_held: one reason, one action, no internals', () => {
+    it('a never-started mission says so and offers Start task', () => {
+      const r = { gateReason: 'mission_held', missionStartState: 'not_started' as const, canForce: true };
+      expect(getGateReasonTitle(r)).toBe('Mission not started');
+      expect(getGateReasonSubtitle(r)).toBe('Start the mission to make its tasks available, or start this task on its own.');
+      expect(getGateBypassLabel(r)).toBe('Start task');
+    });
+
+    it('a paused mission says paused and resume', () => {
+      const r = { gateReason: 'mission_held', missionStartState: 'paused' as const, canForce: true };
+      expect(getGateReasonTitle(r)).toBe('Mission paused');
+      expect(getGateReasonSubtitle(r)).toContain('Resume the mission');
+      expect(getGateBypassLabel(r)).toBe('Start task');
+    });
+
+    it('never says held, arm, forceOverride or approval, and never repeats the title', () => {
+      for (const state of ['not_started', 'paused'] as const) {
+        const r = { gateReason: 'mission_held', missionStartState: state, error: 'Task is blocked: parent mission is held. Use forceOverride.' };
+        const text = `${getGateReasonTitle(r)} ${getGateReasonSubtitle(r)} ${getGateBypassLabel(r)}`;
+        expect(text).not.toMatch(/held|\barm|forceOverride|approv|poll|runner/i);
+        expect(getGateReasonSubtitle(r)).not.toContain(getGateReasonTitle(r));
+      }
+    });
+
+    it('other gates keep their own bypass labels', () => {
+      expect(getGateBypassLabel({ gateReason: 'deferred_start' })).toBe('Start now anyway');
+      expect(getGateBypassLabel({ gateReason: 'mission_local' })).toBe('Force start');
+    });
+  });
+
+  describe('getGateReasonSubtitle (more)', () => {
 
     it('unmerged_dep_pr pluralises on the blocking count', () => {
       expect(getGateReasonSubtitle({ gateReason: 'unmerged_dep_pr' }, { blockingCount: 1 })).toContain('PR is blocking');
       expect(getGateReasonSubtitle({ gateReason: 'unmerged_dep_pr' }, { blockingCount: 2 })).toContain('PRs are blocking');
+    });
+
+    it('connector mismatch reads the names from the route\'s connectorFailures', () => {
+      expect(getGateReasonSubtitle({ gateReason: 'connector_routing_mismatch', connectorFailures: [{ connectorName: 'Linear' }] })).toContain('Missing: Linear.');
     });
 
     it('connector mismatch names the missing connectors and alternative role', () => {
@@ -70,63 +107,18 @@ describe('task-actions shared helpers', () => {
   });
 
   describe('formatFleetStatus', () => {
-    it('shows no runners message when count is 0', () => {
-      const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
-      const msg = formatFleetStatus(fleet);
-      expect(msg).toContain('No runners online');
-      expect(msg).toContain('when a runner connects');
+    it('with no runner online it says so once, with no counts or timing', () => {
+      expect(formatFleetStatus({ count: 0, lastSeenSecs: null })).toBe('No runner is online. It starts when one connects.');
     });
 
-    it('shows singular runner with last seen', () => {
-      const fleet: RunnerFleetStatus = { count: 1, lastSeenSecs: 30 };
-      const msg = formatFleetStatus(fleet);
-      expect(msg).toContain('1 runner online');
-      expect(msg).toContain('30s ago');
+    it('a visual-auditor task needs a runner with a browser', () => {
+      expect(formatFleetStatus({ count: 0, lastSeenSecs: null }, 'visual-auditor')).toContain('runner with a browser');
     });
 
-    it('shows multiple runners with last seen in seconds', () => {
-      const fleet: RunnerFleetStatus = { count: 2, lastSeenSecs: 45 };
-      const msg = formatFleetStatus(fleet);
-      expect(msg).toContain('2 runners online');
-      expect(msg).toContain('45s ago');
-    });
-
-    it('converts seconds to minutes when appropriate', () => {
-      const fleet: RunnerFleetStatus = { count: 1, lastSeenSecs: 120 };
-      const msg = formatFleetStatus(fleet);
-      expect(msg).toContain('1 runner online');
-      expect(msg).toContain('2m ago');
-    });
-
-    it('shows runner count without last seen when not available', () => {
-      const fleet: RunnerFleetStatus = { count: 3, lastSeenSecs: null };
-      const msg = formatFleetStatus(fleet);
-      expect(msg).toContain('3 runners online');
-      expect(msg).not.toContain('ago');
-    });
-
-    it('returns empty string when fleet is null', () => {
+    it('says nothing when a runner is online: counts and check-ins are operator diagnostics', () => {
+      expect(formatFleetStatus({ count: 1, lastSeenSecs: 30 })).toBe('');
+      expect(formatFleetStatus({ count: 3, lastSeenSecs: 120 }, 'visual-auditor')).toBe('');
       expect(formatFleetStatus(null)).toBe('');
-    });
-
-    it('adds visual-auditor caveat when no runners and roleSlug=visual-auditor', () => {
-      const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
-      const msg = formatFleetStatus(fleet, 'visual-auditor');
-      expect(msg).toContain('No runners online');
-      expect(msg).toContain('browser-capable runner');
-    });
-
-    it('adds visual-auditor caveat when runners online and roleSlug=visual-auditor', () => {
-      const fleet: RunnerFleetStatus = { count: 2, lastSeenSecs: 30 };
-      const msg = formatFleetStatus(fleet, 'visual-auditor');
-      expect(msg).toContain('2 runners online');
-      expect(msg).toContain('browser-capable runner');
-    });
-
-    it('does not add caveat for other roles', () => {
-      const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
-      const msg = formatFleetStatus(fleet, 'builder');
-      expect(msg).not.toContain('browser-capable');
     });
   });
 });

@@ -196,7 +196,7 @@ export function InitiativeMissionLines({ missions, limit, moreHref, detail = fal
           )}
           {detail && m.held && (
             <div className="col-span-2 pb-1 md:col-start-2 md:col-span-2">
-              <ArmButton missionId={m.id} />
+              <ArmButton missionId={m.id} startState={m.startState} />
             </div>
           )}
           {detail && m.inlineQuestion && (

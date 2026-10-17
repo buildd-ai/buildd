@@ -102,7 +102,7 @@ describe('MissionOverview groups', () => {
   });
 
   it('the legend says the groups in words', () => {
-    expect(legendText(out)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 held', '1 not started', '1 check']);
+    expect(legendText(out)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
   });
 
   it('a two-task mission draws two compact cells, not two wide slabs', () => {
