@@ -3,7 +3,7 @@ import { PERMISSIONS, roleHas, type Permission } from '@/lib/permission-registry
 import { NO_PERMISSIONS, permsInAnyTeam, settingsPermissions, teamIdsHolding } from './settings-permissions';
 
 const ALL = Object.keys(PERMISSIONS) as Permission[];
-const team = (role: string, slug = 'acme') => ({ role, slug });
+const team = (role: string, personalUserId: string | null = null) => ({ role, personalUserId });
 
 describe('settingsPermissions: one flag per permission, the server rule', () => {
   it('matches roleHas for every permission and role', () => {
@@ -19,10 +19,12 @@ describe('settingsPermissions: one flag per permission, the server rule', () => 
   });
 
   it('a personal team counts as owned, whatever the membership row says', () => {
-    const flags = settingsPermissions(team('member', 'personal-user-1'), 'user-1');
+    const flags = settingsPermissions(team('member', 'user-1'), 'user-1');
     expect(ALL.every((p) => flags[p])).toBe(true);
     // Someone else's personal team is not yours.
-    expect(settingsPermissions(team('member', 'personal-user-2'), 'user-1').create_workspace).toBe(false);
+    expect(settingsPermissions(team('member', 'user-2'), 'user-1').create_workspace).toBe(false);
+    // A personal- slug with no marker is an ordinary team.
+    expect(settingsPermissions({ role: 'member', slug: 'personal-user-1', personalUserId: null } as never, 'user-1').create_workspace).toBe(false);
   });
 
   it('no team holds nothing', () => {

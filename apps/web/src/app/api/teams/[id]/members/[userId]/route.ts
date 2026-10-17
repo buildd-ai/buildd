@@ -6,6 +6,7 @@ import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, isTeamRole } from '@/lib/permissions';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isPersonalTeam } from '@/lib/personal-team';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
@@ -146,9 +147,9 @@ export async function DELETE(
     if (targetUserId === user.id) {
       const team = await db.query.teams.findFirst({
         where: sqlWhere(eq(teams.id, teamId)),
-        columns: { slug: true },
+        columns: { personalUserId: true },
       });
-      if (team?.slug.startsWith('personal-')) {
+      if (isPersonalTeam(team)) {
         return NextResponse.json({ error: 'You cannot leave your personal team' }, { status: 400 });
       }
       if (currentRole === 'owner' && (await ownerCount(teamId)) <= 1) {
