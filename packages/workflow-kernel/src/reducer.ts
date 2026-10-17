@@ -278,6 +278,10 @@ export function verifyCompositionAttestation(
  * Commands whose key embeds mutable state (the next round number) return
  * null; their replays are answered by the reducer's own preconditions.
  */
+/** One CI reading per head, verdict and version: a replay is a duplicate, a re-run that flips it is not. */
+const ciFactKey = (d: Pick<DeliverySnapshot, 'id' | 'version'>, headSha: string, verdict: 'red' | 'green' | 'running'): string =>
+  `cifact:${d.id}:${headSha}:${verdict}@v${d.version}`;
+
 export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): string | null {
   const pr = d?.repoFullName && d.prNumber != null ? `${d.repoFullName}#${d.prNumber}` : null;
   switch (cmd.type) {
@@ -302,6 +306,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
     case 'CiGreenObserved': return d?.boundAttemptId ? `cigreen:${d.boundAttemptId}` : null;
+    case 'CiObserved': return d ? ciFactKey(d, cmd.headSha, cmd.verdict) : null;
     case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
     case 'TreadmillCycleRestarted': return d ? `treadmill:${d.id}:v${d.version}` : null;
     case 'EffectDead': return `effectdead:${cmd.effectId}`;
@@ -892,6 +897,30 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
       if (r.result !== 'apply') return r;
       return { ...r, effects: [...r.effects, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:ci_green:${a.id}`, payload: { families: ['ci'], reason: 'ci_green', attemptId: a.id, taskId: a.taskId } }] };
+    }
+
+    // 6900a317: the CI reading on the current head as a fact, no state change.
+    case 'CiObserved': {
+      const dd = d!;
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      if (isTerminal(dd.state) || dd.state === 'CLOSED_UNMERGED' || dd.state === 'LANDING') return c.stale('state_not_allowed');
+      if (cmd.verdict === 'red' && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
+      if (cmd.verdict === 'green' && (cmd.allPassing !== true || !cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0)) return c.rejected('ci_not_green');
+      if (cmd.verdict === 'running' && (cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0)) return c.rejected('ci_not_running');
+      // A CI repair reads red by its state; its green is CiGreenObserved's, which also ends it.
+      if (dd.state === 'REPAIRING' && dd.stateReason === 'ci') return c.stale('ci_repair_owns_head');
+      if (dd.ci === cmd.verdict && dd.ciHeadSha === cmd.headSha) return c.stale('already_recorded');
+      // Running only withdraws a red on this head; with no red here there is nothing to withdraw.
+      if (cmd.verdict === 'running' && !(dd.ci === 'red' && dd.ciHeadSha === cmd.headSha)) return c.stale('already_recorded');
+      // Same state, same hold: a reading never re-enters review or clears a resume marker.
+      if (dd.state === 'AWAITING_REVIEW' && reviewBudgetHeld(dd)) return c.stale('state_not_allowed');
+      return c.apply(ciFactKey(dd, cmd.headSha, cmd.verdict), dd.state, {
+        guardHead: true,
+        patch: cmd.verdict === 'running'
+          ? { ci: null, ciHeadSha: null, resumeState: dd.resumeState }
+          : { ci: cmd.verdict, ciHeadSha: cmd.headSha, resumeState: dd.resumeState },
+        evidence: { verdict: cmd.verdict, liveChecks: cmd.liveChecks, ...(cmd.allPassing !== undefined ? { allPassing: cmd.allPassing } : {}) },
+      });
     }
 
     // §5.7 rule 5 / AC-14

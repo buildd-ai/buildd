@@ -9839,6 +9839,16 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(deferred?.detail).toMatchObject({ code: 'confinement_not_enforced', requirement: 'protected', reason: 'bwrap_missing' });
   });
 
+  it('an environment with only an isolation probe (no tools, envKeys or mcp) claims instead of failing with a 500', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const environment = { isolation: { platform: 'linux' } };
+
+    const res = await claim({ runner: 'test-runner', environment });
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toBeDefined();
+  });
+
   it('an admin force claim does not lift the isolation gate', async () => {
     mockDecideClaimIsolation.mockResolvedValueOnce({
       decision: { ok: false, requirement: 'protected', code: 'probe_unknown', reason: null, message: 'unknown probe', remedy: [] },
