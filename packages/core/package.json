@@ -220,7 +220,6 @@
     "./repair-target": "./repair-target.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
-    "./agent-instruction-leak": "./agent-instruction-leak.ts",
     "./copy-rules": "./copy-rules.ts",
     "./no-prod-data-prose": "./no-prod-data-prose.ts",
     "./release-queue-scope": "./release-queue-scope.ts",

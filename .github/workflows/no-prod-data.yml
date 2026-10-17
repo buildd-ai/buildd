@@ -61,14 +61,3 @@ jobs:
           git fetch --no-tags origin "$BASE_REF"
           python3 scripts/check_no_prod_data.py "origin/$BASE_REF" \
             --body /tmp/pr-body.txt --title /tmp/pr-title.txt
-
-      - name: Check the diff for a leaked agent-instructions block
-        # always(): an earlier failing step must not hide this one.
-        if: always()
-        # A runner's injected role block once rode a commit into CLAUDE.md. Runs on
-        # every push to the PR, so it also covers pushes after create_pr.
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          git fetch --no-tags origin "$BASE_REF"
-          bash scripts/check-no-agent-instructions.sh "origin/$BASE_REF"

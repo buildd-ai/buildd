@@ -33,7 +33,6 @@ import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
   restoreCodexAgentsMd,
-  healStaleCodexAgentsMd,
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
 // `cleanupWorktree` is deliberately NOT imported: every teardown path in this
@@ -5368,9 +5367,6 @@ export class WorkerManager {
       // output-requirement-nudge/steering loop below, unlike a
       // first-turn-only prompt preamble). Must run before promptArg is built
       // so the prompt pointer below is included.
-      // Whatever backend this run uses, first clear what a killed earlier run
-      // left in this checkout (stale skip-worktree flag, stale exclude line).
-      await healStaleCodexAgentsMd(cwd);
       if (isCodexTask) {
         try {
           // Role persona — the same claim-delivered text Claude appends to its
@@ -6351,13 +6347,6 @@ export class WorkerManager {
       // invocation, like the runner home above: a resumed or closing-turn
       // session writes its own copy from the in-memory bundles.
       cleanupSessionPromptFiles(worker.id);
-      // The Codex AGENTS.md block (Phase 2A) must never outlive the invocation
-      // that wrote it. Per invocation and unconditional, like the two cleanups
-      // above: not behind the closing-turn early return (the nested call shares
-      // the handle and has finished by now) and not behind `if (session)`.
-      if (codexAgentsMd) {
-        await restoreCodexAgentsMd(cwd, codexAgentsMd);
-      }
       if (delegatedToClosingTurn) {
         // The nested closing-turn call above already ran ITS OWN full
         // try/catch/finally to completion — including this exact cleanup
@@ -6423,6 +6412,13 @@ export class WorkerManager {
         // Clean up per-worker Claude config dir (access_token isolation).
         if (claudeConfigDir) {
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
+        }
+
+        // Restore/remove the Codex AGENTS.md we wrote (Phase 2A) so we never
+        // leave the repo dirty: delete it if we created it, restore the original
+        // verbatim if we appended to a pre-existing one. Best-effort.
+        if (codexAgentsMd) {
+          await restoreCodexAgentsMd(session.cwd, codexAgentsMd);
         }
 
         this.sessions.delete(worker.id);

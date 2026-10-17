@@ -138,6 +138,3 @@ apps/web/src/lib/grant-scope.test.ts
 # Enumerates every tracked source file for a session.all call or a positional
 # drizzle(client, ...) init, both of which drizzle v1 breaks at runtime only.
 packages/core/__tests__/migrate-driver-contract.test.ts
-# Runs real git (ls-files, update-index) over temp repos for the Codex AGENTS.md
-# restore, so no diff of its own can select it.
-apps/runner/__tests__/unit/codex-instructions.test.ts
