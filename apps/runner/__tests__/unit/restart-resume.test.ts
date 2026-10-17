@@ -18,6 +18,8 @@ import {
   codexRolloutExists,
   commitShutdownCheckpoint,
   decideRestore,
+  fsResumeProbe,
+  installRunnerShutdown,
   installShutdownSignals,
   restartNewAttemptError,
   shutdownExitCode,
@@ -197,5 +199,56 @@ describe('installShutdownSignals', () => {
     h.handlers.get('SIGINT')!();
     expect(h.pauses).toEqual(['SIGINT']);
     expect(h.exits).toEqual([130]);
+  });
+});
+
+describe('a worker on a per-worker Claude config dir', () => {
+  test('its session file there counts, so the restart continues it', () => {
+    const root = tmp('rr-iso-');
+    const own = join(root, 'ws1', 'claude', 'w1', 'projects', '-wt');
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(own, 'sess-abcdef.jsonl'), '{}\n');
+    const probe = fsResumeProbe({ workspaceIsolationRoot: root, env: { HOME: join(root, 'nohome') } });
+    expect(probe.claudeSessionExists('sess-abcdef', { id: 'w1', workspaceId: 'ws1' })).toBe(true);
+    // Another worker's dir is not this worker's.
+    expect(probe.claudeSessionExists('sess-abcdef', { id: 'w2', workspaceId: 'ws1' })).toBe(false);
+    expect(probe.claudeSessionExists('sess-abcdef')).toBe(false);
+  });
+});
+
+describe('installRunnerShutdown: the broker release fits the deadline', () => {
+  function run(opts: { pauseMs: number; deadlineMs: number; brokerReleaseMs: number }) {
+    const handlers = new Map<string, () => void>();
+    const exits: number[] = [];
+    let released = false;
+    installRunnerShutdown({
+      pauseAgents: () => new Promise(r => setTimeout(r, opts.pauseMs)),
+      releaseBroker: async () => { released = true; },
+      exit: (c) => { exits.push(c); },
+      log: () => {},
+      on: (s, fn) => { handlers.set(s, fn); },
+      setTimer: () => 0,
+      deadlineMs: opts.deadlineMs,
+      brokerReleaseMs: opts.brokerReleaseMs,
+    });
+    return { handlers, exits, released: () => released };
+  }
+
+  test('with no time left after the pause, the release is skipped and the exit is immediate', async () => {
+    const h = run({ pauseMs: 150, deadlineMs: 600, brokerReleaseMs: 5_000 });
+    const t0 = Date.now();
+    h.handlers.get('SIGTERM')!();
+    while (h.exits.length === 0 && Date.now() - t0 < 4_000) await new Promise(r => setTimeout(r, 10));
+    expect(h.exits).toEqual([0]);
+    expect(h.released()).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+  });
+
+  test('with time left, the release runs', async () => {
+    const h = run({ pauseMs: 10, deadlineMs: 5_000, brokerReleaseMs: 1_000 });
+    h.handlers.get('SIGTERM')!();
+    const t0 = Date.now();
+    while (h.exits.length === 0 && Date.now() - t0 < 4_000) await new Promise(r => setTimeout(r, 10));
+    expect(h.released()).toBe(true);
   });
 });

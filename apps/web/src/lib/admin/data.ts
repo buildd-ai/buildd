@@ -18,7 +18,6 @@ import { ESCALATION_GATE_CAPABILITY, verdictFromCode } from '@buildd/core/escala
 import { GATE_SLUGS } from '@buildd/core/gate-events';
 import type { RecoveryCauseDetail, RecoveryFilter, RecoveryPanel } from '@buildd/shared';
 import { readSentinelLastRun, SENTINEL_LAST_RUN_KEY, type RecoveryAttemptDetail } from '@/lib/failure-incident-recovery-events';
-import { INCIDENT_SUBJECT_TYPE, incidentSubjectKey } from '@/lib/failure-incident-escalation';
 import { buildRecoveryCauseDetail, buildRecoveryPanel, type CauseModelDecisions, type PriorityOverride, type QueueFacts, type QueueIncident } from './recovery/queue';
 import { readOperatorReceipt } from '@/lib/operator-recovery-decisions';
 import { buildAutomationState } from '@/lib/failure-incident-recovery-automation';
@@ -31,7 +30,7 @@ import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 import { normalizeDecisionShadows, normalizeFeatureModes, type FeatureModes } from '@buildd/core/inference-policy';
-import { AGENT_AUDIT_RULE_SOURCE, AGENT_AUDIT_SOURCE, type HealthOutcome } from '@buildd/core/decision-feature-health';
+import { type HealthOutcome } from '@buildd/core/decision-feature-health';
 import { applyExperimentUpdate, findOtherRunning, type ExperimentRow } from '@/lib/experiments-store';
 import { fetchOrchestrationDecisionStats } from '@/lib/orchestration-decision-stats-query';
 import { computeUsageStats, describeScan, type GroupDimension } from '@/lib/usage-stats';
@@ -59,6 +58,10 @@ import { fetchOperatorEstimateCounts, fetchOperatorEstimateRows, OPERATOR_ROW_LI
 import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** How stored escalation verdicts were keyed in the decision ledger: `incident:<id>`. */
+const INCIDENT_SUBJECT_TYPE = 'incident';
+const incidentSubjectKey = (id: string) => `${INCIDENT_SUBJECT_TYPE}:${id}`;
 
 export { applyExperimentUpdate, findOtherRunning };
 
@@ -150,10 +153,13 @@ export async function loadDecisionHealthRows(opts: { since: Date; workspaceIds: 
       applied: orchestrationDecisions.applied, verdict: orchestrationDecisions.suggested, reason: orchestrationDecisions.reason,
       latencyMs: orchestrationDecisions.latencyMs, costUsd: orchestrationDecisions.costUsd,
     }).from(orchestrationDecisions).where(inScope(orchestrationDecisions)).orderBy(desc(orchestrationDecisions.createdAt)).limit(DECISION_HEALTH_ROW_LIMIT + 1),
-    db.select({ decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label })
+    db.select({
+      decisionRecordId: decisionOutcomes.decisionRecordId, source: decisionOutcomes.source, label: decisionOutcomes.label,
+      value: decisionOutcomes.value, metadata: decisionOutcomes.metadata,
+    })
       .from(decisionOutcomes)
       .innerJoin(decisionRecords, eq(decisionRecords.id, decisionOutcomes.decisionRecordId))
-      .where(and(inArray(decisionOutcomes.source, [AGENT_AUDIT_SOURCE, AGENT_AUDIT_RULE_SOURCE]), inScope(decisionRecords)))
+      .where(inScope(decisionRecords))
       .orderBy(decisionOutcomes.recordedAt),
   ]);
   const truncated = ledger.length > DECISION_HEALTH_ROW_LIMIT || orchestration.length > DECISION_HEALTH_ROW_LIMIT;

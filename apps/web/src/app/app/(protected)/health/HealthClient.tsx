@@ -5,6 +5,7 @@ import { FailureGroupsSection, failureProblemLine } from './_components/FailureG
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { isolationProblem, runnerIsolationDetail } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
@@ -52,6 +53,7 @@ import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
+import { RunnerIsolation } from './_components/RunnerIsolation';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
@@ -232,7 +234,9 @@ export function scheduleHref(s: Pick<ScheduleRow, 'workspaceId' | 'missionId'>):
 /** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
 const SANDBOX_PLAIN_LABEL: Record<string, string> = {
   sandboxed: 'sandboxed',
+  Seatbelt: 'sandboxed',
   unsandboxed: 'not sandboxed',
+  'sandbox disabled': 'sandbox off',
   'mounts unrestricted': 'sandbox partly on',
 };
 
@@ -275,6 +279,12 @@ interface Props {
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
   runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
+  /**
+   * A task that needs protection is waiting in the scoped workspaces. Every
+   * task needs it by default, so this is "any task pending". An unknown or
+   * stale sandbox probe is a Problem only while this holds.
+   */
+  protectedWorkPending?: boolean;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -325,6 +335,7 @@ export function HealthClient({
   failureGroups: failureGroupsView = null,
   agentAccess = null,
   runnerLanes = null,
+  protectedWorkPending = false,
   now,
   page = 'all',
   top = null,
@@ -411,7 +422,7 @@ export function HealthClient({
     } catch {
       setRunnerHealth(prev => {
         const next = new Map(prev);
-        next.set(heartbeatId, { loading: false, expanded: true, error: 'Failed to fetch health data.' });
+        next.set(heartbeatId, { loading: false, expanded: true, error: 'Could not load health data. Try again.' });
         return next;
       });
     }
@@ -434,12 +445,14 @@ export function HealthClient({
   // table under Trend ranks on, so one incident is one count on both.
   const failureGroups = useMemo(() => groupFailuresBySignature(recentFailures, 5), [recentFailures]);
   const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt, now));
-  // Every online runner whose sandbox posture is not actually enforced — bwrap
-  // denied, or bwrap available with the mount allowlist off. Both are degraded;
-  // neither may render as green.
-  const degradedSandboxRunners = runners.filter(
-    r => isRunnerOnline(r.lastHeartbeatAt, now) && deriveSandboxPosture(r).tier === 'warning',
-  );
+  // Online runners whose isolation deviates from policy in a way someone can
+  // act on (isolationProblem). Reduced isolation that policy allows, and the
+  // mount allowlist being off, show in runner detail only.
+  const isolationProblems = runners.flatMap(r => {
+    if (!isRunnerOnline(r.lastHeartbeatAt, now)) return [];
+    const problem = isolationProblem(r, { protectedWorkPending });
+    return problem ? [{ id: r.id, ...problem }] : [];
+  });
   // The four seat-auth confessions collapse into ONE page-level sentence. The
   // per-stat markers stay where they are; this only names the shared cause once
   // instead of four times.
@@ -465,7 +478,7 @@ export function HealthClient({
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
-    degradedSandboxRunners.length > 0 ||
+    isolationProblems.length > 0 ||
     failedSchedules.length > 0 ||
     (page === 'overview' && accessProblems.length > 0);
   const hasProblems =
@@ -477,7 +490,7 @@ export function HealthClient({
         headline: overviewHeadline({
           noRunners: runners.length === 0,
           offlineRunners: offlineRunners.length,
-          unsandboxedRunners: degradedSandboxRunners.length,
+          unsandboxedRunners: isolationProblems.length,
           brokenCredentials: brokenCredentials.length,
           strandedBackends: strandedBackends.length,
           failingSchedules: failedSchedules.length,
@@ -648,21 +661,16 @@ export function HealthClient({
               </div>
             ))}
 
-            {/* Degraded sandbox posture — working but not confined, warning tier */}
-            {degradedSandboxRunners.map((hb) => {
-              const posture = deriveSandboxPosture(hb);
-              return (
-                <div key={`sandbox-${hb.id}`} className="px-4 py-3 flex items-center gap-3">
-                  <span className="text-status-warning shrink-0 text-sm">⚠</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-text-primary">
-                      {hb.accountName || 'Runner'}: {posture.label}
-                    </p>
-                    <p className="text-xs text-text-muted">{posture.detail}</p>
-                  </div>
+            {/* Isolation that deviates from policy (R-9); the cause and steps are in runner detail */}
+            {isolationProblems.map((p) => (
+              <a key={`sandbox-${p.id}`} href="/app/health/runners" data-testid="problem-isolation" className="px-4 py-3 flex items-center gap-3 hover:bg-surface-2">
+                <span className="text-status-warning shrink-0 text-sm">⚠</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-text-primary">{p.title}</p>
+                  <p className="text-xs text-text-muted">{p.detail}</p>
                 </div>
-              );
-            })}
+              </a>
+            ))}
 
             {/* Schedules with errors */}
             {page === 'overview' && accessProblems.map((p) => (
@@ -861,6 +869,7 @@ export function HealthClient({
                         {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Check health'}
                       </button>
                     </div>
+                    <RunnerIsolation runner={hb} now={now} />
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         {health.pushOnlyResult && (

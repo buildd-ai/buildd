@@ -123,7 +123,7 @@ export function classifyRespondReply(
       message: error,
     };
   }
-  return { kind: 'error', message: error ?? 'Failed to send answer', credentialRevoked: d.credentialRevoked === true };
+  return { kind: 'error', message: error ?? 'Could not send the answer. Try again.', credentialRevoked: d.credentialRevoked === true };
 }
 
 /** "You answered: X", or what an earlier answer recorded. Never an error. */

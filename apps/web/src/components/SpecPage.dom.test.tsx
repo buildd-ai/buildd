@@ -14,10 +14,21 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let refreshes = 0;
+let navigations = 0;
+// As under the App Router: a native pushState reaches useSearchParams, with no server render.
+const searchListeners = new Set<() => void>();
+const nativePush = window.history.pushState.bind(window.history);
+window.history.pushState = (data: unknown, unused: string, url?: string | URL | null) => {
+  nativePush(data, unused, url);
+  for (const l of searchListeners) l();
+};
 mock.module('next/navigation', () => ({
-  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => { refreshes++; } }),
+  useRouter: () => ({ push: () => { navigations++; }, replace: () => { navigations++; }, refresh: () => { refreshes++; } }),
   usePathname: () => '/app/specs/x',
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams((require('react') as typeof import('react')).useSyncExternalStore(
+    (l) => { searchListeners.add(l); return () => { searchListeners.delete(l); }; },
+    () => window.location.search,
+  )),
 }));
 
 const { act } = await import('react');
@@ -34,11 +45,13 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   refreshes = 0;
+  navigations = 0;
 });
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
   globalThis.fetch = realFetch;
+  window.history.replaceState(null, '', '/app');
 });
 
 const iso = new Date().toISOString();
@@ -317,17 +330,73 @@ describe('SpecPage', () => {
     expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
   });
 
-  it('shows a failing repo check on review and still offers Approve (R-34, AC-96)', () => {
+  it('shows a failing repo check on review, after the panel, and still offers Approve (R-34, AC-96, R-9)', async () => {
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
     const preflight = { state: 'ran' as const, path: 'docs/specs/checkout.md', checks: [
       { name: 'specs:lint' as const, ok: false, messages: ['frontmatter missing `summary` (one sentence: what MUST hold)'] },
       { name: 'public-docs:check' as const, ok: true, messages: [] },
       { name: 'no-prod-data' as const, ok: true, messages: [], note: 'The identifier half runs only in CI.' },
     ] };
-    act(() => root.render(<SpecPage view={{ ...base, review, preflight }} />));
+    const urls: string[] = [];
+    let answer!: (r: Response) => void;
+    globalThis.fetch = ((url: string) => { urls.push(url); return new Promise<Response>((r) => { answer = r; }); }) as unknown as typeof fetch;
+    act(() => root.render(<SpecPage view={{ ...base, review, repoChecks: true }} />));
+    // The panel and Approve are there while GitHub is still being asked.
+    expect(q('spec-page-approve')).not.toBeNull();
+    expect(q('spec-repo-checks-loading')).not.toBeNull();
+    expect(urls).toEqual([`/api/specs/${SPEC}/preflight`]);
+    await act(async () => { answer(new Response(JSON.stringify({ revision: 2, preflight }), { status: 200 })); });
+    expect(q('spec-repo-checks-loading')).toBeNull();
     expect(q('spec-repo-checks')!.textContent).toContain('fails specs:lint');
     expect(q('spec-repo-checks')!.textContent).toContain('frontmatter missing `summary`');
     expect(q('spec-page-approve')).not.toBeNull();
+  });
+
+  it('repo checks that cannot be read say so, and Approve stays', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 502 })) as unknown as typeof fetch;
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    await act(async () => { root.render(<SpecPage view={{ ...base, review, repoChecks: true }} />); });
+    expect(q('spec-repo-checks-unread')!.textContent).toContain('could not be run');
+    expect(q('spec-page-approve')).not.toBeNull();
+  });
+
+  it('Review opens on the press: no navigation, the panel and a loading line at once, then the changes (R-7, R-8, AC-4)', async () => {
+    const urls: string[] = [];
+    let answer!: (r: Response) => void;
+    globalThis.fetch = ((url: string) => { urls.push(url); return new Promise<Response>((r) => { answer = r; }); }) as unknown as typeof fetch;
+    act(() => root.render(<SpecPage view={base} />));
+    const link = q('spec-page-review')!;
+    expect(link.getAttribute('href')).toBe(`/app/specs/${SPEC}?review=1`);
+    act(() => { link.click(); });
+    expect(window.location.search).toBe('?review=1');
+    expect(navigations + refreshes).toBe(0);
+    expect(q('spec-page-review')).toBeNull();
+    expect(q('spec-page-review-panel')!.querySelector('h2')!.textContent).toBe('Revision 2 replaces revision 1');
+    expect(q('spec-page-review-loading')).not.toBeNull();
+    expect(q('spec-page-approve')).toBeNull();
+    expect(q('spec-page-body')).toBeNull();
+    expect(urls).toEqual([`/api/specs/${SPEC}/diff?review=1`]);
+
+    const review = {
+      replaces: 1, revision: 2, omittedLines: 0, sectionCount: 1, linesAdded: 1, linesRemoved: 1, body: base.body, version: 5,
+      hunks: [{ kind: 'changed' as const, path: 'Checkout', linesAdded: 1, linesRemoved: 1, rows: [{ op: '+' as const, oldLine: null, newLine: 3, text: 'new' }] }],
+    };
+    await act(async () => { answer(new Response(JSON.stringify({ review }), { status: 200 })); });
+    expect(q('spec-page-review-loading')).toBeNull();
+    expect(q('spec-approval-diff')).not.toBeNull();
+    // Approve carries the version the panel was read at.
+    const posted: unknown[] = [];
+    globalThis.fetch = (async (_u: string, init: RequestInit) => { posted.push(JSON.parse(String(init.body))); return new Response('{}', { status: 200 }); }) as typeof fetch;
+    await act(async () => { q('spec-page-approve')!.click(); });
+    expect(posted).toEqual([{ revision: 2, expectedVersion: 5 }]);
+  });
+
+  it('a review that cannot be read says why, with no Approve', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'No revision of this spec waits for approval.' }), { status: 409 })) as unknown as typeof fetch;
+    act(() => root.render(<SpecPage view={base} />));
+    await act(async () => { q('spec-page-review')!.click(); });
+    expect(q('spec-page-review-error')!.textContent).toBe('No revision of this spec waits for approval.');
+    expect(q('spec-page-approve')).toBeNull();
   });
 });
 
@@ -349,6 +418,14 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     expect(container.querySelector('a[href="#delivery"]')).toBeNull();
     act(() => root.render(<SpecPage view={{ ...base, delivery: null }} />));
     expect(q('spec-delivery')).toBeNull();
+  });
+
+  it('shows revision-matched criterion verdicts beside body chips, with their work context', () => {
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: null } }} />));
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')?.textContent).toContain('Passes');
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')?.getAttribute('title')).toContain(entry.title);
+    act(() => root.render(<SpecPage view={{ ...base, reading: { revision: 2, approved: false, isHead: true }, delivery: { entries: [entry], next: null } }} />));
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')).toBeNull();
   });
 
   it('lists each entry once, linking to its task, with delivery and standing on separate lines', () => {

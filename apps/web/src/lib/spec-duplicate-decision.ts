@@ -7,6 +7,7 @@ import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdic
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { specCard, tfidfRank, type SpecCard } from '@/lib/specs/card';
+import { specDuplicateObjective } from '@/lib/spec-decision-gold';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { SPEC_RELATIONS, type DuplicateCandidate, type DuplicateCheck, type DuplicateCheckInput, type DuplicateOverride, type SpecRelation } from '@/lib/specs/duplicates';
 
@@ -127,6 +128,8 @@ export const SPEC_DUPLICATE_BINDING: BuilddDecisionKindBinding = {
   capability: SPEC_DUPLICATE_CAPABILITY,
   mode: 'live',
   measuredModels: SPEC_DUPLICATE_MEASURED_MODELS,
+  // Graded by later events, not a person (lib/spec-decision-gold.ts), so outcomeGraded has a denominator.
+  readout: { objective: specDuplicateObjective },
 };
 
 export const specDuplicateKind = defineBuilddDecisionKind(SPEC_DUPLICATE_CONFIG, SPEC_DUPLICATE_BINDING);
@@ -170,7 +173,8 @@ async function teamOfWorkspace(workspaceId: string): Promise<string | null> {
   return ws?.teamId ?? null;
 }
 
-const digest = (c: SpecCard) => createHash('sha256').update(JSON.stringify(c)).digest('hex').slice(0, 16);
+/** The hash of the new spec's card, the half of a pair's subject id after the colon (the grader re-derives it to find the spec). */
+export const digest = (c: SpecCard) => createHash('sha256').update(JSON.stringify(c)).digest('hex').slice(0, 16);
 
 /**
  * Compare a new spec with its workspace's approved specs. Never throws: any

@@ -555,6 +555,13 @@ export interface WorkspaceGitConfig {
     };
   };
 
+  // The isolation every task in this workspace requires of the runner that
+  // claims it (Living Spec "Runner isolation", R-4; resolveIsolationRequirement
+  // in @buildd/shared). 'protected': the backend's confinement must be enforced.
+  // 'trusted_local': may run reduced on a runner whose operator opted in.
+  // Absent: trusted_local for a single-owner team, protected otherwise.
+  isolationPolicy?: 'protected' | 'trusted_local';
+
   // SDK debug logging (SDK v0.2.44+)
   debug?: boolean;               // Enable verbose SDK debug output to stderr
   debugFile?: string;             // File path to write SDK debug logs to

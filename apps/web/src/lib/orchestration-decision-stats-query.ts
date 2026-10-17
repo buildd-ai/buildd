@@ -1,6 +1,7 @@
 import type {
-  OrchestrationDecisionCounts, OrchestrationDecisionGroup, OrchestrationDecisionStats, OrchestrationPredictionCounts,
+  OrchestrationDecisionCounts, OrchestrationDecisionGroup, OrchestrationDecisionStats, OrchestrationPredictionCounts, OverlapStartConflictReadout,
 } from '@buildd/shared';
+import type { SoftStartReadoutInput } from '@buildd/core/orchestration-soft-start-readout';
 import { db } from '@buildd/core/db';
 import { orchestrationDecisions, orchestrationManifestPredictions, orchestrationTouchLabels, tasks } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
@@ -85,10 +86,34 @@ export function rollupOrchestrationDecisions(
   };
 }
 
+type LoadSoftStarts = (opts: { workspaceId: string; since: Date; until: Date }) => Promise<SoftStartReadoutInput>;
+
+/**
+ * Every workspace's overlap STARTs in the window, graded on one labeller: the
+ * share whose PR later hit a merge conflict, by area class and gate.
+ */
+export async function loadOverlapStartConflicts(
+  workspaceIds: string[], since: Date, until: Date, load?: LoadSoftStarts,
+): Promise<OverlapStartConflictReadout> {
+  const { summarizeOverlapStartConflicts } = await import('@buildd/core/orchestration-soft-start-readout');
+  const loader = load ?? (await import('@buildd/core/orchestration-claim-source')).loadSoftStartReadoutInput;
+  const inputs = await Promise.all(workspaceIds.map(workspaceId => loader({ workspaceId, since, until })));
+  const merged: SoftStartReadoutInput = {
+    starts: inputs.flatMap(i => i.starts),
+    outcome: {
+      tasks: inputs.flatMap(i => i.outcome.tasks), labels: inputs.flatMap(i => i.outcome.labels), prs: inputs.flatMap(i => i.outcome.prs),
+      conflictTasks: inputs.flatMap(i => i.outcome.conflictTasks), gateEvents: inputs.flatMap(i => i.outcome.gateEvents),
+    },
+    probes: inputs.flatMap(i => i.probes),
+    windowEnd: until,
+  };
+  return summarizeOverlapStartConflicts(merged);
+}
+
 /** Aggregates in Postgres (grouped by decision group and UTC day), rolled up in memory. */
 export async function fetchOrchestrationDecisionStats(input: {
   workspaceIds: string[]; missionId?: string; window: CoordinationWindow;
-}): Promise<OrchestrationDecisionStats> {
+}, deps: { loadSoftStarts?: LoadSoftStarts } = {}): Promise<OrchestrationDecisionStats> {
   const filters = coordinationFilters(input);
   const windowStart = new Date(filters.windowStart);
   const decisionCapabilities = await fetchDecisionCapabilities(input.workspaceIds);
@@ -151,5 +176,14 @@ export async function fetchOrchestrationDecisionStats(input: {
   rolled.decisions.byReason = reasonRows
     .map(row => ({ capability: row.capability, status: row.status, reason: row.reason ?? null, total: n(row.total) }))
     .sort((a, b) => b.total - a.total);
-  return { ...filters, decisionCapabilities, ...rolled, coverage };
+  // Overlap STARTs carry no mission, so a mission-scoped read omits them.
+  let overlap: Pick<OrchestrationDecisionStats, 'overlapStarts' | 'overlapStartsError'> = {};
+  if (!input.missionId) {
+    try {
+      overlap = { overlapStarts: await loadOverlapStartConflicts(input.workspaceIds, windowStart, new Date(), deps.loadSoftStarts) };
+    } catch (err) {
+      overlap = { overlapStartsError: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  return { ...filters, decisionCapabilities, ...rolled, ...overlap, coverage };
 }

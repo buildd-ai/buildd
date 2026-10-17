@@ -8,7 +8,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
-import { WorkerManager } from './workers';
+import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
@@ -100,6 +100,18 @@ if (CLI.kind === 'stop') {
   process.exit(r.code);
 }
 
+// `buildd slots [<n>] [--pause|--abort] [--yes]`: how many agents the runner
+// on this machine runs at once (runner-slots.ts, R-43..R-46). With none
+// running it saves N for the next start. Never starts a runner.
+if (CLI.kind === 'slots') {
+  const { runSlotsCommand } = await import('./runner-slots');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runSlotsCommand(CLI.cmd, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
 // `buildd web`: open the running runner's web UI, or say in one line how to
 // turn it on. It never starts or restarts a runner (runner-web.ts).
 if (CLI.kind === 'web') {
@@ -136,6 +148,10 @@ if (process.argv.includes('--doctor')) {
   for (const c of report.checks) {
     const fixTag = c.fixable ? ` ${DIM}[fixable]${RESET}` : '';
     console.log(`  ${icon(c.status)} ${c.name}  ${DIM}${c.message}${RESET}${fixTag}`);
+    // The steps for what is wrong, e.g. the sandbox check's platform remediation.
+    if (c.status !== 'ok' && c.detail) {
+      for (const line of c.detail.split('\n')) console.log(`      ${DIM}${line}${RESET}`);
+    }
   }
   console.log(`\n  ${GREEN}${report.summary.ok} ok${RESET}  ${YELLOW}${report.summary.warn} warn${RESET}  ${RED}${report.summary.error} error${RESET}\n`);
 
@@ -225,6 +241,11 @@ async function attachTop(missionId: string | null, notice?: string, workspace: s
 
 // `buildd top`: watch the runner already running on this machine. Never starts one.
 if (CLI.kind === 'top') {
+  if (CLI.frame) {
+    // Hidden: one frame on stdout, read-only (top/frame.ts).
+    const { runFrameOnce } = await import('./top/frame');
+    process.exit(await runFrameOnce({ socketPath: RUNNER_SOCKET, missionId: CLI.missionId, workspace: CLI.workspace, team: CLI.team, ...CLI.frame }));
+  }
   await attachTop(CLI.missionId, undefined, CLI.workspace, CLI.team);
 }
 
@@ -700,6 +721,7 @@ runnerHold?.onChange((hold) => {
   if (!wm) return;
   void wm.sendHeartbeatNow().catch(() => {}).then(async () => {
     if (hold) return;
+    wm.resetRefusalBackoff();
     // Agents a stop or restart paused while held continue now (R-37).
     await wm.continueRestoredAgents().catch(() => {});
     wm.claimPendingTasks().catch(() => {});
@@ -1893,6 +1915,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         claimOutcomes: workerManager?.getClaimOutcomes() ?? { tasks: {}, broad: null },
         // A person's hold, so top's header says "on hold" from its first frame (R-33).
         hold: currentRunnerHold(),
+        // A broad claim is out right now: top says "Looking for work…".
+        lookingForWork: workerManager?.isLookingForWork() ?? false,
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -2031,6 +2055,42 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
       const was = runnerHold.resume();
       return Response.json({ hold: null, wasHeld: was !== null, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+
+    // `buildd slots` / + and - in top (runner-slots.ts, R-43..R-46).
+    if (path === '/api/slots' && req.method === 'GET') {
+      const { slotsSource } = await import('./runner-slots');
+      return Response.json({
+        slots: config.maxConcurrent,
+        running: liveAgentCount(),
+        source: slotsSource(loadSavedConfig(), process.env),
+        paused: workerManager?.slotPauses.size ?? 0,
+      }, { headers: corsHeaders });
+    }
+    if (path === '/api/slots' && req.method === 'POST') {
+      const { applySlots, SlotPauseQueue } = await import('./runner-slots');
+      const body = await parseBody(req).catch(() => ({}));
+      const wm = workerManager;
+      const client = buildd;
+      const result = await applySlots(body, {
+        setSlots: (n) => {
+          saveConfig({ maxConcurrent: n });
+          if (wm) wm.setSlots(n);
+          else config.maxConcurrent = n;
+        },
+        agents: () => (wm?.getWorkers() ?? []).map((w: LocalWorker) => ({ id: w.id, title: w.taskTitle || w.id, status: w.status, startedAt: w.startedAt ?? 0 })),
+        // The same server path as p and x in top, so the dashboard sees the same thing.
+        act: async (workerId, action) => {
+          if (!client) return { ok: false, why: 'not configured' };
+          const r = await relayWorkerAction(workerId, action, {}, (endpoint, payload) => client.relayDashboardAction(endpoint, payload));
+          const b = r.body as { error?: unknown } | null;
+          return r.status >= 200 && r.status < 300 ? { ok: true } : { ok: false, why: `${typeof b?.error === 'string' ? b.error : 'refused'} (HTTP ${r.status})` };
+        },
+        pauses: wm?.slotPauses ?? new SlotPauseQueue(),
+      });
+      // Without a worker manager nothing else says it; with one, setSlots did.
+      if (result.status === 200 && !wm) broadcast({ type: 'slots', maxConcurrent: config.maxConcurrent });
+      return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 
     if (path === '/api/workers/purge' && req.method === 'POST') {
@@ -2858,7 +2918,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
-      const report = withClaimHealthCheck(runDiagnostics());
+      // This process's own isolation record, the one its heartbeat carries.
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
       return Response.json(report, { headers: corsHeaders });
     }
 
@@ -2867,7 +2928,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       const report = runDiagnostics();
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = withClaimHealthCheck(runDiagnostics());
+      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 

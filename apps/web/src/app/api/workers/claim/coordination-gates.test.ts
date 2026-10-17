@@ -37,6 +37,13 @@ describe('evaluateCoordinationGates', () => {
     expect(evaluateCoordinationGates(task({ pathManifest: ['apps/runner/x.ts'] }), snap({ openPrTasks: [pr()] }))).toEqual([]);
   });
 
+  // Same overlap policy as the claim (./overlap-policy).
+  it('an open PR or live lease sharing only a mergeable file holds nothing: the claim starts it alongside', () => {
+    const file = ['apps/web/src/lib/x.ts'];
+    expect(evaluateCoordinationGates(task({ pathManifest: file }), snap({ openPrTasks: [pr({ pathManifest: file })] }))).toEqual([]);
+    expect(evaluateCoordinationGates(task({ pathManifest: file }), snap({ activeClaims: new Map([['h', file]]) }))).toEqual([]);
+  });
+
   it('live lease held by another task → lease_overlap', () => {
     const reasons = evaluateCoordinationGates(task(), snap({ activeClaims: new Map([['h', ['packages/core/db/schema.ts']]]), liveTaskIds: new Set(['h']) }));
     expect(reasons.map(r => r.kind)).toEqual(['lease_overlap']);

@@ -3,18 +3,18 @@
  * (docs/specs/failure-incident-recovery.md §12(c)).
  *
  * The production sweep (`runFailurePatternSweep` + `productionSweepDeps`), the
- * real collector, ledger, recovery families, lease, audit rows, escalation
- * gate, Home read and click-time action route, against real rows. Faked only
- * at the edges a test cannot reach: GitHub (the missed-webhook replay), the
- * push transport (`notifyTeam`, recorded) and `emit` (the merge chain the
- * webhook would have run; this suite drives the merge hook itself).
+ * real collector, ledger, recovery families, lease and audit rows, against
+ * real rows. Faked only at the edges a test cannot reach: GitHub (the
+ * missed-webhook replay), the push transport (`notifyTeam`, stubbed) and
+ * `emit` (the merge chain the webhook would have run; this suite drives the
+ * merge hook itself).
  *
  * The scenario is the stale-blocker case of §2.1: task T waits behind PR A,
  * then PR B; B merges. Then the same through a missed webhook healed by
  * `reconcileStalePrWorkers`. Then the edges that must stay explicit and never
  * read as recovered: an open PR, a closed PR, a held dependency, a stalled CI
  * with its own repair, a cycle, missing evidence, a failed repair, a held and
- * an expired lease, an exhausted budget, a stale click, a recurrence, and the
+ * an expired lease, an exhausted budget, a changed cause, a recurrence, and the
  * task adapter's superseded questions.
  */
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -23,13 +23,9 @@ import { assertDbConfigured, outboxFor, q, seedTask, seedWorkspace } from './har
 
 // ── edges ───────────────────────────────────────────────────────────────────
 
-/** Pushes the gate sent, as `notifyTeam` received them. */
-const pushes: Array<{ teamId: string; payload: { title: string; message: string; url: string } }> = [];
+/** No push transport in a test. */
 const realNotify = await import('../../src/lib/notify');
-mock.module('../../src/lib/notify', () => ({
-  ...realNotify,
-  notifyTeam: async (teamId: string, _kind: string, payload: { title: string; message: string; url: string }) => { pushes.push({ teamId, payload }); },
-}));
+mock.module('../../src/lib/notify', () => ({ ...realNotify, notifyTeam: async () => {} }));
 
 /** GitHub as the reconcile sweep reads it: the PRs in `mergedOnGithub` are merged, every other PR is open. */
 const mergedOnGithub = new Map<string, string>();
@@ -58,12 +54,9 @@ const { pathOverlapRecoveryFamily } = await import('../../src/lib/failure-incide
 const { dbRecoveryEvents } = await import('../../src/lib/failure-incident-recovery-events');
 const { createDbIncidentPort, recordIncidentCandidates } = await import('../../src/lib/failure-incident-store');
 const { actOnIncidentResults, defaultIncidentSender, formatIncidentAlert } = await import('../../src/lib/failure-incident-actions');
-const { loadIncidentNeedsYou, loadIncidentVerdicts } = await import('../../src/lib/failure-incident-escalation');
 const { projectIncident } = await import('../../src/lib/incident-view');
 const { failurePatternSubscribers } = await import('../../src/lib/failure-pattern-subscribers');
 const { reconcileStalePrWorkers } = await import('../../src/lib/pr-reconcile');
-const { applyIncidentCapability } = await import('../../src/app/api/health/incidents/[id]/actions/apply');
-const { productionIncidentActionDeps } = await import('../../src/app/api/health/incidents/[id]/actions/deps');
 const { loadSupersededQuestionTaskIds, loadTaskRecoveryViews } = await import('../../src/lib/incident-recovery-load');
 
 type Effects = import('../../src/lib/failure-incident-recovery').RecoveryEffects;
@@ -151,11 +144,6 @@ async function expireLease(incidentId: string) {
   await q(sql`UPDATE system_cache SET expires_at = now() - interval '1 second' WHERE key = ${`failure-incident-recovery:${incidentId}`}`);
 }
 
-/** Home's Needs You read for these workspaces: the rows the nav badge counts. */
-async function homeIncidentIds(workspaceId: string): Promise<string[]> {
-  return (await loadIncidentNeedsYou([workspaceId])).map(i => (i as { incidentId?: string }).incidentId!).filter(Boolean);
-}
-
 /** The production sweep deps, with no model triage and no fix-task filing (the action layer's own suites cover those). */
 function sweepDeps(effects?: Effects, ops: string[] = []): SweepDeps {
   const base = productionSweepDeps();
@@ -197,7 +185,7 @@ interface Stall {
   teamId: string;
   /** The task the scenario follows: deferred behind A, then behind B. */
   t: string;
-  /** Two more tasks behind B only, so the stall is `high` and Home reads it. */
+  /** Two more tasks behind B only, so the stall is `high`. */
   others: string[];
   a: { prNumber: number; taskId: string };
   b: { prNumber: number; taskId: string };
@@ -252,7 +240,6 @@ describe('the #4386 scenario: T behind PR A, then PR B; B merges', () => {
     await q(sql`UPDATE gate_events SET detail = jsonb_set(detail, '{firstDeferredAt}', to_jsonb(${ago(150)}::text))
       WHERE gate = ${GATE_SLUGS.CLAIM_LOOP_DEFERRAL} AND detail->>'prNumber' = ${String(s.b.prNumber)}
         AND task_id IN (${s.t}::uuid, ${s.others[0]}::uuid, ${s.others[1]}::uuid)`);
-    const pushedBefore = pushes.length;
     const counters = await sweep(s.workspaceId);
     expect(counters.runFailures).toBe(0);
 
@@ -269,16 +256,13 @@ describe('the #4386 scenario: T behind PR A, then PR B; B merges', () => {
     const r = readRecovery(incident)!;
     expect(Date.parse(r.firstSeenAt)).toBeGreaterThan(bFirst);
 
-    // An open PR that is moving: Buildd waits on it; nobody is asked or paged.
+    // An open PR that is moving: Buildd waits on it; nobody is asked.
     expect(incident.status).toBe('open');
     expect(r.state).toBe('waiting');
     expect(r.owner).toBe('buildd');
     expect(r.cause.reasonCode).toBe('path_overlap.blocker_open');
     expect(r.nextCheckAt! > new Date().toISOString()).toBe(true);
-    expect(pushes.length).toBe(pushedBefore);
-    expect(await homeIncidentIds(s.workspaceId)).not.toContain(incident.id);
-    const view = projectIncident(incident, (await loadIncidentVerdicts(s.teamId, [incident.id])).get(incident.id));
-    expect(view.needsYou).toBe(false);
+    const view = projectIncident(incident, null);
     expect(view.phase).toBe('waiting');
     expect(view.sentence).toContain(`PR #${s.b.prNumber}`);
     expect(view.sentence).not.toMatch(RECOVERED_WORDS);
@@ -320,9 +304,8 @@ describe('the #4386 scenario: T behind PR A, then PR B; B merges', () => {
     for (const task of [s.t, ...s.others]) expect(await releaseWakes(task)).toHaveLength(1);
   });
 
-  test('AC-2: once every task starts, the merge hook resolves it; Home and the badge drop it; the verdict is Buildd\'s', async () => {
+  test('AC-2: once every task starts, the merge hook resolves it, Buildd\'s', async () => {
     for (const task of [s.t, ...s.others]) await subjectStarts(task, s.workspaceId);
-    const pushedBefore = pushes.length;
     await mergeHook(s.workspaceId, s.b.prNumber);
 
     const after = (await createDbIncidentPort().then(p => p.findById(incident.id)))!;
@@ -330,21 +313,18 @@ describe('the #4386 scenario: T behind PR A, then PR B; B merges', () => {
     expect(after.resolvedAt).not.toBeNull();
     const r = readRecovery(after)!;
     expect(r.state).toBe('recovered');
+    expect(r.owner).toBe('buildd');
     // I-1, and the release attempt was verified on the same row.
     const [attempt] = await attemptRows(incident.id);
     expect(attempt.detail.verify.passed).toBe(true);
-    expect(await homeIncidentIds(s.workspaceId)).toHaveLength(0);
-    expect(pushes.length).toBe(pushedBefore);
-    const verdict = (await loadIncidentVerdicts(s.teamId, [incident.id])).get(incident.id);
-    expect(verdict?.owner).toBe('buildd');
-    const view = projectIncident(after, verdict);
+    const view = projectIncident(after, null);
     expect(view.phase).toBe('recovered');
     expect(view.sentence).toMatch(/^Recovered at /);
     // Each task woken exactly once over the whole recovery.
     for (const task of [s.t, ...s.others]) expect(await releaseWakes(task)).toHaveLength(1);
   });
 
-  test('AC-12: a fresh occurrence reopens it per the existing policy: recurrence +1, generation +1, budget 0, no page', async () => {
+  test('AC-12: a fresh occurrence reopens it per the existing policy: recurrence +1, generation +1, budget 0', async () => {
     const port = await createDbIncidentPort();
     const before = (await port.findById(incident.id))!;
     const g = readRecovery(before)!.generation;
@@ -370,18 +350,16 @@ describe('the #4386 scenario: T behind PR A, then PR B; B merges', () => {
     // The attempts already run stay as history.
     expect(r.attempts.length).toBeGreaterThan(0);
 
-    // A reopen re-gates; it pages only if the new generation needs a decision.
-    const pushedBefore = pushes.length;
+    // Acting on the reopen leaves it open.
     await actOnIncidentResults(results, { port, decide: null, fixTasks: null, send: defaultIncidentSender() });
-    expect(pushes.length).toBe(pushedBefore);
-    expect(await homeIncidentIds(s.workspaceId)).not.toContain(incident.id);
+    expect((await port.findById(incident.id))!.status).toBe('open');
   });
 });
 
 // ── 2. the same merge, through a missed webhook ─────────────────────────────
 
 describe('missed merge webhook, healed by reconcileStalePrWorkers', () => {
-  test('the reconcile releases and wakes once; the backstop resolves only after the tasks start; Home drops it', async () => {
+  test('the reconcile releases and wakes once; the backstop resolves only after the tasks start', async () => {
     const s = await stallBehindB({ bWaitMinutes: 150 });
     await sweep(s.workspaceId);
     const [incident] = await incidentsIn(s.workspaceId);
@@ -423,7 +401,6 @@ describe('missed merge webhook, healed by reconcileStalePrWorkers', () => {
     expect(calls.release).toEqual([]);
     expect(calls.wake).toEqual([]);
     for (const task of [s.t, ...s.others]) expect(await releaseWakes(task)).toHaveLength(1);
-    expect(await homeIncidentIds(s.workspaceId)).toHaveLength(0);
   }, 30_000);
 });
 
@@ -487,7 +464,7 @@ describe('a broad manifest and an additional dependency', () => {
 });
 
 describe('a stalled CI with its own repair already running', () => {
-  test('recovery waits on the one existing CI retry; repeated and concurrent sweeps add no incident, task, repair or page', async () => {
+  test('recovery waits on the one existing CI retry; repeated and concurrent sweeps add no incident, task or repair', async () => {
     const s = await stallBehindB({ bWaitMinutes: 150, bMovedMinutesAgo: 90 });
     // B's CI is red and a CI retry is already on it, pushing to the same PR.
     const retry = await seedTask(s.workspaceId, { status: 'in_progress' });
@@ -495,7 +472,6 @@ describe('a stalled CI with its own repair already running', () => {
     await prWorker(s.workspaceId, retry, s.b.prNumber, { createdMinutesAgo: 5, movedMinutesAgo: 0, status: 'running' });
     const { effects, calls } = countingEffects();
     const tasksBefore = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM tasks WHERE workspace_id = ${s.workspaceId}::uuid`);
-    const pushedBefore = pushes.length;
 
     await Promise.all([sweep(s.workspaceId, sweepDeps(effects)), sweep(s.workspaceId, sweepDeps(effects)), sweep(s.workspaceId, sweepDeps(effects))]);
     await sweep(s.workspaceId, sweepDeps(effects));
@@ -511,8 +487,6 @@ describe('a stalled CI with its own repair already running', () => {
     expect(tasksAfter.n).toBe(tasksBefore[0].n);
     expect(calls).toEqual({ release: [], wake: [], fix: [] });
     expect(await attemptRows(all[0].id)).toHaveLength(0);
-    expect(pushes.length).toBe(pushedBefore);
-    expect(await homeIncidentIds(s.workspaceId)).toHaveLength(0);
     expect(await taskStatus(retry)).toBe('in_progress');
   }, 30_000);
 });
@@ -522,11 +496,10 @@ describe('a cycle: the blocker\'s repair depends on the waiting task', () => {
   let incident: StoredIncident;
   let retry: string;
 
-  test('AC-8: a decision at once; Home, the page and the push say the same sentence, once', async () => {
+  test('AC-8: a decision at once, in the projection\'s words', async () => {
     s = await stallBehindB({ bWaitMinutes: 150 });
     retry = await seedTask(s.workspaceId, { status: 'pending', dependsOn: [] });
     await q(sql`UPDATE tasks SET ci_retry_pr_number = ${s.b.prNumber}, depends_on = ${JSON.stringify([s.t])}::jsonb WHERE id = ${retry}::uuid`);
-    const pushedBefore = pushes.length;
     await sweep(s.workspaceId);
     [incident] = await incidentsIn(s.workspaceId);
     const r = readRecovery(incident)!;
@@ -535,47 +508,30 @@ describe('a cycle: the blocker\'s repair depends on the waiting task', () => {
     expect(r.cause.reasonCode).toBe('path_overlap.cycle');
     expect(r.decision!.options.map(o => o.capability)).toContain('cancel_attempt');
 
-    // One push, and its words are the projection's.
-    expect(pushes.length).toBe(pushedBefore + 1);
-    const push = pushes[pushes.length - 1];
-    const verdict = (await loadIncidentVerdicts(s.teamId, [incident.id])).get(incident.id)!;
-    expect(verdict.owner).toBe('person');
-    expect(verdict.generation).toBe(r.generation);
-    const view = projectIncident(incident, verdict);
-    const home = (await loadIncidentNeedsYou([s.workspaceId])) as Array<{ incidentId?: string; failureMessage?: string }>;
-    const card = home.find(i => i.incidentId === incident.id)!;
-    expect(card.failureMessage).toBe(view.sentence);
-    expect(push.payload.message).toContain(view.sentence);
-    expect(push.payload.url).toContain(`/app/incidents/${incident.id}`);
+    const view = projectIncident(incident, null);
+    expect(view.phase).toBe('decision');
     expect(view.sentence).toBe(r.decision!.question);
     expect(view.sentence).not.toMatch(RECOVERED_WORDS);
 
-    // A replay of the same state does not page again.
+    // A replay of the same state leaves the same generation's decision.
     await sweep(s.workspaceId, sweepDeps(), new Date(Date.now() + 10 * 60_000).toISOString());
-    expect(pushes.length).toBe(pushedBefore + 1);
+    const replayed = readRecovery((await createDbIncidentPort().then(p => p.findById(incident.id)))!)!;
+    expect(replayed.generation).toBe(r.generation);
+    expect(replayed.state).toBe('needs_decision');
   });
 
-  test('AC-7: a click on the old generation answers 409 with the new assessment and cancels nothing', async () => {
+  test('AC-7: once the cycle breaks, the next check is a new generation, waiting, and cancels nothing', async () => {
     const g1 = readRecovery((await createDbIncidentPort().then(p => p.findById(incident.id)))!)!.generation;
     // The repair attempt no longer depends on T: the cause, and so the generation, changes.
     await q(sql`UPDATE tasks SET depends_on = '[]'::jsonb WHERE id = ${retry}::uuid`);
-    const deps = await productionIncidentActionDeps(s.teamId);
-    const res = await applyIncidentCapability(deps, incident.id, { capability: 'cancel_attempt', generation: g1 });
-    expect(res.status).toBe(409);
-    if (res.status !== 409) throw new Error('expected 409');
-    expect(res.body.reason).toBe('generation_changed');
-    expect(res.body.projection.generation).toBe(g1 + 1);
-    expect(res.body.projection.phase).toBe('waiting');
+    await reassessIncidentsNamingPr(s.workspaceId, s.b.prNumber, 'merge_hook', sweepDeps());
+    const row = (await createDbIncidentPort().then(p => p.findById(incident.id)))!;
+    const r = readRecovery(row)!;
+    expect(r.generation).toBe(g1 + 1);
+    expect(r.state).toBe('waiting');
+    expect(projectIncident(row, null).phase).toBe('waiting');
     expect(await taskStatus(retry)).toBe('pending');
     expect(await taskStatus(s.t)).toBe('pending');
-  });
-
-  test('AC-5: the stored person verdict is from the older generation, so Home and the badge drop it', async () => {
-    const row = (await createDbIncidentPort().then(p => p.findById(incident.id)))!;
-    expect(readRecovery(row)!.state).toBe('waiting');
-    expect(await homeIncidentIds(s.workspaceId)).not.toContain(incident.id);
-    const verdict = (await loadIncidentVerdicts(s.teamId, [incident.id])).get(incident.id);
-    expect(projectIncident(row, verdict).needsYou).toBe(false);
   });
 });
 
@@ -684,28 +640,15 @@ describe('evidence that cannot be read, effects that fail, leases and budgets', 
     rows = await attemptRows(incident.id);
     expect(rows.some(x => x.detail.verify.passed === true)).toBe(false);
 
-    // The gate hands it to the person; Home lists it with the projection's words.
-    const pushedBefore = pushes.length;
-    await defaultIncidentSender()(regateAlert(row));
-    expect(pushes.length).toBe(pushedBefore + 1);
-    const verdict = (await loadIncidentVerdicts(s.teamId, [incident.id])).get(incident.id)!;
-    const view = projectIncident(row, verdict);
-    expect(view.needsYou).toBe(true);
-    const card = ((await loadIncidentNeedsYou([s.workspaceId])) as Array<{ incidentId?: string; failureMessage?: string }>).find(i => i.incidentId === incident.id)!;
-    expect(card.failureMessage).toBe(view.sentence);
-    expect(pushes[pushes.length - 1].payload.message).toContain(view.sentence);
-    expect(formatIncidentAlert(row, { severity: row.severity, reason: 'opened' }, { verdict }).message).toContain(view.sentence);
-    for (const text of [view.sentence, card.failureMessage!, pushes[pushes.length - 1].payload.message]) expect(text).not.toMatch(RECOVERED_WORDS);
+    // The re-gate alert carries the projection's words, and never says it recovered.
+    const view = projectIncident(row, null);
+    expect(view.phase).toBe('decision');
+    const alert = regateAlert(row);
+    expect(alert.message).toContain(view.sentence);
+    expect(formatIncidentAlert(row, { severity: row.severity, reason: 'opened' }).message).toContain(view.sentence);
+    for (const text of [view.sentence, alert.message]) expect(text).not.toMatch(RECOVERED_WORDS);
 
-    // Dismissing it through the action route: off Home, not resolved, Buildd keeps checking.
-    const actionDeps = await productionIncidentActionDeps(s.teamId);
-    const dismissed = await applyIncidentCapability(actionDeps, incident.id, { capability: 'dismiss', generation: r.generation });
-    expect(dismissed.status).toBe(200);
-    row = (await port.findById(incident.id))!;
-    expect(row.status).toBe('acknowledged');
-    expect(await homeIncidentIds(s.workspaceId)).not.toContain(incident.id);
-
-    // AC-10: dismissal is not resolution; Buildd keeps checking, and a passing check still resolves it.
+    // Buildd keeps checking past the spent budget, and a passing check still resolves it.
     const { releaseAndNotify } = await import('../../src/lib/path-claim-release');
     await releaseAndNotify(s.b.taskId, 'merged');
     for (const task of [s.t, ...s.others]) await subjectStarts(task, s.workspaceId);

@@ -1198,6 +1198,9 @@ export async function cleanupStuckWaitingInput(
     });
 
     if (!originalTask) continue;
+    // Already ended (a person cancelled it, say): the question closes with the
+    // worker above. Failing the task or filing a retry would undo the cancel.
+    if (isTerminalTaskStatus(originalTask.status)) continue;
 
     // Build retry description with context about what was asked
     const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;

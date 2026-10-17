@@ -47,6 +47,10 @@ export function runEndReason(r: RunEndInput): string {
   }
   const error = r.error ?? '';
   if (/aborted by user|cancelled by user|canceled by user/i.test(error)) return 'Cancelled';
+  // A question closed because its task was cancelled, deleted or had ended
+  // (lib/sessionless-worker-settle.ts): not a failure of the run.
+  if (/^Task (cancelled|deleted) while the agent was waiting/.test(error)) return 'Cancelled while waiting for an answer';
+  if (/^Task ended while the agent was waiting/.test(error)) return 'Question closed: the task had ended';
   const merged = r.taskMergedPr ? ` · merged as #${r.taskMergedPr}` : '';
   if (classifyFailure(error) === 'budget_limited') {
     const which = /session limit|hit your session/i.test(error) ? 'session limit' : 'budget limit';

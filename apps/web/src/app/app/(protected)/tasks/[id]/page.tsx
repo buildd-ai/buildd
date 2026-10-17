@@ -1502,7 +1502,6 @@ export default async function TaskDetailPage({
           <Notice
             tone={taskRecovery.phase === 'unavailable' ? 'err' : taskRecovery.phase === 'decision' ? 'warn' : 'info'}
             title={taskRecovery.stateWord}
-            action={{ label: 'Open incident', href: taskRecovery.href }}
             className="mt-4"
             data-testid="task-recovery-status"
           >

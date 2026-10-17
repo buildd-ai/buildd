@@ -1,30 +1,38 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * The incident machinery is the platform operator's. A team member or admin
- * reaches service status (lib/service-status.ts), never the incident page, its
- * API, an incident card on Home, or an incident line on Health.
+ * The incident machinery is not part of the open product's surfaces. A team
+ * member, a team admin and the platform operator all reach service status
+ * (lib/service-status.ts); there is no incident page, no incident API, no
+ * incident card on Home and no incident line on Health. Operator tooling
+ * reads root causes through the platform-owner API
+ * (app/api/admin/root-causes/route.ts).
  */
 const read = (rel: string) => readFileSync(resolve(import.meta.dir, '..', rel), 'utf8');
+const exists = (rel: string) => existsSync(resolve(import.meta.dir, '..', rel));
 
 describe('team surfaces and the incident machinery', () => {
-  it('sends team members and admins away from the incident page before reading any row', () => {
-    const page = read('app/app/(protected)/incidents/[id]/page.tsx');
-    const gate = page.indexOf('isPlatformOperator(user)');
-    expect(gate).toBeGreaterThan(-1);
-    expect(page).toMatch(/if \(!isPlatformOperator\(user\)\) redirect\('\/app\/health'\)/);
-    expect(gate).toBeLessThan(page.indexOf('db.query.failureIncidents'));
+  it('ships no incident page and no incident API', () => {
+    expect(exists('app/app/(protected)/incidents')).toBe(false);
+    expect(exists('app/api/health/incidents')).toBe(false);
+    expect(exists('components/incidents')).toBe(false);
   });
 
-  it('gates the incident API sessions on the platform operator', () => {
-    expect(read('app/api/health/incidents/route.ts')).toMatch(/sessionUser && !isPlatformOperator\(sessionUser\)/);
-    expect(read('app/api/health/incidents/[id]/route.ts')).toMatch(/user && !isPlatformOperator\(user\)/);
+  it('keeps the root-cause record and its platform-owner route', () => {
+    expect(exists('lib/root-cause-record.ts')).toBe(true);
+    expect(exists('app/api/admin/root-causes/route.ts')).toBe(true);
   });
 
-  it('loads incident cards onto Home only for a platform operator', () => {
-    expect(read('app/app/(protected)/home/page.tsx')).toMatch(/isPlatformOperator\(user\)\) \{\s*waitingOnYou\.push\(\.\.\.await INCIDENT_NEEDS_YOU/);
+  it('pages nobody from the open product', () => {
+    expect(exists('lib/failure-incident-escalation.ts')).toBe(false);
+    expect(read('lib/failure-incident-actions.ts')).toMatch(/export function defaultIncidentSender\(\): IncidentAlertSender \{\s*return async \(\) => false;\s*\}/);
+  });
+
+  it('offers no incident MCP actions', () => {
+    const tools = readFileSync(resolve(import.meta.dir, '../../../../packages/core/mcp-tools.ts'), 'utf8');
+    expect(tools).not.toMatch(/'(list|update)_incidents?'/);
   });
 
   it('does not load incident state into Health failure groups', () => {
@@ -32,8 +40,13 @@ describe('team surfaces and the incident machinery', () => {
     expect(data).not.toContain('loadFailureIncidentStates');
   });
 
-  it('keeps "Open incident" out of the Home attention card fallback', () => {
-    expect(read('lib/home-attention.ts')).not.toContain('Open incident');
+  it('keeps "Open incident" off team surfaces', () => {
+    for (const rel of [
+      'lib/home-attention.ts',
+      'app/app/(protected)/tasks/[id]/page.tsx',
+      'components/recovery/MissionRecoveryNotice.tsx',
+      'app/app/(protected)/health/_components/FailureGroups.tsx',
+    ]) expect(read(rel)).not.toContain('Open incident');
   });
 
   it('keeps the projection free of operator vocabulary and of the operator role', () => {

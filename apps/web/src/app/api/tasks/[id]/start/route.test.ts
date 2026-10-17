@@ -15,6 +15,7 @@ const mockTasksUpdate = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
+const mockAuthenticateApiKey = mock(async (..._args: unknown[]) => null as any);
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -22,7 +23,7 @@ mock.module('@/lib/auth-helpers', () => ({
 
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
-  authenticateApiKey: async () => null,
+  authenticateApiKey: (...args: unknown[]) => mockAuthenticateApiKey(...args),
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
 }));
@@ -166,13 +167,14 @@ const declaredEdge = (id: string): WaitingReason => makeWaitingReason('dep_decla
 // Helper to create mock NextRequest
 function createMockRequest(options: {
   body?: any;
+  bearer?: string;
 } = {}): NextRequest {
-  const { body } = options;
+  const { body, bearer } = options;
 
   const url = 'http://localhost:3000/api/tasks/task-123/start';
   const init: RequestInit = {
     method: 'POST',
-    headers: new Headers({ 'content-type': 'application/json' }),
+    headers: new Headers({ 'content-type': 'application/json', ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }),
   };
 
   if (body) {
@@ -190,6 +192,8 @@ async function callHandler(request: NextRequest, id: string) {
 describe('POST /api/tasks/[id]/start', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(null);
     mockTasksFindFirst.mockReset();
     mockTasksFindMany.mockReset();
     mockWorkersFindMany.mockReset();
@@ -311,8 +315,61 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.started).toBe(true);
     expect(data.targetLocalUiUrl).toBe('http://localhost:3456');
 
-    // The target rides on the wake; delivery sends the targeted TASK_ASSIGNED.
-    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: 'http://localhost:3456' });
+    // The target rides on the wake with the person flag; delivery sends the
+    // targeted TASK_ASSIGNED, which a held runner still runs (spec c7410e76 R-34).
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: 'http://localhost:3456', byPerson: true });
+  });
+
+  describe('aiming at one runner is a person\'s call', () => {
+    const task = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1', name: 'Test Workspace', repo: 'test/repo' },
+    };
+
+    it('refuses targetLocalUiUrl from an API key: nothing is written or woken', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'worker' });
+      mockTasksFindFirst.mockResolvedValue(task);
+
+      const response = await callHandler(createMockRequest({ bearer: 'bld_key', body: { targetLocalUiUrl: 'http://localhost:3456' } }), 'task-123');
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toContain('person');
+      expect(mockWakeTask).not.toHaveBeenCalled();
+      expect(mockDbUpdate.set).not.toHaveBeenCalled();
+    });
+
+    it('refuses targetLocalUiUrl from a per-task token', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', taskScope: { taskId: 't-other', workspaceId: 'ws-1' } });
+      mockTasksFindFirst.mockResolvedValue(task);
+
+      const response = await callHandler(createMockRequest({ bearer: 'bld_tt', body: { targetLocalUiUrl: 'http://localhost:3456' } }), 'task-123');
+
+      expect(response.status).toBe(403);
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('an API key may still start untargeted (a broadcast a held runner holds)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'worker' });
+      mockTasksFindFirst.mockResolvedValue(task);
+
+      const response = await callHandler(createMockRequest({ bearer: 'bld_key' }), 'task-123');
+
+      expect(response.status).toBe(200);
+      expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: null });
+    });
+
+    it("a person's own OAuth session may aim it, and the wake carries the person flag", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', sessionUserId: 'user-123', actsAs: 'person' });
+      mockTasksFindFirst.mockResolvedValue(task);
+
+      const response = await callHandler(createMockRequest({ bearer: 'oauth_tok', body: { targetLocalUiUrl: 'http://localhost:3456' } }), 'task-123');
+
+      expect(response.status).toBe(200);
+      expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: 'http://localhost:3456', byPerson: true });
+    });
   });
 
   it('returns 400 when task status is not pending', async () => {

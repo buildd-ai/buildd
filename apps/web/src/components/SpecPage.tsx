@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useState, type ReactNode } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
-import PrimaryAction from '@/components/ui/PrimaryAction';
+import PrimaryAction, { primaryActionClass } from '@/components/ui/PrimaryAction';
+import Spinner from '@/components/Spinner';
 import Section from '@/components/ui/Section';
 import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
@@ -23,7 +24,9 @@ import SpecRepoChecks from '@/components/SpecRepoChecks';
 import SpecDelivery from '@/components/SpecDelivery';
 import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
-import type { SpecPageView } from '@/lib/specs/page-view';
+import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
+import type { RepoCopyPreflight } from '@/lib/specs/repo-copy';
+import { nativeHistoryData } from '@/lib/native-history';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
 
@@ -138,6 +141,91 @@ function Compare({ specId, revisions, from, to }: { specId: string; revisions: n
   );
 }
 
+/**
+ * The repo checks on the would-be copy (R-34), fetched after the panel shows:
+ * they ask GitHub, which is never on the path of opening Review (R-9).
+ */
+function RepoChecks({ specId }: { specId: string }) {
+  const [got, setGot] = useState<{ preflight: RepoCopyPreflight | null } | 'loading' | 'unread'>('loading');
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/specs/${encodeURIComponent(specId)}/preflight`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((b: { preflight?: RepoCopyPreflight | null }) => { if (live) setGot({ preflight: b.preflight ?? null }); })
+      .catch(() => { if (live) setGot('unread'); });
+    return () => { live = false; };
+  }, [specId]);
+  if (got === 'loading') {
+    return (
+      <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-repo-checks-loading">
+        <Spinner size="xs" aria-label="Running the repo checks" /> Running the repo checks on the repo copy…
+      </p>
+    );
+  }
+  if (got === 'unread') return <p className="text-meta text-text-muted" data-testid="spec-repo-checks-unread">The repo checks could not be run just now. You can still approve; the copy&apos;s PR runs them.</p>;
+  return <SpecRepoChecks preflight={got.preflight} />;
+}
+
+type ReviewPanes = SpecPanes & { version?: number };
+const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
+
+/**
+ * What approving the waiting revision puts in force (R-7, R-8): from the
+ * server when the page was loaded with ?review=1, else fetched on the press,
+ * with the heading and a loading line shown at once.
+ */
+function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean }) {
+  const [panes, setPanes] = useState<ReviewPanes | null>(initial);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (initial) return;
+    let live = true;
+    fetch(`/api/specs/${encodeURIComponent(spec.id)}/diff?review=1`)
+      .then(async (res) => {
+        const b = (await res.json().catch(() => ({}))) as { review?: ReviewPanes; error?: string };
+        if (!live) return;
+        if (res.ok && b.review) setPanes(b.review);
+        else setError(b.error ?? REVIEW_UNREAD);
+      })
+      .catch(() => { if (live) setError(REVIEW_UNREAD); });
+    return () => { live = false; };
+  }, [spec.id, initial]);
+  const revision = panes?.revision ?? waiting;
+  const replaces = panes ? panes.replaces : spec.approvedRevision;
+  return (
+    <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
+      <h2 id="spec-review-heading" className="text-title font-semibold text-text-primary">
+        {replaces ? `Revision ${revision} replaces revision ${replaces}` : `Revision ${revision} (nothing approved yet)`}
+      </h2>
+      {panes ? (
+        // Above the text it approves on a phone; in the Ask corner on desktop.
+        <ActionDock>
+          <Approve specId={spec.id} revision={panes.revision} expectedVersion={panes.version ?? spec.version} />
+        </ActionDock>
+      ) : null}
+      {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+      {error ? (
+        <Notice tone="warn" data-testid="spec-page-review-error">{error}</Notice>
+      ) : panes ? (
+        <SpecRevisionPanes
+          body={panes.body}
+          hunks={panes.hunks}
+          omittedLines={panes.omittedLines}
+          sectionCount={panes.sectionCount}
+          linesAdded={panes.linesAdded}
+          linesRemoved={panes.linesRemoved}
+          initial={panes.replaces ? 'changes' : 'spec'}
+          attachments={panes.attachmentSources}
+        />
+      ) : (
+        <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-page-review-loading">
+          <Spinner size="sm" aria-label="Reading the changes" /> Reading what changed…
+        </p>
+      )}
+    </section>
+  );
+}
+
 /** A small heading inside Related, so a screen reader can jump between its parts. */
 function Sub({ children }: { children: ReactNode }) {
   return <h3 className="text-meta font-semibold text-text-secondary">{children}</h3>;
@@ -164,30 +252,21 @@ export default function SpecPage({ view }: { view: Ok }) {
   // Related renders only when something sits under it: no empty heading.
   const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
   const line = readingLine(view);
-  const reviewLink = view.canApprove && view.waiting && !view.review;
+  // Review is the address (?review=1), but pressing it is not a navigation: the
+  // URL changes in place (no server render, R-7) and the panel fetches itself.
+  const params = useSearchParams();
+  const reviewing = !!view.canApprove && !!view.waiting && (!!view.review || params.get('review') === '1');
+  const reviewLink = view.canApprove && view.waiting && !reviewing;
+  const openReview = (e: MouseEvent<HTMLAnchorElement>) => {
+    // A new tab or window still opens the link.
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    window.history.pushState(nativeHistoryData(window.history.state), '', `${base}?review=1`);
+  };
 
   const main = (
-    view.review ? (
-      <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading">
-        <h2 id="spec-review-heading" className="text-title font-semibold text-text-primary">
-          {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision} (nothing approved yet)`}
-        </h2>
-        {/* Above the text it approves on a phone; in the Ask corner on desktop. */}
-        <ActionDock>
-          <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
-        </ActionDock>
-        <SpecRepoChecks preflight={view.preflight ?? null} />
-        <SpecRevisionPanes
-          body={view.review.body}
-          hunks={view.review.hunks}
-          omittedLines={view.review.omittedLines}
-          sectionCount={view.review.sectionCount}
-          linesAdded={view.review.linesAdded}
-          linesRemoved={view.review.linesRemoved}
-          initial={view.review.replaces ? 'changes' : 'spec'}
-          attachments={view.review.attachmentSources}
-        />
-      </section>
+    reviewing && view.waiting ? (
+      <ReviewPanel spec={spec} waiting={view.waiting} initial={view.review} repoChecks={!!view.repoChecks} />
     ) : view.compare ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-compare-panel">
         {'error' in view.compare ? (
@@ -203,7 +282,8 @@ export default function SpecPage({ view }: { view: Ok }) {
       </section>
     ) : (
       <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
-        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}} />
+        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
+          criterionVerdicts={(view.delivery?.entries ?? []).filter(e => e.builtTo === view.reading.revision).flatMap(e => e.criteria.map(c => ({ criterionId: c.criterionId, mark: c.mark, title: e.title, href: e.href })))} />
       </Card>
     )
   );
@@ -325,7 +405,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       {numbers.length > 1 ? <Compare specId={spec.id} revisions={numbers} from={defaultFrom} to={spec.headRevision} /> : null}
       <ol className="mt-2 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-page-revisions">
         {view.revisions.map((r) => {
-          const here = r.revision === view.reading.revision && !view.review && !view.compare;
+          const here = r.revision === view.reading.revision && !reviewing && !view.compare;
           return (
             <li key={r.revision} className="flex flex-col gap-0.5 py-2" data-testid="spec-page-revision" data-revision={r.revision}>
               <span className="flex flex-wrap items-baseline gap-x-2 text-body text-text-primary">
@@ -401,9 +481,9 @@ export default function SpecPage({ view }: { view: Ok }) {
 
       {reviewLink ? (
         <ActionDock>
-          <PrimaryAction href={`${base}?review=1`} fullWidthOnMobile data-testid="spec-page-review">
+          <a href={`${base}?review=1`} onClick={openReview} className={primaryActionClass({ fullWidthOnMobile: true })} data-testid="spec-page-review">
             Review revision {view.waiting}
-          </PrimaryAction>
+          </a>
         </ActionDock>
       ) : null}
 

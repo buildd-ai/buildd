@@ -102,9 +102,18 @@ export function isParkedAbortError(error: string | undefined | null): boolean {
   return !!error && (error.startsWith('needs_input') || error.startsWith(PAUSED_ERROR_PREFIX));
 }
 
-/** A paused worker holds no runner slot: it is excluded from the busy count the heartbeat reports. */
-export function holdsRunnerSlot(worker: { status: WorkerStatus; waitingFor?: Pick<WaitingFor, 'type'> | null }): boolean {
+/**
+ * A paused worker holds no runner slot: it is excluded from the busy count the
+ * heartbeat reports. Nor does a question whose session ended (the default
+ * inputAsRetry park): nothing runs until the answer resumes it, and the claim
+ * loop already leaves it out of `busySlotCount`. Only a question asked inside a
+ * live session holds one.
+ */
+export function holdsRunnerSlot(
+  worker: { status: WorkerStatus; waitingFor?: Pick<WaitingFor, 'type'> | null },
+  hasLiveSession = true,
+): boolean {
   if (worker.status === 'working') return true;
-  if (worker.status === 'waiting') return worker.waitingFor?.type !== 'pause';
+  if (worker.status === 'waiting') return hasLiveSession && worker.waitingFor?.type !== 'pause';
   return false;
 }

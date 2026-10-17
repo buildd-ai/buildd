@@ -59,7 +59,7 @@ export const PRIORITY_CAPABILITY = 'operator_recovery.priority';
 export type RecoveryPrincipal =
   /** The platform owner through POST /api/admin/operator. `operatorLabel` is asserted by the admin app, recorded, never trusted. */
   | { kind: 'platform_admin'; accountId: string; operatorLabel: string | null }
-  /** A team admin through the incident page (FIR (b) route), already scoped to their own team. */
+  /** A team admin, already scoped to their own team. No open-product route acts as one. */
   | { kind: 'team'; accountId: string | null; userId: string | null }
   /** A model's `repair_suggestion` (B3). `promoted`: its decision kind left shadow (§6.5). */
   | { kind: 'model'; decisionId: string; promoted: boolean };

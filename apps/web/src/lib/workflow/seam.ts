@@ -543,13 +543,14 @@ export async function attemptEnded(p: {
   }
   // 1bd26ae7: a repair that pushed from somewhere the runner cannot see (an interactive session, another
   // checkout) reports no local head. Its proof is §9's "L unknown" rule: the PR head moved off the head the
-  // repair was bound to and descends from it. The re-review that follows decides whether it fixed anything.
+  // repair was bound to. The re-review that follows decides whether it fixed anything.
+  // A fix that rebased and force-pushed does not descend from the bound head, so ancestry is no test of
+  // "the attempt's push": the head moved and is the PR head now, whichever order the push and the
+  // completion arrived in.
   const reported = attemptId ? view.attempts.find((a) => a.id === attemptId)?.reportedShas.length ?? 0 : 0;
   // Only an end with nothing local to lose (AC-10): an unproven end that reported commits is not proof.
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
-    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
-    const reader = repo ? readerFor(deps, repo.installationId) : null;
-    if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
+    proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
   // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;

@@ -23,6 +23,10 @@ import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/
 import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
 import { claimOrderBy } from '@/lib/claim-order';
 import { claimCandidateWhere, type ClaimCandidateInput, type ClaimGateName } from '@/lib/claim-candidate-where';
+import { findBlockingPr, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
+import type { OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -127,6 +131,9 @@ export interface RunnerQueueRow {
   ctxInfraRetryCount?: string | number | null;
   ctxBudgetExhausted?: string | boolean | null;
   ctxCredentialHold?: string | boolean | null;
+  /** For the alongside read (`queueAlongside`); never sent to the runner. */
+  pathManifest?: string[] | null;
+  gitConfig?: unknown;
   [gate: `g_${string}`]: unknown;
 }
 
@@ -186,9 +193,52 @@ export function groupRunnerQueue(rows: RunnerQueueRow[]): RunnerQueueTeam[] {
   return [...byTeam.values()].sort((a, b) => a.teamName.localeCompare(b.teamName));
 }
 
+/** What a queued task's overlaps are read against: open PRs and live leases, per workspace. */
+export interface QueueOverlapState {
+  openPrs: Map<string, OpenPrTask[]>;
+  leases: Map<string, Map<string, string[]>>;
+}
+
 export interface RunnerQueueDeps {
   read?: (opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) => Promise<RunnerQueueRow[]>;
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
+  overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
+}
+
+/**
+ * The work a queued task would start alongside (spec: Claim Overlap
+ * Scheduling, I-38): the first open PR, else live lease, it shares files with,
+ * when the claim's overlap policy (./overlap-policy) lets it start. Null when
+ * it overlaps nothing, or anything that would hold it.
+ */
+export function queueAlongside(
+  task: { id: string; workspaceId: string; pathManifest?: string[] | null; gitConfig?: unknown },
+  state: QueueOverlapState,
+): { prNumber: number | null; holderTaskId: string | null } | null {
+  const manifest = (task.pathManifest ?? []).filter(p => p !== REPO_WIDE_SENTINEL);
+  if (manifest.length === 0) return null;
+  const gitConfig = (task.gitConfig ?? null) as WorkspaceGitConfig | null;
+  const prs = (state.openPrs.get(task.workspaceId) ?? []).filter(pr => pr.taskId !== task.id);
+  if (findHoldingOpenPr(manifest, prs, workspaceHardSurface(gitConfig))) return null;
+  const leases = state.leases.get(task.workspaceId);
+  if (findHoldingLease(task.id, manifest, leases, undefined, gitConfig)) return null;
+  const pr = prs.find(p => findBlockingPr(manifest, [p]));
+  if (pr) return { prNumber: pr.prNumber ?? null, holderTaskId: pr.taskId ?? null };
+  for (const [holderTaskId, claimed] of leases ?? []) {
+    if (holderTaskId !== task.id && intersectPaths(manifest, claimed.filter(p => p !== REPO_WIDE_SENTINEL)).length > 0) return { prNumber: null, holderTaskId };
+  }
+  return null;
+}
+
+async function readOverlaps(workspaceIds: string[]): Promise<QueueOverlapState> {
+  const [{ loadOpenPrTasksByWorkspace }, { getActiveClaimsByWorkspace }] = await Promise.all([
+    import('@/app/api/workers/claim/coordination-snapshot'), import('@buildd/core/path-claim'),
+  ]);
+  const [openPrs, leaseList] = await Promise.all([
+    loadOpenPrTasksByWorkspace(workspaceIds),
+    Promise.all(workspaceIds.map(async ws => [ws, await getActiveClaimsByWorkspace(ws)] as const)),
+  ]);
+  return { openPrs, leases: new Map(leaseList) };
 }
 
 /** The read, on any select builder (the db, or a QueryBuilder to render it in a test). */
@@ -213,6 +263,8 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxInfraRetryCount: sql<string | null>`${tasks.context}->>'infraRetryCount'`,
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
+      pathManifest: tasks.pathManifest,
+      gitConfig: workspaces.gitConfig,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)
@@ -271,7 +323,22 @@ export async function loadRunnerQueue(
   const gates = runnerQueueGates(input.caller, now);
   const rows = await (deps.read ?? readRows)({ workspaceIds: input.workspaceIds, gates });
   const truncated = rows.length > RUNNER_QUEUE_LIMIT;
-  const teamsOut = groupRunnerQueue(rows.slice(0, RUNNER_QUEUE_LIMIT));
+  const kept = rows.slice(0, RUNNER_QUEUE_LIMIT);
+  const teamsOut = groupRunnerQueue(kept);
+  // Overlaps are read only when some queued task declares files; a failed
+  // read leaves every row without `alongside`.
+  const declaring = kept.filter(r => Array.isArray(r.pathManifest) && r.pathManifest.length > 0);
+  if (declaring.length > 0) {
+    const state = await (deps.overlaps ?? readOverlaps)([...new Set(declaring.map(r => r.workspaceId))]).catch(() => null);
+    if (state) {
+      const byId = new Map(declaring.map(r => [r.id, r]));
+      for (const team of teamsOut) for (const t of team.queue) {
+        const r = byId.get(t.id);
+        const a = r ? queueAlongside(r, state) : null;
+        if (a) t.alongside = a;
+      }
+    }
+  }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {
     if (team.queue.length === 0) return;

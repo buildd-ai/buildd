@@ -164,6 +164,19 @@ export interface TopState {
   view: 'missions' | 'queue';
   /** The server's queue for this runner (GET /api/workers/queue via the socket); null until read. */
   queue: RunnerQueueResponse | null;
+  /**
+   * Estimates (minutes) of tasks the queue has shown, kept after they start,
+   * so a full runner can say when its next slot frees (R-26).
+   */
+  estimates: Record<string, number>;
+  /** A broad claim is out right now ("Looking for work…"). */
+  lookingForWork: boolean;
+  /**
+   * Set right after `-` lowered the slots below the running count: `p` then
+   * pauses the newest extras instead of the selected row (R-45). Cleared by
+   * any other key.
+   */
+  slotOffer: { slots: number; extras: number } | null;
   /** The selected row in the Queue view, over its rows in drawn order. */
   queueCursor: number;
   focus: 'missions' | 'tasks';
@@ -191,6 +204,10 @@ export interface ClaimOutcome {
   deferrals?: Record<string, number>;
   status?: number;
   refusal?: string;
+  /** A broad claim that took work: how many agents it started. */
+  started?: number;
+  /** The task a refused overlap waits for (claim-outcomes.ts). */
+  holderTaskId?: string;
   /**
    * The server's `updatedAt` for the task when top first saw it after this
    * outcome (for the broad claim: the newest `updatedAt` in the list), so
@@ -216,6 +233,9 @@ export function initialState(opts: { hostname: string; missionId?: string | null
     view: 'missions',
     queue: null,
     queueCursor: 0,
+    estimates: {},
+    lookingForWork: false,
+    slotOffer: null,
     focus: 'tasks',
     missionCursor: 0,
     rowCursor: 0,
@@ -239,10 +259,14 @@ export type TopEvent =
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
-  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null }; hold?: RunnerHold | null }
+  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null }; hold?: RunnerHold | null; lookingForWork?: boolean }
   /** The runner's hold changed (`buildd hold`, `h`, or its `until` passed). */
   | { type: 'runner_hold'; hold: RunnerHold | null }
   | { type: 'claim_outcome'; taskId?: string; outcome: ClaimOutcome }
+  /** A broad claim went out (`looking: true`); its claim_outcome frame says it came back. */
+  | { type: 'claim_loop'; looking: boolean }
+  /** The runner's slots changed (`buildd slots`, + / -; R-43). */
+  | { type: 'slots'; maxConcurrent: number }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
   | { type: string; [k: string]: unknown };
@@ -319,7 +343,17 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'queue': {
       const q = (event as any).queue;
       if (!q || !Array.isArray(q.teams)) return state;
-      return { ...state, queue: q };
+      const estimates = { ...state.estimates };
+      for (const tm of q.teams) for (const t of tm?.queue ?? []) {
+        if (t && typeof t.id === 'string' && typeof t.estimateMinutes === 'number') estimates[t.id] = t.estimateMinutes;
+      }
+      return { ...state, queue: q, estimates };
+    }
+    case 'claim_loop':
+      return { ...state, lookingForWork: !!(event as any).looking };
+    case 'slots': {
+      const n = (event as any).maxConcurrent;
+      return typeof n === 'number' && n > 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
     }
     case 'connection':
       return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
@@ -334,7 +368,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
       // An older runner sends no `hold`: it cannot be held, so none.
-      return { ...next, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
+      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
     }
     case 'runner_hold': {
       return { ...state, runner: { ...state.runner, hold: parseRunnerHold((event as any).hold) } };
@@ -357,7 +391,8 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'claim_outcome': {
       const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
       if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
-      if (!e.taskId) return { ...state, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      // A broad outcome is the claim coming back: no longer looking.
+      if (!e.taskId) return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
       const tasks = { ...state.claimOutcomes.tasks };
       if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
       else tasks[e.taskId] = e.outcome;
@@ -375,7 +410,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
   // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
-  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
+  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome' || event.type === 'slots') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
     if (!w?.id) return false;
@@ -1154,6 +1189,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   no_personal_credential: 'needs a personal login that is not set up',
   provider_not_allowed: 'its model provider is not allowed here',
   tier_policy: 'its model tier is not allowed here',
+  isolation_unenforced: 'this runner cannot confine it as its isolation policy requires',
 };
 
 /** Words for a deferral or exclusion code; a code this view has no words for never prints raw. */
@@ -1376,4 +1412,58 @@ export function spendToday(state: TopState, now: number): SpendTotals {
 /** "Today: $2.10 billed, ~$0.40 estimated · plans covered about $41 at list price", or null. */
 export function spendTodayLine(state: TopState, now: number): string | null {
   return todayLine(spendToday(state, now));
+}
+
+// ── The claim loop, in words (task 9e12f377 part 3) ─────────────────────────
+
+/** `14:02` today, else the local day and time. */
+function clockAt(ms: number, now: number): string {
+  return localLiftTime(new Date(ms).toISOString(), now);
+}
+
+const BROAD_REASON_WORDS: Record<string, string> = {
+  no_pending_tasks: 'nothing is waiting for this runner',
+  no_slots: "the account's worker limit is reached",
+  budget_exhausted: 'a plan or rate limit holds the work',
+  context_paused: 'claims are paused after repeated failures',
+  race_lost: 'another runner took the work first',
+  runner_held: 'this runner is on hold',
+};
+
+/** Why the last broad claim started nothing, in words. */
+export function broadNothingWords(o: ClaimOutcome): string {
+  if (o.reason === 'refused') {
+    const why = (o.refusal ?? '').replace(/\s+/g, ' ').trim();
+    return o.status === 429 ? "the account's worker limit is reached" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
+  }
+  if (o.reason === 'budget_exhausted' && o.summary) return o.summary.replace(/\.$/, '');
+  if (o.reason === 'all_candidates_deferred' || o.reason === 'budget_exhausted_partial') {
+    const top = Object.entries(o.deferrals ?? {}).sort((a, b) => b[1] - a[1])[0];
+    if (top) {
+      const words = EXCLUSION_WORDS[top[0]] ?? top[0].replace(/_/g, ' ');
+      const total = Object.values(o.deferrals ?? {}).reduce((n, v) => n + v, 0);
+      return total === top[1] ? `every waiting task is held (${words})` : `every waiting task is held (most: ${words})`;
+    }
+    return 'every waiting task is held';
+  }
+  return BROAD_REASON_WORDS[o.reason] ?? o.reason.replace(/_/g, ' ');
+}
+
+/**
+ * The line that says what the claim loop did (from the owner: after `buildd
+ * resume` nothing said what happens): "Looking for work…" while a claim is
+ * out, "Looked for work 14:02 · started 2", or "… · nothing to start: <why>".
+ * Null before the first claim, while held, and with every slot busy (the
+ * header says so).
+ */
+export function claimLoopLine(state: TopState, now: number): string | null {
+  if (heldNow(state, now)) return null;
+  if (state.lookingForWork) return 'Looking for work…';
+  const o = state.claimOutcomes.broad;
+  // Every slot busy: the header's "3 of 3 busy" already says why nothing starts.
+  if (busySlots(state) >= state.runner.maxConcurrent) return null;
+  if (!o) return null;
+  const at = `Looked for work ${clockAt(o.at, now)}`;
+  if (o.reason === 'claimed') return `${at} · started ${o.started ?? 1}`;
+  return `${at} · nothing to start: ${broadNothingWords(o)}`;
 }

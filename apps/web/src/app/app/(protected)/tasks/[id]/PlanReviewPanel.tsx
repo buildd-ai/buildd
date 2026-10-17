@@ -139,7 +139,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to approve plan');
+        throw new Error(data.error || 'Could not approve the plan. Try again.');
       }
 
       const data = await res.json();
@@ -168,7 +168,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to reject plan');
+        throw new Error(data.error || 'Could not reject the plan. Try again.');
       }
 
       const data = await res.json();

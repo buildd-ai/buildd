@@ -1,6 +1,7 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
 import type { RunnerHold } from './runner-hold';
+import type { RunnerIsolationRecord } from './runner-isolation';
 import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
@@ -1359,6 +1360,13 @@ export interface WorkerEnvironment {
    * dashboard shows it as on hold instead of idle.
    */
   hold?: RunnerHold | null;
+  /**
+   * The confinement this runner can apply, per backend and mode, from this
+   * process's own probe (./runner-isolation). Absent on runner builds that
+   * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
+   * whose cause is unknown.
+   */
+  isolation?: RunnerIsolationRecord;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1737,7 +1745,13 @@ export interface ClaimTaskExclusion {
    * names in prose, so a caller (`buildd top`) can show it in local time
    * without parsing the sentence. Absent when there is no known end.
    */
-  until?: string;
+  until?: string;  /**
+   * The task this one waits for, on an overlap (`soft_overlap`, or a
+   * `path_overlap` behind another task's active claim): the same task `detail`
+   * names in prose, so `buildd top` can say "when #3 ends (same files)" or name
+   * it by title (spec c7410e76 R-26). Absent for any other code.
+   */
+  holderTaskId?: string;
 }
 
 export interface ClaimDiagnostics {
@@ -1875,6 +1889,14 @@ export interface ClaimDiagnostics {
      * re-tiered. The gate event's detail is the structured policy_denied error.
      */
     tier_policy?: number;
+    /**
+     * The task's isolation requirement (`protected`, or `trusted_local`
+     * without the operator's reduced-mode opt-in) is not met by this runner's
+     * current isolation probe for its backend and mode. Held for an eligible
+     * runner, never run with less confinement. See
+     * packages/shared/src/isolation-policy.ts.
+     */
+    isolation_unenforced?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -3318,6 +3340,12 @@ export interface RunnerQueueTask {
   holdCause?: RunnerQueueHoldCause | null;
   /** The task's frozen p50 estimate in minutes; null when the team has estimates off or none was made. */
   estimateMinutes: number | null;
+  /**
+   * Work it shares only mergeable files with (an open PR, else a live lease):
+   * the claim starts it alongside, and the merge settles it. Absent when it
+   * overlaps nothing, or overlaps something that holds it.
+   */
+  alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
 }
 
 export interface RunnerQueueTeam {
@@ -4361,6 +4389,28 @@ export interface OrchestrationPredictionCounts {
   labelled: number;
   unlabelled: number;
 }
+/** One cell of the overlap-START merge-conflict readout (spec: Claim Overlap Scheduling, Measurement). */
+export interface OverlapStartConflictCell {
+  areaClass: string;
+  /** `soft_overlap`, `open_pr_overlap`, `lease_overlap`, or `all` for the area's total. */
+  gate: string;
+  starts: number;
+  /** Starts whose task finished, so whether its PR conflicted is known. */
+  observed: number;
+  /** Observed starts whose PR got a conflict retry. */
+  conflicted: number;
+  /** Still running or unknown: in neither share. */
+  pending: number;
+  /** conflicted / observed; null with nothing observed. */
+  conflictShare: number | null;
+}
+
+export interface OverlapStartConflictReadout {
+  /** One `gate: all` row per area class, then one per gate in it; area classes by name. */
+  cells: OverlapStartConflictCell[];
+  total: OverlapStartConflictCell;
+}
+
 export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
   decisionCapabilities: CoordinationDecisionCapability[];
   decisions: OrchestrationDecisionCounts & {
@@ -4375,6 +4425,14 @@ export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
     byDay: Array<OrchestrationPredictionCounts & { day: string }>;
     byStopReason: Array<{ stopReason: string; total: number }>;
   };
+  /**
+   * Of every overlap START in the window (soft overlap, open PR, live lease),
+   * the share whose PR later hit a merge conflict, by area class and gate.
+   * Absent with a missionId filter (the start rows carry no mission), or when
+   * the read failed (`overlapStartsError`).
+   */
+  overlapStarts?: OverlapStartConflictReadout;
+  overlapStartsError?: string;
   coverage: { note: string };
 }
 

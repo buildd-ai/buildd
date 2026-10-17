@@ -8,7 +8,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -77,6 +78,7 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { readForceStart } from '@buildd/core/waiting-reason';
 import { consumeForceStart, recordForceStartClaim } from '@/lib/force-start';
 import { describeExplicitDeferral } from './explicit-deferral';
+import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
@@ -153,14 +155,13 @@ import {
   openPrStartVerdict,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
-  softOverlapStartVerdict,
-  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
   type ClaimHoldNote,
   type ClaimRiskEvidence,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
-import { loadSoftOverlapHolders } from './soft-overlap-store';
+import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, overlapHolds, workspaceHardSurface } from './overlap-policy';
+import { loadIdleHolderIds, loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -403,7 +404,9 @@ export async function POST(req: NextRequest) {
   // cap on the person (task 69f5b7cd). A verified interactive session is not
   // limited by it, and its workers (runner 'mcp') do not occupy a runner slot.
   // Only the verified marker counts: 'mcp-unverified' is an ordinary runner.
-  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER);
+  // A paused or parked worker, or a question whose session ended, holds no
+  // slot (workerHoldsRunnerSlot, the same rule the runner's heartbeat counts by).
+  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER && workerHoldsRunnerSlot(w));
 
   if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
@@ -1095,6 +1098,7 @@ export async function POST(req: NextRequest) {
     no_personal_credential: 0,
     provider_not_allowed: 0,
     tier_policy: 0,
+    isolation_unenforced: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1111,6 +1115,8 @@ export async function POST(req: NextRequest) {
   // Coding provider/payment-source policy (packages/core/coding-policy.ts), and
   // the tasks it pinned to the runner's own login (no server-held model credential).
   const loadCodingPolicyFor = codingPolicyLoader();
+  // Team sizes for the isolation policy's single-owner default, read once per team.
+  const teamSizeForIsolation = teamSizeLoader();
   const nativeSourceTasks = new Set<string>();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
@@ -1286,6 +1292,23 @@ export async function POST(req: NextRequest) {
     }));
   }
 
+  // Open-PR and lease holders that cannot start themselves (future startAt,
+  // held mission) hold nobody (./overlap-policy). A failed read leaves the set
+  // empty, so every such hold stands (fail closed).
+  let idleHolderIds = new Set<string>();
+  {
+    const named = new Set<string>();
+    for (const list of openPrTasksByWorkspace.values()) for (const pr of list) if (pr.taskId) named.add(pr.taskId);
+    for (const byTask of activePathClaimsByWorkspace.values()) for (const id of byTask.keys()) named.add(id);
+    if (named.size > 0) {
+      try {
+        idleHolderIds = await loadIdleHolderIds([...named], now);
+      } catch (err) {
+        console.warn('[claim] idle holder read failed (every open-PR and lease hold stands):', err);
+      }
+    }
+  }
+
   // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
   // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
   // soft entry then holds as unknown state (fail closed).
@@ -1432,8 +1455,13 @@ export async function POST(req: NextRequest) {
   const planFor = (cands: typeof filteredTasks, claimed: unknown[], capacity: number) => {
     const ctx = buildClaimPlanInput({
       candidates: cands,
-      openPrTasksByWorkspace,
-      activePathClaimsByWorkspace,
+      // A holder that cannot start orders nobody behind it either.
+      openPrTasksByWorkspace: idleHolderIds.size === 0 ? openPrTasksByWorkspace : new Map(
+        [...openPrTasksByWorkspace].map(([ws, list]) => [ws, list.filter(pr => !pr.taskId || !idleHolderIds.has(pr.taskId))]),
+      ),
+      activePathClaimsByWorkspace: idleHolderIds.size === 0 ? activePathClaimsByWorkspace : new Map(
+        [...activePathClaimsByWorkspace].map(([ws, byTask]) => [ws, new Map([...byTask].filter(([id]) => !idleHolderIds.has(id)))]),
+      ),
       missionInFlightRows,
       claimedThisBatch: claimed,
       capacity,
@@ -1620,6 +1648,16 @@ export async function POST(req: NextRequest) {
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
+      // Overlap policy (./overlap-policy): an open PR sharing only mergeable
+      // files does not hold; the task starts alongside it and the merge
+      // settles it. Only a PR on an unmergeable surface holds. Either way the
+      // collector below still records the model's question (never deciding).
+      const wsHardSurface = workspaceHardSurface((task as any).workspace?.gitConfig ?? null);
+      const holdingPr = blocking ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface, idleHolderIds) : null;
+      const startsAlongsidePr = blocking && !holdingPr
+        ? filterOpenPrTasks.find(t => (t.prNumber ?? null) === blocking.prNumber && (t.prUrl ?? null) === blocking.prUrl) ?? null
+        : null;
+      const heldByPr = holdingPr ? { prNumber: holdingPr.pr.prNumber ?? null, prUrl: holdingPr.pr.prUrl ?? null } : null;
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
       // The collector is synchronous and does no I/O, so what it needs is read
       // here: each overlapping holder's current PR diff, and (for a candidate
@@ -1629,15 +1667,31 @@ export async function POST(req: NextRequest) {
         ? await readOpenPrRiskEvidence(task, taskManifest, filterOpenPrTasks, splitOwnOpenPrs(task, openPrTasks).own)
         : {};
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
-      const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      // The model's verdict is recorded, never applied (gated: false): only the
+      // rule's disjoint-diff START can lift a hold on an unmergeable surface.
+      const openPrVerdict = heldByPr && holdNote ? await openPrStartVerdict(holdNote, false) : 'HOLD';
       if (blocking) sawCoordinationBlocker = true;
-      if (blocking && openPrVerdict !== 'HOLD') {
-        if (openPrVerdict === 'START' && holdNote) jevStartNotes.push(holdNote);
-        console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
+      if (startsAlongsidePr) {
+        const sharedPaths = boundDeferralPaths(intersectPaths(taskManifest, startsAlongsidePr.pathManifest ?? []));
+        console.log(`[claim] overlap_start: task ${task.id} starts alongside PR #${blocking!.prNumber ?? blocking!.prUrl} (mergeable files)`);
+        softOverlapStarted.push({
+          gate: 'open_pr_overlap',
+          holderTaskId: startsAlongsidePr.taskId ?? null,
+          prNumber: startsAlongsidePr.prNumber ?? null,
+          paths: sharedPaths,
+          overlapKind: 'mergeable',
+          decidedBy: 'rule',
+          riskTier: holdNote?.candidate.risk?.tier ?? null,
+          areaClass: CLAIM_LEARNING_HOOKS.areaClass(sharedPaths),
+        });
+        const exclusive = exclusiveStartPaths(taskManifest, wsHardSurface);
+        if (exclusive.length > 0) gatedStartPaths = exclusive;
+      } else if (heldByPr && openPrVerdict !== 'HOLD') {
+        console.log(`[claim] rule_start: task ${task.id} past open-PR overlap (PR #${heldByPr.prNumber ?? heldByPr.prUrl}); acquiring its paths`);
         gatedStartPaths = holdNote!.candidate.concretePaths;
-      } else if (blocking) {
-        console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
-        const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
+      } else if (heldByPr) {
+        console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${heldByPr.prNumber ?? heldByPr.prUrl} on an unmergeable surface)`);
+        const blockedByPr = heldByPr;
         firstBlockingPr ??= blockedByPr;
         const blockingEntry = filterOpenPrTasks.find(
           t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
@@ -1679,36 +1733,49 @@ export async function POST(req: NextRequest) {
       // A fix attempt's own ancestors never block it (§13.11 rule 4).
       const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds);
       if (leaseBlock) {
-        const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = leaseBlock;
-        console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-        if (task.id === taskId && !liftedByForce('path_overlap')) {
-          explicitTaskExclusion = {
-            code: 'path_overlap',
-            detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
-          };
+        // Overlap policy (./overlap-policy): a live lease on mergeable files
+        // does not hold, the task starts alongside it; an unmergeable one does,
+        // and so does any lease in a workspace that enforces path claims.
+        const holdingLease = findHoldingLease(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds, (task as any).workspace?.gitConfig ?? null, idleHolderIds);
+        if (!holdingLease) {
+          const sharedPaths = boundDeferralPaths(leaseBlock.overlapPaths);
+          softOverlapStarted.push({
+            gate: 'lease_overlap', holderTaskId: leaseBlock.holderTaskId, paths: sharedPaths, overlapKind: 'mergeable',
+            decidedBy: 'rule', riskTier: null, areaClass: CLAIM_LEARNING_HOOKS.areaClass(sharedPaths),
+          });
         }
-        // prNumber/prUrl: null so a coalesced row does not keep naming a
-        // PR from an earlier layer-1 deferral as the current blocker.
-        if (bypassOrDefer('path_overlap', {
-          blockingTaskId: claimingTaskId, prNumber: null, prUrl: null, paths: boundDeferralPaths(overlapPaths),
-        })) {
-          // The holder's lease paths, so a narrowing that gives one back
-          // wakes this task too (narrow matches waiters by exact path).
-          noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
-          continue;
+        const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = holdingLease ?? leaseBlock;
+        if (holdingLease) {
+          console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+          if (task.id === taskId && !liftedByForce('path_overlap')) {
+            explicitTaskExclusion = {
+              code: 'path_overlap',
+              detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
+            };
+          }
+          // prNumber/prUrl: null so a coalesced row does not keep naming a
+          // PR from an earlier layer-1 deferral as the current blocker.
+          if (bypassOrDefer('path_overlap', {
+            blockingTaskId: claimingTaskId, prNumber: null, prUrl: null, paths: boundDeferralPaths(overlapPaths),
+          })) {
+            // The holder's lease paths, so a narrowing that gives one back
+            // wakes this task too (narrow matches waiters by exact path).
+            noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
+            continue;
+          }
         }
       }
 
       // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
       // scope overlaps this one's on the same file or by directory prefix, or a
-      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
-      // (serialized, generated, hotspot) / unknown-state entry holds
-      // deterministically. The rest is tiered (orchestration-claim-risk): a
-      // holder that never started, or a directory-only overlap, starts in code
-      // (`rule_start`); a same-file one holds unless an applied Jev START
-      // exists for this exact state. Either START's declared paths are then
-      // acquired exclusively before the claim (a live lease wins). Forced:
-      // bypassed and recorded.
+      // pre-v2 inferred edge. Never a dependsOn edge. An overlap on an
+      // unmergeable surface (./overlap-policy: migration, the core list, a
+      // workspace hard surface) or an unknown-state entry holds
+      // deterministically. Every other overlap starts in code (`rule_start`):
+      // the model is still asked and its answer recorded, but it does not
+      // decide. A START acquires only its unmergeable paths exclusively before
+      // the claim, so a third task on the same mergeable file starts too.
+      // Forced: bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
             // Only same-PR conflict/collision attempts get this exemption. Other
@@ -1716,16 +1783,16 @@ export async function POST(req: NextRequest) {
             repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
               ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
               : [],
-            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
+            isHardSurface: (paths, kind) => overlapHolds(paths, kind, workspaceHardSurface((task as any).workspace?.gitConfig ?? null)),
           })
         : [];
       let softHeld = false;
       if (softVerdicts.length) sawCoordinationBlocker = true;
       for (const v of softVerdicts) {
         let softNote: ClaimHoldNote | null = null;
-        // The rule's verdict: deterministic for a hard overlap, HOLD for a
-        // same-file or prefix one until an applied Jev START says otherwise.
-        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        // The rule's verdict: deterministic for an unmergeable overlap, START
+        // for every other one.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'rule_start';
         let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
           v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         // A person's Force start already decided this overlap: no Jev read.
@@ -1740,19 +1807,22 @@ export async function POST(req: NextRequest) {
             : null;
           softNote = assessed?.note ?? null;
           if (assessed) risk = assessed.risk;
-          verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
-        if (verdict === 'START' && softNote) jevStartNotes.push(softNote);
-        if (verdict === 'START' || verdict === 'rule_start') {
-          console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
-          gatedStartPaths = concreteManifest;
+        if (verdict === 'rule_start') {
+          console.log(`[claim] overlap_start: task ${task.id} starts alongside ${v.holderTaskId} (${v.overlapKind}, mergeable files)`);
+          const exclusive = exclusiveStartPaths(concreteManifest, workspaceHardSurface((task as any).workspace?.gitConfig ?? null));
+          if (exclusive.length > 0) gatedStartPaths = exclusive;
           softOverlapStarted.push({
+            gate: 'soft_overlap',
             holderTaskId: v.holderTaskId,
             paths: v.paths.slice(0, 10),
             overlapKind: v.overlapKind,
-            decidedBy: verdict === 'rule_start' ? 'rule' : 'jev',
+            decidedBy: 'rule',
             riskTier: risk?.tier ?? null,
             reasons: risk?.reasons.slice(0, 4) ?? [],
+            // What the model would have answered, for grading; it did not decide.
+            modelRoute: softNote?.candidate.risk?.route ?? null,
+            areaClass: CLAIM_LEARNING_HOOKS.areaClass(v.paths),
           });
           continue;
         }
@@ -2479,6 +2549,29 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Runner isolation (Living Spec "Runner isolation", R-4, R-5): a protected
+    // task goes only to a runner whose current probe confines its backend and
+    // mode; a trusted_local one may also go to a runner whose operator opted
+    // in to reduced confinement. Otherwise it stays queued with the cause. The
+    // backend is final here. A person's own session is not a runner buildd
+    // dispatches to: it confines (or not) on its own machine, unstamped.
+    let isolationStamp: TaskIsolationStamp | null = null;
+    if (!runsOnCallersSeat) {
+      const { decision, stamp } = await decideClaimIsolation({ task: task as any, environment: body.environment, teamSize: teamSizeForIsolation });
+      if (!decision.ok) {
+        deferTask(task, 'isolation_unenforced', {
+          code: decision.code,
+          requirement: decision.requirement,
+          backend: (task as any).backend ?? 'claude',
+          reason: decision.reason,
+          message: decision.message,
+          remedy: decision.remedy,
+        });
+        continue;
+      }
+      isolationStamp = stamp;
+    }
+
     // Coding provider policy: a restriction, not a redirect. The backend is
     // final here (failover and toggles ran above), so a failover target is
     // checked like a stored one. Denied ⇒ held with a structured error; it is
@@ -2583,6 +2676,9 @@ export async function POST(req: NextRequest) {
     // Claimed: it no longer waits on an entitlement.
     delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY];
+    // This claim's isolation decision, or none: a previous attempt's never carries over.
+    delete (patchedContext as Record<string, unknown>)[TASK_ISOLATION_CONTEXT_KEY];
+    if (isolationStamp) (patchedContext as Record<string, unknown>)[TASK_ISOLATION_CONTEXT_KEY] = isolationStamp;
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
@@ -2832,6 +2928,11 @@ export async function POST(req: NextRequest) {
           WHERE account_id = ${account.id}
           AND status IN ('idle', 'running', 'starting', 'waiting_input')
           AND runner IS DISTINCT FROM ${INTERACTIVE_RUNNER}
+          AND parked_until IS NULL
+          AND NOT (status = 'waiting_input' AND (
+            coalesce(error, '') LIKE ${NEEDS_INPUT_ERROR_PREFIX + '%'}
+            OR waiting_for->>'type' = 'pause'
+          ))
         ) < ${account.maxConcurrentWorkers}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),

@@ -34,7 +34,7 @@ import { authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllows
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
@@ -904,6 +904,10 @@ export async function DELETE(
       }
     }
 
+    // Settle and abort its live workers and release its claims first: the
+    // delete orphans the worker rows (task_id → NULL), and a question parked
+    // on one would otherwise stay live, holding a slot, with no task to end it.
+    await applyTaskDeleteSideEffects(id);
     await db.delete(tasks).where(eq(tasks.id, id));
 
     return NextResponse.json({ success: true });

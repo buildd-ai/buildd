@@ -203,14 +203,15 @@ function modelName(model: string): string {
   return CLOUDFLARE_MODELS.find((m) => m.id === model)?.label ?? model;
 }
 
-type SwitchLine = { id: string; text: string };
+/** `kind` is the decision the switch changed; a line without one stands alone. */
+type SwitchLine = { id: string; kind?: string; text: string };
 
 /**
- * One line per decision whose model buildd switched ("Start or wait now uses
- * Clef"), with Undo for people who can change team settings. Undo restores
- * the previous model and keeps it for 30 days.
+ * The decisions buildd switched ("Start or wait now uses Clef"), with Undo for
+ * people who can change team settings. Undo restores the previous model and
+ * keeps it for 30 days.
  */
-function DecisionModelSwitches({ teamId, onChanged, fixture = null }: { teamId: string; onChanged: () => Promise<void>; fixture?: DecisionsQaFixture['switches'] | null }) {
+function useDecisionModelSwitches(teamId: string, onChanged: () => Promise<void>, fixture: DecisionsQaFixture['switches'] | null) {
   const [lines, setLines] = useState<SwitchLine[]>(fixture?.lines ?? []);
   const [canUndo, setCanUndo] = useState(fixture?.canUndo ?? false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -244,25 +245,58 @@ function DecisionModelSwitches({ teamId, onChanged, fixture = null }: { teamId: 
       setBusy(null);
     }
   }
+  return { lines, canUndo, busy, err, undo };
+}
 
-  if (lines.length === 0) return null;
+function UndoButton({ id, busy, undo }: { id: string; busy: string | null; undo: (id: string) => Promise<void> }) {
   return (
-    <div data-testid="decision-model-switches">
-      <ul className="text-text-primary space-y-1">
-        {lines.map((l) => (
-          <li key={l.id} className="flex items-center gap-2">
-            <span>{l.text}</span>
-            {canUndo && (
-              <>
-                <button className="btn btn-quiet btn-sm" disabled={busy !== null} onClick={() => void undo(l.id)}
-                  data-testid="decision-model-switch-undo">{busy === l.id ? 'Undoing…' : 'Undo'}</button>
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
+    <button className="btn btn-quiet btn-sm" disabled={busy !== null} onClick={() => void undo(id)}
+      data-testid="decision-model-switch-undo">{busy === id ? 'Undoing…' : 'Undo'}</button>
+  );
+}
+
+/**
+ * Each decision with its own model, said once. A switch buildd made to that
+ * decision marks its line ("switched by buildd") with Undo beside it rather
+ * than repeating the model; a switch with no override line (a revert to the
+ * default) keeps its own line.
+ */
+function DecisionModelOverrides({ teamId, overrides, onChanged, fixture = null }: {
+  teamId: string;
+  overrides: DecisionModelOverride[];
+  onChanged: () => Promise<void>;
+  fixture?: DecisionsQaFixture['switches'] | null;
+}) {
+  const { lines, canUndo, busy, err, undo } = useDecisionModelSwitches(teamId, onChanged, fixture);
+  const switchOf = (kind: string) => lines.find((l) => l.kind === kind);
+  const loose = lines.filter((l) => !l.kind || !overrides.some((o) => o.kind === l.kind));
+  return (
+    <>
+      {overrides.length > 0 && (
+        <ul className="text-text-primary space-y-1" data-testid="decision-model-overrides">
+          {overrides.map((o) => {
+            const sw = switchOf(o.kind);
+            return (
+              <li key={o.kind} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{o.label} uses {modelName(o.model)}{sw && <span className="text-text-muted"> · switched by buildd</span>}</span>
+                {sw && canUndo && <UndoButton id={sw.id} busy={busy} undo={undo} />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {loose.length > 0 && (
+        <ul className="text-text-primary space-y-1" data-testid="decision-model-switches">
+          {loose.map((l) => (
+            <li key={l.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>{l.text}</span>
+              {canUndo && <UndoButton id={l.id} busy={busy} undo={undo} />}
+            </li>
+          ))}
+        </ul>
+      )}
       {err && <p role="alert" className="text-status-error">{err}</p>}
-    </div>
+    </>
   );
 }
 
@@ -326,12 +360,7 @@ function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGat
         : <h2 id="decision-model-h" className="section-label mb-3">Decision model</h2>}
       <div className={embedded ? 'space-y-2 text-xs' : 'card p-4 space-y-2 text-xs'}>
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
-        {overrides.length > 0 && (
-          <ul className="text-text-primary" data-testid="decision-model-overrides">
-            {overrides.map((o) => <li key={o.kind}>{o.label} uses {modelName(o.model)}</li>)}
-          </ul>
-        )}
-        <DecisionModelSwitches teamId={teamId} onChanged={onChanged} fixture={fixture?.switches} />
+        <DecisionModelOverrides teamId={teamId} overrides={overrides} onChanged={onChanged} fixture={fixture?.switches} />
         <p className="text-text-muted">
           Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.
         </p>

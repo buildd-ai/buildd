@@ -185,6 +185,29 @@ describe('cleanupStuckWaitingInput', () => {
     expect(JSON.stringify(nodes.map(n => n.type))).not.toContain('sql');
   });
 
+  // A question parked on a task someone already cancelled: the timeout ends
+  // the worker, but must not rewrite the cancel as a failure or file a retry
+  // of work the person stopped (late retry/reclaim).
+  it('closes a question on a cancelled task without failing the task or filing a retry', async () => {
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w1', taskId: 'task-1', accountId: 'account-1', runner: 'http://runner', status: 'waiting_input',
+      updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      waitingFor: { type: 'question', prompt: 'Which repo?' }, task: { missionId: null, mission: null },
+    }]);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', workspaceId: 'ws-1', title: 'Add a panel', description: 'd', status: 'cancelled',
+      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [], missionId: null,
+      runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
+    });
+
+    const result = await cleanupStuckWaitingInput('account-1');
+
+    expect(result.failedWorkers).toBe(1);
+    expect(result.retriedTasks).toBe(0);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+  });
+
   // An interactive session's question that expires unanswered must not be
   // handed to a background runner: the person chose to run this work in their
   // own session, and a cloned retry on a runner mission is exactly the

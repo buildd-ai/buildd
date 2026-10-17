@@ -64,12 +64,20 @@ export interface PusherManagerCallbacks {
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
   claimPendingTasks: () => Promise<void>;
-  /** `byPerson`: the assignment named this runner (a person's Start), so a hold does not stop it. */
+  /** `byPerson`: the server says a person aimed this assignment at this runner, so a hold does not stop it. */
   claimAndStart: (task: BuilddTask, opts?: { byPerson?: boolean }) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
 }
 
 const GENERIC_SERVER_FAILURE = 'Task failed on server';
+
+/** The `task:assigned` payload (apps/web/src/lib/dispatch-adapters.ts sendRunnerWake). */
+export interface TaskAssignment {
+  task: BuilddTask;
+  targetLocalUiUrl?: string | null;
+  /** A person aimed it at `targetLocalUiUrl`; absent from older servers. */
+  byPerson?: boolean;
+}
 
 export class PusherManager {
   private pusher?: Pusher;
@@ -180,7 +188,7 @@ export class PusherManager {
         const channelName = `${this.channelPrefix}workspace-${ws.id}`;
         if (!this.workspaceChannels.has(channelName)) {
           const channel = this.pusher.subscribe(channelName);
-          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
+          channel.bind('task:assigned', (data: TaskAssignment) => {
             this.handleTaskAssignment(data);
           });
           channel.bind('task:claimed', (data: { task?: { id?: string; workspaceId?: string } }) => this.handleTaskClaimed(data));
@@ -213,13 +221,19 @@ export class PusherManager {
     this.callbacks.emit({ type: 'task_claimed', taskId, workspaceId: data?.task?.workspaceId ?? null });
   }
 
-  async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
+  /**
+   * `byPerson` is the server's word that a person aimed this at us (dashboard
+   * Start or a task filed onto this runner); only that passes a hold. A target
+   * alone never does: an older server sends none, so its targeted assignments
+   * are held like broadcasts.
+   */
+  async handleTaskAssignment(data: TaskAssignment) {
     if (!this.acceptRemoteTasks) {
       console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
       return;
     }
 
-    const { task, targetLocalUiUrl } = data;
+    const { task, targetLocalUiUrl, byPerson } = data;
 
     // Skip tasks we already know can't be resolved
     if (this.unresolvableTaskIds.has(task.id)) {
@@ -251,9 +265,10 @@ export class PusherManager {
 
     // Auto-claim and start the task
     try {
-      // An assignment aimed at this runner is a person's Start (or a task filed
-      // onto it): a hold does not stop it. A broadcast one is held (runner-hold.ts).
-      const worker = await this.callbacks.claimAndStart(task, { byPerson: !!targetLocalUiUrl });
+      // A person's Start aimed at this runner (or a task they filed onto it)
+      // passes a hold; anything else is held (runner-hold.ts).
+      const aimedHere = !!targetLocalUiUrl && targetLocalUiUrl === this.config.localUiUrl;
+      const worker = await this.callbacks.claimAndStart(task, { byPerson: aimedHere && byPerson === true });
       if (worker) {
         console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }

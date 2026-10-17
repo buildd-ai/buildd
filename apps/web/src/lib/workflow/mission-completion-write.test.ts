@@ -19,7 +19,8 @@ describe('mission completion write', () => {
   test('active to completed, compare-and-set on the fingerprint the decision read', () => {
     const at = new Date('2026-10-15T00:00:00Z');
     const { sql: q, params } = render(completeMissionSql('m-1', 'e:1:retired', at));
-    expect(q).toContain("UPDATE missions m SET status = 'completed', completed_at = $1::timestamptz, updated_at = $2::timestamptz");
+    expect(q).toContain("ELSE $1::timestamptz END");
+    expect(q).toContain('updated_at = $2::timestamptz');
     expect(q).toContain("WHERE m.id = $3::uuid AND m.status = 'active'");
     expect(q).toContain('IS NOT DISTINCT FROM $4::text');
     expect(q).toContain('RETURNING m.id, m.schedule_id');

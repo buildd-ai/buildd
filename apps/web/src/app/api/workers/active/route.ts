@@ -166,13 +166,14 @@ export async function GET(req: NextRequest) {
           inArray(workers.accountId, accountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         )),
-        columns: { accountId: true, localUiUrl: true, status: true, waitingFor: true, parkedUntil: true },
+        columns: { accountId: true, localUiUrl: true, status: true, waitingFor: true, parkedUntil: true, error: true },
       });
-      for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null; status?: string; waitingFor?: { type?: string } | null; parkedUntil?: Date | null }>) {
+      for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null; status?: string; waitingFor?: { type?: string } | null; parkedUntil?: Date | null; error?: string | null }>) {
         if (!w.accountId) continue;
-        // A paused or parked worker holds no slot (the runner's heartbeat
-        // already leaves it out); counting it here read "2 busy" for one.
-        if (w.status && !workerHoldsRunnerSlot({ status: w.status, waitingFor: w.waitingFor, parkedUntil: w.parkedUntil })) continue;
+        // A paused or parked worker, or a question whose session ended, holds
+        // no slot (the runner's heartbeat already leaves it out); counting it
+        // here read "2 busy" for one.
+        if (w.status && !workerHoldsRunnerSlot({ status: w.status, waitingFor: w.waitingFor, parkedUntil: w.parkedUntil, error: w.error })) continue;
         if (isOnceRunnerUrl(w.localUiUrl)) {
           const k = onceKey(w.accountId, w.localUiUrl!);
           onceLive.set(k, (onceLive.get(k) || 0) + 1);

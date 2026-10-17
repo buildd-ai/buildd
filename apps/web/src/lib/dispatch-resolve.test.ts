@@ -350,6 +350,19 @@ describe('relayDispatch', () => {
     const res = await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake'), payload: { targetLocalUiUrl: 'http://r.test' } }, testDeps(base));
     expect(res.body).toEqual({ outcome: 'delivered', via: 'relay:pusher:targeted' });
     expect((mockTriggerEventChecked.mock.calls[0][2] as { targetLocalUiUrl: string }).targetLocalUiUrl).toBe('http://r.test');
+    expect((mockTriggerEventChecked.mock.calls[0][2] as { byPerson: boolean }).byPerson).toBe(false);
+  });
+
+  it("the person flag comes from the outbox row, never the relay payload", async () => {
+    const person: Case = { name: 'relay person', metadata: { targetLocalUiUrl: 'http://r.test', byPerson: true } };
+    seed(person);
+    await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake'), payload: { targetLocalUiUrl: 'http://r.test' } }, testDeps(person));
+    expect(mockTriggerEventChecked.mock.calls[0][2]).toMatchObject({ targetLocalUiUrl: 'http://r.test', byPerson: true });
+
+    mockTriggerEventChecked.mockClear();
+    seed(base);
+    await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake'), payload: { targetLocalUiUrl: 'http://r.test', byPerson: true } }, testDeps(base));
+    expect(mockTriggerEventChecked.mock.calls[0][2]).toMatchObject({ targetLocalUiUrl: 'http://r.test', byPerson: false });
   });
 
   it('Pusher failed → 502 (Dispatch retries); unconfigured → skipped', async () => {
