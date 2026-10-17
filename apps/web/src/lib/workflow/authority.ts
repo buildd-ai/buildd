@@ -58,8 +58,9 @@ SELECT d.id AS delivery_id,
 FROM d`;
 }
 
-export function resolveByIdSql(deliveryId: string): SQL {
-  return resolveSql(sql`d.id = ${deliveryId}::uuid`);
+/** By id; with `workspaceId`, only a delivery of that workspace (a command's input names one, AC-9). */
+export function resolveByIdSql(deliveryId: string, workspaceId?: string): SQL {
+  return resolveSql(workspaceId ? sql`d.id = ${deliveryId}::uuid AND d.workspace_id = ${workspaceId}::uuid` : sql`d.id = ${deliveryId}::uuid`);
 }
 
 export function resolveByPrSql(workspaceId: string, repoFullName: string, prNumber: number): SQL {
@@ -96,9 +97,12 @@ export async function kernelDeliveryForPr(workspaceId: string, repoFullName: str
   return r?.authority === 'kernel' ? r.deliveryId : null;
 }
 
-/** As above, for an attempt task that carries `tasks.delivery_id`. */
-export async function kernelDeliveryById(deliveryId: string, exec: Exec = dbExec): Promise<string | null> {
-  const r = await first(resolveByIdSql(deliveryId), exec);
+/**
+ * As above, for an attempt task that carries `tasks.delivery_id`. With `workspaceId`, a delivery of
+ * another workspace is not found: the same one statement, no extra read.
+ */
+export async function kernelDeliveryById(deliveryId: string, exec: Exec = dbExec, workspaceId?: string): Promise<string | null> {
+  const r = await first(resolveByIdSql(deliveryId, workspaceId), exec);
   return r?.authority === 'kernel' ? r.deliveryId : null;
 }
 

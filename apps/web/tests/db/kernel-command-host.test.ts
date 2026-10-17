@@ -11,11 +11,11 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { q } from './harness';
+import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, recordReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
 const { postgresCommandLedger, COMMAND_LEASE_MS, COMMAND_HEARTBEAT_MS } = await import('../../src/lib/workflow/command-ledger');
@@ -155,6 +155,69 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
     const written = await hostsSince(pr.deliveryId, before);
     expect(written.length).toBeGreaterThan(0);
     expect(written.every((t) => t.host === 'web')).toBe(true);
+  });
+});
+
+describe('AC-9: a review verdict and a fix claim are applied by the control plane', () => {
+  /** A PR handed on to review in shadow (the world's setup), then own mode for the act. */
+  async function inReview(branch: string) {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 4;\n' } });
+    await w.handOn(pr);
+    const head = w.gh.pr(w.repo, pr.prNumber).headSha;
+    const rv = await w.reviewer(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    return { pr, head, rv };
+  }
+  const reviewer = systemPrincipal('system:test-reviewer');
+
+  test('a reviewer\'s request-changes → one record_review_verdict command, then the fix\'s claim → one claim_fix command; both transitions tagged control-plane', async () => {
+    const { pr, head, rv } = await inReview('feat/own-verdict');
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const kv = await recordReviewVerdict({
+      workspaceId: w!.workspaceId, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+      verdict: 'request_changes', effectiveVerdict: 'request_changes', headSha: head, confidence: 0.9,
+    }, { principal: reviewer });
+
+    expect(kv).toMatchObject({ handled: true, toState: 'CHANGES_REQUESTED' });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'record_review_verdict' }]);
+    expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+
+    const [fix] = await q<{ id: string; workspace_id: string; delivery_id: string; delivery_role: string; context: Record<string, unknown> }>(
+      sql`SELECT id, workspace_id, delivery_id, delivery_role, context FROM tasks WHERE delivery_id = ${pr.deliveryId}::uuid AND delivery_role = 'fix' ORDER BY created_at DESC LIMIT 1`);
+    expect(fix).toBeDefined();
+    cp.calls.length = 0;
+    const decision = await claimFix(
+      { id: fix.id, workspaceId: fix.workspace_id, deliveryId: fix.delivery_id, deliveryRole: fix.delivery_role, context: fix.context },
+      { principal: reviewer },
+    );
+
+    expect(decision).toEqual({ action: 'proceed' });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'claim_fix' }]);
+    expect((await w!.delivery(pr)).state).toBe('FIXING');
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toEqual(expect.arrayContaining(['ReviewVerdictRecorded', 'FixClaimed']));
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a verdict named for another workspace acts on nothing: the delivery is not found there', async () => {
+    const { pr, head, rv } = await inReview('feat/own-verdict-other-ws');
+    const { workspaceId: other } = await seedWorkspace();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const kv = await recordReviewVerdict({
+      workspaceId: other, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+      verdict: 'approve', effectiveVerdict: 'approve', headSha: head, confidence: 0.9,
+    }, { principal: reviewer });
+
+    expect(kv).toEqual({ handled: false });
+    expect((await w!.delivery(pr)).version).toBe(before);
+    expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
   });
 });
 

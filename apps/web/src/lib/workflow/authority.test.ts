@@ -46,6 +46,13 @@ describe('SQL', () => {
     expect(render(resolveByIdSql('d1')).params).toEqual(['d1']);
   });
 
+  test('by id for a named workspace: a delivery of another workspace is not found, in the same one statement', () => {
+    const { sql: text, params } = render(resolveByIdSql('d1', 'w1'));
+    expect(text).toContain('WHERE d.id = $1::uuid AND d.workspace_id = $2::uuid');
+    expect(params).toEqual(['d1', 'w1']);
+    expect(render(resolveByIdSql('d1')).sql).not.toContain('d.workspace_id = $');
+  });
+
   test('an explicit release only ever moves kernel → legacy', () => {
     const { sql: text, params } = render(releaseSql('d1'));
     expect(text).toContain("WHERE id = $1::uuid AND authority = 'kernel'");

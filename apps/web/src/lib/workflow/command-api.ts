@@ -85,6 +85,12 @@ export interface KernelOps {
   attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
+  /** T6: a kernel review round's verdict, reported by the worker PATCH. Only a delivery of `workspaceId` is acted on. */
+  record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
+  /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
+  adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
+  /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
+  claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -106,6 +112,15 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     return s.attemptEnded(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
+  // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
+  record_review_verdict: (s, i) => s.recordReviewVerdict(i),
+  adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
+  claim_fix: (s, { task, workspaceId }) => {
+    // As attempt_ended: the claim it revalidates must be for a task of that workspace (and the seam then
+    // reads only that workspace's delivery).
+    if (task?.workspaceId !== workspaceId) throw new Error('claim_fix: input.workspaceId is not the task\'s workspace');
+    return s.claimFix(task);
+  },
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];

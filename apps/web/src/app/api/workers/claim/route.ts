@@ -95,7 +95,9 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
+// T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { claimFix as claimKernelFix, kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -2821,7 +2823,7 @@ export async function POST(req: NextRequest) {
     if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
       const fixDecision = await claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
-      }).catch((err): { action: 'defer'; reason: string } => {
+      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
         return { action: 'defer', reason: 'kernel_error' };
       });

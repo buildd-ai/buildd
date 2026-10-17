@@ -340,10 +340,13 @@ mock.module('@/lib/supersession', () => ({
 // Workflow kernel T9 (lib/workflow/seam.ts; real-SQL suite in
 // apps/web/tests/db/workflow-seam.test.ts). Here only the wiring: a kernel fix
 // is revalidated after the claim CAS, and one the kernel skips is cancelled.
-const mockClaimKernelFix = mock(async (_t: any): Promise<any> => ({ action: 'proceed' }));
+const mockClaimKernelFix = mock(async (_t: any, _c?: any): Promise<any> => ({ action: 'proceed' }));
 const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undefined);
+// T9 goes through the one client (AC-9): the kernel's door, never the seam's own on this host.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, claimFix: mockClaimKernelFix }));
 mock.module('@/lib/workflow/seam', () => ({
-  claimFix: mockClaimKernelFix,
+  claimFix: mock(async () => { throw new Error('the claim route called the seam\'s claimFix, not the kernel client\'s'); }),
   cancelSkippedTask: mockCancelSkippedTask,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
 }));
@@ -9735,6 +9738,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(mockClaimKernelFix).toHaveBeenCalledTimes(1);
     expect((mockClaimKernelFix.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' });
+    // Through the kernel client, for the runner that claims it (AC-9): the control plane applies T9 in own mode.
+    expect((mockClaimKernelFix.mock.calls[0] as any[])[1]).toMatchObject({ principal: { kind: 'account', id: account().id, grant: null } });
     expect(mockCancelSkippedTask).toHaveBeenCalledWith('task-1', 'fix_not_needed');
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
     expect(data.diagnostics.taskExclusion.code).toBe('fix_not_needed');

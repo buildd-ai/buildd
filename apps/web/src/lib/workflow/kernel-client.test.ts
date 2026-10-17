@@ -539,6 +539,84 @@ describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the lan
   });
 });
 
+describe('T6 and T9 are doors too (AC-9): a review verdict (recorded or adopted) and a fix claim from the web host', () => {
+  const OTHER = '44444444-4444-4444-8444-444444444444';
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+  const adopted = { workspaceId: WS, deliveryId: DELIVERY, reviewerTaskId: 'rv-2', verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.8 };
+  const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+  type Door = 'recordReviewVerdict' | 'adoptReviewVerdict' | 'claimFix';
+  const cases: Array<{ fn: Door; op: string; arg: unknown; sent: unknown }> = [
+    { fn: 'recordReviewVerdict', op: 'record_review_verdict', arg: verdict, sent: verdict },
+    { fn: 'adoptReviewVerdict', op: 'adopt_review_verdict', arg: adopted, sent: adopted },
+    // The task's workspace rides on the input for the reach check, as attempt_ended's does.
+    { fn: 'claimFix', op: 'claim_fix', arg: fixTask, sent: { task: fixTask, workspaceId: WS } },
+  ];
+  const call = async (fn: Door, arg: unknown, c: Record<string, unknown>) => {
+    const client = await import('./kernel-client');
+    return (client[fn] as (a: unknown, c: unknown) => Promise<unknown>)(arg, c);
+  };
+
+  for (const { fn, op, arg, sent } of cases) {
+    it(`${op}: in own mode it is submitted to the control plane for its caller, and nothing runs here`, async () => {
+      const l = local();
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op, result: { handled: false } }); }) as unknown as typeof fetch;
+      expect(await call(fn, arg, { principal: runner, idempotencyKey: `${op}:k-0001`, deps: { ...l.deps, env: OWN, fetch: fetchSpy } })).toEqual({ handled: false });
+      expect(l.ran).toEqual([]);
+      expect(bodies).toEqual([{ v: 1, op, input: sent, principal: runner, idempotencyKey: `${op}:k-0001` }]);
+    });
+
+    it(`${op}: in shadow the web host runs it itself, as before`, async () => {
+      const l = local();
+      await call(fn, arg, { principal: runner, deps: { ...l.deps, env: {} } });
+      expect(l.ran).toEqual([op]);
+    });
+
+    it(`${op}: release skew, a control plane that predates the op refused it as unknown, so the web host applies it itself and says so`, async () => {
+      const l = local();
+      const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+      const errors: unknown[] = [];
+      const realError = console.error;
+      console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+      try {
+        await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
+      } finally {
+        console.error = realError;
+      }
+      expect(l.ran).toEqual([op]);
+      expect(String(errors[0])).toContain('SKEW');
+      expect(String(errors[0])).toContain(op);
+    });
+
+    it(`${op}: release skew only, any other refusal stays a refusal and nothing runs here`, async () => {
+      for (const [status, code, error] of [[403, 'forbidden', 'account does not reach this workspace'], [400, 'bad_request', 'unknown op "land"']] as const) {
+        const l = local();
+        const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+        const err = await call(fn, arg, { principal: runner, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+        expect(err).toBeInstanceOf(KernelCommandRefusedError);
+        expect(l.ran).toEqual([]);
+      }
+    });
+
+    it(`${op}: the command endpoint knows the op`, async () => {
+      const { isKernelOp } = await import('./command-api');
+      expect(isKernelOp(op)).toBe(true);
+    });
+  }
+
+  it('claim_fix: the host claims a fix only for a task of the workspace the reach check judged', async () => {
+    const { runKernelOp } = await import('./command-api');
+    await expect(runKernelOp('claim_fix', { task: fixTask, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+  });
+
+  it('a verdict names its workspace: without one the endpoint refuses it as malformed before any check', async () => {
+    const { commandProblem } = await import('./command-api');
+    const { workspaceId: _ws, ...noWorkspace } = verdict;
+    expect(commandProblem({ v: 1, op: 'record_review_verdict', idempotencyKey: 'k-00000001', principal: runner, input: noWorkspace })).toBe('input.workspaceId must be a uuid');
+  });
+});
+
 describe('a door after an unknown outcome', () => {
   it('submits again with the same key and returns the control plane\'s answer; a not_applied failure is not retried', async () => {
     const { landThroughKernel, DOOR_UNKNOWN_RETRIES } = await import('./kernel-client');
