@@ -21,7 +21,7 @@
 import { afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
+import { assertDbConfigured, confinedRunnerEnvironment, q, seedMission, seedTask, seedWorkspace } from './harness';
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
 mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
@@ -488,18 +488,10 @@ describe('revocation and membership loss, mid-session', () => {
 });
 
 describe('claims', () => {
-  // A runner whose current probe confines both backends, so the isolation gate
-  // (Living Spec "Runner isolation", R-4) passes and only the grant decides reach.
-  const bwrap = { mechanism: 'bwrap', scope: ['write', 'network', 'env'] };
-  const environment = {
-    tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: new Date().toISOString(),
-    isolation: {
-      platform: 'linux', evidence: [], claude: bwrap, codex: { 'read-only': bwrap, 'workspace-write': bwrap },
-      probeAt: new Date().toISOString(), processStartedAt: new Date(Date.now() - 1000).toISOString(), runnerVersion: '1.0.0',
-    },
-  };
   const claim = (s: S, body: Record<string, unknown>, bound: string | null) =>
-    claimRoute.POST(req(s, '/api/workers/claim', { method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 5, environment, ...body }, bound }));
+    claimRoute.POST(req(s, '/api/workers/claim', {
+      method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 5, environment: confinedRunnerEnvironment(), ...body }, bound,
+    }));
   const claimedTaskIds = async (res: Response) => ((await res.json()) as { workers?: Array<{ taskId: string }> }).workers?.map(w => w.taskId) ?? [];
 
   test('a bound claim takes only the granted workspace\'s task, never an open sibling\'s', async () => {
