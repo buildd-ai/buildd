@@ -137,11 +137,10 @@ export async function defaultMacKeychainHasLoginAsync(): Promise<boolean> {
   // First call ever: block once to get initial value
   let value = false;
   try {
-    const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
-      stdio: 'ignore',
+    await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
       timeout: 3000,
     });
-    value = r && true;
+    value = true;
   } catch {
     value = false;
   }
@@ -178,8 +177,8 @@ export async function defaultMacKeychainStampAsync(): Promise<string | null> {
   let value: string | null = null;
   try {
     const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
-      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
+      encoding: 'utf-8' as const,
     });
     if (r && r.stdout) value = parseKeychainMdat(String(r.stdout));
   } catch {
