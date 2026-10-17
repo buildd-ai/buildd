@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`the frame while held 80x24: "on hold" in place of "online", and the line under the header 1`] = `
-" buildd · laptop-1234                  2 of 3 slots busy · ● on hold · v0.340.0 
+" buildd · laptop-1234                        2 of 3 busy · ● on hold · v0.340.0 
  On hold since 09:12: nothing new starts, 2 running finish. h resumes.          
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ exports[`the frame while held 80x24: "on hold" in place of "online", and the lin
 `;
 
 exports[`the frame while held 120x40 1`] = `
-" buildd · laptop-1234                                                          2 of 3 slots busy · ● on hold · v0.340.0 
+" buildd · laptop-1234                                                                2 of 3 busy · ● on hold · v0.340.0 
  On hold since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                  
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

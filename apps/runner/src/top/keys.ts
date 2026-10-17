@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  busySlots, currentMission, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
@@ -153,6 +153,11 @@ export type Effect =
   | { type: 'openRunner' }
   /** `h`: hold this runner (`on`) or resume it (R-33). */
   | { type: 'hold'; on: boolean }
+  /**
+   * `+` / `-`: set the runner's slots (R-43). `extras: 'pause'` is `p` right
+   * after a lower: pause the most recently started extras (R-45).
+   */
+  | { type: 'slots'; slots: number; extras?: 'pause' }
   /** Read the queue now: the Queue view just opened (R-26). */
   | { type: 'refreshQueue' }
   | { type: 'quit' };
@@ -256,6 +261,18 @@ function actOnRow(state: TopState, ch: string, now: number): KeyResult {
 
 export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   if (key.name === 'ctrl-c') return { state, effects: [{ type: 'quit' }] };
+  // Right after `-` left more running than slots, `p` pauses the newest extras
+  // (R-45); any other key drops the offer and is handled as usual.
+  if (state.slotOffer) {
+    const offer = state.slotOffer;
+    state = { ...state, slotOffer: null };
+    if (key.name === 'char' && key.ch === 'p' && state.mode.kind === 'list') {
+      return {
+        state: info(state, `Pausing the ${offer.extras === 1 ? 'newest agent' : `${offer.extras} newest agents`}…`),
+        effects: [{ type: 'slots', slots: offer.slots, extras: 'pause' }],
+      };
+    }
+  }
   const mode = state.mode;
 
   if (mode.kind === 'input') {
@@ -307,11 +324,13 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     }
     return { state: { ...state, status: null }, effects: [] };
   }
+  // `+` / `-` (R-43): one more or one fewer slot, from any list or detail view.
+  if (key.name === 'char' && (key.ch === '+' || key.ch === '=' || key.ch === '-')) return slotKey(state, key.ch === '-' ? -1 : 1);
   // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
   if (key.name === 'char' && key.ch === 'h') {
     const on = !heldNow(state, now);
     return {
-      state: info(state, on ? 'Holding: nothing new starts, running agents finish…' : 'Resuming: this runner takes new work again…'),
+      state: info(state, on ? 'Holding: nothing new starts, running agents finish…' : 'Resuming: looking for work now…'),
       effects: [{ type: 'hold', on }],
     };
   }
@@ -427,7 +446,14 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     const running = typeof (result.body as any)?.running === 'number' ? (result.body as any).running : 0;
     return effect.on
       ? { text: `On hold: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
-      : { text: 'Resumed: this runner takes new work again.', tone: 'ok' };
+      : { text: 'Resumed: looking for work now.', tone: 'ok' };
+  }
+  if (effect.type === 'slots') {
+    if (!ok) return { text: `Slots refused: ${refusalReason(result)}`, tone: 'error' };
+    const b = result.body as { line?: unknown; failed?: unknown } | null;
+    const failed = Array.isArray(b?.failed) ? (b!.failed as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    if (failed.length > 0) return { text: failed[0], tone: 'error' };
+    return { text: typeof b?.line === 'string' ? b.line : `Slots now ${effect.slots}.`, tone: 'ok' };
   }
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
@@ -448,4 +474,28 @@ export function refusalReason(result: { status: number; body: unknown }): string
   const reason = typeof b === 'string' ? b : b?.error ?? b?.message ?? b?.reason;
   if (typeof reason === 'string' && reason.trim()) return `${reason.trim()} (HTTP ${result.status})`;
   return `HTTP ${result.status}`;
+}
+
+/** Slots a person may set from top (runner-slots.ts bounds). */
+const MIN_TOP_SLOTS = 1;
+const MAX_TOP_SLOTS = 50;
+
+/**
+ * `+` / `-`: raise or lower the slots by one (R-43..R-45). Lowering below the
+ * running count lets the extras finish and offers `p` to pause the newest
+ * instead, in the status line.
+ */
+function slotKey(state: TopState, delta: 1 | -1): KeyResult {
+  const cur = state.runner.maxConcurrent;
+  const slots = cur + delta;
+  if (slots < MIN_TOP_SLOTS) return { state: refuse(state, `${cur} slot is the fewest: buildd hold stops new work instead.`), effects: [] };
+  if (slots > MAX_TOP_SLOTS) return { state: refuse(state, `${MAX_TOP_SLOTS} slots is the most.`), effects: [] };
+  const running = busySlots(state);
+  const extras = running - slots;
+  // Shown at once; the runner's answer replaces it.
+  const next: TopState = { ...state, runner: { ...state.runner, maxConcurrent: slots }, slotOffer: extras > 0 ? { slots, extras } : null };
+  const text = extras > 0
+    ? `${running} running, slots now ${slots}: they finish, nothing new starts until ${slots - 1 === 0 ? 'none run' : `${slots - 1} run`}. p pauses the ${extras === 1 ? 'newest' : `${extras} newest`} instead.`
+    : `Slots now ${slots}: ${running} running, ${slots - running} free${delta > 0 ? ', looking for work for them now' : ''}.`;
+  return { state: info(next, text), effects: [{ type: 'slots', slots }] };
 }
