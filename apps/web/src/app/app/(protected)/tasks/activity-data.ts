@@ -20,6 +20,8 @@ import {
   buildActivityHistory, buildActivityNow, reviewOf,
   type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -129,7 +131,7 @@ export async function loadActivity(input: {
           columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, taskClass: true },
           with: {
             workers: {
-              columns: { status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true },
+              columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true },
               limit: 5,
               orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)]),
             },
@@ -139,10 +141,17 @@ export async function loadActivity(input: {
     }),
   ]);
 
+  // A kernel-owned delivery's merged/open/closed reading replaces its PR worker's columns
+  // (workflow-kernel-library §7); work without one keeps the worker rows.
+  const missionTaskIds = (missionRows as any[]).flatMap(m => (m.tasks ?? []).map((t: { id: string }) => t.id));
+  const views = await getDeliveryViewsForTasks([...new Set([...ids, ...missionTaskIds])]).catch(() => new Map());
+
   const byTask = new Map<string, typeof workerRows>();
   for (const w of workerRows) if (w.taskId) byTask.set(w.taskId, [...(byTask.get(w.taskId) ?? []), w]);
+  const lifecycleByTask = overlayDeliveryLifecycle(ids.map(id => ({ id, workers: byTask.get(id) ?? [] })), views);
+  for (const t of lifecycleByTask) byTask.set(t.id, t.workers as typeof workerRows);
 
-  const deliveries = (missionRows as any[]).map(m => missionDeliveryOf(m, rules));
+  const deliveries = (missionRows as any[]).map(m => missionDeliveryOf({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], views) }, rules));
 
   const tasks: ActivityTaskInput[] = input.tasks.map(t => {
     const ws = byTask.get(t.id) ?? [];

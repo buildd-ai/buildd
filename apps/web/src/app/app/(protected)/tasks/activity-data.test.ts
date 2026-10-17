@@ -63,6 +63,14 @@ describe('the loader reads live work in scope', () => {
     expect(page).toContain('const allTasks = [...new Map([...rootTasks, ...childTasks]');
   });
 
+  it('a kernel-owned delivery replaces its PR worker rows for both task and mission readings', () => {
+    expect(src).toContain('getDeliveryViewsForTasks(');
+    expect(src).toContain('overlayDeliveryLifecycle(ids.map(');
+    expect(src).toContain('tasks: overlayDeliveryLifecycle(m.tasks');
+    // The overlay binds a delivery to its PR by number, so mission workers must select it.
+    expect(src).toMatch(/status: true, prUrl: true, prNumber: true, mergedAt/);
+  });
+
   it('attempts are read newest first, so a cap never drops the live one', () => {
     const child = page.slice(page.indexOf('const childTasks'), page.indexOf('const allTasks'));
     expect(child).toMatch(/orderBy: (sqlOrderBy\()?\[desc\(tasks\.createdAt\)\]/);
