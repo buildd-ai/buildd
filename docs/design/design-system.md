@@ -667,8 +667,9 @@ notification text) follows the same rules as a PR lede:
     disarm, claim, poll, heartbeat, lease or a raw status enum. A mission or
     task shows one of **Not started**, **Paused**, **Waiting for approval**,
     **Blocked** or **Ready**, from one projection that every surface uses,
-    with one reason and one action; the start-state words live in
-    `MISSION_START_COPY` (`lib/mission-start-state.ts`). "Held until you arm the mission" reads
+    with one reason and one action; the start-state words are planned to
+    live in one copy map, owned by task 19e58aa7 (not built yet). "Held
+    until you arm the mission" reads
     **Not started**, with **Start**. An action names what it does ("Start
     now"), never "Force start"; the confirmation says what it skips. Operator
     pages (/app/health) may use the technical term when it is the clearest
