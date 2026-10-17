@@ -5,11 +5,7 @@
  * it without pulling the DB.
  */
 import { accountReachesWorkspace } from './workspace-reach';
-
-/** The slug sign-in gives a new user's personal team (apps/web/src/auth.ts). */
-export function personalTeamSlug(userId: string): string {
-  return `personal-${userId}`;
-}
+import { isPersonalTeamOf } from './personal-team';
 
 export interface PersonalLinkInput {
   userId: string;
@@ -18,7 +14,7 @@ export interface PersonalLinkInput {
    * (`manage_team_keys`, decided by the caller through lib/permissions).
    */
   canManageTeamKeys: boolean;
-  team: { id: string; slug: string };
+  team: { id: string; personalUserId: string | null };
   account: { id: string; type: string; teamId: string; workspaceIds?: string[] | null };
   teamWorkspaces: ReadonlyArray<{ id: string; teamId: string; accessMode: string | null }>;
   /** Workspaces the account is already linked to. */
@@ -34,7 +30,7 @@ export interface PlannedLink {
 
 /**
  * Which links to add. Empty unless every one of these holds:
- *   - the team is the user's personal team (slug `personal-<userId>`) and the
+ *   - the team is the user's personal team (`teams.personal_user_id`) and the
  *     user may manage its keys (`manage_team_keys`);
  *   - the account is a `user` account in that same team;
  *   - the account is not a workspace-scoped token (its own list decides);
@@ -43,7 +39,7 @@ export interface PlannedLink {
  */
 export function planPersonalWorkspaceLinks(input: PersonalLinkInput): PlannedLink[] {
   const { userId, canManageTeamKeys, team, account, teamWorkspaces } = input;
-  if (team.slug !== personalTeamSlug(userId)) return [];
+  if (!isPersonalTeamOf(team, userId)) return [];
   if (!canManageTeamKeys) return [];
   if (account.type !== 'user' || account.teamId !== team.id) return [];
   if (account.workspaceIds != null) return [];
