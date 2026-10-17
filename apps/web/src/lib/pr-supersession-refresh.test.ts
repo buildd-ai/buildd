@@ -19,7 +19,9 @@ const {
   retireSupersededRefreshPr,
   sweepSupersededRefreshPrs,
   verifyRefreshSuperseded,
+  shouldSkipExhaustedRefreshPr,
   REFRESH_SUPERSESSION_MARKER,
+  REFRESH_DEFERRAL_EXHAUSTED_KEY,
 } = await import('./pr-supersession-refresh');
 
 const BRANCH = 'mission/abc-integration';
@@ -265,5 +267,78 @@ describe('sweepSupersededRefreshPrs', () => {
   it('skips a repo with no installation', async () => {
     const r = await sweepSupersededRefreshPrs(new Date(), { load: async () => ({ open: [OLDER], merged: [NEWER] }), installation: async () => null, api });
     expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1, deferred: 0, deferralExhausted: 0 });
+  });
+
+  it('when a deferral is exhausted, the sweep sets the exhausted flag and fires a stranded event', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: { code: 'control_plane_unavailable' }, headers: {} } }));
+    const exhaustedPr = { ...OLDER, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 24, reason: 'cp down' } };
+    const now = new Date('2026-10-14T23:10:00Z');
+    const saved: Array<{ taskId: string; count: number; exhausted: boolean }> = [];
+    const saveDeferral = async (taskId: string, state: { count: number }, exhausted: boolean) => { saved.push({ taskId, count: state.count, exhausted }); };
+    const r = await sweepSupersededRefreshPrs(now, {
+      load: async () => ({ open: [exhaustedPr], merged: [NEWER] }),
+      installation: async () => 1,
+      api,
+      saveDeferral,
+    });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 0, deferred: 1, deferralExhausted: 1 });
+    expect(saved.at(-1)).toEqual({ taskId: 't4275', count: 25, exhausted: true });
+    expect(mockFireGateEvent.mock.calls.some((c: any[]) => c[0].outcome === 'stranded' && c[0].detail.kind === 'control_plane_deferral_exhausted')).toBe(true);
+  });
+
+  it('an exhausted PR is excluded from the sweep by shouldSkipExhaustedRefreshPr', () => {
+    // The filter excludes PRs whose context carries the exhausted flag.
+    expect(shouldSkipExhaustedRefreshPr({})).toBe(false);
+    expect(shouldSkipExhaustedRefreshPr({ other: 'value' })).toBe(false);
+    expect(shouldSkipExhaustedRefreshPr({ [REFRESH_DEFERRAL_EXHAUSTED_KEY]: true })).toBe(true);
+    expect(shouldSkipExhaustedRefreshPr({ [REFRESH_DEFERRAL_EXHAUSTED_KEY]: false })).toBe(false);
+  });
+
+  it('a successful retire clears the deferral so future outages start fresh', async () => {
+    const cleared: string[] = [];
+    const clearDeferral = async (taskId: string) => { cleared.push(taskId); };
+    const r = await sweepSupersededRefreshPrs(new Date(), {
+      load: async () => {
+        const prWithOldDeferral = { ...OLDER, deferral: { firstAt: '2026-10-13T00:00:00Z', count: 5, reason: 'prior outage' } };
+        return { open: [prWithOldDeferral], merged: [NEWER] };
+      },
+      installation: async () => 1,
+      api,
+      clearDeferral,
+    });
+    expect(r.retired).toBe(1);
+    expect(cleared).toEqual(['t4275']);
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+  });
+
+  it('a 409 response (edge already exists) also clears the deferral', async () => {
+    const cleared: string[] = [];
+    const clearDeferral = async (taskId: string) => { cleared.push(taskId); };
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 409, error: 'edge exists' }));
+    const r = await sweepSupersededRefreshPrs(new Date(), {
+      load: async () => {
+        const prWithOldDeferral = { ...OLDER, deferral: { firstAt: '2026-10-13T00:00:00Z', count: 5, reason: 'prior outage' } };
+        return { open: [prWithOldDeferral], merged: [NEWER] };
+      },
+      installation: async () => 1,
+      api,
+      clearDeferral,
+    });
+    expect(r.retired).toBe(1);
+    expect(cleared).toEqual(['t4275']);
+  });
+
+  it('a failed record does not clear the deferral', async () => {
+    const cleared: string[] = [];
+    const clearDeferral = async (taskId: string) => { cleared.push(taskId); };
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 500, error: 'server error' }));
+    const r = await sweepSupersededRefreshPrs(new Date(), {
+      load: async () => ({ open: [OLDER], merged: [NEWER] }),
+      installation: async () => 1,
+      api,
+      clearDeferral,
+    });
+    expect(r.kept).toBe(1);
+    expect(cleared).toHaveLength(0);
   });
 });
