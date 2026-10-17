@@ -15,7 +15,7 @@ import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, observePrState, observeHead, observeBase, KernelObservationFailed, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
 const { drainParkedCommands, postgresCommandOutbox } = await import('../../src/lib/workflow/command-outbox');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
@@ -24,6 +24,8 @@ const { applyCommand } = await import('../../src/lib/workflow/kernel');
 
 const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS', 'KERNEL_DOOR_BUDGET_MS'] as const;
 const savedEnv: Record<string, string | undefined> = {};
+/** A door that waits out its (shortened) budget, then the floor's pass. */
+const AC35_TIMEOUT_MS = 30_000;
 
 interface ControlPlane {
   calls: Array<{ path: string; op: string | null }>;
@@ -222,6 +224,129 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
   });
 });
 
+describe('AC-9 met: GitHub\'s PR facts (T17 to T19, T3, T29) are applied by the control plane', () => {
+  /** A PR handed on in shadow (the world's setup), then own mode, with GitHub's own webhooks left undelivered: the door is the only report. */
+  async function handedOn(branch: string) {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 7;\n' } });
+    await w.handOn(pr);
+    process.env.EXECUTION_MODE = 'own';
+    process.env.KERNEL_DOOR_BUDGET_MS = '800';
+    resetKernelModeCache();
+    return pr;
+  }
+  const ref = (pr: OpenedPr) => ({ workspaceId: w!.workspaceId, repoFullName: w!.repo, prNumber: pr.prNumber, installationId: w!.installationId });
+  /** GitHub's pull object, as the webhook carries it. */
+  const githubPull = async (pr: OpenedPr) => (await w!.gh.request('GET', `/repos/${w!.repo}/pulls/${pr.prNumber}`)).body;
+  const unappliedCloses = (pr: OpenedPr) => q<{ source: string }>(sql`SELECT source FROM workflow_facts
+    WHERE workspace_id = ${w!.workspaceId}::uuid AND repo_full_name = ${w!.repo} AND pr_number = ${pr.prNumber} AND kind = 'pr_closed' AND applied_transition_id IS NULL`);
+
+  test('a merge, then a close and a reopen → one observe_pr_state command each; the control plane reads the live PR and applies T17 / T19, tagged control-plane', async () => {
+    const pr = await handedOn('feat/own-close');
+    w!.gh.closePr(w!.repo, pr.prNumber, 'a-person');
+    w!.gh.discardWebhooks();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const owned = await observePrState({ ...ref(pr), source: 'webhook:closed', pull: await githubPull(pr) }, { principal: systemPrincipal('system:webhook:closed') });
+    expect(owned).toBe(true);
+    expect((await w!.delivery(pr)).state).toBe('CLOSED_UNMERGED');
+
+    w!.gh.reopenPr(w!.repo, pr.prNumber, 'a-person');
+    w!.gh.discardWebhooks();
+    expect(await observePrState({ ...ref(pr), source: 'webhook:reopened' }, { principal: systemPrincipal('system:webhook:reopened') })).toBe(true);
+
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_pr_state' }, { path: '/v1/commands', op: 'observe_pr_state' }]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toEqual(expect.arrayContaining(['PrClosedUnmerged', 'PrReopened']));
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a person\'s push → one observe_head command, and a retarget → one observe_base command; both applied there, tagged control-plane', async () => {
+    const pr = await handedOn('feat/own-head');
+    const head = w!.gh.push(w!.repo, pr.branch, { 'src/p.ts': 'x\n' }, { pusher: 'a-person' });
+    w!.gh.createBranch(w!.repo, 'release', 'dev');
+    w!.gh.discardWebhooks();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    expect(await observeHead({ ...ref(pr), hintedHeadSha: head, source: 'webhook:synchronize' }, { principal: systemPrincipal('system:webhook:synchronize') })).toBe(true);
+    expect((await w!.delivery(pr)).currentHeadSha).toBe(head);
+
+    await w!.gh.request('PATCH', `/repos/${w!.repo}/pulls/${pr.prNumber}`, { base: 'release' });
+    w!.gh.discardWebhooks();
+    expect(await observeBase({ ...ref(pr), hintedFromBase: 'dev', source: 'webhook:edited' }, { principal: systemPrincipal('system:webhook:edited') })).toBe(true);
+
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_head' }, { path: '/v1/commands', op: 'observe_base' }]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toEqual(expect.arrayContaining(['HeadObserved', 'BaseChanged']));
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a merge webhook while the control plane is down: recorded unapplied on the web host, KernelObservationFailed, nothing applied; the control plane\'s floor applies it once it is back', async () => {
+    const pr = await handedOn('feat/down-merge');
+    w!.gh.mergePr(w!.repo, pr.prNumber, { by: 'a-person' });
+    w!.gh.discardWebhooks();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+    cp.down = true;
+
+    const err = await observePrState({ ...ref(pr), source: 'webhook:closed', pull: await githubPull(pr) }, { principal: systemPrincipal('system:webhook:closed') }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(KernelObservationFailed);
+    expect(err.deliveryId).toBe(pr.deliveryId);
+    expect(await unappliedCloses(pr)).toEqual([{ source: 'webhook:closed' }]);
+    expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
+    // Never parked: the unapplied fact is its re-sender.
+    expect(await q(sql`SELECT 1 FROM workflow_command_outbox WHERE op = 'observe_pr_state' AND command_input->>'repoFullName' = ${w!.repo}`)).toEqual([]);
+
+    // Back: the control plane's floor (the heal is the same pass, narrowed) reads GitHub and applies T17 there.
+    cp.down = false;
+    setKernelHost('control-plane');
+    try {
+      await seam.reconcileKernelDeliveries({}, { only: [pr.deliveryId], minQuietMs: 0 });
+    } finally {
+      setKernelHost('web');
+    }
+    expect((await w!.delivery(pr)).state).toBe('MERGED');
+    expect(await unappliedCloses(pr)).toEqual([]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toContain('PrMerged');
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  }, AC35_TIMEOUT_MS);
+
+  test('a push while the control plane is down is parked under its key and still read as the kernel\'s; once it answers, the floor applies it once', async () => {
+    const pr = await handedOn('feat/down-push');
+    const head = w!.gh.push(w!.repo, pr.branch, { 'src/q.ts': 'y\n' }, { pusher: 'a-person' });
+    w!.gh.discardWebhooks();
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `observe_head:${crypto.randomUUID()}`;
+
+    const owned = await observeHead({ ...ref(pr), hintedHeadSha: head, source: 'webhook:synchronize' }, { principal: systemPrincipal('system:webhook:synchronize'), idempotencyKey: key });
+
+    expect(owned).toBe(true);
+    expect((await w!.delivery(pr)).currentHeadSha).not.toBe(head);
+    const [row] = await q<{ status: string }>(sql`SELECT status FROM workflow_command_outbox WHERE idempotency_key = ${key}`);
+    expect(row).toEqual({ status: 'pending' });
+
+    cp.down = false;
+    const before = (await w!.delivery(pr)).version;
+    setKernelHost('control-plane');
+    try {
+      const outbox = postgresCommandOutbox();
+      await drainParkedCommands({ host: () => 'control-plane', outbox: { ...outbox, claimDue: async (n) => (await outbox.claimDue(n)).filter((r) => r.key === key) } });
+    } finally {
+      setKernelHost('web');
+    }
+    expect((await w!.delivery(pr)).currentHeadSha).toBe(head);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.filter((t) => t.command === 'HeadObserved')).toHaveLength(1);
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  }, AC35_TIMEOUT_MS);
+});
+
 describe('AC-9: a review verdict and a fix claim are applied by the control plane', () => {
   /** A PR handed on to review in shadow (the world's setup), then own mode for the act. */
   async function inReview(branch: string) {
@@ -326,7 +451,6 @@ describe('AC-12: the control plane unreachable', () => {
 });
 
 /** Each test waits out real door budgets (the control plane down), more than once: slow CI runners need room. */
-const AC35_TIMEOUT_MS = 30_000;
 
 describe('AC-35: a door command the control plane never answered lands once it recovers, exactly once', () => {
   /** A PR whose owner is still working, set up in shadow; then own mode for the act, with a short door budget. */
