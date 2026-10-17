@@ -66,6 +66,38 @@ export function integrationRefreshOf(context: unknown): IntegrationRefreshContex
   };
 }
 
+/**
+ * The mission branch a refresh was filed for, or null when that can no longer
+ * be told from its context.
+ *
+ * `refreshBranch` is written once at filing and nothing rewrites it. A refresh
+ * filed before it existed carries the same value in `baseBranch` only, which a
+ * requeue used to overwrite with the task's own head (`resumeBranch`): a
+ * `baseBranch` equal to `resumeBranch` is that overwrite, not a mission branch
+ * (#4909: every landing refused with "filed for" naming the PR's own head).
+ */
+export function refreshFiledFor(context: unknown): string | null {
+  if (!integrationRefreshOf(context)) return null;
+  const ctx = context as Record<string, unknown>;
+  const explicit = str(ctx.refreshBranch);
+  if (explicit) return explicit;
+  const base = str(ctx.baseBranch);
+  if (!base || base === str(ctx.resumeBranch)) return null;
+  return base;
+}
+
+/**
+ * The branch fields a requeue writes for a task that resumes on `branch`.
+ * `resumeBranch` is what the runner resumes from; `baseBranch` is its fallback.
+ * A refresh's `baseBranch` is the branch it was filed for, read by every merge
+ * door, so a requeue leaves it alone.
+ */
+export function requeueBranchContext(context: unknown, branch: string | null | undefined): { baseBranch?: string; resumeBranch?: string } {
+  if (!branch) return {};
+  if (integrationRefreshOf(context)) return { resumeBranch: branch };
+  return { baseBranch: branch, resumeBranch: branch };
+}
+
 /** The merge method a door must use for this task's PR. Never squash or rebase a refresh. */
 export function resolveMergeMethod(context: unknown, requested?: MergeMethod | null): MergeMethod {
   if (integrationRefreshOf(context)) return 'merge';

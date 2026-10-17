@@ -64,7 +64,7 @@ export async function loadRecentMissions(workspaceIds: string[], now = Date.now(
   if (workspaceIds.length === 0) return [];
   const since = new Date(now - RECENT_DAYS * 86_400_000);
   const selection = {
-    columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, executor: true } as const,
+    columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, armedAt: true, executor: true } as const,
     extras: sqlExtras({ deliveredAt: deliveredAtSqlFor(since) }),
     orderBy: sqlOrderBy([desc(missions.updatedAt)]),
   };

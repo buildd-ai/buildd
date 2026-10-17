@@ -2,7 +2,7 @@
 title: Mission Surface Audit
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: A mission touching UI surfaces MUST receive a dependent surface audit and enforce its visual review policy before shipping.
 domain: missions
 surfaces: [apps/web/src/lib/workflow/visual-review-policy.ts, apps/web/src/lib/workflow/visual-review-state.ts]
@@ -238,6 +238,11 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   automatically (once), the refusal names the system, not the owner, and the
   state view shows a wait; under `ask` the owner decision stays, and under
   `off` no audit is owed.
+- AC-110: GIVEN a completed mission whose last visual pass judged an earlier
+  commit than the one it delivered WHEN its visual review is shown THEN it reads
+  "passed on an earlier commit", names both commits, owes no verification and
+  never says it checks again; GIVEN the same on an open mission THEN the review
+  is owed again (`needed`).
 
 **Code surface**:
 - `apps/web/src/lib/mission-surface-audit-gate.ts` — `evaluateSurfaceAuditGate()`
@@ -342,7 +347,12 @@ it is for (`context.visualReview.headSha`); a queued audit stamped for an older
 head is re-stamped, a running one keeps its head. Rules: never file while an
 audit is queued or running; a pass on another commit, or an audit that recorded
 none, is stale evidence (`staleEvidence`, status `needed`) and re-files as the
-next round, up to the total round ceiling; a failed audit is a **system**
+next round, up to the total round ceiling, while the mission is open. A completed
+or archived mission is never re-filed (its completion gate already ran), so there
+a pass on an earlier commit stays `passed` with `staleEvidence` and
+`passedOnEarlierCommit` set, owes nothing, and every surface says it passed on the
+judged commit and that the delivered commit was not checked again, never that it
+checks again (AC-110); a failed audit is a **system**
 failure and retries with 5 / 15 / 45 minute backoff, three attempts per head,
 then `blocked` with the owner as next actor; a named capture setup error
 (`protection_bypass_missing`, `app_auth_not_configured`, `preview_unavailable`)

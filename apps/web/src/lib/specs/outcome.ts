@@ -11,6 +11,7 @@ import { readPinnedSpecRevision } from './pin';
 import { specCriteria, type RequirementRef } from '@buildd/spec-contract/requirements';
 import { inScope } from '@buildd/spec-contract/scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
+import { criterionHashes } from './criteria';
 
 /**
  * Governed outcomes (Living Specs V1, decision D-5): whether a task's outcome
@@ -97,7 +98,11 @@ export type OutcomeView = GovernedOutcomeReadout & {
   criteria: Array<GovernedOutcomeReadout['criteria'][number] & { text: string }>;
 };
 
-type Loaded = { task: TaskRow; pin: Record<string, unknown>; revision: number; specRevisionId: string; specId: string; criteria: RequirementRef[] };
+type Loaded = {
+  task: TaskRow; pin: Record<string, unknown>; revision: number; specRevisionId: string; specId: string; criteria: RequirementRef[];
+  /** Each criterion's text hash on the pinned revision: what a verdict records, and what it must match to count (R-13). */
+  hashes: Map<string, string>;
+};
 
 async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mode): Promise<Loaded | SpecError> {
   if (typeof taskId !== 'string' || !isUuid(taskId)) return fail(404, 'Task not found');
@@ -111,14 +116,16 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
   if (!pin || typeof pin.specId !== 'string') return fail(409, 'This task is not pinned to a Living Spec, so it has no governed outcome');
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return fail(409, `The pinned spec revision is unavailable: ${read.reason}`);
-  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)) };
+  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)), hashes: criterionHashes(read.body) };
 }
 
 async function fold(l: Loaded): Promise<OutcomeView> {
-  const rows = await db.select({ criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt })
+  const all = await db.select({ criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.taskId, l.task.id), eq(specOutcomeVerdicts.specRevisionId, l.specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
+  // A verdict on another wording of a criterion does not count for this one (R-13); one recorded before wordings were kept does.
+  const rows = all.filter((r) => !r.textHash || r.textHash === l.hashes.get(r.criterionId));
   const head = await currentPrHeadSha(l.task.id);
   const r = foldGovernedOutcome(l.criteria.map((c) => c.id), rows, head);
   const text = new Map(l.criteria.map((c) => [c.id, c.text]));
@@ -170,6 +177,7 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
     taskId: l.task.id,
     specRevisionId: l.specRevisionId,
     criterionId,
+    criterionTextHash: l.hashes.get(criterionId) ?? null,
     verdict: verdict as VerificationVerdict,
     headSha: headSha.toLowerCase(),
     evidence: { refs, readIds, ...(observed ? { observed } : {}), recordedBy },
@@ -197,6 +205,7 @@ export async function recordCheckVerdict(taskId: string, input: {
     taskId: l.task.id,
     specRevisionId: l.specRevisionId,
     criterionId: input.criterionId,
+    criterionTextHash: l.hashes.get(input.criterionId) ?? null,
     verdict: input.verdict,
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
@@ -225,6 +234,7 @@ export async function recordAuditedVerdict(taskId: string, input: {
     taskId: l.task.id,
     specRevisionId: l.specRevisionId,
     criterionId: input.criterionId,
+    criterionTextHash: l.hashes.get(input.criterionId) ?? null,
     verdict: input.verdict,
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, auditTaskId: input.auditTaskId, recordedBy: `visual:${input.auditTaskId}` },

@@ -211,3 +211,17 @@ describe('a queued review names the claim gate hold (spec f7f67f1a R-33)', () =>
     expect(presentVisualReview({ ...queued, holdReason: 'something_new' }).detail).toBe('Starts on the latest changes.');
   });
 });
+
+describe('presentVisualReview: a closed mission passed on an earlier commit', () => {
+  it('names both commits and does not say it is checking again', () => {
+    const p = present({
+      audit: { ...audit, status: 'completed' }, review: review(), auditedSha: 'aaaaaaa1', missionClosed: true,
+      branch: { headSha: 'bbbbbbb2', base: 'dev', integrationPr: pr({ state: 'merged', ready: true }), workLanded: true },
+    });
+    expect(p.label).toBe('Visual check passed on an earlier commit');
+    expect(p.detail).toBe('It passed on aaaaaaa before the mission completed. The delivered commit bbbbbbb was not checked again.');
+    expect(p.needsYou).toBe(false);
+    expect(copyOf(p)).not.toMatch(/checking the latest|checks again/i);
+    expect(copyOf(p)).not.toMatch(MECHANICS);
+  });
+});

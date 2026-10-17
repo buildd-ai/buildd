@@ -97,6 +97,12 @@ import type { CompletionDecisionCode } from '@buildd/core/mission-completion-cod
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
+import { MISSION_START_COPY, missionStartCopy } from './mission-start-state';
+
+/** The held mission's words: Not started, or Paused when it ran before. */
+function missionStartCopyFor(input: Pick<MissionStateInput, 'isHeld' | 'armedAt'>) {
+  return missionStartCopy({ isHeld: input.isHeld, armedAt: input.armedAt ?? null }) ?? MISSION_START_COPY.not_started;
+}
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import type { CiRedChain } from './ci-red-chain';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
@@ -511,6 +517,11 @@ export interface MissionStateInput {
   /** Start gate not released (`startMode === 'held'`). */
   isHeld: boolean;
   /**
+   * `missions.armedAt`: set when the gate was released before, so a held
+   * mission reads Paused rather than Not started (lib/mission-start-state.ts).
+   */
+  armedAt?: Date | string | null;
+  /**
    * `missions.executor`. 'local': a person runs the tasks from their own
    * session, so open rows with no runner on them are that session's work, not
    * a stall. Held still outranks it.
@@ -798,6 +809,8 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
         ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
       : w?.kind === 'task' && (w.hold || w.waitingNoCause)
         ? { ...getMissionStateChip(resolved.displayState), label: 'WAITING' }
+      : resolved.kind === 'held'
+        ? { ...getMissionStateChip(resolved.displayState), label: missionStartCopyFor(input).label.toUpperCase() }
         : getMissionStateChip(resolved.displayState);
   const criteriaBlockingReason =
     resolved.waitingOn?.kind === 'criterion_failing' || resolved.waitingOn?.kind === 'criterion_unverified'
@@ -866,7 +879,7 @@ function resolve(input: MissionStateInput): Resolution {
   if (isHeld) {
     return {
       kind: 'held',
-      waitingOn: { kind: 'human_decision', tone: 'info', label: 'Held until you arm the mission', detail: null },
+      waitingOn: { kind: 'human_decision', tone: 'info', label: missionStartCopyFor(input).waitingLine, detail: null },
       displayState: 'held',
       source: 'mission.startMode',
     };
@@ -1988,8 +2001,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         ? 'waiting on goal-criteria verification: 1 criterion has no verdict'
         : `waiting on goal-criteria verification: ${d.count} criteria have no verdict`;
     case 'human_decision':
-      // These labels already read as statements ("Held until you arm the
-      // mission"), so they are quoted, not re-worded.
+      // These labels already read as statements ("Not started. Its tasks are
+      // available once you start it."), so they are quoted, not re-worded.
       return d.label;
     case 'self_resolving_wait':
       return d.waitUntil

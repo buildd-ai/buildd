@@ -277,7 +277,11 @@ export function buildFleetSnapshot(
         end: runsNow(w) ? null : (Number.isFinite(ms(w.completedAt)) ? ms(w.completedAt) : ms(w.updatedAt)) || ms(w.startedAt),
       }));
     const assigned = assignSlots(intervals);
+    // Lanes need a row per run that overlapped; the runner's size is what it
+    // advertises. Mixing the two read "6 of 7 busy" on one page and "6/6" on
+    // another for the same 5-slot runner.
     const cap = Math.max(g.hb?.maxConcurrentWorkers ?? 0, assigned.slots, 1);
+    const advertised = g.hb ? Math.max(g.hb.maxConcurrentWorkers ?? 0, 1) : Math.max(liveHere.length, 1);
     const laneOf = assigned.slotOf;
     const slots: FleetSlot[] = Array.from({ length: cap }, (_, index) => ({
       index, worker: null, last: null, lane: { id: `${gid}:${index}`, bars: [] },
@@ -287,9 +291,9 @@ export function buildFleetSnapshot(
     for (const iv of [...intervals].sort((a, b) => a.start - b.start)) {
       place(slots[laneOf.get(iv.id) ?? 0], byId.get(iv.id)!, iv);
     }
-    // A person's hold (`buildd hold`): shown as on hold, not idle, while in force AND the runner is online (R-33).
+    // A person's hold is shown only while the runner is online (R-33).
     const hold = online && g.hb ? activeRunnerHold(g.hb.environment, now) : null;
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots, ...(hold ? { hold } : {}) });
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(hold ? { hold } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
@@ -358,6 +362,8 @@ export function fleetDisplayRows(runner: FleetRunner, opts: { since?: number; re
   else if (rest.length > 1) rows.push({ kind: 'idle', count: rest.length, slots: rest });
   return rows;
 }
+
+export { runnerBusyLine } from './runner-busy-line';
 
 export interface FleetSummary {
   busy: number;

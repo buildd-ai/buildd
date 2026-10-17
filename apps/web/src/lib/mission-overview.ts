@@ -125,7 +125,7 @@ export function overviewWaitCause(model: Model, id: string): OverviewWaitCause |
 }
 
 const WAIT_WORD: Record<OverviewWaitCause, string> = { tasks: 'Waiting on tasks', slot: 'Next in line', hold: 'Held', unknown: 'Waiting', closed: 'Closed without merging' };
-const WAIT_LEGEND: Record<OverviewWaitCause, string> = { tasks: 'waiting on tasks', slot: 'next in line', hold: 'held', unknown: 'not started', closed: 'closed without merging' };
+const WAIT_LEGEND: Record<OverviewWaitCause, string> = { tasks: 'waiting on tasks', slot: 'next in line', hold: 'blocked', unknown: 'not started', closed: 'closed without merging' };
 
 export interface OverviewLegendEntry {
   key: 'done' | 'active' | OverviewWaitCause | 'checks';

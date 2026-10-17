@@ -36,7 +36,7 @@ describe('approvalDraft', () => {
   it('never invents: a held, scheduled draft says so, and a missing title reads as untitled', () => {
     const d = approvalDraft(part({ action: 'create', startMode: 'held', cronExpression: '0 9 * * *' }));
     expect(d.kind === 'mission' && d.title).toBe('Untitled mission');
-    expect(d.kind === 'mission' && d.plan).toBe('Plan first · held until you arm it · schedule 0 9 * * *');
+    expect(d.kind === 'mission' && d.plan).toBe('Plan first · not started until you start it · schedule 0 9 * * *');
     expect(d.kind === 'mission' && d.criteria).toEqual([]);
   });
 
@@ -66,15 +66,15 @@ describe('approvalDraft — a write on an existing object shows the server\'s be
 
   it('hold: headline names the task and where it runs; one change line', () => {
     const d = approvalDraft(withPreview('hold_task', { taskId: 'checkout' }, {
-      v: 1, verb: 'Hold task', fingerprint: 'f',
+      v: 1, verb: 'Pause task', fingerprint: 'f',
       target: { kind: 'task', id: 't', label: 'checkout · Stripe in currency', detail: 'running on dune', workspaceId: 'ws' },
-      changes: [{ label: 'Claims', before: 'open', after: 'held' }],
+      changes: [{ label: 'Claims', before: 'open', after: 'paused' }],
       note: 'The agent running on dune is told to stop at a safe point and wait.',
     }));
     expect(d.kind).toBe('preview');
     if (d.kind !== 'preview') return;
-    expect(d.headline).toBe('Hold task: checkout · Stripe in currency (running on dune)');
-    expect(d.changes.map(c => c.line)).toEqual(['Claims: open → held']);
+    expect(d.headline).toBe('Pause task: checkout · Stripe in currency (running on dune)');
+    expect(d.changes.map(c => c.line)).toEqual(['Claims: open → paused']);
     expect(d.note).toContain('safe point');
     expect(d.workspaceId).toBe('ws');
     expect(d.confirmText).toBeNull();

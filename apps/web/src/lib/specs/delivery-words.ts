@@ -20,8 +20,13 @@
 export type DeliveryOutcome = 'verified' | 'fail' | 'unverified';
 export type DeliveryTone = 'success' | 'error' | 'muted';
 
-/** A criterion as the drill-down shows it. `waived` comes only from a mission's outcome spec. */
-export type CriterionMark = 'pass' | 'fail' | 'stale' | 'none' | 'inconclusive' | 'unsupported' | 'waived';
+/**
+ * A criterion as the drill-down shows it. `waived` comes only from a mission's
+ * outcome spec. `earlier-pass` / `earlier-fail`: the verdict judged words the
+ * revision in force has since changed, so it does not count for them
+ * ("Reviewing a spec revision" R-13).
+ */
+export type CriterionMark = 'pass' | 'fail' | 'stale' | 'none' | 'inconclusive' | 'unsupported' | 'waived' | 'earlier-pass' | 'earlier-fail';
 
 export interface StandingInput {
   /** The revision the work was built to (its pin). */
@@ -83,7 +88,21 @@ export function criterionWords(mark: CriterionMark): { label: string; tone: Deli
     case 'inconclusive': return { label: 'Inconclusive', tone: 'warning' };
     case 'unsupported': return { label: 'Unsupported', tone: 'warning' };
     case 'waived': return { label: 'Waived', tone: 'muted' };
+    case 'earlier-pass': return { label: 'Passed an earlier wording', tone: 'muted' };
+    case 'earlier-fail': return { label: 'Failed an earlier wording', tone: 'muted' };
   }
+}
+
+/**
+ * A mark against the revision in force, given whether the criterion's words
+ * changed since the revision the verdict judged (R-13): a pass or a fail on
+ * other words is said as on an earlier wording. Anything else is unchanged.
+ */
+export function wordingMark(mark: CriterionMark, wordingChanged: boolean): CriterionMark {
+  if (!wordingChanged) return mark;
+  if (mark === 'pass' || mark === 'stale') return 'earlier-pass';
+  if (mark === 'fail') return 'earlier-fail';
+  return mark;
 }
 
 /** A task-page criterion standing as a mark. A stale fail is still a fail; a stale pass is not a pass. */

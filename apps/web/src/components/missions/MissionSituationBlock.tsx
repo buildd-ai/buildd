@@ -34,6 +34,7 @@ import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 import ClosedPrResolution, { type ClosedPrItem } from './ClosedPrResolution';
 import SituationTaskAffordance from './SituationTaskAffordance';
+import { statusPill } from '@/components/ui/states';
 
 /**
  * The element the criteria affordance targets: the Verified pill in the
@@ -252,7 +253,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
                 className="inline-flex min-h-11 md:min-h-0 items-center gap-1.5 text-accent-text hover:underline"
               >
                 <span className="truncate">{b.title}</span>
-                <span className="shrink-0 font-mono text-text-muted">· {b.status}</span>
+                <span className="shrink-0 font-mono text-text-muted">· {statusPill(b.status).label}</span>
               </Link>
             </li>
           ))}

@@ -85,3 +85,44 @@ describe('a bounded reader (S4a review: the fast heal reads GitHub under a budge
     expect(seen[0]?.signal).toBeUndefined();
   });
 });
+
+describe('a re-run supersedes the run it replaced (6900a317)', () => {
+  // One head, one workflow triggered twice (a PR-body edit re-runs it): GitHub keeps the
+  // first run's failed suite next to the passing one, under the same check name.
+  const run = (id: number, name: string, suite: number, conclusion: string | null, status = 'completed') =>
+    ({ id, name, status, conclusion, check_suite: { id: suite }, started_at: new Date(1_000_000 + id).toISOString() });
+  const suite = (id: number, conclusion: string | null, status = 'completed') => ({ id, status, conclusion });
+  const api = (runs: unknown[], suites: unknown[]) => (async (_i: number, path: string) => {
+    if (path.includes('/check-runs')) return { total_count: runs.length, check_runs: runs };
+    if (path.includes('/check-suites')) return { total_count: suites.length, check_suites: suites };
+    throw new Error(`unexpected ${path}`);
+  }) as never;
+
+  test('checkRuns: a failed run a newer same-name run replaced is not failing', async () => {
+    const r = githubReader(1, api([run(1, 'build', 10, 'success'), run(2, 'check', 20, 'failure'), run(3, 'check', 30, 'success')], []));
+    expect(await r.checkRuns!('acme/widgets', 'H1')).toEqual({ complete: true, failing: [] });
+  });
+  test('checkRuns: a newer failure still fails, and a re-run still going is not complete', async () => {
+    const r = githubReader(1, api([run(2, 'check', 20, 'success'), run(3, 'check', 30, 'failure')], []));
+    expect(await r.checkRuns!('acme/widgets', 'H1')).toEqual({ complete: true, failing: ['check'] });
+    const going = githubReader(1, api([run(2, 'check', 20, 'failure'), run(3, 'check', 30, null, 'in_progress')], []));
+    expect(await going.checkRuns!('acme/widgets', 'H1')).toEqual({ complete: false, failing: [] });
+  });
+  test('ciGreen: a failed suite whose every run was re-run green elsewhere does not hold the head red', async () => {
+    const runs = [run(1, 'build', 10, 'success'), run(2, 'check', 20, 'failure'), run(3, 'check', 30, 'success')];
+    const r = githubReader(1, api(runs, [suite(10, 'success'), suite(20, 'failure'), suite(30, 'success')]));
+    expect(await r.ciGreen!('acme/widgets', 'H1')).toBe(true);
+  });
+  test('ciGreen: a failed suite with a run nothing replaced, or with no runs at all, is still red', async () => {
+    const partly = [run(2, 'check', 20, 'failure'), run(4, 'lint', 20, 'failure'), run(3, 'check', 30, 'success')];
+    expect(await githubReader(1, api(partly, [suite(20, 'failure'), suite(30, 'success')])).ciGreen!('acme/widgets', 'H1')).toBe(false);
+    expect(await githubReader(1, api([run(3, 'check', 30, 'success')], [suite(20, 'failure'), suite(30, 'success')])).ciGreen!('acme/widgets', 'H1')).toBe(false);
+  });
+  test('ciGreen: unreadable runs fall back to the suites alone (fails closed)', async () => {
+    const suitesOnly = (async (_i: number, path: string) => {
+      if (path.includes('/check-suites')) return { check_suites: [suite(20, 'failure'), suite(30, 'success')] };
+      throw new Error('GitHub API error: 502');
+    }) as never;
+    expect(await githubReader(1, suitesOnly).ciGreen!('acme/widgets', 'H1')).toBe(false);
+  });
+});

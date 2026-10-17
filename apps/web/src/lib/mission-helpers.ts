@@ -385,7 +385,8 @@ export function deriveTaskHealthSignal(
 export type MissionDisplayState = 'held' | 'local' | 'stranded' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
-  held: 'HELD',
+  // A held start gate: NOT STARTED here, PAUSED when it ran before (the state view sets it).
+  held: 'NOT STARTED',
   // executor='local': the tasks run in a person's own session. Active work,
   // never HELD — held is the pause, and a local mission is not paused.
   local: 'LOCAL',
@@ -600,7 +601,7 @@ export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: strin
   attention: { label: 'NEEDS ATTENTION', color: 'var(--status-warning)' },
   review:    { label: 'AWAITING REVIEW', color: 'var(--status-success)' },
   scheduled: { label: 'SCHEDULED',       color: 'var(--status-info)' },
-  paused:    { label: 'PAUSED / HELD',   color: 'var(--text-muted)' },
+  paused:    { label: 'PAUSED / NOT STARTED',   color: 'var(--text-muted)' },
   completed: { label: 'COMPLETED',       color: 'var(--text-muted)' },
 };
 
@@ -803,7 +804,7 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   stalled: { label: 'Stalled', colorClass: 'health-pill-stalled' },
   shipped: { label: 'Shipped', colorClass: 'health-pill-shipped' },
   paused: { label: 'Paused', colorClass: 'health-pill-paused' },
-  held: { label: 'Held', colorClass: 'health-pill-paused' },
+  held: { label: 'Not started', colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
   'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
   escalated: { label: 'Needs decision', colorClass: 'health-pill-escalated' },

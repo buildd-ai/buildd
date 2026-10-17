@@ -16,7 +16,7 @@ interface Props {
 
 const OPTIONS: Array<{ value: Choice; label: string; describe: string }> = [
   { value: 'off', label: 'Off', describe: 'Reviews judge code only.' },
-  { value: 'review', label: 'Comments', describe: 'The reviewer comments on new UI text. Merges are not held.' },
+  { value: 'review', label: 'Comments', describe: 'The reviewer comments on new UI text. Merges are not blocked.' },
   { value: 'gate', label: 'Required', describe: 'New UI text that misses the voice guide goes back to the builder with a rewrite.' },
 ];
 

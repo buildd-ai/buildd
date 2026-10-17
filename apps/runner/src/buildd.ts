@@ -212,7 +212,7 @@ export class BuilddClient {
     return data;
   }
 
-  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
+  async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
@@ -249,6 +249,12 @@ export class BuilddClient {
     // workspaces when no specific workspaceId is targeted (the autonomous poll).
     if (claimAcrossAccessible && !workspaceId) {
       body.claimAcrossAccessible = true;
+    }
+    // A person chose this task for this runner (`c` in top, or a task aimed
+    // at it): the server lets it past the account-wide worker count, since
+    // this runner only claims into a free slot of its own.
+    if (opts.byPerson) {
+      body.requestedByPerson = true;
     }
     // BUILDD_EXECUTOR=cloud is set by apps/cloud-runner for the container. It
     // is sent verbatim so the server can refuse a value it does not know
@@ -352,6 +358,8 @@ export class BuilddClient {
      * when it is absent (docs/specs/real-and-virtual-cost.md).
      */
     costBasis?: 'real' | 'virtual' | 'unknown';
+    /** Which Claude login the run used; a machine login's wall holds only this runner. */
+    claudeLoginUsed?: 'machine_login' | 'machine_token' | 'stored';
     /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
@@ -704,6 +712,16 @@ export class BuilddClient {
   async listWorkspaces() {
     const data = await this.fetch('/api/workspaces');
     return data.workspaces || [];
+  }
+
+  /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
+  async getExplain(kind: 'mission' | 'task', id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/explain?${kind}Id=${encodeURIComponent(id)}`); } catch { return null; }
+  }
+
+  /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
+  async getMission(id: string): Promise<any | null> {
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}`); } catch { return null; }
   }
 
   async getWorkspaceConfig(workspaceId: string): Promise<{

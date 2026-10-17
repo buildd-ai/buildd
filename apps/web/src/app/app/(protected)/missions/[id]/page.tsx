@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { missionStartState } from '@/lib/mission-start-state';
 import { after } from 'next/server';
 import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs, users } from '@buildd/core/db/schema';
@@ -410,6 +411,7 @@ export default async function MissionDetailPage({
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
   const isHeld = (mission as any).isHeld === true;
+  const armedAt: Date | null = (mission as { armedAt?: Date | null }).armedAt ?? null;
 
   // Goal criteria that have not been verified keep the mission open — the header
   // must say that rather than "READY FOR REVIEW".
@@ -463,6 +465,7 @@ export default async function MissionDetailPage({
   const fallbackView = missionAnswer ? null : deriveMissionStateView({
     status: mission.status,
     isHeld,
+    armedAt,
     executor: (mission as any).executor ?? null,
     orchestrationMode,
     activeAgents,
@@ -1156,7 +1159,7 @@ export default async function MissionDetailPage({
   // The drawer's per-task Build › Audit › Land and audit/repair evidence: the
   // shared delivery projection over the same rows (Home, Missions, Activity).
   const taskDeliveries = missionTaskDeliveries({
-    mission: { id, title: mission.title, status: mission.status, isHeld, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },
+    mission: { id, title: mission.title, status: mission.status, isHeld, armedAt, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },
     tasks: allTasks as unknown as MissionDeliveryTaskRow[],
     digestOf,
     rules: missionHelpers,
@@ -1262,6 +1265,7 @@ export default async function MissionDetailPage({
       hasSchedule={!!scheduleCron}
       orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
       isHeld={isHeld}
+      startState={missionStartState({ isHeld, armedAt })}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
       completionDecision={completionDecision}

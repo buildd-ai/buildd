@@ -268,6 +268,23 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
+  it('refuses a fix on a frozen release candidate\'s branch: the fix goes to its source branch, then an amendment (task 7f71c3bb)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      ...workspaceRow,
+      releaseConfig: { enabled: true, strategy: 'workflow_dispatch', prodBranch: 'main', candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] } },
+    });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('frozen release candidate');
+    expect(body.error).toContain('`dev`');
+    expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
+    expect(mockRequestCiRetry).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
   it('returns 409 for a draft PR', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
     mockCheckPrIsDraft.mockResolvedValue(true);

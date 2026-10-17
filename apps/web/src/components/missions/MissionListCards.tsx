@@ -12,6 +12,7 @@
  *
  * Every link into a task goes through the model's `missionTaskHref` output.
  */
+import { MISSION_START_COPY, type MissionStartState } from '@/lib/mission-start-state';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
@@ -203,7 +204,7 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
           )}
           {counts.failed > 0 && <span className="text-status-error"><b className="font-semibold">{counts.failed}</b> failed</span>}
           {counts.open > 0 && <span className="text-text-muted">{counts.open} open</span>}
-          {counts.held > 0 && <span className="text-text-muted">{counts.held} held</span>}
+          {counts.held > 0 && <span className="text-text-muted">{counts.held} waiting</span>}
         </div>
         {model.criteria && <CriteriaPips criteria={model.criteria} />}
       </div>
@@ -211,8 +212,9 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
   );
 }
 
-/* ── Arm — releases a held mission ── */
-export function ArmButton({ missionId }: { missionId: string }) {
+/* ── Start (or resume) a mission whose tasks are not yet available ── */
+export function ArmButton({ missionId, startState = 'not_started' }: { missionId: string; startState?: MissionStartState }) {
+  const copy = MISSION_START_COPY[startState];
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -227,7 +229,7 @@ export function ArmButton({ missionId }: { missionId: string }) {
       });
       startTransition(() => router.refresh());
     } catch {
-      // non-fatal: the card stays held and the button can be pressed again
+      // non-fatal: the card stays as it was and the button can be pressed again
     } finally {
       setBusy(false);
     }
@@ -240,9 +242,9 @@ export function ArmButton({ missionId }: { missionId: string }) {
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleArm(); }}
       disabled={isPending || busy}
       className="inline-flex min-h-11 items-center gap-1 border-2 border-primary bg-primary px-3.5 font-mono text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50 md:min-h-9"
-      aria-label="Arm this mission: release its tasks for workers to claim"
+      aria-label={`${copy.action}: make its tasks available`}
     >
-      {isPending || busy ? 'Arming…' : 'Arm →'}
+      {isPending || busy ? copy.actionPending : `${copy.action} →`}
     </button>
   );
 }
@@ -260,7 +262,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
   const meta = r
     ? [r.lastTickAt ? `last tick ${timeAgo(r.lastTickAt)}` : 'no ticks', r.lastSummary].filter(Boolean).join(' · ')
     : h
-      ? `${h.ready} ${h.roles.length === 1 ? `${h.roles[0]} ` : ''}task${h.ready === 1 ? '' : 's'} ready · arm to start`
+      ? `${h.ready} ${h.roles.length === 1 ? `${h.roles[0]} ` : ''}task${h.ready === 1 ? '' : 's'} ready · ${h.startState === 'paused' ? 'resume' : 'start'} to begin`
       : model.sentence ?? view.situation.headline;
 
   return (
@@ -316,7 +318,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
             </span>
             <span className="flex items-center gap-2">
               {model.counts.total > 0 && <span className="text-text-muted">{model.counts.done}/{model.counts.total}</span>}
-              {model.kind === 'held' && <ArmButton missionId={view.id} />}
+              {model.kind === 'held' && <ArmButton missionId={view.id} startState={model.held?.startState} />}
             </span>
           </>
         )}

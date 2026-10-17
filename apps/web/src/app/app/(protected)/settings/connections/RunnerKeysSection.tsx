@@ -142,7 +142,7 @@ export default function RunnerKeysSection({
                   />
                 )}
                 {k.picks == null ? (
-                  <p className="text-meta text-text-muted">Claims from the open workspaces of {k.homeTeamName}. Edit to choose workspaces.</p>
+                  <p className="text-meta text-text-muted">Takes work from the open workspaces of {k.homeTeamName}. Edit to choose workspaces.</p>
                 ) : (
                   groupPicks(k.picks).map((g) => (
                     <div key={g.teamId}>
@@ -196,7 +196,7 @@ export default function RunnerKeysSection({
                     <InlineConfirm
                       testId="foreign-runner-remove-confirm"
                       confirmTestId="foreign-runner-remove-yes"
-                      question={`Remove ${r.accountName} from ${r.workspaceName}? That runner stops claiming work in this workspace.`}
+                      question={`Remove ${r.accountName} from ${r.workspaceName}? That runner stops taking work from this workspace.`}
                       confirmLabel="Remove"
                       busyLabel="Removing…"
                       busy={busy === id}

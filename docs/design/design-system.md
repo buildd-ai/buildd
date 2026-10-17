@@ -678,7 +678,12 @@ notification text) follows the same rules as a PR lede:
     action. Detail: one sentence of reason, and who can act. Diagnostics
     (gate codes, runner scheduling, override flags, exact timings) sit in a
     Disclosure for team admins and operators, or only on the operator page
-    that owns them (Settings › Runners, Health). A fact a member can act on
+    that owns them (Settings › Runners, Health). The Disclosure is
+    `DiagnosticsDisclosure` (`components/ui/DiagnosticsDisclosure.tsx`): a page
+    decides its audience once with `canSeeDiagnostics` (permission
+    `view_work_diagnostics`, or a platform operator) and wraps its body in
+    `DiagnosticsAudienceProvider`; without one, nothing renders. The task page
+    adopts it first. A fact a member can act on
     stays a plain sentence ("No runner is online."). No narration of the
     machinery ("runners claim on their next poll"), and no precision beyond
     what the reader acts on.

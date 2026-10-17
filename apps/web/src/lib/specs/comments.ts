@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { specComments, specRevisions, specs } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { outlineOf } from '@buildd/core/artifact-read';
-import { requirementIds } from '@buildd/spec-contract/requirements';
+import { criterionRecords } from '@buildd/spec-contract/criterion-records';
 import { isUuid } from '@/lib/uuid';
 import { author, fail, getSpec, reach, type SpecCaller, type SpecError } from './store';
 import { findSection } from './section-revise';
@@ -42,11 +42,15 @@ const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 type Anchored = { id: string; label: string; text: string };
 
-/** The anchor's text in `body`: a section's span, or a criterion's definition line. */
+/**
+ * The anchor's text in `body`: a section's span, or a criterion's words as
+ * its record holds them (./criteria.ts), so a comment's hash is the
+ * criterion's text hash ("Reviewing a spec revision" R-13).
+ */
 export function locateAnchor(body: string, kind: AnchorKind, ref: { id?: string; label?: string }): Anchored | null {
   if (kind === 'criterion') {
     const id = ref.id ?? ref.label;
-    const c = requirementIds(body).find((r) => r.id === id && (r.kind === 'requirement' || r.kind === 'acceptance'));
+    const c = criterionRecords(body).find((r) => r.id === id);
     return c ? { id: c.id, label: c.id, text: c.text } : null;
   }
   const outline = outlineOf(body);

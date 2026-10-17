@@ -388,6 +388,7 @@ export async function POST(req: NextRequest) {
         orchestrationMode: effectiveOrchestrationMode,
         ...(decompositionSkippedAtCreate ? { decompositionSkipped: true } : {}),
         isHeld: effectiveIsHeld,
+        ...(effectiveIsHeld ? {} : { armedAt: new Date() }),
         ...(executor ? { executor } : {}),
         integrationBranchEnabled,
         ...(defaultBackend ? { defaultBackend } : {}),

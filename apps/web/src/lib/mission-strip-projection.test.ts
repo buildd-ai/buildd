@@ -159,7 +159,7 @@ describe('one tone/bucket projection: strip header, list card and phase bar agre
     const slots = stripSlots(board);
     const header = stripSlotCounts(slots);
     expect(header).toEqual({ landed: 1, failed: 3, open: 1, held: 3, active: 0 });
-    expect(stripCountsLabel(header)).toBe('1 open · 3 failed · 3 held');
+    expect(stripCountsLabel(header)).toBe('1 open · 3 failed · 3 waiting');
 
     const { model } = listCard(dagTasks(spec).map(toListTaskRow));
     expect(model.buckets).toEqual(header);

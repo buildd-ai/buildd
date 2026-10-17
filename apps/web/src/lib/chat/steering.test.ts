@@ -181,10 +181,10 @@ describe('the owner\'s examples', () => {
     expect(writes).toEqual([]);
   });
 
-  it('"Pause the Stripe checkout…" → Hold task card; approving holds it and tells the running agent', async () => {
+  it('"Pause the Stripe checkout…" → Pause task card; approving holds it and tells the running agent', async () => {
     const { preview, out } = await proposeAndApprove('hold_task', { taskId: 'stripe checkout', reason: 'until the rounding decision is in' });
-    expect(approvalHeadline(preview)).toBe('Hold task: checkout · Stripe in currency (running on dune)');
-    expect(preview.changes.map(approvalChangeLine)).toEqual(['Claims: open → held', 'Until: + until the rounding decision is in']);
+    expect(approvalHeadline(preview)).toBe('Pause task: checkout · Stripe in currency (running on dune)');
+    expect(preview.changes.map(approvalChangeLine)).toEqual(['Claims: open → paused', 'Until: + until the rounding decision is in']);
     expect(preview.note).toBe('The agent running on dune is told to stop at a safe point and wait.');
     expect(writes).toEqual([
       `PATCH /api/tasks/${T_STRIPE.slice(0, 8)} {"held":true,"heldReason":"until the rounding decision is in"}`,
@@ -321,8 +321,8 @@ describe('the owner\'s examples', () => {
 
   it('arming a held mission', async () => {
     const { preview } = await proposeAndApprove('manage_missions', { action: 'arm', missionId: MISSION_HELD });
-    expect(approvalHeadline(preview)).toBe('Arm mission: Rounding rollout (held)');
-    expect(preview.changes.map(approvalChangeLine)).toEqual(['Start: held → armed']);
+    expect(approvalHeadline(preview)).toBe('Start mission: Rounding rollout (not started)');
+    expect(preview.changes.map(approvalChangeLine)).toEqual(['Start: not started → started']);
     expect(writes).toEqual([`PATCH /api/missions/${MISSION_HELD.slice(0, 8)} {"arm":true}`]);
   });
 

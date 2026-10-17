@@ -3,8 +3,9 @@ import { NextRequest } from 'next/server';
 
 let caller: unknown = { kind: 'user', userId: 'u1' };
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
+let missing = false;
 mock.module('@/lib/specs/store', () => ({
-  getSpec: async (_c: unknown, _id: string, o: { revision?: number }) => ({ ok: true, view: { revision: { revision: o.revision ?? 2 } } }),
+  getSpec: async (_c: unknown, _id: string, o: { revision?: number }) => (missing ? { ok: false, status: 404, error: 'Spec not found' } : { ok: true, view: { revision: { revision: o.revision ?? 2 } } }),
   reviseSpecDraft: async () => ({ ok: false, status: 409, error: 'changed', currentVersion: 3 }),
 }));
 const sectionCalls: unknown[] = [];
@@ -16,6 +17,13 @@ mock.module('@/lib/specs/section-revise', () => ({
 }));
 let short: unknown = { state: 'none' };
 mock.module('@/lib/specs/short-id', () => ({ SHORT_ID: /^[0-9a-f]{8}$/, resolveSpecShortId: async () => short }));
+const notFoundFor: string[] = [];
+mock.module('@/lib/specs/copy', () => ({
+  specNotFound: async (_c: unknown, id: string) => {
+    notFoundFor.push(id);
+    return { ok: false, status: 404, error: `Spec ${id} is not readable from here, but it was copied: c1`, code: 'spec_copied' };
+  },
+}));
 const { GET, PATCH } = await import('./route');
 const params = Promise.resolve({ specId: 's1' });
 
@@ -56,5 +64,16 @@ describe('/api/specs/[specId]', () => {
     const res = await GET(new NextRequest('http://l/api/specs/abcdef12'), { params: Promise.resolve({ specId: 'abcdef12' }) });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'ambiguous_short_id', specs: [{ id: 'a' }, { id: 'b' }] });
+  });
+
+  it('GET of a spec the caller cannot read answers through specNotFound: the copy it can read, or how to make one', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    short = { state: 'none' };
+    missing = true;
+    const res = await GET(new NextRequest('http://l/api/specs/65664148'), { params: Promise.resolve({ specId: '65664148' }) });
+    missing = false;
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'spec_copied' });
+    expect(notFoundFor).toEqual(['65664148']);
   });
 });
