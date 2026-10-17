@@ -8,11 +8,13 @@ import type { BuilddClient } from './buildd';
 import type { LocalUIConfig } from './types';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { gitShellAsync, mapWithConcurrency } from './git-async';
 import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { removeWorktreeIfUnowned } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
+import { decideRestore, fsResumeProbe, restartNewAttemptError, type ResumeProbe } from './restart-resume';
+import { PAUSED_ERROR, pausedWaitingFor } from './pause';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
@@ -81,6 +83,20 @@ function repoPathFromWorktree(worktreePath: string): string {
   return idx > 0 ? worktreePath.substring(0, idx) : worktreePath;
 }
 
+/**
+ * How many workers one sync tick syncs at once. Each sync awaits its own git
+ * (async, git-async.ts) and its own PATCH, so a slow worktree or a slow
+ * response holds one slot, never the rest of the tick.
+ */
+export const SYNC_TICK_CONCURRENCY = 4;
+
+/** What one sync reads from a worker's worktree. */
+interface WorktreeObservation {
+  gitFacts: GitProgressObservation | null;
+  touched?: { paths: string[]; baseResolved: boolean; complete: boolean };
+  dirtyWorktree?: boolean;
+}
+
 /** How often the sync tick may fetch a base ref it could not resolve. */
 const BASE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -97,9 +113,9 @@ const BASE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
  * With no resolvable base the committed half is left out rather than guessed.
  * Never throws — passive infrastructure.
  */
-function computeTouchedPaths(worktreePath: string, baseRef: string | undefined): { paths: string[]; baseResolved: boolean; complete: boolean } {
+async function computeTouchedPaths(worktreePath: string, baseRef: string | undefined): Promise<{ paths: string[]; baseResolved: boolean; complete: boolean }> {
   try {
-    const sweep = sweepWorktreeChanges(worktreePath, baseRef);
+    const sweep = await sweepWorktreeChanges(worktreePath, baseRef);
     // `complete`: git saw the whole set. A configured base that did not
     // resolve, or a git error, means a path missing from this sweep is not
     // evidence it was reverted — the tracker then only adds, never removes.
@@ -123,17 +139,17 @@ function computeTouchedPaths(worktreePath: string, baseRef: string | undefined):
  * source of truth on its own — the runner's own terminal collectGitStats call
  * (git-operations.ts) computes the same thing independently at session end.
  */
-function computeDirtyWorktree(worktreePath: string): boolean {
+async function computeDirtyWorktree(worktreePath: string): Promise<boolean> {
   try {
     // Runs every sync tick against the worker's own live worktree, so it can
     // race an agent `git add`/`git commit` there for the same index.lock —
     // GIT_OPTIONAL_LOCKS=0 skips the opportunistic index write-back `status`
     // would otherwise do, without changing the porcelain output read below.
-    const output = execSync('git status --porcelain', {
+    const output = await gitShellAsync('git status --porcelain', {
       cwd: worktreePath,
-      timeout: 5000,
+      timeoutMs: 5000,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    }).toString();
+    });
     return output.split('\n').some(line => line.length > 0 && !line.startsWith('??'));
   } catch {
     return false;
@@ -209,6 +225,8 @@ export interface WorkerSyncContext {
   onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
   /** The server says a person paused this run (PATCH response `pauseRequested`, pause.ts). */
   onPauseRequested?: (worker: LocalWorker) => void;
+  /** What a restart checks before continuing a worker in its own session (restart-resume.ts). Default: the filesystem. */
+  resumeProbe?: ResumeProbe;
 }
 
 /**
@@ -293,12 +311,21 @@ export class WorkerSync {
   }
 
   /**
-   * Restore workers from disk on startup.
-   * Workers with active status are marked as errored since we can't resume SDK sessions.
-   * Exception: 'waiting' workers keep their status for sendMessage()-based resume.
+   * Restore workers from disk on startup (R-37, R-38; restart-resume.ts).
+   *
+   * - A worker the process was running when it died (SIGKILL, power loss, an
+   *   update restart over it) is restored as PAUSED when its worktree and its
+   *   session are still on disk: `resumeOnStart: 'crash'`, and
+   *   WorkerManager.continueRestoredAgents continues it in that session.
+   * - A paused worker (by a person, or by a service stop) keeps waiting; one
+   *   whose worktree or session is gone cannot continue where it was, so it is
+   *   failed as a new attempt with a reason naming what was missing.
+   * - Anything else that was running is reported failed, "Process restarted",
+   *   with what was missing, and the task retries from its last pushed commit.
    */
   restoreWorkersFromDisk() {
     try {
+      const probe = this.ctx.resumeProbe ?? fsResumeProbe({ workspaceIsolationRoot: this.ctx.config?.workspaceIsolationRoot });
       const restored = loadAllWorkers();
       let skippedTerminal = 0;
       for (const worker of restored) {
@@ -324,12 +351,56 @@ export class WorkerSync {
         // silently skip the notification — stranding the server row at 'running'
         // until the reaper expired it. 'stale' still arrives unrewritten, and
         // 'working' is kept for any caller that hands us a pre-rewrite row.
-        if (worker.killedByRestart || worker.status === 'working' || worker.status === 'stale') {
+        const wasRunning = !!worker.killedByRestart || worker.status === 'working' || worker.status === 'stale';
+        const paused = worker.status === 'waiting' && worker.waitingFor?.type === 'pause';
+        let missing: string[] | null = null;
+        if (wasRunning || paused) {
+          const verdict = decideRestore(worker, probe);
+          if (verdict.kind === 'continue' && wasRunning) {
+            // R-37: the worktree and the session survived, so this is a pause,
+            // not a failure. The server hears it on the first report.
+            worker.status = 'waiting';
+            worker.error = PAUSED_ERROR;
+            worker.completedAt = undefined;
+            // A pause a person had asked for (still waiting on a tool when the
+            // process died) stays theirs: it waits for them, never auto-continues.
+            const byPerson = !!worker.pauseRequestedAt;
+            worker.pauseRequestedAt = undefined;
+            worker.waitingFor = pausedWaitingFor(byPerson ? 'person' : 'crash');
+            worker.currentAction = 'Paused';
+            worker.resumeOnStart = byPerson ? undefined : 'crash';
+            delete worker.killedByRestart;
+            sessionLog(worker.id, 'info', 'restart_paused', 'runner stopped with this worker running; worktree and session intact, restored as paused', worker.taskId);
+            storeSaveWorker(worker);
+          } else if (verdict.kind === 'new_attempt') {
+            missing = verdict.missing;
+          }
+        }
+        if (missing && paused) {
+          // R-38: a paused agent that cannot continue in its own session.
+          const error = restartNewAttemptError(missing);
           worker.status = 'error';
-          worker.error = 'Process restarted';
+          worker.error = error;
+          worker.completedAt = Date.now();
+          worker.currentAction = 'Could not continue after the restart';
+          worker.waitingFor = undefined;
+          worker.resumeOnStart = undefined;
+          sessionLog(worker.id, 'warn', 'restart_new_attempt', error, worker.taskId);
+          storeSaveWorker(worker);
+          this.ctx.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error,
+            crashReconciled: true,
+            ...buildTerminalAttributionPayload(worker),
+          }).catch(() => {});
+        } else if (missing && wasRunning) {
+          const error = restartNewAttemptError(missing);
+          worker.status = 'error';
+          worker.error = error;
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
           delete worker.killedByRestart;
+          sessionLog(worker.id, 'warn', 'restart_new_attempt', error, worker.taskId);
 
           // Notify server so it doesn't stay "running" forever. Carries
           // whatever cost/token/turn numbers this session had accumulated
@@ -342,7 +413,7 @@ export class WorkerSync {
           // ordinary failure.
           this.ctx.buildd.updateWorker(worker.id, {
             status: 'failed',
-            error: 'Process restarted',
+            error,
             crashReconciled: true,
             ...buildTerminalAttributionPayload(worker),
             ...(typeof worker.resultMeta?.numTurns === 'number' && worker.resultMeta.numTurns > 0
@@ -396,35 +467,75 @@ export class WorkerSync {
     }
   }
 
+  /** In-flight worktree reads, per worker (see observeWorktree). */
+  private worktreeReads = new Map<string, Promise<WorktreeObservation>>();
+  /** Workers a sync tick is syncing right now; the next tick skips them. */
+  private tickInFlight = new Set<string>();
+
+  /**
+   * Every git read one sync makes against the worker's worktree: HEAD and the
+   * git-progress facts (cached 30s per HEAD), the checkpoint sweep for the
+   * working set, and the dirty-tracked-files signal. Same commands and parsing
+   * as before, run async (git-async.ts) so the event loop keeps serving the
+   * local socket and the other workers while git works. A second sync of the
+   * same worker while this one is still reading (addMilestone syncs right
+   * away) shares the read instead of starting another set of git children.
+   */
+  private observeWorktree(worker: LocalWorker): Promise<WorktreeObservation> {
+    const pending = this.worktreeReads.get(worker.id);
+    if (pending) return pending;
+    const read = this.readWorktree(worker).finally(() => {
+      if (this.worktreeReads.get(worker.id) === read) this.worktreeReads.delete(worker.id);
+    });
+    this.worktreeReads.set(worker.id, read);
+    return read;
+  }
+
+  private async readWorktree(worker: LocalWorker): Promise<WorktreeObservation> {
+    const out: WorktreeObservation = { gitFacts: null };
+    const wt = worker.worktreePath;
+    if (!wt || !existsSync(wt)) return out;
+    if (worker.prBaseRef && worker.branch) {
+      try {
+        const head = (await gitShellAsync('git rev-parse HEAD', { cwd: wt, timeoutMs: 5000 })).trim();
+        const cached = this.gitObservations.get(worker.id);
+        if (!cached || cached.head !== head || Date.now() - cached.at >= 30_000) {
+          out.gitFacts = await observeGitProgress(wt, worker.prBaseRef, worker.branch);
+          this.gitObservations.set(worker.id, { at: Date.now(), head, facts: out.gitFacts });
+        } else out.gitFacts = cached.facts;
+      } catch { /* Passive observation never interrupts the worker. */ }
+    }
+    // Authoritative working set: the task-owned file set from git (working-set.ts).
+    out.touched = await computeTouchedPaths(wt, worker.prBaseRef);
+    // Dirty-worktree signal for the complete_task gate — see computeDirtyWorktree.
+    out.dirtyWorktree = await computeDirtyWorktree(wt);
+    return out;
+  }
+
   /**
    * Sync a single worker's state to the buildd server.
    * Handles abort responses (server-side termination) and pending instructions.
    */
   async syncWorkerToServer(worker: LocalWorker) {
     try {
-      let gitFacts: GitProgressObservation | null = null;
-      if (worker.worktreePath && worker.prBaseRef && worker.branch && existsSync(worker.worktreePath)) {
+      // All of this sync's git reads, off the event loop and shared with any
+      // sync of the same worker already reading (see observeWorktree).
+      const observed = await this.observeWorktree(worker);
+      const gitFacts: GitProgressObservation | null = observed.gitFacts;
+      if (gitFacts) {
         try {
-          const head = execSync('git rev-parse HEAD', { cwd: worker.worktreePath, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-          const cached = this.gitObservations.get(worker.id);
-          if (!cached || cached.head !== head || Date.now() - cached.at >= 30_000) {
-            gitFacts = observeGitProgress(worker.worktreePath, worker.prBaseRef, worker.branch);
-            this.gitObservations.set(worker.id, { at: Date.now(), head, facts: gitFacts });
-          } else gitFacts = cached.facts;
-          if (gitFacts) {
-            worker.checkpointEvents ??= new Set<CheckpointEventType>();
-            for (const event of [
-              ...(gitFacts.commitCount > 0 ? [CheckpointEvent.FIRST_COMMIT] : []),
-              ...(gitFacts.pushed ? [CheckpointEvent.FIRST_PUSH] : []),
-            ]) {
-              if (worker.checkpointEvents.has(event)) continue;
-              worker.checkpointEvents.add(event);
-              const milestone = { type: 'checkpoint' as const, event, label: CHECKPOINT_LABELS[event], ts: Date.now() };
-              // Avoid addMilestone's immediate sync recursion: these facts are already on this PATCH.
-              appendMilestone(worker.milestones, milestone);
-              this.ctx.dirtyForDisk.add(worker.id);
-              this.ctx.emit({ type: 'milestone', workerId: worker.id, milestone });
-            }
+          worker.checkpointEvents ??= new Set<CheckpointEventType>();
+          for (const event of [
+            ...(gitFacts.commitCount > 0 ? [CheckpointEvent.FIRST_COMMIT] : []),
+            ...(gitFacts.pushed ? [CheckpointEvent.FIRST_PUSH] : []),
+          ]) {
+            if (worker.checkpointEvents.has(event)) continue;
+            worker.checkpointEvents.add(event);
+            const milestone = { type: 'checkpoint' as const, event, label: CHECKPOINT_LABELS[event], ts: Date.now() };
+            // Avoid addMilestone's immediate sync recursion: these facts are already on this PATCH.
+            appendMilestone(worker.milestones, milestone);
+            this.ctx.dirtyForDisk.add(worker.id);
+            this.ctx.emit({ type: 'milestone', workerId: worker.id, milestone });
           }
         } catch { /* Passive observation never interrupts the worker. */ }
       }
@@ -475,9 +586,7 @@ export class WorkerSync {
       // locally with a generation; only the DELTA since the server's last ACK
       // goes out, one bounded chunk per tick (working-set.ts). The server
       // leases it. ~5ms shell call; only computed when a worktree exists.
-      const touched = worker.worktreePath && existsSync(worker.worktreePath)
-        ? computeTouchedPaths(worker.worktreePath, worker.prBaseRef)
-        : undefined;
+      const touched = observed.touched;
       const syncNow = Date.now();
       let workingSetDelta: ReturnType<typeof nextWorkingSetDelta> = null;
       if (touched) {
@@ -503,9 +612,7 @@ export class WorkerSync {
         void refreshBaseRef(worker.worktreePath, worker.prBaseRef);
       }
       // Dirty-worktree signal for the complete_task gate — see computeDirtyWorktree.
-      const dirtyWorktree = worker.worktreePath && existsSync(worker.worktreePath)
-        ? computeDirtyWorktree(worker.worktreePath)
-        : undefined;
+      const dirtyWorktree = observed.dirtyWorktree;
 
       // Degraded path-claim calls since the last successful sync: the server's
       // declaration denominator (conflict-aware-orchestration.md §3), split by
@@ -565,6 +672,8 @@ export class WorkerSync {
               type: worker.waitingFor.type,
               prompt: worker.waitingFor.prompt,
               options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+              // A pause says since when (R-38: the dashboard shows "paused since").
+              ...(worker.waitingFor.since ? { since: worker.waitingFor.since } : {}),
             };
       }
       let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;
@@ -780,16 +889,26 @@ export class WorkerSync {
     if (this.ctx.dirtyWorkers.size === 0) return;
     const toSync = new Set(this.ctx.dirtyWorkers);
     this.ctx.dirtyWorkers.clear();
-    try {
-      for (const workerId of toSync) {
-        const worker = this.ctx.workers.get(workerId);
-        if (worker && (worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) {
-          await this.syncWorkerToServer(worker);
-        }
-      }
-    } catch {
-      // Silently ignore sync errors - server may be temporarily unreachable
+    // Several at once (SYNC_TICK_CONCURRENCY): one worker's slow git or slow
+    // PATCH holds its own slot only. A worker still syncing from the previous
+    // tick is left dirty for the next one rather than synced twice at once.
+    const due: LocalWorker[] = [];
+    for (const workerId of toSync) {
+      const worker = this.ctx.workers.get(workerId);
+      if (!worker || !(worker.status === 'working' || worker.status === 'stale' || worker.status === 'waiting')) continue;
+      if (this.tickInFlight.has(workerId)) { this.ctx.dirtyWorkers.add(workerId); continue; }
+      due.push(worker);
     }
+    await mapWithConcurrency(due, SYNC_TICK_CONCURRENCY, async (worker) => {
+      this.tickInFlight.add(worker.id);
+      try {
+        await this.syncWorkerToServer(worker);
+      } catch {
+        // Silently ignore sync errors - server may be temporarily unreachable
+      } finally {
+        this.tickInFlight.delete(worker.id);
+      }
+    });
   }
 
   /**

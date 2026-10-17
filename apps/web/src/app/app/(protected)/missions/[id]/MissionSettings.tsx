@@ -8,8 +8,9 @@ import type { MissionDisplayState } from '@/lib/mission-helpers';
 import Notice from '@/components/ui/Notice';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
-import { humanPickableRoles, type GoalCriterion } from '@buildd/shared';
+import { humanPickableRoles, type GoalCriterion, type LivingSpecGoalCriterion } from '@buildd/shared';
 import MissionDecisionSheet, { type SurfaceAuditDecision } from './MissionDecisionSheet';
+import OutcomeSpecPicker from './OutcomeSpecPicker';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -90,6 +91,8 @@ interface MissionSettingsProps {
   hasPrimaryAction?: boolean;
   /** Who claims the tasks: runners, or a person's local session. Null hides the switch. */
   executor?: 'runner' | 'local' | null;
+  /** The mission's selected outcome specs (its living_spec criteria). Null hides the picker. */
+  outcomeSpecs?: LivingSpecGoalCriterion[] | null;
 }
 
 export default function MissionSettings({
@@ -105,6 +108,7 @@ export default function MissionSettings({
   hasPrimaryAction = false,
   executor = null,
   completionDecision = null,
+  outcomeSpecs = null,
 }: MissionSettingsProps) {
   const router = useRouter();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -701,6 +705,11 @@ export default function MissionSettings({
 
       {error && (
         <p className="text-meta text-status-error">{error}</p>
+      )}
+
+      {/* The outcome spec: the requirements this mission must meet on its integrated result. */}
+      {outcomeSpecs && workspaceId && (
+        <OutcomeSpecPicker missionId={missionId} workspaceId={workspaceId} selected={outcomeSpecs} readonly={isTerminal} />
       )}
 
       {/* Quick Task Creation — hidden for completed/archived missions */}

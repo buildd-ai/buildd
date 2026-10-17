@@ -20,14 +20,20 @@ export const CLOUD_MODEL_AUTH_ENV = 'BUILDD_CLOUD_MODEL_AUTH';
 
 const CLOUD_PROVIDER_SWITCHES = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
-const set = (v: string | undefined) => typeof v === 'string' && v.length > 0;
+/**
+ * Whether a credential variable counts as set. The one predicate for the cost
+ * basis and the run route (run-route.ts), so the two can never disagree about
+ * the same env (a whitespace-only key counts, as it does here).
+ */
+export const isCredentialSet = (v: string | undefined): boolean => typeof v === 'string' && v.length > 0;
+const set = isCredentialSet;
 
 /**
  * A Claude run. Precedence mirrors Claude Code's own: an API key or auth token
  * in the env beats a subscription token, so it decides first.
  */
 export function claudeCostBasis(
-  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'hostSeatUsed'>,
+  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'machineLoginUsed'>,
   opts: { claudeCredentialUsed: boolean },
 ): RunnerCostBasis {
   const env = modelEnv.env;
@@ -35,8 +41,24 @@ export function claudeCostBasis(
   if (modelEnv.endpoint === 'team' || modelEnv.endpoint === 'custom') return 'real';
   if (CLOUD_PROVIDER_SWITCHES.some(k => set(env[k]) && env[k] !== '0')) return 'real';
   if (set(env.ANTHROPIC_AUTH_TOKEN) || set(env.ANTHROPIC_API_KEY)) return 'real';
-  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.hostSeatUsed || opts.claudeCredentialUsed) return 'virtual';
+  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.machineLoginUsed || opts.claudeCredentialUsed) return 'virtual';
   return 'unknown';
+}
+
+/**
+ * Which kind of login a parsed Codex `auth.json` holds, in the order the Codex
+ * backend resolves it: an API key under `tokens`, a ChatGPT login
+ * (`tokens.access_token`), then a top-level API key. Null when it holds
+ * neither. Shared by the cost basis and the runner's Codex auth label
+ * (host-seat.ts detectCodexAuthSource); never returns a value.
+ */
+export function codexAuthJsonKind(auth: Record<string, unknown> | null | undefined): 'api_key' | 'chatgpt' | null {
+  if (!auth || typeof auth !== 'object') return null;
+  const tokens = (auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : auth) as Record<string, unknown>;
+  if (set(tokens.api_key as string) || set(tokens.apiKey as string)) return 'api_key';
+  if (set(tokens.access_token as string)) return 'chatgpt';
+  if (set(auth.api_key as string) || set(auth.apiKey as string) || set(auth.OPENAI_API_KEY as string)) return 'api_key';
+  return null;
 }
 
 /** A Codex run, in the order the Codex backend resolves auth (codex-backend.ts `resolveAuth`). */
@@ -47,13 +69,9 @@ export function codexCostBasis(input: {
   envApiKey?: string;
 }): RunnerCostBasis {
   if (input.teamEndpoint) return 'real';
-  const auth = input.authJson;
-  if (auth) {
-    const tokens = (auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : auth) as Record<string, unknown>;
-    if (set(tokens.api_key as string) || set(tokens.apiKey as string)) return 'real';
-    if (set(tokens.access_token as string)) return 'virtual';
-    if (set(auth.api_key as string) || set(auth.apiKey as string) || set(auth.OPENAI_API_KEY as string)) return 'real';
-  }
+  const kind = codexAuthJsonKind(input.authJson);
+  if (kind === 'api_key') return 'real';
+  if (kind === 'chatgpt') return 'virtual';
   if (set(input.envApiKey)) return 'real';
   return 'unknown';
 }

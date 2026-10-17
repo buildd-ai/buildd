@@ -15,7 +15,7 @@
  * root — the whole point is a per-user service a sandboxed agent account can
  * manage without sudo.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { resolveBuilddHome } from './buildd-home';
@@ -88,8 +88,21 @@ function escapeXml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** How the service runs the launcher. `debug` passes --debug, so it serves the local web UI (`buildd web`). */
+export interface ServiceRunOptions {
+  debug?: boolean;
+}
+
+/**
+ * How long the service manager waits after its stop signal before it kills
+ * the runner (launchd ExitTimeOut, systemd TimeoutStopSec). The runner pauses
+ * its running agents in that window and exits on its own well inside it
+ * (restart-resume.ts SHUTDOWN_DEADLINE_MS); this is the margin above that.
+ */
+export const SERVICE_STOP_TIMEOUT_S = 30;
+
 /** macOS LaunchAgent plist. KeepAlive + RunAtLoad cover both reboot survival and crash restart. */
-export function generateLaunchdPlist(paths: ServicePaths): string {
+export function generateLaunchdPlist(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -98,7 +111,7 @@ export function generateLaunchdPlist(paths: ServicePaths): string {
 	<string>${escapeXml(paths.label)}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>${escapeXml(paths.builddBin)}</string>
+		<string>${escapeXml(paths.builddBin)}</string>${opts.debug ? '\n\t\t<string>--debug</string>' : ''}
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -106,6 +119,8 @@ export function generateLaunchdPlist(paths: ServicePaths): string {
 	<true/>
 	<key>ProcessType</key>
 	<string>Background</string>
+	<key>ExitTimeOut</key>
+	<integer>${SERVICE_STOP_TIMEOUT_S}</integer>
 	<key>WorkingDirectory</key>
 	<string>${escapeXml(paths.home)}</string>
 	<key>StandardOutPath</key>
@@ -125,7 +140,7 @@ export function generateLaunchdPlist(paths: ServicePaths): string {
 }
 
 /** Linux systemd --user unit. Restart=always covers crash restart; reboot survival needs `loginctl enable-linger`. */
-export function generateSystemdUnit(paths: ServicePaths): string {
+export function generateSystemdUnit(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
   return `[Unit]
 Description=buildd runner
 After=network-online.target
@@ -133,10 +148,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${paths.builddBin}
+ExecStart=${paths.builddBin}${opts.debug ? ' --debug' : ''}
 WorkingDirectory=${paths.home}
 Restart=always
 RestartSec=5
+# The stop signal goes to the launcher (the main process) only, which hands it
+# to the runner; the runner pauses its agents and exits, and the launcher exits
+# with it. Once the main process has exited, systemd SIGKILLs whatever is left
+# in the unit (and everything at TimeoutStopSec if it has not). The default,
+# control-group, signals every agent process at once, so each died before the
+# runner could pause it.
+KillMode=mixed
+TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}
 Environment=PATH=${paths.pathEnv}
 Environment=HOME=${paths.home}
 StandardOutput=append:${paths.stdoutLog}
@@ -181,6 +204,16 @@ export interface ServiceActionResult {
   message: string;
 }
 
+/** Printed last after a successful install: the two ways to look at the runner, in that order. */
+export const SERVICE_WATCH_HINT = [
+  'Watch it:                buildd top',
+  'Open it in your browser: buildd web',
+].join('\n');
+
+function withWatchHint(message: string, opts: { watchHint?: boolean }): string {
+  return opts.watchHint === false ? message : `${message}\n\n${SERVICE_WATCH_HINT}`;
+}
+
 const UNSUPPORTED_PLATFORM_MESSAGE =
   'buildd service is only supported on macOS and Linux. On Windows, install.ps1 registers a Scheduled Task automatically.';
 
@@ -188,6 +221,7 @@ export function installService(
   paths: ServicePaths,
   platform: ServicePlatform,
   run: CommandRunner = runSync,
+  opts: ServiceRunOptions & { watchHint?: boolean } = {},
 ): ServiceActionResult {
   if (platform === 'unsupported') return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
 
@@ -196,7 +230,7 @@ export function installService(
   if (platform === 'darwin') {
     const plistPath = launchdPlistPath(paths);
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, generateLaunchdPlist(paths));
+    writeFileSync(plistPath, generateLaunchdPlist(paths, opts));
     run('launchctl', ['unload', plistPath]); // idempotent: ignore failure if not already loaded
     const load = run('launchctl', ['load', '-w', plistPath]);
     if (load.exitCode !== 0) {
@@ -204,14 +238,17 @@ export function installService(
     }
     return {
       ok: true,
-      message: `Installed launchd service (${plistPath}).\n${serviceLogsHint(paths)}`,
+      message: withWatchHint(`Installed launchd service (${plistPath}).\n${serviceLogsHint(paths)}`, opts),
     };
   }
 
   if (platform === 'linux') {
     const unitPath = systemdUnitPath(paths);
     mkdirSync(dirname(unitPath), { recursive: true });
-    writeFileSync(unitPath, generateSystemdUnit(paths));
+    // `enable --now` does not restart a unit that is already running, so a
+    // reinstall (e.g. to add --debug) would leave the old process in place.
+    const wasActive = run('systemctl', ['--user', 'is-active', '--quiet', `${paths.unitName}.service`]).exitCode === 0;
+    writeFileSync(unitPath, generateSystemdUnit(paths, opts));
     const reload = run('systemctl', ['--user', 'daemon-reload']);
     if (reload.exitCode !== 0) {
       return { ok: false, message: `systemctl --user daemon-reload failed: ${(reload.stderr || reload.stdout).trim()}` };
@@ -220,16 +257,59 @@ export function installService(
     if (enable.exitCode !== 0) {
       return { ok: false, message: `systemctl --user enable failed: ${(enable.stderr || enable.stdout).trim()}` };
     }
+    if (wasActive) {
+      const restart = run('systemctl', ['--user', 'restart', `${paths.unitName}.service`]);
+      if (restart.exitCode !== 0) {
+        return { ok: false, message: `systemctl --user restart failed: ${(restart.stderr || restart.stdout).trim()}` };
+      }
+    }
     return {
       ok: true,
-      message:
+      message: withWatchHint(
         `Installed systemd --user service (${unitPath}).\n${serviceLogsHint(paths)}\n\n` +
         'To keep it running after you log out and across reboots, run:\n' +
         '  loginctl enable-linger $USER',
+        opts,
+      ),
     };
   }
 
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
+}
+
+/** Whether the installed service runs with --debug, so a plain reinstall keeps it. False when none is installed. */
+export function installedServiceDebug(paths: ServicePaths, platform: ServicePlatform): boolean {
+  const file = platform === 'darwin' ? launchdPlistPath(paths) : platform === 'linux' ? systemdUnitPath(paths) : null;
+  if (!file || !existsSync(file)) return false;
+  try {
+    const text = readFileSync(file, 'utf-8');
+    return platform === 'darwin'
+      ? text.includes('<string>--debug</string>')
+      : /^ExecStart=.* --debug$/m.test(text);
+  } catch {
+    console.warn(`Failed to read service file ${file}`);
+    return false;
+  }
+}
+
+/** Handles the `buildd service install` subcommand: preserves --debug flag if not specified. For testing. */
+export function handleInstallCommand(paths: ServicePaths, platform: ServicePlatform, runner: CommandRunner, args: string[]): CommandResult {
+  const parsed = parseInstallArgs(args, installedServiceDebug(paths, platform));
+  if ('error' in parsed) return { ok: false, message: `${parsed.error}\n${USAGE}` };
+  return installService(paths, platform, runner, {
+    debug: parsed.debug,
+    watchHint: process.env.BUILDD_INSTALLER !== '1',
+  });
+}
+
+/** `buildd service install [--debug|--no-debug]`: with neither, keep what the installed service does. */
+export function parseInstallArgs(args: string[], installedDebug: boolean): { debug: boolean } | { error: string } {
+  const unknown = args.find((a) => a !== '--debug' && a !== '--no-debug');
+  if (unknown) return { error: `Unknown argument: ${unknown}` };
+  const on = args.includes('--debug');
+  const off = args.includes('--no-debug');
+  if (on && off) return { error: 'Pass --debug or --no-debug, not both' };
+  return { debug: on ? true : off ? false : installedDebug };
 }
 
 export function uninstallService(
@@ -295,7 +375,11 @@ export function serviceStatus(
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
 }
 
-const USAGE = 'Usage: buildd service <install|uninstall|status|logs>';
+const USAGE = [
+  'Usage: buildd service <install|uninstall|status|logs>',
+  '  buildd service install --debug     also serve the local web UI (buildd web); kept on reinstall',
+  '  buildd service install --no-debug  turn the web UI off again',
+].join('\n');
 
 async function main(): Promise<void> {
   const sub = Bun.argv[2];
@@ -304,7 +388,7 @@ async function main(): Promise<void> {
 
   switch (sub) {
     case 'install': {
-      const result = installService(paths, platform);
+      const result = handleInstallCommand(paths, platform, runSync, Bun.argv.slice(3));
       console.log(result.message);
       process.exit(result.ok ? 0 : 1);
     }

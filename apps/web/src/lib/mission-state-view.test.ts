@@ -69,7 +69,19 @@ describe('deriveMissionStateView — blocked by task', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'task') throw new Error('unreachable');
     expect(waiting.count).toBe(2);
-    expect(waiting.label).toContain('2 pending');
+    // Plain words, not raw statuses: "2 queued", never "2 pending" or "task(s)".
+    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 queued');
+  });
+
+  // Regression (owner report): "2 deliverable task(s) still open (1 pending, 1 assigned)".
+  it('with an agent working, says what is still open in plain words', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      activeAgents: 1,
+      completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 2, pendingByStatus: { pending: 1, assigned: 1 } },
+    });
+    const waiting = view.outstanding.find(f => f.kind === 'task') ?? gated(view);
+    expect(waiting.label).toBe('2 tasks still open: 1 queued, 1 picked up');
   });
 
   it('consumes deriveTaskHealthSignal, not a reimplementation of it', () => {
@@ -79,8 +91,12 @@ describe('deriveMissionStateView — blocked by task', () => {
     ]);
     expect(health).toBe('STALLED');
 
+    // A queued row nothing holds is next in line, not a stall (spec 8e137fdb I-4);
+    // a started row with nothing running it is.
     const view = deriveMissionStateView({ ...base, health, openTasks: [{ id: 't1', status: 'pending' }] });
-    expect(view.kind).toBe('blocked');
+    expect(view.kind).toBe('waiting');
+    expect(view.chip.label).toBe('NEXT IN LINE');
+    expect(deriveMissionStateView({ ...base, health, openTasks: [{ id: 't1', status: 'assigned' }] }).kind).toBe('blocked');
   });
 });
 
@@ -523,7 +539,7 @@ describe('deriveMissionStateView — precedence chain', () => {
       health: 'STALLED',
       openTasks: [{ id: 'task-e', status: 'pending' }],
     });
-    expect(view.kind).toBe('blocked');
+    expect(view.kind).toBe('waiting');
   });
 
   it('held outranks everything but a closed row', () => {
@@ -737,6 +753,25 @@ describe('deriveMissionStateView — surface audit missing', () => {
     }
   });
 
+  // task e7285dc4: the completion gate itself says who acts, so every surface
+  // reading the decision (not only explain) shows a system wait under automatic.
+  it('is a system wait when the completion gate filed the audit itself', () => {
+    const filed = {
+      ...refusal,
+      reason: 'This mission changed UI and no surface audit has passed yet. buildd files it itself; the mission completes when it passes.',
+      surfaceAuditActor: 'system' as const,
+    };
+    const view = deriveMissionStateView({ ...base, completion: filed });
+    expect(view.kind).not.toBe('awaiting_decision');
+    expect(view.waitingOn?.kind).toBe('self_resolving_wait');
+    expect(JSON.stringify(view)).not.toMatch(/waive|surfaceAuditWaiver/i);
+  });
+
+  it('the gate naming the owner keeps the owner decision', () => {
+    const view = deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditActor: 'owner' as const } });
+    expect(view.kind).toBe('awaiting_decision');
+  });
+
   it('stays an owner decision only when the review itself names the owner', () => {
     const view = deriveMissionStateView({ ...base, completion: refusal, visualReviewActor: 'owner' });
     expect(view.kind).toBe('awaiting_decision');
@@ -771,7 +806,8 @@ describe('deriveMissionStateView — local executor', () => {
     expect(view.situation.headline).not.toMatch(/no live worker/);
     expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     // The same input on runners is the genuine stall.
-    expect(deriveMissionStateView({ ...local, executor: 'runner' }).displayState).toBe('stalled');
+    // The same input on runners is next in line for one (spec 8e137fdb I-4).
+    expect(deriveMissionStateView({ ...local, executor: 'runner' }).chip.label).toBe('NEXT IN LINE');
   });
 
   it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {

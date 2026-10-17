@@ -50,7 +50,7 @@ export interface UnfetchableRepo {
 export interface KnowledgeIngestPollerOptions {
   enabled: boolean;
   api: FullIngestApiClient;
-  scanRepos: () => LocalRepo[];
+  scanRepos: () => LocalRepo[] | Promise<LocalRepo[]>;
   /** Injectable for tests; defaults to the git-reader + batch executor. */
   executeJob?: (job: FullIngestJob, repoPath: string) => Promise<{ status: 'done' | 'error' }>;
   /**
@@ -91,7 +91,7 @@ export class KnowledgeIngestPoller {
     const log = this.opts.log ?? ((msg: string) => console.log(msg));
     try {
       const now = this.now();
-      const repos = this.opts.scanRepos().filter(r => {
+      const repos = (await this.opts.scanRepos()).filter(r => {
         if (!r.normalizedUrl) return false;
         const backoff = this.unfetchable.get(r.normalizedUrl.toLowerCase());
         return !backoff || backoff.until <= now;
@@ -152,7 +152,7 @@ export class KnowledgeIngestPoller {
 
 function defaultExecuteJob(api: FullIngestApiClient) {
   return async (job: FullIngestJob, repoPath: string) => {
-    const reader = createGitRepoReader(repoPath, job.sha);
+    const reader = await createGitRepoReader(repoPath, job.sha);
     return runFullIngestJob(job, reader, api, undefined, {
       // SCIP precise-graph enrichment (stream B2b). Dynamic import keeps
       // scip-runner's child_process/fs surface lazy and off the static graph;
@@ -201,7 +201,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         import('@buildd/core/knowledge-store/ingest'),
       ]);
 
-      const reader = makeReader(repoPath, job.sha);
+      const reader = await makeReader(repoPath, job.sha);
       const allPaths = await reader.listFiles();
 
       const codeFiles: Array<{ path: string; content: string }> = [];
@@ -242,6 +242,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         const res = await ingestFiles(codeStore, job.workspaceId, 'code', codeFiles.slice(i, i + BATCH));
         totalChunks += res.chunks;
         skippedUnchanged += res.skippedUnchanged;
+        await yieldToEventLoop();
       }
       for (let i = 0; i < docsFiles.length; i += BATCH) {
         const batch = docsFiles.slice(i, i + BATCH);
@@ -249,6 +250,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
         await ingestFiles(specStore, job.workspaceId, 'spec', batch.map(f => ({ ...f })));
         totalChunks += docsRes.chunks;
         skippedUnchanged += docsRes.skippedUnchanged;
+        await yieldToEventLoop();
       }
 
       // Namespace-wide orphan sweep. Empty prefix = entire namespace.
@@ -291,11 +293,14 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
   };
 }
 
+/** Let timers and the local API run between CPU-heavy batches. */
+const yieldToEventLoop = () => new Promise<void>(r => setImmediate(r));
+
 /** Wire-up used by the WorkerManager: HTTP api from the runner's server config. */
 export function createKnowledgeIngestPoller(config: {
   builddServer: string;
   apiKey: string;
-  scanRepos: () => LocalRepo[];
+  scanRepos: () => LocalRepo[] | Promise<LocalRepo[]>;
 }): KnowledgeIngestPoller {
   const api = createHttpIngestApi({ serverUrl: config.builddServer, apiKey: config.apiKey });
   const hasLocalDb = !!(process.env.DATABASE_URL && process.env.VOYAGE_API_KEY);

@@ -471,7 +471,13 @@ describe('deliverTaskDispatch: targeted local runner', () => {
     await flush();
     expect(fetchCalls).toHaveLength(0);
     expect(assignedCalls()).toHaveLength(1);
-    expect(assignedCalls()[0][2]).toMatchObject({ targetLocalUiUrl: 'http://runner.local:8766', task: { id: 'task-w1' } });
+    expect(assignedCalls()[0][2]).toMatchObject({ targetLocalUiUrl: 'http://runner.local:8766', byPerson: false, task: { id: 'task-w1' } });
+  });
+
+  it("carries the person flag only when the hint says a person aimed it (a held runner runs only those)", async () => {
+    seed({});
+    await deliverTaskDispatch(row('manual.start', { metadata: { targetLocalUiUrl: 'http://runner.local:8766', byPerson: true } }));
+    expect(assignedCalls()[0][2]).toMatchObject({ targetLocalUiUrl: 'http://runner.local:8766', byPerson: true });
   });
 
   it('a failed targeted send throws so the row retries', async () => {
@@ -495,6 +501,7 @@ describe('deliverTaskDispatch: Pusher broadcast', () => {
     const [channel, , data] = assignedCalls()[0] as [string, string, { task: Record<string, unknown>; targetLocalUiUrl: unknown }];
     expect(channel).toBe('workspace-ws-w1');
     expect(data.targetLocalUiUrl).toBeNull();
+    expect((data as { byPerson?: unknown }).byPerson).toBe(false);
     expect(data.task).toMatchObject({ id: 'task-w1', backend: 'codex', missionId: 'mission-w1', dispatch: { id: r.id, cause: 'task.reassigned' } });
     expect('description' in data.task).toBe(false);
   });
@@ -818,6 +825,13 @@ describe('wakeTask / wakeTasks / announceTaskCreated', () => {
     expect(mockExecute).toHaveBeenCalledTimes(1);
     await flush();
     expect(mockClaimDue).toHaveBeenCalled();
+  });
+
+  it('wakeTask records byPerson only alongside a target', async () => {
+    await wakeTask('task-w1', 'manual.start', { targetLocalUiUrl: 'http://x', byPerson: true });
+    expect(mockEnqueueSql).toHaveBeenLastCalledWith({ taskId: 'task-w1', cause: 'manual.start', notBefore: undefined, metadata: { targetLocalUiUrl: 'http://x', byPerson: true } });
+    await wakeTask('task-w1', 'manual.start', { targetLocalUiUrl: null, byPerson: true });
+    expect(mockEnqueueSql).toHaveBeenLastCalledWith({ taskId: 'task-w1', cause: 'manual.start', notBefore: undefined, metadata: undefined });
   });
 
   it('wakeTask swallows an enqueue failure and still kicks (the trigger row stands)', async () => {

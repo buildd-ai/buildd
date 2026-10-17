@@ -18,6 +18,10 @@ describe('missions page header', () => {
     expect(h1).not.toContain('font-mono');
   });
 
+  it('links to the specs from the header (they have no nav item)', () => {
+    expect(src).toMatch(/<Link[^>]*href="\/app\/specs"[^>]*data-testid="missions-specs-link"/);
+  });
+
   it('links to Releases from the header, and no longer to Initiatives', () => {
     expect(src).toMatch(/<Link[^>]*href="\/app\/releases"[^>]*data-testid="missions-releases-link"/);
     expect(src).not.toContain('/app/initiatives');

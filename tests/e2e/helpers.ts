@@ -152,7 +152,8 @@ export class LocalUIClient {
     return this.fetch<{
       configured: boolean;
       serverless: boolean;
-      hasClaudeCredentials: boolean;
+      modelAuthSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none';
+      codexAuthSource?: 'machine_login' | 'api_key' | 'none';
       builddServer: string;
       model: string;
       acceptRemoteTasks: boolean;

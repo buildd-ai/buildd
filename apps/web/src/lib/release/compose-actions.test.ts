@@ -207,7 +207,7 @@ describe('release: merge the candidate, pinned to its SHA', () => {
     const res = await runComposeAction(target, 'user-1', { action: 'release', expectedCandidateSha: CAND }, deps);
     expect(res.status).toBe(200);
     expect(res.message).toContain('released when production runs it');
-    expect(deps.mergePr).toHaveBeenCalledWith(1, 'o/r', 99, 'merge', CAND);
+    expect(deps.mergePr).toHaveBeenCalledWith(1, 'o/r', 99, 'merge', CAND, 'user-1');
     expect(rows[0]).toMatchObject({ step: 'release', outcome: 'succeeded', candidateSha: CAND });
   });
 

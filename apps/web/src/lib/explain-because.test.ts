@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, reviewRoundLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -39,7 +39,7 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.taskId).toBe('task-a');
     expect(chain[0].derivedFrom).toBe('tasks.status + workers.status');
     // Last link is the conclusion.
-    expect(chain[1].claim).toContain('State is blocked');
+    expect(chain[1].claim).toContain('next in line for a runner');
     for (const l of chain) {
       expect(l.refs.missionId).toBe('mission-1');
       expect(l.derivedFrom).toBeTruthy();
@@ -70,7 +70,15 @@ describe('buildStateBecause', () => {
       // The row without a worker is still named as such, and leads the chain —
       // it is the one worth a reader's attention.
       expect(chain[0].refs.taskId).toBe('task-queued');
-      expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
+      expect(chain[0].claim).toBe('"Write the docs" is next in line for a runner.');
+    });
+
+    it('names the claim loop hold instead of "waiting for a runner" (spec f7f67f1a R-33)', () => {
+      const rows = [{ id: 'task-queued', title: 'Write the docs', status: 'pending', live: false, holdReason: 'budget_paused' }];
+      const view = deriveMissionStateView({ ...base, health: 'STALLED', openTasks: rows.map(({ id, title, status, holdReason }) => ({ id, title, status, holdReason })) });
+      const chain = buildStateBecause(view, { missionId: 'm' }, { openTasks: rows });
+      const row = chain.find(l => l.refs.taskId === 'task-queued');
+      expect(row?.claim).toBe('"Write the docs" is queued: runners paused new work until the model budget resets.');
     });
 
     it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
@@ -186,7 +194,7 @@ describe('buildStateBecause', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });
     expect(chain).toHaveLength(1);
-    expect(chain[0].claim).toContain('No source reports outstanding work');
+    expect(chain[0].claim).toBe('No task, PR, check or decision is open.');
   });
 });
 
@@ -458,5 +466,29 @@ describe('taskRecoveryLink', () => {
     expect(taskRecoveryLink('cancelled', {}, subject)).toBeNull();
     expect(taskRecoveryLink('pending', null, subject)).toBeNull();
     expect(taskRecoveryLink('completed', { cancellation: { reason: 'x', actor: 'a', at: 'b' } }, subject)).toBeNull();
+  });
+});
+
+describe('reviewRoundLink (58c8961e: why the latest review round started)', () => {
+  const base = { failureCount: 0, verdict: null, effectiveVerdict: null } as const;
+  it('names the trigger and a delta review that carries an approval', () => {
+    const l = reviewRoundLink({ prNumber: 7, rounds: [
+      { ...base, id: 'r1', round: 1, headSha: 'a'.repeat(40), kind: 'full', status: 'decided', trigger: 'first_pass' },
+      { ...base, id: 'r2', round: 2, headSha: 'b'.repeat(40), kind: 'delta', status: 'queued', trigger: 'ci_fix', scope: { deltaApproval: { eligible: true, fromHeadSha: 'a'.repeat(40), reason: 'small delta inside the approved PR' } } },
+    ] }, { taskId: 't1' })!;
+    expect(l.derivedFrom).toBe('DeliveryView.rounds');
+    expect(l.refs).toEqual({ taskId: 't1', prNumber: 7 });
+    expect(l.claim).toBe('Review round 2 at bbbbbbb: After a CI fix. A delta review that carries the approval at aaaaaaa.');
+  });
+  it('says why a round after an approval is a full review, and how a superseded one ended', () => {
+    const full = reviewRoundLink({ prNumber: 7, rounds: [
+      { ...base, id: 'r2', round: 2, headSha: 'b'.repeat(40), kind: 'full', status: 'superseded', trigger: 'new_commits', endReason: 'superseded_by_push', scope: { deltaApproval: { eligible: false, fromHeadSha: 'a'.repeat(40), reason: 'the delta touches a file outside the PR (src/b.ts)' } } },
+    ] }, {})!;
+    expect(full.claim).toBe('Review round 2 at bbbbbbb: After new commits. A full review, because the delta touches a file outside the PR (src/b.ts). Ended: replaced by a newer push.');
+  });
+  it('no rounds, or a round from before triggers: no link', () => {
+    expect(reviewRoundLink({ prNumber: 7, rounds: [] }, {})).toBeNull();
+    expect(reviewRoundLink(null, {})).toBeNull();
+    expect(reviewRoundLink({ prNumber: 7, rounds: [{ ...base, id: 'r1', round: 1, headSha: 'a', kind: 'full', status: 'queued' }] }, {})).toBeNull();
   });
 });

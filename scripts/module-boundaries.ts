@@ -59,6 +59,8 @@ export type Owner = ModuleId | 'core';
 /** Core run-record helpers whose names also match broader module heuristics. */
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/bash-failure-trace.ts',
+  // Task/worker outcome eligibility for core forecasts, not stored knowledge.
+  'packages/core/task-estimate-evidence.ts',
   'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
   // The team credential policy (teams.credentialPolicy): it governs agent runs
   // and every provider (packages/core/providers/policy.ts), not just decision

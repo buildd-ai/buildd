@@ -2,29 +2,11 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import PrCard, { type CiCheckRun, type PrOutcome } from '@/components/task/PrCard';
-import type { OpenAttemptInfo } from '@/lib/explain';
-import type { PrDisplayState } from '@/lib/pr-presentation';
+import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
+import { StoredPrCard, type StoredPrFacts } from '@/components/task/StoredPrCard';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-export type StoredPrFacts = {
-  prUrl: string;
-  prNumber: number;
-  prLifecycleStatus?: string | null;
-  /** The delivery's PR state when the kernel owns the PR (§17.5); wins over the column. */
-  prState?: PrDisplayState | null;
-  linesAdded?: number | null;
-  linesRemoved?: number | null;
-  filesChanged?: number | null;
-  /** Task page outcome view (stored-state lineage); enriched here with check runs per commit. */
-  outcome?: PrOutcome | null;
-  /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — already live, never re-derived here. */
-  openAttempt?: OpenAttemptInfo | null;
-  /** The page's header already offers the PR's one action. */
-  hideAction?: boolean;
-  /** The status row already names and links this PR (PrCardProps.statedAbove). */
-  statedAbove?: boolean;
-};
+export { StoredPrCard, type StoredPrFacts };
 
 const toRun = (c: any): CiCheckRun => ({
   name: c.name,
@@ -34,17 +16,6 @@ const toRun = (c: any): CiCheckRun => ({
 });
 
 const sameRef = (a: string | undefined, b: string | undefined) => !!a && !!b && (a.startsWith(b) || b.startsWith(a));
-
-/**
- * The PR card as it can be rendered from stored state alone — lifecycle, diff
- * size, the link. Used as the Suspense fallback for `<PrDetailsCard />`, so the
- * card paints complete and in place on first paint and only the CI/review rows
- * arrive later. That is why this is the same component and not a skeleton:
- * there is nothing to shim, the data genuinely is already in the database.
- */
-export function StoredPrCard(facts: StoredPrFacts) {
-  return <PrCard {...facts} ciChecks={null} reviews={null} mergeable={null} mergeableState={null} />;
-}
 
 /**
  * The PR card enriched with GitHub's live view — CI check runs, review states,

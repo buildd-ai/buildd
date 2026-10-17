@@ -289,7 +289,8 @@ describe('explainMission', () => {
     const answer = result!.subjects[0];
 
     expect(answer.subject.scope).toBe('mission');
-    expect(answer.state).toBe('blocked');
+    // A queued row nothing holds is next in line (spec 8e137fdb I-4).
+    expect(answer.state).toBe('waiting');
     expect(answer.waitingOn?.kind).toBe('task');
     expect(answer.because.length).toBeGreaterThan(0);
     expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
@@ -304,9 +305,9 @@ describe('explainMission', () => {
 
     // The header chip rides on the same answer as the panel, so the two
     // cannot disagree: a blocked mission never reads AUTO/RUNNING up top.
-    // (Open work with no live worker: the view names it 'stalled' → STALLED.)
-    expect(answer.displayState).toBe('stalled');
-    expect(answer.chip.label).toBe('STALLED');
+    // (Queued work nothing holds: the view names it next in line.)
+    expect(answer.displayState).toBe('active');
+    expect(answer.chip.label).toBe('NEXT IN LINE');
     expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 
@@ -1017,13 +1018,13 @@ describe('visual task browser claimability explanation', () => {
     browserHeartbeats = [];
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('needs a runner with a browser');
   });
   it('does not invent a missing browser when the capability read failed', async () => {
     browserHeartbeats = null;
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('missing browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('needs a runner with a browser');
     browserHeartbeats = [];
   });
 });

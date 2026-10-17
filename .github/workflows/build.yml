@@ -87,6 +87,11 @@ jobs:
       - name: Lint specs (frontmatter + dead paths + index)
         run: bun run scripts/check-specs.ts --check
 
+      # A generated copy of a native spec (docs/specs/living-specs.md §18, R-16)
+      # is refused when hand-edited: both hashes must match what buildd wrote.
+      - name: Refuse hand edits to generated spec copies
+        run: bun run scripts/check-generated-specs.ts
+
       - name: Check design drift
         run: bun run design:check
 
@@ -621,6 +626,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read # pull the postgres image from our GHCR mirror
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
@@ -629,19 +635,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # Started by hand rather than as a `services:` container, and not from
-      # Docker Hub: shared runner IPs hit its anonymous pull limit under load,
-      # and a service container cannot retry. The official postgres image comes
-      # from the ECR Public mirror; pgvector is installed from the PGDG apt repo
-      # the image already has configured.
+      # Started by hand rather than as a `services:` container, because a
+      # service container cannot retry or fall back. Public registries have
+      # failed us twice: Docker Hub's anonymous pull limit on shared runner IPs,
+      # then ECR Public's "Data limit exceeded" (2026-10-14/15). So the image
+      # comes from our own GHCR mirror (mirror-ci-images.yml), pulled with
+      # GITHUB_TOKEN, with ECR Public and Docker Hub as fallbacks tried in the
+      # same round, five rounds with backoff (scripts/ci/pull-image.sh).
+      # pgvector is installed from the PGDG apt repo the image already has.
       - name: Start Postgres (pgvector)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
         run: |
-          IMAGE=public.ecr.aws/docker/library/postgres:17
-          for attempt in 1 2 3 4 5; do
-            docker pull "$IMAGE" && break
-            if [ "$attempt" = 5 ]; then echo "::error::docker pull $IMAGE failed 5/5 times"; exit 1; fi
-            sleep $((15 * attempt))
-          done
+          # A fork PR's token may not read the mirror; the fallbacks cover it.
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin \
+            || echo "::warning::GHCR login failed; falling back to public registries"
+          IMAGE=ci/postgres:17
+          bash scripts/ci/pull-image.sh "$IMAGE" \
+            ghcr.io/buildd-ai/ci-mirror/postgres:17 \
+            public.ecr.aws/docker/library/postgres:17 \
+            docker.io/library/postgres:17
           docker run -d --name postgres -p 5432:5432 \
             -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=buildd_test \
             "$IMAGE"

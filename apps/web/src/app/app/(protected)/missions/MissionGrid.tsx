@@ -11,12 +11,12 @@
  * scope comes from the shell's switcher (the page reads `?workspace=`).
  */
 import { Select } from '@/components/ui/Select';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
 import MissionRow from '@/components/ui/MissionRow';
 import Segmented from '@/components/ui/Segmented';
-import { DELIVERY_KIND } from '@/lib/delivery-projection';
+import { DELIVERY_KIND, type MissionRemaining } from '@/lib/delivery-projection';
 import { stateOfDelivery, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
@@ -51,6 +51,14 @@ export function MissionGrid({
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
   const [showOlder, setShowOlder] = useState(false);
+  // Phones keep search behind a 44px button; from md the field always shows.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (searchOpen) searchRef.current?.focus(); }, [searchOpen]);
+  const toggleSearch = () => {
+    if (searchOpen) setQ('');
+    setSearchOpen(!searchOpen);
+  };
   const groups = useMemo(() => portfolioGroups(rows), [rows]);
   // A link to a group with no missions left falls back to all of them.
   const [group, setGroup] = useState(initialGroup && groups.some(g => g.id === initialGroup) ? initialGroup : '');
@@ -79,10 +87,13 @@ export function MissionGrid({
 
   return (
     <div className="space-y-5">
-      <Headline open={totals.all} counts={totals} slots={slots} />
+      <Headline open={totals.all} slots={slots} />
 
+      {/* Phones get at most two rows: the strip and the search button, then
+          the group selector and the opened search side by side. One row from md. */}
       <div data-testid="portfolio-tools" className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div className="relative min-w-0">
+        <div data-testid="portfolio-tools-primary" className="flex min-w-0 items-center gap-1">
+        <div className="relative min-w-0 flex-1">
           <div
             data-testid="portfolio-filters"
             className="min-w-0 overflow-x-auto pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:pr-0"
@@ -109,7 +120,25 @@ export function MissionGrid({
             className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
+        <button
+          type="button"
+          data-testid="portfolio-search-toggle"
+          onClick={toggleSearch}
+          aria-expanded={searchOpen}
+          aria-controls="portfolio-search"
+          aria-label={searchOpen ? 'Close search' : 'Search missions'}
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-card)] transition-colors md:hidden ${
+            searchOpen || q !== '' ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:bg-surface-2 hover:text-text-secondary'
+          }`}
+        >
+          <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            {searchOpen
+              ? <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              : <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />}
+          </svg>
+        </button>
+        </div>
+        <div data-testid="portfolio-tools-secondary" className={`${hasGroups || searchOpen ? 'flex' : 'hidden md:flex'} min-w-0 items-center gap-2`}>
         {hasGroups && (
           <Select
             testId="portfolio-group"
@@ -120,17 +149,19 @@ export function MissionGrid({
               { value: ALL_GROUPS, label: 'All groups' },
               ...groups.map(g => ({ value: g.id, label: `${g.name} (${g.count})` })),
             ]}
-            className="md:w-auto md:min-w-[180px]"
+            className="min-w-0 flex-1 md:w-auto md:min-w-[180px] md:flex-none"
           />
         )}
         <input
+          ref={searchRef}
+          id="portfolio-search"
           type="search"
           data-testid="portfolio-search"
           aria-label="Search missions"
-          placeholder="Search missions"
+          placeholder="Search"
           value={q}
           onChange={e => setQ(e.target.value)}
-          className="min-h-11 w-full min-w-0 rounded-[var(--radius-card)] border border-border-default bg-transparent px-3 text-[16px] text-text-primary placeholder:text-text-muted focus:border-border-strong focus:outline-none md:min-h-9 md:w-[240px] md:text-body"
+          className={`${searchOpen ? 'block' : 'hidden'} min-h-11 w-full min-w-0 flex-1 rounded-[var(--radius-card)] border border-border-default bg-transparent px-3 text-[16px] text-text-primary placeholder:text-text-muted focus:border-border-strong focus:outline-none md:block md:min-h-9 md:w-[240px] md:flex-none md:text-body`}
         />
         </div>
       </div>
@@ -144,7 +175,7 @@ export function MissionGrid({
                 <span className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-title font-semibold text-text-primary">{onDev.label}</span>
                   <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{onDev.rows.length}</span>
-                  <span className="text-meta text-text-muted">A goal criterion hasn&rsquo;t passed.</span>
+                  <span data-testid="mission-section-left" className="text-meta text-text-muted">{landedLeft(onDev.rows)}</span>
                 </span>
               }
             >
@@ -211,30 +242,49 @@ function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: nu
   );
 }
 
-/** "14 open" and one line: what needs you, what's moving, what's waiting, what's landed, and the agent slots. */
-function Headline({ open, counts, slots }: { open: number; counts: Record<PortfolioStatusFilter, number>; slots: { live: number; max: number } }) {
-  const parts = [
-    counts.needs > 0 ? `${counts.needs} need${counts.needs === 1 ? 's' : ''} you` : null,
-    `${counts.motion} in motion`,
-    `${counts.waiting} waiting`,
-    counts.landed > 0 ? `${counts.landed} landed, checks pending` : null,
-    slots.max > 0 ? `${slots.live} of ${slots.max} agent slots` : null,
-  ].filter(Boolean);
+/**
+ * "14 open · 1 of 4 agent slots" on one line. The per-status counts are not
+ * repeated here: the filter strip and the section headings already carry them.
+ */
+function Headline({ open, slots }: { open: number; slots: { live: number; max: number } }) {
   return (
-    <div className="space-y-1">
-      <div className="flex items-baseline gap-2">
-        <span data-testid="portfolio-open" title={COUNTER_DEFINITIONS.open} className="font-mono text-[32px] font-semibold leading-none tabular-nums text-text-primary">{open}</span>
-        <span className="text-body text-text-secondary">open</span>
-      </div>
-      <p data-testid="portfolio-breakdown" className="font-mono text-meta text-text-secondary">{parts.join(' · ')}</p>
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <span data-testid="portfolio-open" title={COUNTER_DEFINITIONS.open} className="font-mono text-[24px] font-semibold leading-none tabular-nums text-text-primary md:text-[32px]">{open}</span>
+      <span className="text-body text-text-secondary">open</span>
+      {slots.max > 0 && (
+        <p data-testid="portfolio-breakdown" className="font-mono text-meta text-text-secondary">
+          <span aria-hidden="true" className="mr-2 text-text-muted">·</span>{slots.live} of {slots.max} agent slots
+        </p>
+      )}
     </div>
   );
 }
 
-function ago(ms: number | null, now: number): string {
+/** "just now" under a minute, else "<duration> ago". Exported for its test. */
+export function ago(ms: number | null, now: number): string {
   if (ms == null) return '';
   const d = now - ms;
-  return d < 60_000 ? 'now' : shortDuration(d);
+  return d < 60_000 ? 'just now' : `${shortDuration(d)} ago`;
+}
+
+const LEFT_WORDS: Record<MissionRemaining, { one: string; part: string }> = {
+  visual: { one: 'The visual review is what’s left.', part: 'visual review' },
+  criteria: { one: 'A goal criterion hasn’t passed.', part: 'goal criteria' },
+  release: { one: 'Waiting on the release.', part: 'release' },
+  completion: { one: 'Ready to complete.', part: 'ready to complete' },
+};
+
+/** The Landed group's subtitle: what is actually left on its missions (spec f7f67f1a R-32). */
+export function landedLeft(rows: readonly PortfolioRow[]): string {
+  const counts = new Map<MissionRemaining, number>();
+  for (const r of rows) {
+    const k = r.delivery.remaining ?? 'completion';
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const order: MissionRemaining[] = ['visual', 'criteria', 'release', 'completion'];
+  const present = order.filter(k => counts.has(k));
+  if (present.length === 1) return LEFT_WORDS[present[0]].one;
+  return `Left: ${present.map(k => `${LEFT_WORDS[k].part} (${counts.get(k)})`).join(', ')}.`;
 }
 
 function nextLine(r: PortfolioRow): string {
@@ -250,7 +300,7 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
   const aside = [
     row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
     showWorkspace ? row.workspaceName : null,
-    age ? `${age} ago` : null,
+    age || null,
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="portfolio-row" data-mission-id={d.id} data-kind={d.kind}>

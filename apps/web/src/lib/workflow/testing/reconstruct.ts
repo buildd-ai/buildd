@@ -214,6 +214,8 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         outcome, localHeadSha: L, commitCount: num(E.commitCount) ?? 0, live,
         ...(proof ? { proof } : {}),
         ...(E.carryForward ? { carryForward: E.carryForward as 'content_equivalent' | 'own_refresh' } : {}),
+        // 58c8961e: the delta read the decision used (absent: none, which is a full review).
+        ...(E.delta ? { delta: E.delta as never } : {}),
         taskRetryBudgetLeft: requeue,
         reviewRequired: E.policy !== 'no_review',
         // e9f1674b: the hand-off's live check read; its budget is in the evidence only when it acted.
@@ -295,7 +297,7 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       const p = (effect?.payload ?? {}) as J;
       const mechanical = E.mode === 'mechanical';
       // Who sent it is recorded: a mechanical repair's own effect hands a refusal to an agent
-      // (conflict-retry-effects.ts `refusedToAgent`, always mechanicalRefused), the door never does.
+      // (the package's handlers/conflict.ts `refusedToAgent`, always mechanicalRefused), the door never does.
       // Only an actor neither says is read off the replay's ledger.
       const openMech = view.attempts.some((a: AttemptSnapshot) => a.mode === 'mechanical' && a.boundHeadSha === h && (a.status === 'queued' || a.status === 'running'));
       const refusedBy = REFUSING_EFFECTS.has(actor) ? true : actor.startsWith('door:') ? false : null;

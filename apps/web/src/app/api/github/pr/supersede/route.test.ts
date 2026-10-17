@@ -89,6 +89,8 @@ describe('POST /api/github/pr/supersede', () => {
       supersedingPrNumber: 2293,
       reason: 'branch deleted',
       recordedBy: 'Agent Bob',
+      // The control plane checks the API account by id; the name is only the recorded label.
+      caller: { account: expect.objectContaining({ id: 'acc-1' }) },
     }));
   });
 

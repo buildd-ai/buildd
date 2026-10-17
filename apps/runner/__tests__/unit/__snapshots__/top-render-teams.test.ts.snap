@@ -1,0 +1,28 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`teams and missions (R-23, R-24) 80x24: the filter line, team headings, open missions, then the delivered ones folded into one row 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Acme                 │ Pair on the parser · local session                      
+ ▸ Pair on the parser │─────────────────────────────────────────────────────────
+   local session      │ A person runs this mission from their own session.      
+   Ship the… building │                                                         
+   Docs refr… on hold │                                                         
+   Delivered · 1      │                                                         
+ Initech              │                                                         
+   Billing… verifying │                                                         
+                      │                                                         
+   (no mission)   0/0 │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;

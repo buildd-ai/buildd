@@ -138,14 +138,9 @@ one up, both as the user the runner runs as:
   `CLAUDE_CODE_OAUTH_TOKEN`. It is a long-lived token with no refresh, so it
   suits servers and containers.
 
-Which seat an agent gets is set by `BUILDD_HOST_SEAT` in the runner's
-environment:
-
-| Value | Agent gets |
-|---|---|
-| unset or `auto` | The machine's login, unless the team also stores a subscription seat in buildd Settings. Then the stored seat is used, exactly as before. |
-| `prefer` | The machine's login, even when a seat is stored in buildd. |
-| `off` | Never the machine's env token; a stored seat as before. |
+The machine's own login is used whenever present, with no switch.
+The `personal_only` team policy keeps it away from tasks that must use the
+requester's own key (`runnerLocalAllowed: false`).
 
 `BUILDD_MODEL_AUTH_SOURCE=runner` ("runner-managed", no automatic paid
 fallback) makes your own `claude login` / `CLAUDE_CODE_OAUTH_TOKEN` the only
@@ -160,16 +155,10 @@ or hosted runners. buildd checks that a login is present, never that it is
 valid. Server-side claim deferral and the Codex backend failover are not
 covered here.
 
-Before you switch a runner that uses a stored seat to `prefer`, check the
-machine's login with one real session as the runner user, for example
-`claude -p 'reply ok'` with the same environment the runner has. A check
-against the models endpoint is not enough: it can pass for a token that a
-session rejects.
-
 A metered key or endpoint the team configured still applies: a delivered
 `ANTHROPIC_API_KEY` fills that variable when the machine has not set it, and a
 team agent model endpoint or a non-Anthropic `ANTHROPIC_BASE_URL` replaces the
-login (a seat is never sent to a third-party host).
+login (a login is never sent to a third-party host).
 
 Per setup:
 
@@ -177,15 +166,12 @@ Per setup:
 |---|---|
 | Your own Mac or Linux box, in a terminal | `claude login`, then start `buildd`. Or `export CLAUDE_CODE_OAUTH_TOKEN=...` in the shell that starts it. |
 | macOS service (`buildd service install`) | `claude login` as the same user; the LaunchAgent runs as you and sees the keychain login. |
-| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. Add `Environment=BUILDD_HOST_SEAT=prefer` the same way if a seat is also stored in buildd. |
-| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` (and `BUILDD_HOST_SEAT=prefer` if a seat is also stored in buildd) in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
+| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. |
+| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
 
-Check which one a worker used in its log: `Claude seat: this machine's own
-login (...)` means the machine's login; `Claude seat: the seat stored in
-buildd; ... is present but not used` and `Injected server-managed
-CLAUDE_CODE_OAUTH_TOKEN` mean the stored seat. The token value is never
-logged, and it is redacted from milestones, error traces and evidence like any
-other credential.
+Check which login a worker used in its log: `Claude login: this machine's own
+login (...)`. The token value is never logged, and it is redacted from
+milestones, error traces and evidence like any other credential.
 
 ### Codex (ChatGPT) login
 
@@ -196,11 +182,10 @@ keeps its own Codex home (config, sessions). Its `auth.json` is a link to your
 login, so the CLI's token refreshes land in your file and do not go stale in a
 copy. A credential buildd delivers is never written through that link.
 
-`BUILDD_HOST_SEAT` works the same way. Under `auto`, your login is used when
-the team stores no Codex credential in buildd. Under `prefer`, it also beats a
-stored ChatGPT login. A team OpenAI API key is metered usage the team chose,
-so it is still used under every mode. The log line `Codex login: this
-machine's own` confirms which login ran.
+The machine's Codex login is used when present. Without one, a delivered
+OpenAI API key is used. The `personal_only` policy keeps the machine login
+away from the agent. The log line `Codex login: this machine's own` confirms
+which login ran.
 
 A ChatGPT login rotates its refresh token on every use. Several Codex workers
 refreshing at once can sign each other out. Keep the runner at one concurrent

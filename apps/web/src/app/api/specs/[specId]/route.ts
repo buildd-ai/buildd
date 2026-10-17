@@ -2,17 +2,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSpec, reviseSpecDraft } from '@/lib/specs/store';
 import { specCaller } from '@/lib/specs/caller';
 import { reviseSpecSection } from '@/lib/specs/section-revise';
+import { formatHints } from '@/lib/specs/format-hints';
+import { resolveSpecShortId, SHORT_ID } from '@/lib/specs/short-id';
 
 type Ctx = { params: Promise<{ specId: string }> };
 
-/** GET /api/specs/[specId][?revision=N]: the spec at its head or at revision N, exactly as written. */
+/**
+ * GET /api/specs/[specId][?revision=N]: the spec at its head or at revision N, exactly as written.
+ * specId may be the 8-hex short id a brief cites: it resolves among the specs the caller can reach;
+ * several matches are a 409 listing their full ids.
+ */
 export async function GET(req: NextRequest, { params }: Ctx) {
-  const { specId } = await params;
+  let { specId } = await params;
   const caller = await specCaller(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const raw = req.nextUrl.searchParams.get('revision');
   const revision = raw === null ? undefined : Number(raw);
   if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) return NextResponse.json({ error: 'revision must be a positive integer' }, { status: 400 });
+  if (SHORT_ID.test(specId.toLowerCase())) {
+    const hit = await resolveSpecShortId(caller, specId);
+    if (hit.state === 'one') specId = hit.id;
+    else if (hit.state === 'many') {
+      return NextResponse.json({ error: `Short id ${specId} matches ${hit.specs.length} specs; pass a full id`, code: 'ambiguous_short_id', specs: hit.specs }, { status: 409 });
+    }
+  }
   const r = await getSpec(caller, specId, { revision });
   return r.ok ? NextResponse.json(r.view) : NextResponse.json({ error: r.error }, { status: r.status });
 }
@@ -22,7 +35,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
  * draft. With `section` (an outline id) or `heading`, body is that one
  * section's new text and the rest of the spec is kept as it is. A stale
  * expectedVersion is a 409 with currentVersion: re-read, merge, revise on top. Agents and people may revise; approving is a separate,
- * person-only act.
+ * person-only act. formatHints (R-48) suggests a diagram or table for the text sent; it never refuses.
  */
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { specId } = await params;
@@ -32,5 +45,5 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'a JSON body is required' }, { status: 400 });
   const r = 'section' in body || 'heading' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.currentVersion !== undefined ? { code: 'version_conflict', currentVersion: r.currentVersion } : r.code ? { code: r.code } : {}) }, { status: r.status });
-  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged });
+  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
 }

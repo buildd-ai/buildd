@@ -1,3 +1,5 @@
+import { claimAreaClass } from '@buildd/core/orchestration-claim-learning-evidence';
+import { CLAIM_HOLD_DECISION } from '@buildd/core/orchestration-claim-decision';
 import type { RunProgressReaders } from '@/lib/run-progress-read';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -35,17 +37,26 @@ import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
-import type { EffectHandlers } from '@/lib/workflow/effects';
-import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
-import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
-import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
-import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
-import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
-import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
-import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
-import { legacyFirstReview } from '@/lib/workflow/review-handoff';
+import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
+import type { Escalate } from '@buildd/workflow-kernel/ports';
+import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
+import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
+import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
+import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { builddLandingRails } from '@/lib/workflow/auto-merge-rails';
+import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
+import { builddDecide } from '@/lib/workflow/decision-port';
+import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
+import { supersessionLifecycle } from '@/lib/workflow/supersession-effects';
+import { notifyTeamOf } from '@/lib/notify';
+import { isTeamAlertEvent } from '@/lib/notify-rules';
+import { handOffHost } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
+import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
+import { missionEpochHooks } from '@/lib/mission-epoch-hooks';
+import type { MissionEpochHooks } from '@/lib/workflow/delivery-epochs';
 import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
@@ -66,6 +77,9 @@ import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-ro
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
+import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
+import { proposeSpecTaxonomy } from '@/lib/spec-taxonomy-decision';
+import { decidePublication, recordPublicationOverride } from '@/lib/spec-publication-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -119,13 +133,6 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
 
-/**
- * The kill-switch hand-off slot (lib/workflow/legacy-handoff.ts): a delivery
- * the switch released before its first kernel round gets legacy's first
- * review from the reviews module, so the PR is never left with no reviewer.
- */
-export const LEGACY_FIRST_REVIEW: LegacyFirstReview = legacyFirstReview;
-
 /** Review-backed read hooks for core's run-progress projection. */
 export const RUN_PROGRESS_READERS: RunProgressReaders = {
   review: readPrReviewStatus,
@@ -139,25 +146,69 @@ export const RUN_PROGRESS_READERS: RunProgressReaders = {
 export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
 
 /**
- * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
- * (core) decides and records the effect; the reviews module carries out the
- * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations), the
- * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), the
- * conflict/migration families' (mechanical refresh and renumber first, an
- * agent conflict fix only on a refusal, conflict exhaustion), the trunk
- * breaker's (one trunk-fix task per incident, cancelling the per-PR CI fix
- * tasks a trunk incident skipped), landing and
- * post-merge work (merge call, verify, post-merge events, mission-PR
- * finalize), and a closed PR's resolution (supersession scan, the edge's
- * projection, mission wake). Each effect kind has exactly one handler.
+ * The workflow kernel's slots (docs/specs/workflow-kernel-library.md §2). Core
+ * composes the kernel once from them (`workflowKernel()` in
+ * lib/workflow/kernel-ports.ts): buildd's adapters for the kernel's ports, and
+ * the effect handler map the drain runs. The kernel (core) decides and
+ * records the effect.
+ *
+ * `workflowKernelHooks()`: each module's half of the ports. Every effect
+ * handler is the package's and runs on these:
+ *  - reviews: how GitHub's merge answer reads as T16, the activity render, the
+ *    review loop's host half (`reviewsHost`: a reviewer's output, the §5.9
+ *    composition attestation, a review GitHub refused, the approval's
+ *    supersession, the escalation notice), the conflict families' git work
+ *    (`conflictsHost`), and legacy's first review for a delivery the kill
+ *    switch released (`handOffHost`, so the PR is never left with no
+ *    reviewer);
+ *  - reviews, missions: the supersession scan, the edge's projection and the
+ *    mission wake, the post-merge work and mission-PR finalize;
+ *  - per role the task `Work` files: the reviewer and the review fix
+ *    (reviews), the CI fix or schema-drift diagnose, the conflict fix, the
+ *    trunk fix; with the CI job-log capture;
+ *  - each repair family's hand-off to a person (`Escalate`, by family);
+ *  - notifications: team notices;
+ *  - decisions: the decision model at the kernel's decision points (`Decide`).
  *
  * Built on first use, not at load: the handler modules reach back into this
  * file through core-emit (post-merge work emits events), so composing them at
  * load time works or throws depending on which module a process imports first.
+ * The activity render is loaded on its first render, as it was before the
+ * kernel composed it.
  */
-let workflowEffectHandlersMemo: EffectHandlers | null = null;
-export function workflowEffectHandlers(): EffectHandlers {
-  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
+const ESCALATE_BY_FAMILY: Record<string, Escalate> = { ci: ciEscalate, review_fix: reviewEscalate, conflict: conflictEscalate, migration: conflictEscalate };
+
+/** `exec` and `repoFor`: the db handle and repo lookup a caller injected (the seam's deps), for the ports that read them. */
+export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost>[0]; repoFor?: Parameters<typeof handOffHost>[1] } = {}): BuilddKernelHooks {
+  return {
+    mergeAnswerOf,
+    notify: {
+      activity: async (p) => (await import('@/lib/workflow/pr-activity-effects')).activityNotify().activity(p),
+      team: async (p) => {
+        // A kind notify does not know would be dropped by its routing: refuse it loudly instead.
+        if (!isTeamAlertEvent(p.kind)) throw new Error(`unknown team alert kind: ${p.kind}`);
+        await notifyTeamOf({ workspaceId: p.workspaceId, prNumber: p.prNumber ?? undefined }, p.kind, {
+          title: p.title, message: p.body ?? '', ...(p.url ? { url: p.url } : {}), ...(p.urlTitle ? { urlTitle: p.urlTitle } : {}),
+        });
+      },
+    },
+    lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
+    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
+    escalate: {
+      exhausted: (d, n) => {
+        const e = ESCALATE_BY_FAMILY[n.family];
+        if (!e) throw new Error(`no escalation for family ${n.family}`);
+        return e.exhausted(d, n);
+      },
+    },
+    evidence: ciEvidence,
+    reviews: reviewsHost,
+    conflicts: conflictsHost,
+    handOff: handOffHost(opts.exec, opts.repoFor),
+    decide: builddDecide,
+    // The merge rails the merge effect reads at merge time; the mission-PR hold is the missions module's.
+    rails: builddLandingRails({ missionGate: (task) => guardMissionPrMerge(task) }),
+  };
 }
 
 /**
@@ -165,6 +216,20 @@ export function workflowEffectHandlers(): EffectHandlers {
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
+
+/**
+ * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
+ * module says whether a mission's shipping PR merged, so a refresh task with
+ * nothing left to ship can complete on that evidence.
+ */
+export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo, branch) => missionShippingPrMerged(missionId, repo, branch);
+
+/**
+ * The kernel's mission epoch slot (lib/workflow/delivery-epochs.ts): the
+ * missions module answers the mission's open work, the mission PR it recorded
+ * before epochs, and which workspace's repo holds its branches.
+ */
+export const MISSION_EPOCH_HOOKS: MissionEpochHooks = missionEpochHooks;
 
 /**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
@@ -266,6 +331,31 @@ export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
 
 /**
+ * The decisions module's spec area slot (lib/spec-area-decision.ts): organize
+ * (lib/specs/organize.ts) asks which area an unfiled spec belongs in, and a
+ * person's move of a spec buildd filed is recorded on that filing's ledger row.
+ */
+export const SPEC_AREA_CLASSIFY = classifySpecArea;
+export const SPEC_AREA_OVERRIDE = recordAreaOverride;
+
+/**
+ * The decisions module's spec taxonomy slot (lib/spec-taxonomy-decision.ts):
+ * organize, on a workspace with no areas, asks the team's decision model to
+ * sort its specs into a proposed taxonomy; `ran: false` means the word-based
+ * fallback in lib/specs/areas.ts proposes instead.
+ */
+export const SPEC_TAXONOMY_PROPOSE = proposeSpecTaxonomy;
+
+/**
+ * The decisions module's spec publication slot (lib/spec-publication-decision.ts):
+ * the repo copy (lib/specs/repo-copy.ts) asks whether an approved revision may
+ * leave buildd before anything is written to GitHub, and a person's "Publish
+ * anyway" is recorded on that decision's ledger row.
+ */
+export const SPEC_PUBLICATION_DECIDE = decidePublication;
+export const SPEC_PUBLICATION_OVERRIDE = recordPublicationOverride;
+
+/**
  * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
  * installs the spec-corpus similarity query behind core's `neighbourDeps`
  * (lib/specs/neighbours.ts), so the nearby route can suggest a parent.
@@ -281,3 +371,11 @@ export const SPEC_SIMILARITY = async (): Promise<void> => {
  * a replayable copy of its input. Without it capture is a no-op.
  */
 export const DECISION_REPLAY_STORE = startDecisionReplayStore;
+
+/** Claim declares this policy slot; coordination owns its evidence and persistence. */
+export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hooks').ClaimLearningHooks = {
+  areaClass: claimAreaClass,
+  get fingerprint() { return CLAIM_HOLD_DECISION.fingerprint; },
+  loadPolicy: async (gate, area) => (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area),
+  record: async (row, replay) => (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision(row, replay),
+};

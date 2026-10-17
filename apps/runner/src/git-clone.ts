@@ -39,9 +39,12 @@
  * send the same request again at once; the claim path reports the task as an
  * infrastructure failure (workers.ts), which buildd requeues with backoff.
  *
- * Synchronous, like the resolver that calls it.
+ * The clone itself is synchronous, like the resolver that calls it. The
+ * on-demand branch fetch has an async twin (ensureRemoteBranchAsync) for the
+ * callers on the runner's event loop.
  */
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { gitArgsAsync, type GitAsyncError } from './git-async';
 import { rmSync } from 'fs';
 
 export const CLOUD_CLONE_DEPTH = 1;
@@ -455,6 +458,113 @@ export function ensureRemoteBranch(repoPath: string, branch: string, opts: Ensur
       }
       log(`[fetch] origin/${branch} ${isGithubThrottle(stderr) ? 'rate limited by GitHub' : 'failed'} (${reason}); retrying in ${Math.round(delay / 1000)}s`);
       sleep(delay);
+      waited += delay;
+    }
+  } catch (err) {
+    log(`[fetch] could not fetch origin/${branch}: ${err instanceof Error ? err.message : String(err)}`);
+    return 'failed';
+  }
+}
+
+// ── Branches on demand, off the event loop ───────────────────────────────────
+//
+// The same fetch as ensureRemoteBranch, for callers on the runner's own event
+// loop (worktree setup at claim time, the PR base, PR stats). The sync version
+// parked the loop for the whole fetch, retries and their sleeps included, so a
+// task start froze the local socket and the heartbeat for seconds.
+
+/** GitCwdRun, async. Never rejects: a failure comes back as a non-zero status. */
+export type GitCwdRunAsync = (args: string[], timeoutMs: number) => Promise<ReturnType<GitCwdRun>>;
+
+export function gitInAsync(repoPath: string): GitCwdRunAsync {
+  return async (args, timeoutMs) => {
+    try {
+      const stdout = await gitArgsAsync(args, { cwd: repoPath, timeoutMs });
+      return { status: 0, stdout, stderr: '', signal: null };
+    } catch (err) {
+      const e = err as Partial<GitAsyncError> & { message?: string };
+      return {
+        status: typeof e.exitCode === 'number' ? e.exitCode : null,
+        stdout: '',
+        stderr: typeof e.stderr === 'string' && e.stderr ? e.stderr : String(e.message ?? err),
+        signal: (e.signal ?? null) as NodeJS.Signals | null,
+      };
+    }
+  };
+}
+
+async function cloneShapeAsync(run: GitCwdRunAsync): Promise<{ shallow: boolean; narrow: boolean }> {
+  const shallow = await run(['rev-parse', '--is-shallow-repository'], LOCAL_GIT_TIMEOUT_MS);
+  const isShallow = shallow.status === 0 && String(shallow.stdout ?? '').trim() === 'true';
+  const refspec = await run(['config', '--get-all', 'remote.origin.fetch'], LOCAL_GIT_TIMEOUT_MS);
+  const wildcard = /\brefs\/heads\/\*/.test(String(refspec.stdout ?? ''));
+  return { shallow: isShallow, narrow: isShallow || (refspec.status === 0 && !wildcard) };
+}
+
+/** probeRetryAfter, async: the same one header read, without blocking. */
+export function probeRetryAfterAsync(remoteUrl: string): Promise<number | null> {
+  if (!/^https:\/\//i.test(remoteUrl)) return Promise.resolve(null);
+  const url = `${remoteUrl.replace(/\/+$/, '')}/info/refs?service=git-upload-pack`;
+  return new Promise((resolvePromise) => {
+    let out = '';
+    try {
+      const child = spawn('curl', ['-s', '-o', '/dev/null', '-D', '-', '--max-time', '10', url], { stdio: ['ignore', 'pipe', 'ignore'] });
+      child.stdout?.on('data', (c: Buffer) => { out += c.toString('utf-8'); });
+      child.on('error', () => resolvePromise(null));
+      child.on('close', () => {
+        const header = /^retry-after:\s*(.+)$/im.exec(out)?.[1];
+        resolvePromise(header ? parseRetryAfter(header) : null);
+      });
+    } catch {
+      resolvePromise(null);
+    }
+  });
+}
+
+export interface EnsureRemoteBranchAsyncOptions {
+  run?: GitCwdRunAsync;
+  sleep?(ms: number): Promise<void>;
+  retryAfter?(remoteUrl: string): Promise<number | null> | number | null;
+  log?(message: string): void;
+  timeoutMs?: number;
+}
+
+/** ensureRemoteBranch, async: same probes, fetch, retry policy and results. Never throws. */
+export async function ensureRemoteBranchAsync(repoPath: string, branch: string, opts: EnsureRemoteBranchAsyncOptions = {}): Promise<RemoteBranchResult> {
+  if (!isSafeBranchName(branch)) return 'missing';
+  const run = opts.run ?? gitInAsync(repoPath);
+  const log = opts.log ?? ((m: string) => console.warn(m));
+  try {
+    if ((await run(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}^{commit}`], LOCAL_GIT_TIMEOUT_MS)).status === 0) return 'present';
+    const shape = await cloneShapeAsync(run);
+    if (!shape.narrow) return 'not_needed';
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+    const retryAfter = opts.retryAfter ?? probeRetryAfterAsync;
+    const args = ['fetch', '-q', '--no-tags', ...(shape.shallow ? ['--depth', String(CLOUD_BRANCH_FETCH_DEPTH)] : []), 'origin', branchRefspec(branch)];
+    let waited = 0;
+    for (let attempt = 0; ; attempt++) {
+      const r = await run(args, opts.timeoutMs ?? CLOUD_CLONE_TIMEOUT_MS);
+      if (r.status === 0) {
+        log(`[fetch] origin/${branch} fetched on demand${shape.shallow ? ` (depth ${CLOUD_BRANCH_FETCH_DEPTH})` : ''}`);
+        return 'fetched';
+      }
+      const stderr = String(r.stderr ?? '');
+      if (/couldn't find remote ref/i.test(stderr)) return 'missing';
+      const reason = failureText({ status: r.status, stderr, signal: r.signal });
+      let retryAfterS: number | null = null;
+      if (/\b429\b/.test(stderr)) {
+        const url = String((await run(['remote', 'get-url', 'origin'], LOCAL_GIT_TIMEOUT_MS)).stdout ?? '').trim();
+        retryAfterS = url ? await retryAfter(url) : null;
+      }
+      const delay = r.signal || !transientCloneFailure(stderr)
+        ? null
+        : gitRetryDelayMs({ attempt, stderr, retryAfterS, waitedMs: waited, budgetMs: FETCH_RETRY_BUDGET_MS, beyondBudget: 'stop' });
+      if (delay === null) {
+        log(`[fetch] could not fetch origin/${branch}: ${reason}`);
+        return 'failed';
+      }
+      log(`[fetch] origin/${branch} ${isGithubThrottle(stderr) ? 'rate limited by GitHub' : 'failed'} (${reason}); retrying in ${Math.round(delay / 1000)}s`);
+      await sleep(delay);
       waited += delay;
     }
   } catch (err) {

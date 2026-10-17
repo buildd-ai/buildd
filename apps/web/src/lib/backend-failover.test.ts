@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
@@ -17,12 +19,12 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-// Mock hasCodexCredential directly to avoid relying on transitive @buildd/core/db
+// Mock resolveCodexApiKey directly to avoid relying on transitive @buildd/core/db
 // mock resolution — Bun 1.4.0 (CI) uses per-file module registries so transitive
 // mocks from @buildd/core/db don't propagate into codex-credential.ts's imports.
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
+const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mockHasCodexCredential,
+  resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
 // Same reasoning for the plain-API-key sibling: either credential is enough
@@ -30,6 +32,11 @@ mock.module('@/lib/codex-credential', () => ({
 const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
 mock.module('@/lib/openai-credential', () => ({
   hasOpenAiApiKey: mockHasOpenAiApiKey,
+}));
+
+const mockHasEndpoint = mock(() => Promise.resolve(false));
+mock.module('@buildd/core/agent-endpoint', () => ({
+  hasOpenAiCompatibleAgentEndpoint: mockHasEndpoint,
 }));
 
 const {
@@ -47,8 +54,9 @@ beforeEach(() => {
   mockBackendPausesFindMany.mockResolvedValue([]);
   mockAccountsFindFirst.mockResolvedValue(null);
   mockTenantBudgetsFindFirst.mockResolvedValue(null);
-  mockHasCodexCredential.mockResolvedValue(false);
+  mockResolveCodexApiKey.mockResolvedValue(null);
   mockHasOpenAiApiKey.mockResolvedValue(false);
+  mockHasEndpoint.mockResolvedValue(false);
 });
 
 describe('recordBackendPause', () => {
@@ -133,21 +141,39 @@ describe('isBackendConfigured', () => {
     expect(await isBackendConfigured('claude', scope)).toBe(true);
   });
 
-  it('requires a stored credential for Codex', async () => {
+  it('requires a deliverable API key for Codex', async () => {
     expect(await isBackendConfigured('codex', scope)).toBe(false);
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     expect(await isBackendConfigured('codex', scope)).toBe(true);
   });
 
   // A plain team/workspace OpenAI API key is the simpler sibling of
   // `codex_credential` (ChatGPT connect) — either one configures Codex.
   it('also treats a plain OpenAI API key as a configured Codex credential', async () => {
-    mockHasCodexCredential.mockResolvedValue(false);
+    mockResolveCodexApiKey.mockResolvedValue(null);
     mockHasOpenAiApiKey.mockResolvedValue(false);
     expect(await isBackendConfigured('codex', scope)).toBe(false);
 
     mockHasOpenAiApiKey.mockResolvedValue(true);
     expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  // resolveCodexApiKey returns null for a stored subscription login (claims
+  // never deliver one), so a login alone must not read as ready.
+  it('does not treat a stored subscription login alone as configured', async () => {
+    mockResolveCodexApiKey.mockResolvedValue(null);
+    expect(await isBackendConfigured('codex', scope)).toBe(false);
+    expect(await isBackendConfigured('codex', { teamId: 'team-1', anyAccount: true })).toBe(false);
+  });
+
+  it('an OpenAI-compatible agent endpoint alone configures Codex', async () => {
+    mockHasEndpoint.mockResolvedValue(true);
+    expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  it('is not configured without a team', async () => {
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
+    expect(await isBackendConfigured('codex', { accountId: 'account-1' })).toBe(false);
   });
 
   it('refuses a backend the runner cannot execute yet', async () => {
@@ -156,7 +182,7 @@ describe('isBackendConfigured', () => {
 
   it('passes the claiming account through by default', async () => {
     await isBackendConfigured('codex', scope);
-    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+    expect(mockResolveCodexApiKey).toHaveBeenLastCalledWith({
       teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1',
     });
   });
@@ -165,7 +191,7 @@ describe('isBackendConfigured', () => {
     // Read-only reporting has no claiming account; an account-scoped credential
     // still means the backend works for someone, so it must not read as absent.
     await isBackendConfigured('codex', { teamId: 'team-1', workspaceId: 'ws-1', anyAccount: true });
-    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+    expect(mockResolveCodexApiKey).toHaveBeenLastCalledWith({
       teamId: 'team-1', accountId: 'any', workspaceId: 'ws-1',
     });
   });
@@ -180,7 +206,7 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('moves a Claude-walled task to Codex when a credential exists', async () => {
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     expect((await resolveFailoverBackend({ from: 'claude', scope })).backend).toBe('codex');
   });
 
@@ -193,9 +219,65 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('respects a busy provider slot the caller reports', async () => {
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     const decision = await resolveFailoverBackend({ from: 'claude', scope, busy: { codex: true } });
     expect(decision.backend).toBeNull();
     expect(decision.blocked[0]).toMatchObject({ backend: 'codex', reason: 'busy' });
+  });
+});
+
+// A runner on its own machine login hits a wall that is its own, not the
+// team's (task e68327a1). The pause row carries that runner's seat key; a
+// reader with a different key must not see it, a reader with no key must.
+describe('seat-scoped pauses', () => {
+  const dialect = new PgDialect();
+  const renderedWhere = () => {
+    const call = mockBackendPausesFindMany.mock.calls.at(-1) as any[] | undefined;
+    return dialect.sqlToQuery(capturedWhere(call?.[0]?.where));
+  };
+  const soon = () => new Date(Date.now() + HOUR);
+
+  it('records the seat key a runner-scoped wall carries, and none for a shared wall', async () => {
+    await recordBackendPause({ backend: 'claude', scope, resetsAt: soon(), seatKey: 'runner:aaa' });
+    await recordBackendPause({ backend: 'claude', scope, resetsAt: soon() });
+    expect(insertedPauses[0]).toMatchObject({ backend: 'claude', seatKey: 'runner:aaa' });
+    expect(insertedPauses[1].seatKey ?? null).toBeNull();
+  });
+
+  it("ignores another runner's seat wall but keeps its own and every shared one", async () => {
+    const shared = soon();
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 40 * HOUR), reason: 'budget', seatKey: 'runner:other' },
+    ]);
+    expect((await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' })).has('claude')).toBe(false);
+
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 40 * HOUR), reason: 'budget', seatKey: 'runner:mine' },
+    ]);
+    const own = await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' });
+    expect(own.get('claude')?.seatKey).toBe('runner:mine');
+
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: shared, reason: 'budget', seatKey: null },
+    ]);
+    expect((await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' })).get('claude')?.resetsAt).toEqual(shared);
+  });
+
+  it('scopes the query itself: shared rows or this seat only', async () => {
+    await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' });
+    const q = renderedWhere();
+    expect(q.sql).toContain('"seat_key" is null');
+    expect(q.sql).toMatch(/"seat_key" = \$\d+/);
+    expect(q.params).toContain('runner:mine');
+  });
+
+  // Fail-safe: a reader that cannot say which login it runs on is held by
+  // every wall, seat-scoped or not.
+  it('reads every wall, seat-scoped ones included, for a reader with no seat key', async () => {
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: soon(), reason: 'budget', seatKey: 'runner:other' },
+    ]);
+    expect((await getActiveBackendPauses(scope)).has('claude')).toBe(true);
+    expect(renderedWhere().sql).not.toContain('seat_key');
   });
 });

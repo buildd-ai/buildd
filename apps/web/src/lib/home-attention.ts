@@ -171,6 +171,10 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'decision', tone: 'warning', title, sentence: text(i.recommendation) && title !== text(i.recommendation) ? `Recommended: ${text(i.recommendation)}` : subject ? `Mission: ${subject}` : 'The mission is waiting on your choice.', actionType: 'decide', primary: { label: 'Choose…', href: subjectHref ?? '' } });
     }
     case 'APPROVE':
+      // Work built ahead of approval that merged, and the spec still unapproved (living-specs.md §20, R-42).
+      if (i.specProvisional) {
+        return make({ label: 'unapproved spec', tone: 'warning', title: 'Work shipped against an unapproved spec', sentence: text(i.failureMessage), actionType: 'approve', primary: { label: text(i.fixLabel) ?? 'Review spec', href: text(i.fixHref) ?? '' } });
+      }
       return make({ label: 'approval', tone: 'warning', title: subject, sentence: text(i.verdictSummary) ?? 'This work is waiting for your approval before it starts.', actionType: 'approve', primary: { label: 'Approve…', href: text(i.fixHref) ?? subjectHref ?? '' } });
     case 'RECONNECT':
       return make({ label: 'reconnect', tone: 'warning', title: text(i.connectorName), sentence: text(i.failureMessage) ?? (i.connectorName ? `${i.connectorName} lost its connection. Agents using it are paused.` : null), actionType: 'reconnect', primary: { label: text(i.fixLabel) ?? 'Reconnect', href: text(i.fixHref) ?? '' } });
@@ -217,7 +221,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
   for (const s of status) items.set(s.key, s);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
-    items.set(key, { key, kind: 'question', label: 'needs input', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
+    items.set(key, { key, kind: 'question', label: 'question', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });
   }
   // Conservative precedence: a stale or blocked reading must never become a merge CTA through dedupe.
   const priority = (i: ActionQueueItem) => i.chip === 'STALE' ? 3 : i.chip === 'BLOCKED' ? 2 : 1;
@@ -286,7 +290,7 @@ export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: 
     const href = hrefFor(t);
     const prompt = t.waitingFor?.prompt?.trim();
     out.push({
-      key: `question:${t.id}`, kind: 'question', label: 'needs input', tone: 'warning',
+      key: `question:${t.id}`, kind: 'question', label: 'question', tone: 'warning',
       title: prompt || t.title,
       sentence: t.waitingFor?.context?.trim() || `Asked while working on ${t.title}.`,
       meta: '', href, actionType: 'answer', primary: { label: 'Answer', href }, owner: 'human',
@@ -297,7 +301,7 @@ export function admitWaitingTasks(items: readonly HomeAttentionItem[], waiting: 
 
 /** Shared grammar for attention lists; each surface keeps its existing zero copy. */
 export function needsYouHeadline(count: number, empty = 'All good.'): string {
-  return count === 0 ? empty : count === 1 ? '1 thing needs you.' : `${count} things need you.`;
+  return count === 0 ? empty : `${count} waiting on you.`;
 }
 
 const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
@@ -323,5 +327,5 @@ export function homeAttentionCopy(items: readonly HomeAttentionItem[], opts: { r
   for (const i of items) counts.set(i.actionType, (counts.get(i.actionType) ?? 0) + 1);
   const idle = opts.runnerConnected === false ? 'No runner is connected yet, so nothing is running.' : 'The fleet is working without you.';
   const subline = [...counts].map(([t, n]) => `${n} ${ACTION_NOUN[t][n === 1 ? 0 : 1]}`).join(' · ') || idle;
-  return { count, headline: needsYouHeadline(count, 'Nothing needs you.'), subline };
+  return { count, headline: needsYouHeadline(count, 'Nothing waiting on you.'), subline };
 }

@@ -6,9 +6,10 @@
  * for callers that hold feed rows (`MissionFeedTaskInput`) rather than board
  * rows, so they do not each re-derive it. Pure; cancelled tasks get no cell.
  */
-import { buildBoardCells, toBoardTaskInput, type BoardExternalDepInput } from './mission-board';
+import { buildBoardCells, toBoardTaskInput, type BoardExternalDepInput, type MissionGateFacts } from './mission-board';
 import type { BlockingTask } from './mission-card-view';
 import type { MissionFeedTaskInput } from './mission-pulse';
+import { overviewProgress, type OverviewProgressCell } from './mission-overview';
 import { stripOrder, stripState, type StripState } from './mission-task-strip';
 
 export function feedStripOrder(
@@ -62,4 +63,21 @@ export function taskRowsStripProjection(
   const model = buildBoardCells({ tasks: rows, externalDeps: taskIndex ? externalDepsOf(tasks, taskIndex) : [] });
   const order = stripOrder(model);
   return { order, states: new Map(order.map(id => [id, stripState(model, id)])) };
+}
+
+/**
+ * The mission Overview strip's cells (done, in progress, waiting, then
+ * checks), from task rows with their workers: `buildd top`'s progress row
+ * (spec c7410e76 R-29) through the page's own `overviewProgress`. Pass what
+ * the page passes its board: each row's kernel `delivery` display on the row,
+ * the out-of-mission dependency rows, and the gate facts' released edges, so
+ * a closed unmerged delivery reads not landed and a released edge reads ready,
+ * as on the page.
+ */
+export function taskRowsProgress(
+  tasks: readonly TaskRow[],
+  opts: { externalDeps?: readonly BoardExternalDepInput[]; gateFacts?: MissionGateFacts | null } = {},
+): OverviewProgressCell[] {
+  const rows = tasks.map(t => toBoardTaskInput(t));
+  return overviewProgress(buildBoardCells({ tasks: rows, externalDeps: [...(opts.externalDeps ?? [])], gateFacts: opts.gateFacts ?? null }));
 }

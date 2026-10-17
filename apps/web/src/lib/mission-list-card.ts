@@ -33,7 +33,7 @@ import {
   type MissionCardWorkerRow,
 } from './mission-card-view';
 import { missionNeedsYou } from './mission-state-view';
-import { missionTaskHref } from './mission-task-href';
+import { missionTaskHref, taskAnswerHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import type { WaitingFor } from '@buildd/shared';
@@ -283,7 +283,7 @@ export function buildMissionListCard(
         .find(w => w.status === 'waiting_input' && w.waitingFor?.prompt);
       if (parked) {
         question = {
-          taskId: r.task.id, label, href: cell.href, workerId: parked.id ?? null,
+          taskId: r.task.id, label, href: taskAnswerHref({ taskId: r.task.id, missionId: row.id }), workerId: parked.id ?? null,
           prompt: parked.waitingFor!.prompt!, options: waitingForOptionLabels(parked.waitingFor!.options).slice(0, 3),
         };
       }
@@ -371,7 +371,7 @@ export function buildMissionListCard(
     if (kind === 'held') return { label: 'Held', tone: 'warning' };
     // Not LOCAL: nothing is happening, and nothing will until the owner acts.
     if (strand) return { label: 'Stranded', tone: 'warning' };
-    if (needsYou) return { label: 'Needs you', tone: 'warning' };
+    if (needsYou) return { label: 'Waiting on you', tone: 'warning' };
     // A local mission is active work run from a person's session: LOCAL, in
     // the running tone — never Held, and never Stalled for want of a runner.
     if (kind === 'active' && row.executor === 'local') return { label: 'Local', tone: 'accent' };

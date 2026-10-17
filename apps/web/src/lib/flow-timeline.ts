@@ -395,3 +395,14 @@ export function flowAxisTicks(timeline: Pick<FlowTimeline, 'from' | 'to'>): Arra
   for (let ms = 0; ms <= span; ms += step) out.push({ at: (ms / span) * 100, label: label(ms) });
   return out;
 }
+
+/**
+ * Whether an axis tick would collide with the "now" label: `hide` when it sits
+ * too close on every screen, `phone` when only the narrow phone track runs them
+ * together (shown from md), `show` otherwise. A finished mission has no now label.
+ */
+export function flowTickNearNow(at: number, nowAt: number | null): 'show' | 'phone' | 'hide' {
+  if (nowAt == null) return 'show';
+  const gap = Math.abs(at - nowAt);
+  return gap < 6 ? 'hide' : gap < 14 ? 'phone' : 'show';
+}

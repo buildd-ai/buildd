@@ -17,7 +17,7 @@ export default function MissionRecoveryNotice({ items }: MissionRecoveryNoticePr
   return (
     <div className="space-y-2" data-testid="mission-recovery-notice">
       <p className="text-body text-text-primary">
-        {items.length === 1 ? 'One task is held by an automatic repair.' : `${items.length} tasks are held by an automatic repair.`}
+        {items.length === 1 ? '1 task held by automatic repair.' : `${items.length} tasks held by automatic repair.`}
       </p>
       <ul className="space-y-2">
         {items.map(({ taskId, title, view }) => (

@@ -90,6 +90,7 @@ export async function redriveSurfaceWaiter(
       eventHeadSha: headSha,
       door: 'surface_wakeup',
       actor: { kind: 'system' },
+      principal: { kind: 'system', id: 'system:surface_wakeup' },
       mode: 'enforce',
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },

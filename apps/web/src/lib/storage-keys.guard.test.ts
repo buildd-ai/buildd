@@ -30,6 +30,9 @@ const UPLOAD_CALLER_ALLOWLIST = new Set([
   // The chat upload relay: the key comes from buildChatUploadKey at upload start,
   // the body must be exactly the size and type the upload was started with, at most 4 MB.
   'apps/web/src/lib/artifact-chat-files.ts',
+  // Spec attachment uploads (living-specs.md §21): buildArtifactKey under the spec's
+  // own workspace, the staging key signed for the declared size, at most 50 MB.
+  'apps/web/src/lib/specs/attachments.ts',
 ]);
 
 /** Routes that accept a storage key from the request body. */

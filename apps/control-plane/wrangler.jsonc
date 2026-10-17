@@ -20,6 +20,11 @@
     { "pattern": "buildd.dev/api/dispatch/v1/*", "zone_name": "buildd.dev" },
     { "pattern": "control-plane.buildd.dev", "custom_domain": true }
   ],
+  // The kernel's effect drain and floor (docs/specs/workflow-kernel-library.md §3): hourly, at
+  // :10 like the web app's merge-state pass, so it opens no extra Neon wake window. A no-op in
+  // shadow. Cron triggers are script settings, not version settings: `wrangler versions deploy`
+  // does not apply them; a change here takes `wrangler triggers deploy` (or `wrangler deploy`).
+  "triggers": { "crons": ["10 * * * *"] },
   "vars": {
     // shadow: pass everything through to the web app. own: serve the execution routes here.
     "EXECUTION_MODE": "own",

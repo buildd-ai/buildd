@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const ZERO = { total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0 };
@@ -43,6 +43,11 @@ mock.module('@/lib/early-release-reconciler', () => ({
   reconcileEarlyReleases: mockEarlyRelease,
 }));
 
+// Held release tasks (lib/held-pr-tasks.ts): the hourly backstop rides this route.
+const HELD_ZERO = { scanned: 0, completed: 0, failed: 0, retried: 0, waiting: 0, errors: 0 };
+const mockHeldReleases = mock(async () => HELD_ZERO);
+mock.module('@/lib/held-pr-tasks', () => ({ sweepHeldReleases: mockHeldReleases }));
+
 // The two sweeps below were unmocked too, so they queried the live database.
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
@@ -86,6 +91,16 @@ mock.module('@/lib/workflow/seam', () => ({
   drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor,
   restartTreadmillCycles: mockTreadmillCycles,
 }));
+// The command ledger's retention prune rides the same kernel pass (lib/workflow/kernel-floor.ts).
+const mockPrune = mock(async () => 0);
+mock.module('@/lib/workflow/command-ledger', () => ({
+  postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 30_000, COMMAND_HEARTBEAT_MS: 10_000, COMMAND_RETENTION_DAYS: 7,
+}));
+
+// When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
+let lastFloorAt: Date | null = null;
+const realKernelFloor = await import('@/lib/workflow/kernel-floor');
+mock.module('@/lib/workflow/kernel-floor', () => ({ ...realKernelFloor, lastControlPlaneFloorAt: async () => lastFloorAt }));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -110,7 +125,8 @@ mock.module('@buildd/core/db', () => ({
   }),
 }));
 
-import { GET } from './route';
+import { GET, SWEEP_CONTROL_PLANE_BUDGET_MS } from './route';
+import { controlPlaneBudgetLeft } from '@/lib/workflow/kernel-client';
 
 function makeRequest(token?: string, query = '') {
   return new NextRequest(`http://localhost/api/cron/pr-reconcile${query}`, {
@@ -158,6 +174,64 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockReconcile.mockResolvedValue(ZERO);
     await GET(makeRequest('test-secret'));
     expect(dbTouches).toEqual([]);
+  });
+
+  it('runs the held-release backstop on the hourly merge-state scope (and the daily full pass) and reports it', async () => {
+    mockHeldReleases.mockClear();
+    mockHeldReleases.mockResolvedValueOnce({ ...HELD_ZERO, scanned: 2, completed: 1, retried: 1 });
+    const hourly = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(mockHeldReleases).toHaveBeenCalledTimes(1);
+    expect((await hourly.json()).heldReleases).toMatchObject({ scanned: 2, completed: 1, retried: 1 });
+    await GET(makeRequest('test-secret'));
+    expect(mockHeldReleases).toHaveBeenCalledTimes(2);
+  });
+
+  // Incident 197552dc: a run that hit the function limit logged nothing after its first seconds, and a
+  // run that finished logged every step at the end, so nobody could tell which step was slow.
+  it('times every step of the merge-state pass, logs each as it finishes, and reports the slowest', async () => {
+    mockClosedPrSweep.mockImplementationOnce(async () => { await new Promise((r) => setTimeout(r, 40)); return CLOSED_ZERO; });
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    let body: Record<string, any>;
+    try {
+      body = await (await GET(makeRequest('test-secret', '?scope=merge-state'))).json();
+    } finally {
+      console.log = realLog;
+    }
+    for (const step of ['reconcile', 'missionPrs', 'branchRefresh', 'stranded', 'specRecheck', 'lineagePrs', 'landing', 'refreshRedrive', 'ciRed', 'closedPrs', 'earlyRelease', 'hourlySubscribers', 'heldReleases']) {
+      expect(typeof body.timings[step]).toBe('number');
+      expect(lines.some((l) => l.startsWith(`[PrReconcile] step=${step} ms=`))).toBe(true);
+    }
+    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(30);
+    expect(lines.find((l) => l.startsWith('[PrReconcile] timings='))).toContain('slowest=closedPrs:');
+    // A step's own line comes before the pass's summary, so a run cut off mid-pass still shows what finished.
+    expect(lines.findIndex((l) => l.startsWith('[PrReconcile] step=reconcile'))).toBeLessThan(lines.findIndex((l) => l.startsWith('[PrReconcile] timings=')));
+    expect(body.controlPlane).toMatchObject({ label: 'pr-reconcile:merge-state', budgetMs: SWEEP_CONTROL_PLANE_BUDGET_MS });
+  });
+
+  it('every sweep of a pass runs inside one control-plane budget, well inside the function limit', async () => {
+    const seen: Array<number | null> = [];
+    const probe = <T,>(v: T) => async () => { seen.push(controlPlaneBudgetLeft()); return v; };
+    mockLandingSweep.mockImplementationOnce(probe(LANDING_ZERO));
+    mockCiRedSweep.mockImplementationOnce(probe(CI_RED_ZERO));
+    mockClosedPrSweep.mockImplementationOnce(probe(CLOSED_ZERO));
+    mockHeldReleases.mockImplementationOnce(probe(HELD_ZERO));
+    await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(seen).toHaveLength(4);
+    for (const left of seen) {
+      expect(left).not.toBeNull();
+      expect(left!).toBeLessThanOrEqual(SWEEP_CONTROL_PLANE_BUDGET_MS);
+    }
+    expect(SWEEP_CONTROL_PLANE_BUDGET_MS).toBeLessThanOrEqual(40_000);
+    // The landing and red-PR ticks too.
+    seen.length = 0;
+    mockLandingSweep.mockImplementationOnce(probe(LANDING_ZERO));
+    await GET(makeRequest('test-secret', '?scope=landing'));
+    mockCiRedSweep.mockImplementationOnce(probe(CI_RED_ZERO));
+    await GET(makeRequest('test-secret', '?scope=ci-red'));
+    expect(seen).toHaveLength(2);
+    for (const left of seen) expect(left).not.toBeNull();
   });
 
   it('returns 401 when no authorization header', async () => {
@@ -211,6 +285,53 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(mockTreadmillCycles).toHaveBeenCalled();
     expect(mockTreadmillCycles.mock.calls[0]![0]).toEqual({ cooldownMs: 60 * 60_000 });
     expect(body.treadmillCycles).toMatchObject({ restarted: 1, refused: 1 });
+  });
+
+  describe('who runs the kernel\'s drain and floor (workflow-kernel-library §3)', () => {
+    const kernelMocks = [mockDrainDueEffects, mockTrunk, mockKernelFloor, mockTreadmillCycles, mockPrune];
+    const saved: Record<string, string | undefined> = {};
+    beforeEach(async () => {
+      for (const k of ['EXECUTION_MODE', 'KERNEL_COMMAND_SECRET']) saved[k] = process.env[k];
+      for (const m of kernelMocks) m.mockClear();
+      (await import('@/lib/workflow/kernel-client')).resetKernelModeCache();
+    });
+    afterEach(() => {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+    const cutOver = () => { process.env.EXECUTION_MODE = 'own'; process.env.KERNEL_COMMAND_SECRET = 'k1:test'; };
+
+    it('no command key on this host: not switched over, so this route drains and runs the floor, even with EXECUTION_MODE=own', async () => {
+      process.env.EXECUTION_MODE = 'own';
+      delete process.env.KERNEL_COMMAND_SECRET;
+      const body = await (await GET(makeRequest('test-secret'))).json();
+      expect(body.kernelSkipped).toBeUndefined();
+      expect(body).toMatchObject({ kernelHost: 'web', kernelReason: 'shadow' });
+      for (const m of kernelMocks) expect(m).toHaveBeenCalled();
+    });
+
+    it('cut over, with the control plane\'s floor current: none of it runs here', async () => {
+      cutOver();
+      lastFloorAt = new Date(Date.now() - 50 * 60_000);
+      const res = await GET(makeRequest('test-secret'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.kernelSkipped).toBe('control_plane_hosts');
+      expect(body.kernelOutbox).toBeUndefined();
+      for (const m of kernelMocks) expect(m).not.toHaveBeenCalled();
+      // The rest of the hourly pass still runs here.
+      expect(mockReconcile).toHaveBeenCalled();
+    });
+
+    it('cut over, with the control plane\'s floor older than two periods or never run: the liveness fallback drains here, and says so', async () => {
+      cutOver();
+      for (const at of [new Date(Date.now() - 121 * 60_000), null]) {
+        lastFloorAt = at;
+        for (const m of kernelMocks) m.mockClear();
+        const body = await (await GET(makeRequest('test-secret'))).json();
+        expect(body).toMatchObject({ kernelHost: 'web', kernelReason: 'control_plane_floor_stale', kernelOutbox: { claimed: 0 } });
+        for (const m of kernelMocks) expect(m).toHaveBeenCalled();
+      }
+    });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {
@@ -339,6 +460,25 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(res.status).toBe(200);
     expect(mockClosedPrSweep).toHaveBeenCalledTimes(1);
     expect((await res.json()).closedPrs).toEqual({ candidates: 2, recorded: 1, suggested: 1, none: 0, skipped: 0 });
+  });
+
+  // Task 9f4d3339: the pass died inside this sweep and its one summary line could not say which PR was slow.
+  it('logs the closed-PR sweep per PR, slowest first, with what stopped it', async () => {
+    mockClosedPrSweep.mockResolvedValue({
+      candidates: 3, recorded: 0, suggested: 1, none: 0, skipped: 0, deferred: 1, budgetStopped: 1,
+      prs: [{ pr: 'org/a#1', ms: 120, outcome: 'suggested' }, { pr: 'org/a#2', ms: 19_000, outcome: 'deferred' }],
+    });
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    try {
+      await GET(makeRequest('test-secret', '?scope=merge-state'));
+    } finally {
+      console.log = realLog;
+    }
+    const line = lines.find((l) => l.startsWith('[ClosedPrSupersession]'));
+    expect(line).toContain('budgetStopped=1');
+    expect(line).toContain('prs=org/a#2:19000ms:deferred,org/a#1:120ms:suggested');
   });
 
   it('a closed-PR backfill failure does not fail the run', async () => {

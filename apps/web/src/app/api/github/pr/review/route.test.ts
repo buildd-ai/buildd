@@ -506,6 +506,57 @@ describe('POST /api/github/pr/review — idempotency', () => {
     const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
     afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
 
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+
+      it('the control plane unreachable: 503 naming it, and no legacy reviewer is created in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockRequestKernelReview.mockClear();
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^request_review:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_review');
+        expect(mockRequestKernelReview).not.toHaveBeenCalled();
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      // The control plane re-checks the caller with the web host's rule: the door submits the session it judged.
+      const principalSent = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockReturnValue(account);
+        await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        return cp.calls.filter((c) => c.op === 'request_review').map((c) => c.body?.principal);
+      };
+
+      it('a grant session is submitted as its grant with its workspace list, a person behind it or not', async () => {
+        const grant = { ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] };
+        const asGrant = { kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
+        expect(await principalSent(grant)).toEqual([asGrant]);
+        cp?.restore();
+        expect(await principalSent({ ...grant, sessionUserId: 'user-7' })).toEqual([{ ...asGrant, userId: 'user-7' }]);
+      });
+
+      it('a person is submitted as the user; a plain API account as an account that is not a grant', async () => {
+        expect(await principalSent({ ...ACCOUNT, sessionUserId: 'user-7' })).toEqual([{ kind: 'user', id: 'user-7' }]);
+        cp?.restore();
+        expect(await principalSent(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+    });
+
     it('is T5 on the live head and never creates a legacy reviewer', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
@@ -527,6 +578,15 @@ describe('POST /api/github/pr/review — idempotency', () => {
       expect(json).toMatchObject({ kernel: true, reviewTaskId: 'round-reviewer' });
       expect(mockFindReviewTaskForPr).not.toHaveBeenCalled();
       mockFindReviewTaskForPr.mockReturnValue(null);
+    });
+
+    it('1bd26ae7: a round with no reviewer task is never "already under review" with nothing behind it: it says what is queued', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: null });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ ok: true, kernel: true, reviewTaskId: null, queued: { state: 'queued', reason: 'no reviewer task exists for this head yet (review_in_flight)' } });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
     it('a reviewTaskId whose row is missing falls through to queueing a review, never a null status', async () => {
@@ -571,6 +631,19 @@ describe('POST /api/github/pr/review — idempotency', () => {
       const body = await res.json();
       expect(body.code).toBe('force_requires_human');
       expect(body.hint).toContain('person');
+    });
+
+    // 2ded4e88: a spent review budget is a person's. The hint names where they act, not `force`: an
+    // interactive session would just retry with it.
+    it('a request on a spent review budget is a 409 that sends a person to the PR\'s page', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_budget_spent', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('review_budget_spent');
+      expect(body.hint).toContain('a person can request one more review from the PR\'s page');
+      expect(body.hint).not.toContain('force');
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
     it('a request the table refuses is a 409 with the current view', async () => {
@@ -663,6 +736,28 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(res.status).toBe(201);
     expect(mockCarryForward).not.toHaveBeenCalled();
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+  });
+
+  // 2ded4e88: the round budget is the PR's. Spent, force at a moved head does not file a reviewer from
+  // a key or a session; the person asks from the PR's page (the dashboard re-review).
+  it.each([
+    ['an API key', {}],
+    ['an OAuth session', { sessionUserId: 'user-7' }],
+  ])('force on a spent review budget is refused for %s, even at a moved head', async (_label, extra) => {
+    mockAuthenticateApiKey.mockReturnValue({ ...ACCOUNT, ...extra });
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-3',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 'still no' } },
+      context: { prNumber: 42, headSha: 'old-sha', iteration: 3, maxIterations: 3 },
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('review_budget_spent');
+    expect(body.hint).toContain('PR\'s page');
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
   it('force at the head the verdict already covers is refused for an API key', async () => {
@@ -953,5 +1048,29 @@ describe('per-task token', () => {
     mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, id: 'ws-2', name: 'other' });
     const res = await GET(get('?prNumber=42&workspaceId=other'));
     expect(res.status).toBe(404);
+  });
+
+  describe('workspace outside the team list', () => {
+    const OWN = { ...WORKSPACE, id: 'ws-own', name: 'buildd', repo: 'buildd-ai/buildd' };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockReturnValue({ ...SCOPED, taskScope: { ...SCOPED.taskScope, workspaceId: 'ws-own' } });
+      mockGetTeamWorkspaceIds.mockReturnValue(['ws-team-only']);
+      mockResolveWorkspace.mockReturnValue(null);
+      mockWorkspacesFindFirst.mockReturnValue(OWN);
+    });
+
+    for (const input of ['buildd', 'BuildD', 'buildd-ai/buildd', 'ws-own']) {
+      it(`resolves workspaceId=${input} to the token's own workspace`, async () => {
+        const res = await GET(get(`?prNumber=42&workspaceId=${encodeURIComponent(input)}`));
+        expect(res.status).toBe(200);
+        expect(mockWaitForPrReviewStatus.mock.calls.at(-1)![0]).toMatchObject({ workspaceId: 'ws-own', prNumber: 42 });
+      });
+    }
+
+    it('still 404s a different workspace name', async () => {
+      const res = await GET(get('?prNumber=42&workspaceId=other'));
+      expect(res.status).toBe(404);
+    });
   });
 });

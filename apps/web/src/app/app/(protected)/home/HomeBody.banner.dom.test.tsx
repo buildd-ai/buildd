@@ -60,7 +60,7 @@ describe('phone Home and the needs-input banner', () => {
   it('a waiting task the banner knows is in the inbox and the count, and the banner steps aside at every width', () => {
     mount([waiting]);
     expect(cardCount()).toBe(2);
-    expect(container.textContent).toContain('2 things need you.');
+    expect(container.textContent).toContain('2 waiting on you.');
     const cards = [...container.querySelectorAll('[data-testid="needs-you-card"]')];
     expect(cards.map(c => c.getAttribute('data-kind')).sort()).toEqual(['question', 'queue']);
     expect(container.textContent).toContain('Ship to canary first?');
@@ -71,13 +71,13 @@ describe('phone Home and the needs-input banner', () => {
   it('a task already in the inbox from the server is not listed twice', () => {
     mount([waiting], [{ workerId: 'w-1', taskId: 'task-waiting', label: 'rollout', runnerName: null, askedAt: null, href: '/app/tasks/task-waiting', question: { headline: 'Ship to canary first?', body: null, options: [], noteId: null } }]);
     expect(cardCount()).toBe(2);
-    expect(container.textContent).toContain('2 things need you.');
+    expect(container.textContent).toContain('2 waiting on you.');
   });
 
   it('an answered task is not admitted: it no longer needs the person', () => {
     mount([{ ...waiting, waitingFor: null, answerSent: true }]);
     expect(cardCount()).toBe(1);
-    expect(container.textContent).toContain('1 thing needs you.');
+    expect(container.textContent).toContain('1 waiting on you.');
   });
 
   it('the hold is released when Home unmounts, so other pages keep the banner', () => {

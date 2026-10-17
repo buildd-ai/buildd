@@ -240,6 +240,8 @@ expect(prompt).toContain('authentication method');
 
 ## Running Unit Tests — Always Isolated
 
+When stdout is not a TTY (a log file, an agent shell) the runner prints a `[progress]` line every 30s: files done, elapsed, host load vs CPU count, and hinted work left. Documented durations assume an idle host; a load well above the CPU count (shared runner) slows every broad check, so a long run with advancing `[progress]` lines is slow, not hung.
+
 Run unit tests through the runner, never `bun test` directly:
 
 ```bash
@@ -273,6 +275,24 @@ section exists to prevent. It was also silently useless for a while: an e2e file
 called `process.exit(0)` at module scope when `BUILDD_TEST_SERVER` was unset, so
 `bun test` at the repo root aborted mid-collection and exited 0 having run
 almost nothing.
+
+### Slow locally: process-spawn cost, not CPU
+
+On a managed laptop (endpoint-security agent scanning every `exec`) each `git`
+process costs roughly 150-250 ms against about 30 ms for a trivial binary, and
+`/usr/bin/git` (the Xcode shim) is the slow end. The `scripts/release-*.test.ts`
+files build real git fixtures (init, commit, push, fetch per test), so they
+spawn hundreds of git processes: `release-candidate.test.ts` took about 6.5
+minutes alone and its `exclude` tests hit the 30 s per-test timeout, while the
+whole run reported "host oversubscribed". Other load (browsers, editors) adds
+to it, but the fixtures are the dominant term. No hook or network access is
+involved: fixture repos do not inherit the checkout's `core.hooksPath`.
+
+Do not read a local timeout in those files as a code failure, and do not wait
+on the full suite on such a host. Run the files your change touches, and let CI
+(`build` job) be the full-suite evidence. Check that the cause is the host with
+`time (for i in $(seq 10); do git --version >/dev/null; done)`: well over a
+second means spawn cost dominates.
 
 ### What gets collected
 

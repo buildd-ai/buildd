@@ -362,7 +362,7 @@ describe('createGitRepoReader', () => {
   it('lists files and reads contents at HEAD when no sha is given', async () => {
     const dir = makeRepo();
     try {
-      const reader = createGitRepoReader(dir);
+      const reader = await createGitRepoReader(dir);
       const files = await reader.listFiles();
       expect(files).toContain('src/app.ts');
       expect(files).toContain('README.md');
@@ -376,7 +376,7 @@ describe('createGitRepoReader', () => {
   it('returns null for binary files', async () => {
     const dir = makeRepo();
     try {
-      const reader = createGitRepoReader(dir);
+      const reader = await createGitRepoReader(dir);
       expect(await reader.readFile('blob.bin')).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -386,7 +386,7 @@ describe('createGitRepoReader', () => {
   it('falls back to HEAD when the requested sha is unknown', async () => {
     const dir = makeRepo();
     try {
-      const reader = createGitRepoReader(dir, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+      const reader = await createGitRepoReader(dir, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
       const files = await reader.listFiles();
       expect(files).toContain('src/app.ts');
     } finally {
@@ -402,7 +402,7 @@ describe('createGitRepoReader', () => {
       execFileSync('git', ['add', '.'], { cwd: dir });
       execFileSync('git', ['commit', '-q', '-m', 'update'], { cwd: dir });
 
-      const reader = createGitRepoReader(dir, firstSha);
+      const reader = await createGitRepoReader(dir, firstSha);
       expect(await reader.readFile('src/app.ts')).toBe('export const app = 1;\n');
       expect(reader.resolvedSha).toBe(firstSha);
     } finally {

@@ -7,14 +7,21 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
+import type { CodexAuthSource, ModelAuthReport } from './host-seat';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
 import { PATH_CLAIM_TIMEOUT_MS } from './path-claim-enforcement';
+
+/** Heartbeat model-auth fields; local to the runner (the server owns its own type). */
+export type HeartbeatModelAuth = Pick<ModelAuthReport, 'source' | 'mode'> & {
+  /** The Codex label (host-seat.ts detectCodexAuthSource), sent as `codexAuthSource`. */
+  codexSource?: CodexAuthSource;
+};
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -138,6 +145,32 @@ export class BuilddClient {
   async listTasks(): Promise<BuilddTask[]> {
     const data = await this.fetch('/api/tasks');
     return data.tasks || [];
+  }
+
+  /**
+   * Each named mission's stage (spec c7410e76 R-18), from the missions
+   * module's GET /api/missions/stages. Keyed by mission id; a mission the
+   * server could not place is absent.
+   */
+  async listMissionStages(missionIds: string[]): Promise<Record<string, MissionStage>> {
+    if (missionIds.length === 0) return {};
+    const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
+    return data?.stages && typeof data.stages === 'object' ? data.stages : {};
+  }
+
+  /** Open missions and those delivered in the last 7 days across the key's workspaces (R-24), from GET /api/missions/recent. */
+  async listRecentMissions(): Promise<RecentMission[]> {
+    const data = await this.fetch('/api/missions/recent');
+    return Array.isArray(data?.missions) ? data.missions : [];
+  }
+
+  /** Per team, the order this runner's claims take waiting work (R-26), from GET /api/workers/queue. */
+  async listQueue(q: { runner?: string; skills?: string[] }): Promise<RunnerQueueResponse> {
+    const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });
+    if (q.runner) p.set('runner', q.runner);
+    if (q.skills?.length) p.set('skills', q.skills.join(','));
+    const data = await this.fetch(`/api/workers/queue?${p}`);
+    return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {
@@ -339,6 +372,8 @@ export class BuilddClient {
     crashReconciled?: boolean;
     /** The workspace clone was throttled by GitHub (git-clone.ts): the server books infra_failure and requeues with backoff. */
     githubThrottled?: boolean;
+    /** A Claude run refused before spawn for want of any model credential (host-seat.ts claudeModelAuthMissing): the server books infra_failure and requeues with backoff. */
+    modelAuthMissing?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's
@@ -610,6 +645,29 @@ export class BuilddClient {
         ? `http_${(err as ServerRefusalError).status}`
         : err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'transport';
       return { verdict: 'send', outcome: 'error', error, version: null, latencyMs: Date.now() - started };
+    }
+  }
+
+  /**
+   * POST to a dashboard route on a person's behalf (`buildd top`'s actions,
+   * runner-socket.ts) and hand back the server's status and body as they are.
+   * Never queued in the outbox and never thrown on a 4xx: a person pressed a
+   * key and should see the server's answer, refusal included, right away.
+   */
+  async relayDashboardAction(endpoint: string, body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    try {
+      const res = await this.transport.request(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      lastServerContactAt = Date.now();
+      const text = await res.text();
+      let parsed: unknown = {};
+      try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { error: text.slice(0, 500) }; }
+      return { status: res.status, body: parsed };
+    } catch (err: any) {
+      return { status: 502, body: { error: `buildd server unreachable: ${err?.message ?? err}` } };
     }
   }
 
@@ -1029,6 +1087,13 @@ export class BuilddClient {
      * in neither (apps/web/src/lib/lost-claim.ts).
      */
     claimHandoff?: ClaimHandoffSnapshot,
+    /**
+     * Which kind of model credential this runner's agents use: the
+     * machine login label (host-seat.ts detectModelAuthSource), plus the
+     * Codex label (detectCodexAuthSource). Labels, never a value. Omitted by older callers; the server keeps the stored
+     * label when the field is absent.
+     */
+    modelAuth?: HeartbeatModelAuth | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
@@ -1065,7 +1130,12 @@ export class BuilddClient {
       payload.commitDrift = updateSnapshot.commitDrift;
       payload.updating = updateSnapshot.updating;
       payload.updateAvailable = updateSnapshot.updateAvailable;
+      payload.updateDrain = updateSnapshot.updateDrain ?? null;
       payload.trackedBranch = updateSnapshot.trackedBranch;
+    }
+    if (modelAuth) {
+      payload.modelAuthSource = modelAuth.source;
+      if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',

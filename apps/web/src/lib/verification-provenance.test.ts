@@ -48,14 +48,12 @@ describe('the runner copy wins over an agent copy', () => {
 
 describe('agentCredential', () => {
   const taskToken = { taskScope: { taskId: 't-1' } };
-  test('a task token on a worker a host runner claimed is the agent', () => {
-    expect(agentCredential(taskToken, { claimedByCloud: false })).toBe(true);
-    expect(agentCredential(taskToken, {})).toBe(true);
-  });
-  test('on a worker a cloud container claimed, the task token is the runner', () => {
-    expect(agentCredential(taskToken, { claimedByCloud: true })).toBe(false);
+  test('a task token is the agent, on a host-claimed worker and a cloud-claimed one alike', () => {
+    // In a cloud container the runner and the agent share the task token, so
+    // nothing written on it can be told apart from the agent's own word.
+    expect(agentCredential(taskToken)).toBe(true);
   });
   test('a runner key is never the agent', () => {
-    expect(agentCredential({}, { claimedByCloud: false })).toBe(false);
+    expect(agentCredential({})).toBe(false);
   });
 });

@@ -331,12 +331,19 @@ jobs:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
 
-      - name: Raise concurrency limits for CI
+      - name: Raise concurrency limits and clear budget walls for CI
         if: steps.sync.outputs.machine_online != 'false'
+        # The branch is a fresh fork of its parent, so it carries whatever
+        # provider walls and budget pauses the parent holds right now. A real
+        # runner hitting its plan limit would otherwise defer every claim these
+        # tests make. Only this throwaway branch is touched.
         run: |
           psql "$DATABASE_URL" <<'SQL'
             UPDATE accounts SET max_concurrent_workers = 50;
             UPDATE worker_heartbeats SET max_concurrent_workers = 50;
+            DELETE FROM backend_pauses;
+            DELETE FROM tenant_budgets;
+            UPDATE accounts SET budget_exhausted_at = NULL, budget_resets_at = NULL;
           SQL
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}

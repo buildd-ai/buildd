@@ -14,6 +14,7 @@ import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { fleetLabel, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
+import { ZonedTime } from '@/components/DisplayTimezone';
 
 const busyOn = (r: FleetRunner) => r.slots.filter(s => s.worker).length;
 const agents = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
@@ -29,35 +30,46 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const offline = fleet.runners.filter(r => !r.online);
   const busy = fleet.runners.filter(r => r.online).reduce((n, r) => n + busyOn(r), 0);
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
+  const heldCount = fleet.runners.filter(r => r.online && r.hold).length;
+  const held: HeadlinePart[] = heldCount > 0 ? [{ text: ` ${heldCount} on hold.` }] : [];
   if (offline.length === fleet.runners.length) {
     if (stale === 0) return [{ text: 'All runners offline.' }];
     return [{ text: `All runners offline. ${agents(stale)} ${stale === 1 ? 'was' : 'were'} working at the last check-in.` }];
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
     : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
-  if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...tail];
-  return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
+  if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...held, ...tail];
+  return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...held, ...tail];
 }
 
 function RunnerRow({ runner }: { runner: FleetRunner }) {
   const busy = runner.slots.filter(s => s.worker).length;
   const waiting = runner.slots.filter(s => s.worker?.question).length;
+  // A person's hold (`buildd hold`): it starts nothing, so it is not idle.
+  const hold = runner.online ? runner.hold ?? null : null;
   return (
     <li
       data-testid="fleet-runner-row"
       data-online={runner.online ? 'true' : 'false'}
+      data-held={hold ? 'true' : undefined}
       data-elastic={runner.elastic ? 'true' : undefined}
       className="flex min-h-14 items-center gap-3 px-4 py-2.5"
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
           <span title={runner.name} className="min-w-0 truncate text-sm font-semibold text-text-primary">{runner.name}</span>
-          <StatusChip tone={runner.online ? 'ok' : 'warn'}>{runner.online ? 'Online' : 'Offline'}</StatusChip>
+          <StatusChip tone={hold ? 'idle' : runner.online ? 'ok' : 'warn'}>{hold ? 'On hold' : runner.online ? 'Online' : 'Offline'}</StatusChip>
         </div>
         <div className="mt-0.5 truncate text-xs text-text-muted">
           {runner.machine ?? 'Host runner'}
-          {waiting > 0 && <span className="text-status-warning"> · {waiting} need input</span>}
+          {waiting > 0 && <span className="text-status-warning"> · {waiting} waiting on you</span>}
         </div>
+        {hold && (
+          <div data-testid="fleet-runner-hold" className="mt-0.5 text-xs text-text-secondary">
+            Nothing new starts here; running agents finish. On hold since <ZonedTime value={hold.since} format="time" />
+            {hold.until ? <>, resumes at <ZonedTime value={hold.until} format="time" />.</> : <>, until someone runs buildd resume.</>}
+          </div>
+        )}
       </div>
       {runner.elastic ? (
         // Elastic: as many slots as runs, so there is no meter to fill.

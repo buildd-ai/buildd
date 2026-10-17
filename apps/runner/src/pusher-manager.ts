@@ -64,8 +64,19 @@ export interface PusherManagerCallbacks {
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
   claimPendingTasks: () => Promise<void>;
-  claimAndStart: (task: BuilddTask) => Promise<LocalWorker | null>;
+  /** `byPerson`: the server says a person aimed this assignment at this runner, so a hold does not stop it. */
+  claimAndStart: (task: BuilddTask, opts?: { byPerson?: boolean }) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
+}
+
+const GENERIC_SERVER_FAILURE = 'Task failed on server';
+
+/** The `task:assigned` payload (apps/web/src/lib/dispatch-adapters.ts sendRunnerWake). */
+export interface TaskAssignment {
+  task: BuilddTask;
+  targetLocalUiUrl?: string | null;
+  /** A person aimed it at `targetLocalUiUrl`; absent from older servers. */
+  byPerson?: boolean;
 }
 
 export class PusherManager {
@@ -177,9 +188,10 @@ export class PusherManager {
         const channelName = `${this.channelPrefix}workspace-${ws.id}`;
         if (!this.workspaceChannels.has(channelName)) {
           const channel = this.pusher.subscribe(channelName);
-          channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
+          channel.bind('task:assigned', (data: TaskAssignment) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('task:claimed', (data: { task?: { id?: string; workspaceId?: string } }) => this.handleTaskClaimed(data));
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
@@ -193,18 +205,35 @@ export class PusherManager {
     // Unsubscribe from workspace channels
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
+      channel.unbind('task:claimed');
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
   }
 
-  async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
+  /**
+   * A task in one of this runner's workspaces was claimed, here or by another
+   * runner: `buildd top`'s Queue view rereads its order (spec c7410e76 AC-12).
+   */
+  handleTaskClaimed(data: { task?: { id?: string; workspaceId?: string } } | null | undefined) {
+    const taskId = data?.task?.id;
+    if (typeof taskId !== 'string') return;
+    this.callbacks.emit({ type: 'task_claimed', taskId, workspaceId: data?.task?.workspaceId ?? null });
+  }
+
+  /**
+   * `byPerson` is the server's word that a person aimed this at us (dashboard
+   * Start or a task filed onto this runner); only that passes a hold. A target
+   * alone never does: an older server sends none, so its targeted assignments
+   * are held like broadcasts.
+   */
+  async handleTaskAssignment(data: TaskAssignment) {
     if (!this.acceptRemoteTasks) {
       console.log('Remote task assignment ignored (acceptRemoteTasks is disabled)');
       return;
     }
 
-    const { task, targetLocalUiUrl } = data;
+    const { task, targetLocalUiUrl, byPerson } = data;
 
     // Skip tasks we already know can't be resolved
     if (this.unresolvableTaskIds.has(task.id)) {
@@ -236,7 +265,10 @@ export class PusherManager {
 
     // Auto-claim and start the task
     try {
-      const worker = await this.callbacks.claimAndStart(task);
+      // A person's Start aimed at this runner (or a task they filed onto it)
+      // passes a hold; anything else is held (runner-hold.ts).
+      const aimedHere = !!targetLocalUiUrl && targetLocalUiUrl === this.config.localUiUrl;
+      const worker = await this.callbacks.claimAndStart(task, { byPerson: aimedHere && byPerson === true });
       if (worker) {
         console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }
@@ -253,6 +285,35 @@ export class PusherManager {
         console.error(`Failed to start assigned task ${task.id}:`, err);
       }
     }
+  }
+
+  /**
+   * The server marked this worker failed. Keep the reason it recorded (R-22 of
+   * "Runner on your terminal"): the event's own error, else one the worker
+   * already had, else the worker row's (the server's event is thin and usually
+   * carries none). "Task failed on server" only when nothing says why.
+   */
+  async applyServerFailure(workerId: string, data: any): Promise<void> {
+    const worker = this.callbacks.getWorkers().get(workerId);
+    // Only apply if worker hasn't already completed locally
+    if (!worker || worker.status === 'done' || worker.status === 'error') return;
+    console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
+    const given = typeof data?.error === 'string' && data.error.trim() ? data.error : null;
+    const known = given || worker.error || null;
+    worker.status = 'error';
+    worker.error = known || GENERIC_SERVER_FAILURE;
+    worker.completedAt = worker.completedAt || Date.now();
+    this.callbacks.emit({ type: 'worker_update', worker });
+    this.callbacks.abort(workerId).catch(() => {});
+    if (known) return;
+    try {
+      const remote = await this.buildd.getWorkerRemote(workerId) as { error?: unknown } | null;
+      const reason = typeof remote?.error === 'string' ? remote.error.trim() : '';
+      if (reason && worker.error === GENERIC_SERVER_FAILURE) {
+        worker.error = reason;
+        this.callbacks.emit({ type: 'worker_update', worker });
+      }
+    } catch { /* offline: the generic line stands */ }
   }
 
   // Subscribe to Pusher channel for worker commands
@@ -279,16 +340,7 @@ export class PusherManager {
     });
 
     channel.bind('worker:failed', (data: any) => {
-      const worker = this.callbacks.getWorkers().get(workerId);
-      // Only apply if worker hasn't already completed locally
-      if (worker && worker.status !== 'done' && worker.status !== 'error') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
-        worker.status = 'error';
-        worker.error = data?.error || 'Task failed on server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.callbacks.emit({ type: 'worker_update', worker });
-        this.callbacks.abort(workerId).catch(() => {});
-      }
+      void this.applyServerFailure(workerId, data);
     });
 
     // Progress heartbeat: when the server confirms a progress update (from the agent's

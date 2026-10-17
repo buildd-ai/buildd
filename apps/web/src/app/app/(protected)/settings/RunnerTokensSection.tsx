@@ -13,6 +13,8 @@ import { StatusChip } from './_components/ConnectionRow';
 import { unlinkedTokensChip } from './_lib/unlinked-tokens';
 import { accountReachesWorkspace } from '@/lib/workspace-reach';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
+import { modelAuthLabel, codexAuthLabel } from './_lib/model-auth-label';
+import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/shared';
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
 import MaxConcurrentWorkersEditor from './MaxConcurrentWorkersEditor';
@@ -40,6 +42,10 @@ interface Account {
   createdAt?: string | Date | null;
   /** Latest runner heartbeat on this token, ISO; absent when not seen recently. */
   lastSeenAt?: string | null;
+  /** Model login the token's latest runner heartbeat reported; null = not reported. */
+  modelAuthSource?: RunnerModelAuthSource | null;
+  /** Codex login the same heartbeat reported; null = not reported. */
+  codexAuthSource?: RunnerCodexAuthSource | null;
   /** Trusted as a long-lived host runner (team credential access). */
   hostRunner?: boolean;
   /**
@@ -52,6 +58,21 @@ interface Account {
    * it (DELETE /api/accounts/[id]). Omitted = canManageHostRunner.
    */
   canDelete?: boolean;
+}
+
+/** Which model login the runner on this token uses, in words. */
+function ModelAuthLine({ source }: { source: RunnerModelAuthSource | null | undefined }) {
+  const label = modelAuthLabel(source);
+  return (
+    <div
+      data-testid="token-model-auth"
+      data-model-auth={source ?? 'not_reported'}
+      className={`mt-0.5 text-meta ${label.warning ? 'text-status-warning' : 'text-text-muted'}`}
+    >
+      {label.text}
+      {label.command && <> <code className="font-mono">{label.command}</code></>}
+    </div>
+  );
 }
 
 /** "seen 4m ago", "seen now", or nothing when no runner has reported lately. */
@@ -196,6 +217,16 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                               )}
                               {seenLabel(account.lastSeenAt) && (
                                 <div data-testid="token-last-seen" className="mt-0.5 text-meta text-text-muted">{seenLabel(account.lastSeenAt)}</div>
+                              )}
+                              {/* Only a token a runner has heartbeated on has a model login to name. */}
+                              {(account.modelAuthSource != null || seenLabel(account.lastSeenAt)) && (
+                                <ModelAuthLine source={account.modelAuthSource} />
+                              )}
+                              {/* Codex is optional: a line only when the runner reported a Codex login. */}
+                              {codexAuthLabel(account.codexAuthSource) && (
+                                <div data-testid="token-codex-auth" className="mt-0.5 text-meta text-text-muted">
+                                  {codexAuthLabel(account.codexAuthSource)}
+                                </div>
                               )}
                             </div>
                             <code className="text-xs text-text-muted font-mono flex-shrink-0">

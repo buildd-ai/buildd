@@ -29,7 +29,7 @@
 import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
 import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type WaitingOnTone } from '@/lib/mission-state-view';
-import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
+import { missionTaskHref, taskAnswerHref, taskPageHref } from '@/lib/mission-task-href';
 import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 import ClosedPrResolution, { type ClosedPrItem } from './ClosedPrResolution';
@@ -57,7 +57,7 @@ export type PrimaryAffordance =
    * when the destination is one of this mission's tasks: the link carries
    * `data-task-id`, so the task sheet opens over the mission instead of a push.
    */
-  | { kind: 'internal'; label: string; href: string; taskId?: string }
+  | { kind: 'internal'; label: string; href: string; taskId?: string; navigate?: boolean }
   /** Nothing is wired for this blocker; the sentence carries it alone. */
   | null;
 
@@ -130,8 +130,10 @@ export function affordanceFor(
     case 'dependency':
       return { kind: 'internal', label: 'Open the upstream mission', href: `/app/missions/${focus.missionId}` };
     case 'human_decision':
-      // A worker's question is answered on its task, from the task sheet.
-      return focus.question ? taskAffordance('Answer the question', focus.question.taskIds[0], ctx.missionId) : null;
+      // A worker's question is answered on its task page, the full answering
+      // experience: always a navigation, never the in-page strip anchor.
+      if (!focus.question?.taskIds[0]) return null;
+      return { kind: 'internal', label: 'Answer the question', href: taskAnswerHref({ taskId: focus.question.taskIds[0], missionId: ctx.missionId }), taskId: focus.question.taskIds[0], navigate: true };
     case 'self_resolving_wait':
       return null;
   }
@@ -278,7 +280,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
             </a>
           ) : affordance.taskId ? (
             // One task: on the Board its drawer carries the action (no second CTA).
-            <SituationTaskAffordance label={affordance.label} href={affordance.href} taskId={affordance.taskId} />
+            <SituationTaskAffordance label={affordance.label} href={affordance.href} taskId={affordance.taskId} navigate={affordance.navigate} />
           ) : (
             <Link
               data-testid="mission-primary-action"

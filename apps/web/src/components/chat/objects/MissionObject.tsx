@@ -25,7 +25,7 @@ import type { StateKey } from '@/components/ui/states';
 import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
-  waiting: { text: 'needs you', cls: 'text-status-warning' },
+  waiting: { text: 'waiting on you', cls: 'text-status-warning' },
   running: { text: 'running', cls: 'text-accent-text' },
   review: { text: 'in review', cls: 'text-status-success' },
   ci_failed: { text: 'CI failed', cls: 'text-status-error' },
@@ -59,7 +59,7 @@ export function missionCardRows(model: MissionBoardModel, max = 6): { rows: Boar
   return { rows: sorted.slice(0, max), more: Math.max(0, sorted.length - max) };
 }
 
-/** "3 of 12 landed · 4 running · 1 needs you" */
+/** "3 of 12 landed · 4 running · 1 waiting on you" */
 export function missionCountsLine(model: MissionBoardModel): string {
   const running = Object.values(model.tasks).filter(t => t.status === 'running').length;
   const bits = [`${model.landed.done} of ${model.landed.total} landed`];

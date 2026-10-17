@@ -18,7 +18,12 @@ export const RUNNER_USAGE = [
   '',
   'Commands:',
   '  buildd                     Start the runner in the foreground',
+  '  buildd top                 Watch the runner on this machine and act on its work',
+  '                             (--mission <id> opens on one mission, --workspace <name or id>',
+  '                             on one workspace, --team <name> on one team; t switches team,',
+  '                             w switches workspace, ? shows the keys)',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
+  '  buildd login --workspaces  Choose which workspaces this runner serves; the key stays the same',
   '  buildd logout              Remove the saved API key',
   '  buildd status              Show whether you are signed in',
   '  buildd service <cmd>       Run in the background: install | status | logs | uninstall',
@@ -33,23 +38,32 @@ export const RUNNER_USAGE = [
   '                             not as you (for a shared or remote machine)',
   '  buildd install [--global] --status|--uninstall   Inspect or remove those hooks',
   '  buildd env verify [--json] Check that the current repo is runnable',
+  '  buildd name [<name>]       Name this runner on the dashboard (the hostname by default);',
+  '                             with no name, print it and where it comes from. --clear removes it',
+  '  buildd hold [--for <time>] Stop this runner taking new work; running agents finish',
+  '                             (--for 2h or 30m resumes on its own; h in buildd top does the same)',
+  '  buildd resume              Let this runner take new work again',
+  '  buildd stop [--yes]        Pause every running agent and hold this runner (asks first);',
+  '                             buildd resume continues them. --abort ends them instead',
+  '  buildd web                 Open the runner on this machine in your browser',
   '  buildd help                Show this help',
   '',
   'Options:',
   '  --debug                    Serve the local UI at http://localhost:8766',
+  '  --foreground               Run in this terminal (refused while the background runner runs)',
   '  --once --task <task-id>    Run one task and exit',
   '  --doctor [--fix]           Diagnose (and repair) the install',
   '  --version                  Print the runner version',
   '  -h, --help                 Show this help',
   '',
   'Configuration comes from ~/.buildd/config.json and variables exported in your',
-  'shell or service (BUILDD_API_KEY, BUILDD_SERVER, PROJECTS_ROOT, PORT).',
+  'shell or service (BUILDD_API_KEY, BUILDD_SERVER, BUILDD_RUNNER_NAME, PROJECTS_ROOT, PORT).',
   'A .env file in the current folder is never read.',
 ].join('\n');
 
 const HELP = new Set(['--help', '-h', 'help']);
 /** Flags that stand alone. */
-const BOOLEAN_FLAGS = new Set(['--debug', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
+const BOOLEAN_FLAGS = new Set(['--debug', '--foreground', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
 /** Flags that take the next argument (or `=value`) as their value. */
 const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan', '--attach-orphan']);
 /** Positional subcommands the runner itself understands, as word sequences. */
@@ -57,12 +71,87 @@ const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 
 export type CliDecision =
   | { kind: 'help' }
+  /** `buildd name [<name>|--clear]` (runner-name.ts); `args` are the words after `name`. */
+  | { kind: 'name'; args: string[] }
+  /** `buildd hold [--for <time>]` (runner-hold.ts); `forArg` is checked there. */
+  | { kind: 'hold'; forArg: string | null }
+  /** `buildd resume` (runner-hold.ts). */
+  | { kind: 'resume' }
+  /** `buildd stop [--abort] [--yes|-y]` (runner-hold.ts runStopCommand). */
+  | { kind: 'stop'; yes: boolean; abort: boolean }
+  /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
+  | { kind: 'web' }
   | { kind: 'run' }
+  | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null }
   | { kind: 'unknown'; arg: string };
+
+/** `buildd top [--mission <id>] [--workspace <name or id>] [--team <name>]`: its own small grammar, nothing else is accepted. */
+function classifyTop(args: string[]): CliDecision {
+  const values: Record<'--mission' | '--workspace' | '--team', string | null> = { '--mission': null, '--workspace': null, '--team': null };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const flag = (['--mission', '--workspace', '--team'] as const).find(f => a === f || a.startsWith(f + '='));
+    if (!flag) return { kind: 'unknown', arg: a };
+    if (a === flag) {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      values[flag] = v;
+      i++;
+      continue;
+    }
+    const v = a.slice(flag.length + 1);
+    if (!v) return { kind: 'unknown', arg: a };
+    values[flag] = v;
+  }
+  return { kind: 'top', missionId: values['--mission'], workspace: values['--workspace'], team: values['--team'] };
+}
+
+/** `buildd hold [--for <time>]`: nothing else is accepted. */
+function classifyHold(args: string[]): CliDecision {
+  let forArg: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--for') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      forArg = v;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--for=')) {
+      const v = a.slice('--for='.length);
+      if (!v) return { kind: 'unknown', arg: a };
+      forArg = v;
+      continue;
+    }
+    return { kind: 'unknown', arg: a };
+  }
+  return { kind: 'hold', forArg };
+}
 
 export function classifyCliArgs(argv: string[]): CliDecision {
   const args = argv.slice(2);
   if (args.some(a => HELP.has(a))) return { kind: 'help' };
+  if (args[0] === 'top') return classifyTop(args.slice(1));
+
+  if (args[0] === 'name') {
+    const rest = args.slice(1);
+    const flag = rest.find(a => a.startsWith('-') && a !== '--clear');
+    return flag ? { kind: 'unknown', arg: flag } : { kind: 'name', args: rest };
+  }
+  if (args[0] === 'hold') return classifyHold(args.slice(1));
+  if (args[0] === 'resume') {
+    return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'resume' };
+  }
+  if (args[0] === 'stop') {
+    const rest = args.slice(1);
+    const bad = rest.find(a => a !== '--yes' && a !== '-y' && a !== '--abort');
+    if (bad !== undefined) return { kind: 'unknown', arg: bad };
+    return { kind: 'stop', yes: rest.includes('--yes') || rest.includes('-y'), abort: rest.includes('--abort') };
+  }
+  if (args[0] === 'web') {
+    return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };
+  }
 
   let i = 0;
   // A subcommand may only lead.

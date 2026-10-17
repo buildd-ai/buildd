@@ -13,6 +13,7 @@ export function criterionLabel(c: GoalCriterion): string {
   if (c.type === 'metric') return `${c.query} ${c.operator} ${c.threshold}${c.unit ? ' ' + c.unit : ''}`;
   if (c.type === 'command') return c.command.length > 60 ? c.command.slice(0, 60) + '…' : c.command;
   if (c.type === 'artifact_exists') return c.key ? `Artifact: ${c.key}` : `Artifact type: ${c.artifactType ?? 'any'}`;
+  if (c.type === 'living_spec') return `Spec revision ${c.revision}`;
   if (c.type === 'description') return c.description.length > 80 ? c.description.slice(0, 80) + '…' : c.description;
   const TYPE_LABELS: Record<string, string> = {
     all_prs_merged: 'All PRs merged',

@@ -443,7 +443,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
       // A grant session whose call named no usable workspace: refused before
       // anything runs, with the granted choices only.
-      if (grantSession?.refusal && !(args?.action === 'list_workspaces')) return grantSession.refusal;
+      if (grantSession?.refusal && !(args?.action === 'list_workspaces' || args?.action === 'help')) return grantSession.refusal;
       // Defence in depth for a write grant (no token scopes, so the check
       // below is skipped): a named workspace must be the bound one.
       if (grantSession && tokenScopes == null && tokenWorkspaceIds != null) {
@@ -459,7 +459,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const required = requiredScopeForMcpTool(name, args as Record<string, unknown>);
         if (!required || !hasTokenScope(tokenScopes, required)) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
         // list_workspaces names no workspace; it lists only what the caller reaches.
-        if (tokenWorkspaceIds != null && action !== 'list_workspaces') {
+        if (tokenWorkspaceIds != null && action !== 'list_workspaces' && action !== 'help') {
           const corpus = name === 'recall' ? args?.scope : p.corpus;
           if ((name === 'recall' || (name === 'buildd_memory' && action === 'query_knowledge')) && (Array.isArray(corpus) ? corpus.includes('initiative') : corpus === 'initiative')) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Initiative knowledge is team-wide'})}],isError:true};
           const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();

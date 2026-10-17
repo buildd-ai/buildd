@@ -261,9 +261,9 @@ describe('interactive sessions on the fleet board', () => {
 describe('homeHeadline', () => {
   const text = (p: ReturnType<typeof homeHeadline>) => p.map(x => x.text).join('');
   it('says how many agents work and how many things need you', () => {
-    expect(text(homeHeadline({ live: 5, needsYou: 2 }))).toBe('5 agents working. 2 need you.');
-    expect(text(homeHeadline({ live: 6, needsYou: 1 }))).toBe('6 agents working. 1 needs you.');
-    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing needs input.');
+    expect(text(homeHeadline({ live: 5, needsYou: 2 }))).toBe('5 agents working. 2 waiting on you.');
+    expect(text(homeHeadline({ live: 6, needsYou: 1 }))).toBe('6 agents working. 1 waiting on you.');
+    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing waiting on you.');
   });
   it('an idle fleet names what just shipped', () => {
     const parts = homeHeadline({ live: 0, needsYou: 1, shipped: 'Example mission' });
@@ -271,8 +271,8 @@ describe('homeHeadline', () => {
     expect(parts.find(p => p.tone === 'success')?.text).toBe('shipped');
   });
   it('an idle fleet is said in plain words, never "fleet idle"', () => {
-    expect(text(homeHeadline({ live: 0, needsYou: 0 }))).toBe('No agents working. Nothing needs input.');
-    expect(text(homeHeadline({ live: 0, needsYou: 2 }))).toBe('No agents working. 2 need you.');
+    expect(text(homeHeadline({ live: 0, needsYou: 0 }))).toBe('No agents working. Nothing waiting on you.');
+    expect(text(homeHeadline({ live: 0, needsYou: 2 }))).toBe('No agents working. 2 waiting on you.');
   });
 });
 
@@ -502,3 +502,22 @@ describe('fleet online window', () => {
   });
 });
 
+
+describe('a held runner (buildd hold, R-35)', () => {
+  const hb = (id: string, hold: unknown): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: `http://${id}.local:8766`, maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000),
+    environment: { labels: { hostname: id }, hold } as any,
+  });
+  it('carries the hold while it is in force, and nothing once its until has passed', () => {
+    const since = new Date(NOW - 3_600_000).toISOString();
+    const snap = buildFleetSnapshot([
+      hb('atlas', { since, until: null }),
+      hb('birch', { since, until: new Date(NOW - 60_000).toISOString() }),
+      hb('cedar', null),
+    ], [], { now: NOW });
+    const by = Object.fromEntries(snap.runners.map(r => [r.name, r]));
+    expect(by.atlas.hold).toEqual({ since, until: null });
+    expect(by.birch.hold).toBeUndefined();
+    expect(by.cedar.hold).toBeUndefined();
+  });
+});

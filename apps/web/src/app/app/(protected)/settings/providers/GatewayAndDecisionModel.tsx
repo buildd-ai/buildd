@@ -5,6 +5,7 @@ import { keyHealthPill, keyHealthTone, type KeyHealth } from '@/lib/provider-key
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { StatusChip } from '../_components/ConnectionRow';
 import { Select } from '@/components/ui/Select';
+import type { DecisionsQaFixture } from '../models/qa-state';
 
 /**
  * Settings → Model providers: the team's LiteLLM gateway and which model
@@ -73,8 +74,12 @@ export function GatewayCard({ teamId, canManage, onChanged, embedded = false }: 
   );
 }
 
-/** Which model answers decision calls. `rev` reloads it after the gateway changes. */
-export function DecisionModelPicker({ teamId, canManage, rev = 0, embedded = false }: { teamId: string; canManage: boolean; rev?: number; embedded?: boolean }) {
+/**
+ * Which model answers decision calls. `rev` reloads it after the gateway changes.
+ * `fixture` (`?state=decisions`, dev only): its overrides and switch lines show
+ * instead of the team's, and nothing is written (../models/qa-state.ts).
+ */
+export function DecisionModelPicker({ teamId, canManage, rev = 0, embedded = false, fixture = null }: { teamId: string; canManage: boolean; rev?: number; embedded?: boolean; fixture?: DecisionsQaFixture | null }) {
   const { gateway } = useGateway(teamId, rev);
   const [decision, setDecision] = useState<DecisionModel | undefined>(undefined);
   const [overrides, setOverrides] = useState<DecisionModelOverride[]>([]);
@@ -83,10 +88,10 @@ export function DecisionModelPicker({ teamId, canManage, rev = 0, embedded = fal
     if (!t?.ok) return;
     const team = (await t.json()) as { team?: { decisionModel?: DecisionModel; decisionModelOverrides?: DecisionModelOverride[] }; decisionModel?: DecisionModel };
     setDecision(team.team?.decisionModel ?? team.decisionModel ?? null);
-    setOverrides(team.team?.decisionModelOverrides ?? []);
-  }, [teamId]);
+    setOverrides(fixture?.overrides ?? team.team?.decisionModelOverrides ?? []);
+  }, [teamId, fixture]);
   useEffect(() => { void load(); }, [load]);
-  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} overrides={overrides} hasGateway={!!gateway} onChanged={load} embedded={embedded} />;
+  return <DecisionModelSection teamId={teamId} canManage={canManage} value={decision} overrides={overrides} hasGateway={!!gateway} onChanged={load} embedded={embedded} fixture={fixture} />;
 }
 
 function GatewaySection({ teamId, canManage, gateway, error, onChanged, embedded = false }: {
@@ -198,7 +203,70 @@ function modelName(model: string): string {
   return CLOUDFLARE_MODELS.find((m) => m.id === model)?.label ?? model;
 }
 
-function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGateway, onChanged, embedded = false }: {
+type SwitchLine = { id: string; text: string };
+
+/**
+ * One line per decision whose model buildd switched ("Start or wait now uses
+ * Clef"), with Undo for people who can change team settings. Undo restores
+ * the previous model and keeps it for 30 days.
+ */
+function DecisionModelSwitches({ teamId, onChanged, fixture = null }: { teamId: string; onChanged: () => Promise<void>; fixture?: DecisionsQaFixture['switches'] | null }) {
+  const [lines, setLines] = useState<SwitchLine[]>(fixture?.lines ?? []);
+  const [canUndo, setCanUndo] = useState(fixture?.canUndo ?? false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    if (fixture) return;
+    const res = await fetch(`/api/teams/${teamId}/decision-model-switches`, { cache: 'no-store' }).catch(() => null);
+    if (!res?.ok) return;
+    const body = (await res.json()) as { lines?: SwitchLine[]; canUndo?: boolean };
+    setLines(body.lines ?? []);
+    setCanUndo(body.canUndo === true);
+  }, [teamId, fixture]);
+  useEffect(() => { void load(); }, [load]);
+
+  async function undo(id: string) {
+    if (fixture) return;
+    setBusy(id);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}/decision-model-switches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ switchId: id, action: 'undo' }),
+      });
+      if (!res.ok) throw new Error(await errorText(res));
+      await load();
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not undo');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (lines.length === 0) return null;
+  return (
+    <div data-testid="decision-model-switches">
+      <ul className="text-text-primary space-y-1">
+        {lines.map((l) => (
+          <li key={l.id} className="flex items-center gap-2">
+            <span>{l.text}</span>
+            {canUndo && (
+              <>
+                <button className="btn btn-quiet btn-sm" disabled={busy !== null} onClick={() => void undo(l.id)}
+                  data-testid="decision-model-switch-undo">{busy === l.id ? 'Undoing…' : 'Undo'}</button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {err && <p role="alert" className="text-status-error">{err}</p>}
+    </div>
+  );
+}
+
+function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGateway, onChanged, embedded = false, fixture = null }: {
   /** A row in Used for: titled "Decisions", no card. */
   embedded?: boolean;
   teamId: string;
@@ -208,6 +276,8 @@ function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGat
   overrides?: DecisionModelOverride[];
   hasGateway: boolean;
   onChanged: () => Promise<void>;
+  /** The QA fixture: its switch lines show, and Save writes nothing. */
+  fixture?: DecisionsQaFixture | null;
 }) {
   const [custom, setCustom] = useState(false);
   const [model, setModel] = useState('');
@@ -223,6 +293,7 @@ function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGat
   }, [value, hasGateway]);
 
   async function save(next: DecisionModel) {
+    if (fixture) return;
     setBusy(true);
     setErr(null);
     try {
@@ -260,6 +331,7 @@ function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGat
             {overrides.map((o) => <li key={o.kind}>{o.label} uses {modelName(o.model)}</li>)}
           </ul>
         )}
+        <DecisionModelSwitches teamId={teamId} onChanged={onChanged} fixture={fixture?.switches} />
         <p className="text-text-muted">
           Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.
         </p>

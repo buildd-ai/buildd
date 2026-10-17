@@ -52,7 +52,7 @@ describe('state table', () => {
     }
   });
 
-  it('ready, blocked and queued are three textures (ST-3)', () => {
+  it('ready, blocked and queued are three textures (strip R-8)', () => {
     expect(STATES.ready.pattern).toBe('empty');
     expect(STATES.blocked.pattern).toBe('hatch-dense');
     expect(STATES.queued.pattern).toBe('hatch-sparse');

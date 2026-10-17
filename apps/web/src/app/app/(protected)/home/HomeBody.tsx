@@ -11,7 +11,7 @@ import { DecisionCard } from './DecisionCard';
 import { NeedsYouRows, PolicyDigests } from './NeedsYouRows';
 import { layoutNeedsYou } from './needs-you-layout';
 import { DeliveryMilestones } from './DeliveryMilestones';
-import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
+import type { DeliveryCounts, MissionDelivery, QuietMissionCause } from '@/lib/delivery-projection';
 
 /** Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */
 const BODY_GRID = {
@@ -28,9 +28,18 @@ export function inProgressLine(n: number): string {
 /** Card columns by how many there are, so a row of cards never leaves a hole. */
 const CARD_COLS = ['', '', 'md:grid-cols-2', 'min-[1100px]:grid-cols-3'] as const;
 
-/** "7 more missions are waiting on capacity or another mission." */
-export function quietMissionsLine(n: number): string {
-  return n === 1 ? '1 more mission is waiting on capacity or another mission.' : `${n} more missions are waiting on capacity or another mission.`;
+/**
+ * "3 more missions are next in line for a runner." / "4 more missions: 2 are …, 1 is …".
+ * Names only the causes the delivery projection found; more than three, or none, reads neutrally.
+ */
+export function quietMissionsLine(n: number, causes: readonly QuietMissionCause[] = []): string {
+  const verb = (k: number) => (k === 1 ? 'is' : 'are');
+  const missions = n === 1 ? '1 more mission' : `${n} more missions`;
+  const known = causes.filter(c => c.count > 0 && c.cause !== 'waiting');
+  const total = known.reduce((k, c) => k + c.count, 0);
+  if (known.length === 0 || known.length > 3 || total !== n) return `${missions} ${verb(n)} waiting.`;
+  if (known.length === 1) return `${missions} ${verb(n)} ${known[0].cause}.`;
+  return `${missions}: ${known.map(c => `${c.count} ${verb(c.count)} ${c.cause}`).join(', ')}.`;
 }
 
 /**
@@ -43,7 +52,7 @@ export function quietMissionsLine(n: number): string {
  * rows with one text action, grouped where they ask the same thing. Nothing here repeats another section: no counts line
  * (Agents and Moving carry them), no Just shipped (Landed lists it first).
  */
-export function HomeBody({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, inProgress = 0, setup = null, runnerConnected, lead = null, foot = null }: {
+export function HomeBody({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, quietCauses = [], inProgress = 0, setup = null, runnerConnected, lead = null, foot = null }: {
   items: HomeAttentionItem[]; ask: ReactNode;
   /** Human reviews held back while Buildd still repairs or checks their PRs (`deriveHomeNeedsYou`). */
   inProgress?: number;
@@ -59,8 +68,10 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
   counts: DeliveryCounts;
   /** 2–3 missions moving toward delivery (`selectHomeMilestones`). */
   milestones: MissionDelivery[];
-  /** Open missions waiting on capacity or another mission: named, never listed. */
+  /** Open missions that are waiting, not moving: counted, never listed. */
   quietMissions: number;
+  /** What those missions wait on (`quietMissionCauses`); without it the line names no cause. */
+  quietCauses?: readonly QuietMissionCause[];
 }) {
   const [done, setDone] = useState<Record<string, string>>({});
   // Optimism covers only this snapshot. Fresh server truth wins after every refresh.
@@ -94,7 +105,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
     {!needsOwner && setup}
     {(items.length > 0 || lead) && <section data-testid="home-waiting-on-you" aria-labelledby="home-needs-you-h" className="mb-8">
       {/* The headline is this section's visible header and count. */}
-      <h2 id="home-needs-you-h" className="sr-only">Needs you</h2>
+      <h2 id="home-needs-you-h" className="sr-only">Waiting on you</h2>
       {lead}
       {cards.length > 0 && <div data-testid="needs-you-cards" className={`grid gap-4 ${CARD_COLS[cards.length]}`}>{cards.map(item => done[item.key] ? doneLine(item) : <DecisionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>}
       {digests.length > 0 && <PolicyDigests digests={digests} />}
@@ -105,7 +116,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
     {/* What is not listed, and where it is: one line, the only Activity link on Home. */}
     <p data-testid="home-also" className="mb-8 text-meta text-text-muted">
       {inProgress > 0 && <>{inProgressLine(inProgress)}{' '}</>}
-      {quietMissions > 0 ? quietMissionsLine(quietMissions) : inProgress > 0 ? '' : 'Everything else in motion is in Activity.'}{' '}
+      {quietMissions > 0 ? quietMissionsLine(quietMissions, quietCauses) : inProgress > 0 ? '' : 'Everything else in motion is in Activity.'}{' '}
       <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-text-secondary hover:text-text-primary md:min-h-0">Activity →</Link>
     </p>
     <div data-testid="home-body" data-layout={layout} className={BODY_GRID[layout]}>

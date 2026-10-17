@@ -7,7 +7,7 @@
 // child_process and must never enter a serverless bundle graph.
 
 import * as childProcess from 'node:child_process';
-const { execFileSync } = childProcess;
+const { execFile } = childProcess;
 import { createHash } from 'crypto';
 import { shouldIngestFile, MAX_INGEST_FILE_BYTES } from './ingest-filter';
 import type { ScipGraph } from './scip-parser';
@@ -246,15 +246,28 @@ export async function runFullIngestJob(
 
     let skipped = 0;
     const entries: IngestFileEntry[] = [];
-    for (const path of keepPaths) {
-      const content = await reader.readFile(path);
+    // Bounded parallel reads: each is an async git child, so the caller's event
+    // loop stays free and a many-file backfill is not one spawn at a time.
+    const READ_CONCURRENCY = 8;
+    const contents: Array<string | null> = new Array(keepPaths.length).fill(null);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(READ_CONCURRENCY, keepPaths.length) }, async () => {
+        while (next < keepPaths.length) {
+          const i = next++;
+          contents[i] = await reader.readFile(keepPaths[i]);
+        }
+      }),
+    );
+    keepPaths.forEach((path, i) => {
+      const content = contents[i];
       if (content === null) {
         skipped++;
-        continue;
+        return;
       }
       const fileHash = createHash('sha256').update(content).digest('hex');
       entries.push({ path, content, fileHash });
-    }
+    });
 
     const totals: AdaptivePushTotals = {
       filesIngested: 0,
@@ -304,25 +317,44 @@ export async function runFullIngestJob(
 
 // ── Git-backed repo reader ───────────────────────────────────────────────────
 
-function git(repoPath: string, args: string[], maxBuffer = 10 * 1024 * 1024): Buffer {
-  return execFileSync('git', args, { cwd: repoPath, maxBuffer, stdio: ['pipe', 'pipe', 'pipe'] });
+// Async on purpose: this runs inside the runner process, and a synchronous git
+// call per file froze its heartbeat, local API and claims for the whole backfill.
+function git(
+  repoPath: string,
+  args: string[],
+  maxBuffer = 10 * 1024 * 1024,
+  extra: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      args,
+      { cwd: repoPath, maxBuffer, encoding: 'buffer', ...extra },
+      (err, stdout, stderr) => {
+        if (err) {
+          (err as { stderr?: Buffer }).stderr = stderr as Buffer;
+          reject(err);
+        } else resolve(stdout as Buffer);
+      },
+    );
+  });
 }
 
-function tryResolveSha(repoPath: string, sha?: string | null): string {
+async function tryResolveSha(repoPath: string, sha?: string | null): Promise<string> {
   if (sha) {
     try {
-      return git(repoPath, ['rev-parse', '--verify', `${sha}^{commit}`]).toString().trim();
+      return (await git(repoPath, ['rev-parse', '--verify', `${sha}^{commit}`])).toString().trim();
     } catch {
       // Local clone may be behind — fetch the sha, then retry once.
       try {
-        git(repoPath, ['fetch', '--quiet', 'origin', sha]);
-        return git(repoPath, ['rev-parse', '--verify', `${sha}^{commit}`]).toString().trim();
+        await git(repoPath, ['fetch', '--quiet', 'origin', sha]);
+        return (await git(repoPath, ['rev-parse', '--verify', `${sha}^{commit}`])).toString().trim();
       } catch {
         // Fall through to HEAD — an index at current HEAD beats no index.
       }
     }
   }
-  return git(repoPath, ['rev-parse', 'HEAD']).toString().trim();
+  return (await git(repoPath, ['rev-parse', 'HEAD'])).toString().trim();
 }
 
 export type CheckoutCheck = { ok: true } | { ok: false; reason: string };
@@ -347,16 +379,14 @@ function gitErrorLine(err: unknown): string {
 export async function checkCheckoutFetchable(repoPath: string, sha?: string | null): Promise<CheckoutCheck> {
   if (sha) {
     try {
-      git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
+      await git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
       return { ok: true };
     } catch {
       // Not present locally — must fetch.
     }
   }
   try {
-    execFileSync('git', sha ? ['fetch', '--quiet', 'origin', sha] : ['fetch', '--quiet', 'origin'], {
-      cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    await git(repoPath, sha ? ['fetch', '--quiet', 'origin', sha] : ['fetch', '--quiet', 'origin'], undefined, {
       timeout: CHECKOUT_FETCH_TIMEOUT_MS,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
@@ -365,7 +395,7 @@ export async function checkCheckoutFetchable(repoPath: string, sha?: string | nu
   }
   if (sha) {
     try {
-      git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
+      await git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
     } catch {
       return { ok: false, reason: `sha ${sha.slice(0, 12)} not found on origin after fetch` };
     }
@@ -378,18 +408,18 @@ export async function checkCheckoutFetchable(repoPath: string, sha?: string | nu
  * working-tree checkout or mutation, so it's safe on dirty/in-use clones.
  * Binary (NUL-containing) and oversized blobs read as null.
  */
-export function createGitRepoReader(repoPath: string, sha?: string | null): RepoReader {
-  const resolvedSha = tryResolveSha(repoPath, sha);
+export async function createGitRepoReader(repoPath: string, sha?: string | null): Promise<RepoReader> {
+  const resolvedSha = await tryResolveSha(repoPath, sha);
   return {
     resolvedSha,
     async listFiles() {
-      const out = git(repoPath, ['ls-tree', '-r', '--name-only', '-z', resolvedSha], 50 * 1024 * 1024);
+      const out = await git(repoPath, ['ls-tree', '-r', '--name-only', '-z', resolvedSha], 50 * 1024 * 1024);
       return out.toString('utf8').split('\0').filter(Boolean);
     },
     async readFile(path: string) {
       let buf: Buffer;
       try {
-        buf = git(repoPath, ['show', `${resolvedSha}:${path}`], MAX_INGEST_FILE_BYTES + 1024);
+        buf = await git(repoPath, ['show', `${resolvedSha}:${path}`], MAX_INGEST_FILE_BYTES + 1024);
       } catch {
         return null; // missing path or blob larger than maxBuffer
       }

@@ -76,6 +76,8 @@ export const MISSION_WORKER_COLUMNS = {
   // The Landed drawer's audit evidence: the head this worker pushed, which a
   // review verdict must match to count (lib/activity-delivery.ts).
   lastCommitSha: true,
+  // The after() PR fact import records a fact in the worker's own workspace (AC-3).
+  workspaceId: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {

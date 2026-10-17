@@ -59,8 +59,39 @@ describe('deriveTaskChecks', () => {
     const c = deriveTaskChecks(V({ state: 'APPROVED', rounds: [r1, r2], ledger: [fix], approvedCurrentHead: true }));
     expect(row(c, 'review')).toMatchObject({ result: 'Approved · round 2', reviewTaskId: 'rev2' });
     expect(c.history).toEqual([
-      { round: 1, headSha: 'HEADA00', result: 'Changes requested', state: 'failed', reviewTaskId: 'rev1', repairs: [{ label: 'Review fix 1 of 3', status: 'completed', taskId: 'fix1' }] },
+      { round: 1, headSha: 'HEADA00', result: 'Changes requested', state: 'failed', reviewTaskId: 'rev1', repairs: [{ label: 'Review fix 1 of 3', status: 'pushed', taskId: 'fix1' }] },
     ]);
+  });
+
+  test('AC-19 (workflow-kernel-library.md §5): a repair that changed nothing reads "no change", never "completed"', () => {
+    const r1 = R({ id: 'r1', round: 1, headSha: 'HEADA000', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'rev1' });
+    for (const outcome of ['noop', 'unproven'] as const) {
+      const c = deriveTaskChecks(V({ state: 'CHANGES_REQUESTED', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'ended', outcome })] }));
+      expect(row(c, 'review')?.repair).toMatchObject({ label: 'Review fix 1 of 3', status: 'no_change' });
+    }
+  });
+
+  // workflow-kernel-library.md §7: a repair reads its phase from attempt facts.
+  describe('repair phase (§7)', () => {
+    const r1 = R({ id: 'r1', round: 1, headSha: 'HEADA000', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    test('a review fix whose commits have not reached GitHub: awaiting push', () => {
+      const c = deriveTaskChecks(V({ state: 'AWAITING_PUSH', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'ended', outcome: 'unproven', reportedShas: ['LOCAL1'] })] }));
+      expect(row(c, 'review')?.repair).toMatchObject({ label: 'Review fix 1 of 3', status: 'awaiting_push' });
+    });
+    test('a review fix that pushed the head now awaiting its round: awaiting review, on the current row', () => {
+      const r2 = R({ id: 'r2', round: 2, headSha: 'HEADB000', status: 'queued' });
+      const c = deriveTaskChecks(V({ prState: 'ci_passed', rounds: [r1, r2], ledger: [A({ status: 'ended', outcome: 'delivered', pushedHeadSha: 'HEADB000' })] }));
+      expect(row(c, 'review')).toMatchObject({ result: 'Awaiting review · round 2', repair: { label: 'Review fix 1 of 3', status: 'awaiting_review', taskId: 'fix1' } });
+    });
+    test('a CI fix that pushed the head CI is now running on: pushed and testing', () => {
+      const fix = A({ id: 'c1', family: 'ci', triggerReason: 'ci', boundHeadSha: 'HEADA000', taskId: 'cifix', status: 'ended', outcome: 'delivered', pushedHeadSha: 'HEADB000' });
+      const c = deriveTaskChecks(V({ state: 'AWAITING_REVIEW', prState: 'awaiting_ci', ledger: [fix] }));
+      expect(row(c, 'tests')).toMatchObject({ state: 'running', result: 'Checking', repair: { label: 'CI fix 1 of 3', status: 'pushed_testing', taskId: 'cifix' } });
+    });
+    test('queued and running repairs keep those words', () => {
+      expect(row(deriveTaskChecks(V({ state: 'CHANGES_REQUESTED', headSha: 'HEADA000', rounds: [r1], ledger: [A()] })), 'review')?.repair?.status).toBe('queued');
+      expect(row(deriveTaskChecks(V({ state: 'FIXING', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'running' })] })), 'review')?.repair?.status).toBe('running');
+    });
   });
 
   test('AC-6: an approval of an older head is history, not the current review', () => {

@@ -18,6 +18,8 @@ export interface WaitingFor {
   /** `pause`: the person paused the run (pause.ts); answering it resumes the same session. */
   type: 'question' | 'permission' | 'pause';
   prompt: string;
+  /** `pause`: when it was paused (ISO), for "paused since" in top and on the dashboard. */
+  since?: string;
   options?: Array<{
     label: string;
     description?: string;
@@ -183,6 +185,14 @@ export interface LocalWorker {
   // rather than re-deriving intent from the error string, keeps the two sides
   // from silently drifting the way the status check did.
   killedByRestart?: boolean;
+  /**
+   * Persisted: this worker was paused by the runner itself, not by a person,
+   * and continues in its own session when the runner next starts (unless it
+   * is on hold). `shutdown`: a service stop or restart paused it within the
+   * grace; `crash`: the runner died with it running and the next start found
+   * its worktree and session intact (restart-resume.ts, R-37).
+   */
+  resumeOnStart?: 'shutdown' | 'crash';
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;
@@ -341,6 +351,19 @@ export interface LocalWorker {
   tokenTally?: { inputTokens: number; outputTokens: number };
   /** How this run's usage is charged (cost-basis.ts); set when the agent env is built. */
   costBasis?: 'real' | 'virtual' | 'unknown';
+  /**
+   * Which route this run reached its model by (run-route.ts): plan, API key,
+   * gateway or cloud account, the provider and whose credential. Set with
+   * `costBasis` when the agent env is built; a label, never a credential.
+   */
+  route?: import('./run-route').RunRoute | null;
+  /**
+   * The model provider refused this run's login: the SDK's own
+   * `authentication_failed` / `oauth_org_not_allowed`, a session that died on
+   * its first model call, or an expired Codex login. Never set from a tool's
+   * error text. Marks a plan login expired (run-route.ts nextLoginFailures).
+   */
+  modelLoginFailed?: boolean;
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only
@@ -348,6 +371,9 @@ export interface LocalWorker {
   // taxonomy to re-enable once the tightened scanner has a production track record.
   sandboxMountGap?: boolean;
   bwrapRetryPending?: boolean;  // Set when bwrap namespace denial fires mid-run; startSession will restart without sandbox
+  // Refused before spawn: no model credential for a Claude run (host-seat.ts
+  // claudeModelAuthMissing). Reported as an infra failure, paused by NO_MODEL_AUTH_PAUSE.
+  modelAuthMissing?: boolean;
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -621,6 +647,12 @@ export interface BuilddTask {
   mission?: {
     workingBranch?: string | null;
     integrationBranchEnabled?: boolean | null;
+    /** Task list (GET /api/tasks) only: what `buildd top` shows and why a task waits. */
+    id?: string;
+    title?: string;
+    isHeld?: boolean;
+    executor?: 'runner' | 'local';
+    taskCounts?: { done: number; total: number };
   } | null;
   // Role slug this task is routed to (e.g. "builder", "researcher") — drives
   // role-scoped runner behaviour such as pr-mutation-enforcement.ts.

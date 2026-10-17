@@ -38,6 +38,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-o
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersession';
+import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
@@ -52,7 +53,113 @@ export type DetectResult =
   | { outcome: 'skipped'; reason: string }
   | { outcome: 'recorded'; repo: string; prNumber: number; method: SupersessionMethod; confidence: number }
   | { outcome: 'suggested'; suggestion: SupersessionSuggestion; candidatesChecked: number }
-  | { outcome: 'none'; candidatesChecked: number };
+  | { outcome: 'none'; candidatesChecked: number }
+  /**
+   * A candidate verified, but the control plane did not answer the record (a retryable outage, the
+   * pass's budget spent). Not stamped, no suggestion: the content DID verify, so the next sweep
+   * tries again, up to the deferral cap. A refusal or a failed command is not deferred.
+   */
+  | { outcome: 'deferred'; reason: string; candidatesChecked: number };
+
+/**
+ * Time limits for one detection run. Both are opt-in: the webhook and kernel doors pass none and
+ * behave as before. The hourly sweep passes both (`SWEEP_LIMITS`).
+ *
+ * A run cut short by either writes no verdict: not stamped, no suggestion, no "none". It defers to
+ * the next tick, keeping the candidates it did judge (`SupersessionScan.judged`) and recording the
+ * attempt (`lastAttemptAt`), which moves the row behind the others in the sweep's queue. A request
+ * timeout counts toward the control-plane deferral cap (lib/control-plane-deferral.ts). A budget stop
+ * counts only for the first row of a sweep: that row had the whole budget to itself, so the stop is
+ * its own cost; a later row was cut off by the rows before it.
+ */
+export interface DetectLimits {
+  /** Each GitHub call is abandoned after this long. */
+  requestTimeoutMs?: number;
+  /** The pass's own clock: when it fires, every call in flight is abandoned and no new one starts. */
+  budget?: AbortSignal;
+  /** This is the first row the sweep started, so it had the whole budget. */
+  first?: boolean;
+}
+
+/** The hourly sweep's limits. The route's function limit is 60 s, shared with a dozen other steps. */
+export const SWEEP_LIMITS = {
+  /** Wall time for the whole sweep. */
+  budgetMs: 20_000,
+  /** One GitHub call. They normally answer in well under a second. */
+  requestTimeoutMs: 5_000,
+} as const;
+
+type Interruption = 'timeout' | 'budget';
+
+/**
+ * GitHub reads for one detection run, cut off by `DetectLimits`. Most reads below swallow their
+ * errors into an empty answer (a missing PR is not a failure), so an abandoned read would look like
+ * "nothing there". `interrupted` is how the run knows it must not judge on what it has.
+ *
+ * The first interruption sticks: once one call is abandoned, no new call starts, and every call
+ * still in flight (the other side of a parallel read) is aborted with it. `close()` aborts whatever
+ * is left when the run returns, so nothing reads GitHub after the run is over.
+ */
+class GhReader {
+  interrupted: Interruption | null = null;
+  private readonly run = new AbortController();
+  constructor(private readonly limits: DetectLimits = {}) {}
+
+  private interrupt(why: Interruption) {
+    this.interrupted ??= why;
+    this.run.abort();
+  }
+
+  /** True once the run was cut short, by a timeout or the pass's budget. */
+  stopped(): boolean {
+    if (!this.interrupted && this.limits.budget?.aborted) this.interrupt('budget');
+    return this.interrupted != null;
+  }
+
+  /** The run is over: abandon anything still reading. */
+  close() {
+    this.run.abort();
+  }
+
+  async call(inst: number, path: string) {
+    if (this.stopped()) throw new Error(`supersession scan stopped (${this.interrupted}) before ${path}`);
+    if (this.run.signal.aborted) throw new Error(`supersession scan is over before ${path}`);
+    const signals: AbortSignal[] = [this.run.signal];
+    if (this.limits.requestTimeoutMs != null) signals.push(AbortSignal.timeout(this.limits.requestTimeoutMs));
+    if (this.limits.budget) signals.push(this.limits.budget);
+    const signal = AbortSignal.any(signals);
+    try {
+      return await githubApi(inst, path, { signal });
+    } catch (err) {
+      // Aborted by this run itself (another call's interruption, or close): already labelled.
+      if (signal.aborted && !this.run.signal.aborted) this.interrupt(this.limits.budget?.aborted ? 'budget' : 'timeout');
+      throw err;
+    }
+  }
+}
+
+/**
+ * A candidate's verdict, kept on the scan so a later run inside the rescan window does not pay
+ * for it again. Only merged candidates are kept: a merged PR's diff no longer changes, while an
+ * unmerged one may still merge.
+ */
+interface JudgedPair {
+  repo: string;
+  prNumber: number;
+  prUrl: string;
+  verified: boolean;
+  method?: SupersessionMethod;
+  confidence: number;
+  /** ISO time it was judged. */
+  at: string;
+  /** The closed PR's head when it was judged: a push since (reopen, push, close) invalidates it. */
+  closedHeadSha?: string;
+  /** The candidate's merge commit when it was judged. */
+  mergeCommitSha?: string;
+}
+
+/** At most this many judged pairs are kept on a scan. */
+const JUDGED_KEEP = 20;
 
 /** Actor label on an auto-recorded edge — distinguishes it from a person's. */
 export const AUTO_SUPERSESSION_ACTOR = 'system:auto-supersession';
@@ -96,6 +203,7 @@ interface GhPr {
   html_url?: string;
   commits?: number;
   title?: string;
+  head?: { sha?: string };
 }
 
 const SURFACE: Record<DetectVia, string> = {
@@ -116,27 +224,27 @@ function installationResolver() {
   };
 }
 
-async function listFiles(inst: number, repo: string, n: number): Promise<DiffFile[]> {
-  const files = await githubApi(inst, `/repos/${repo}/pulls/${n}/files?per_page=100`);
+async function listFiles(gh: GhReader, inst: number, repo: string, n: number): Promise<DiffFile[]> {
+  const files = await gh.call(inst, `/repos/${repo}/pulls/${n}/files?per_page=100`);
   return Array.isArray(files) ? files : [];
 }
 
-async function commitDiffs(inst: number, repo: string, n: number): Promise<DiffFile[][]> {
-  const commits = await githubApi(inst, `/repos/${repo}/pulls/${n}/commits?per_page=${DETECT_LIMITS.maxPatchIdCommits}`);
+async function commitDiffs(gh: GhReader, inst: number, repo: string, n: number): Promise<DiffFile[][]> {
+  const commits = await gh.call(inst, `/repos/${repo}/pulls/${n}/commits?per_page=${DETECT_LIMITS.maxPatchIdCommits}`);
   const out: DiffFile[][] = [];
   for (const c of Array.isArray(commits) ? commits : []) {
     // A merge commit (two parents) carries no change of its own.
     if (Array.isArray(c?.parents) && c.parents.length > 1) continue;
-    const full = await githubApi(inst, `/repos/${repo}/commits/${c.sha}`);
+    const full = await gh.call(inst, `/repos/${repo}/commits/${c.sha}`);
     out.push(Array.isArray(full?.files) ? full.files : []);
   }
   return out;
 }
 
-async function fileContent(inst: number, repo: string, path: string, ref: string): Promise<string | null> {
+async function fileContent(gh: GhReader, inst: number, repo: string, path: string, ref: string): Promise<string | null> {
   try {
     const encoded = path.split('/').map(encodeURIComponent).join('/');
-    const res = await githubApi(inst, `/repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
+    const res = await gh.call(inst, `/repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`);
     if (typeof res?.content !== 'string') return null;
     return Buffer.from(res.content, 'base64').toString('utf8');
   } catch {
@@ -151,9 +259,11 @@ interface CandidateVerdict {
   method?: SupersessionMethod;
   confidence: number;
   prUrl?: string;
+  mergeCommitSha?: string;
 }
 
 async function verifyCandidate(opts: {
+  gh: GhReader;
   closedRepo: string;
   closed: GhPr;
   closedFiles: DiffFile[];
@@ -161,16 +271,22 @@ async function verifyCandidate(opts: {
   cand: Candidate;
   inst: number;
   filesCache: Map<string, DiffFile[]>;
+  /** A verdict an earlier run reached on this pair; reused only if neither side has moved since. */
+  prior?: JudgedPair;
 }): Promise<CandidateVerdict> {
-  const { cand, inst } = opts;
-  const pr: GhPr | null = await githubApi(inst, `/repos/${cand.repo}/pulls/${cand.prNumber}`).catch(() => null);
+  const { cand, inst, gh, prior } = opts;
+  const pr: GhPr | null = await gh.call(inst, `/repos/${cand.repo}/pulls/${cand.prNumber}`).catch(() => null);
   if (!pr?.merged) return { merged: false, verified: false, confidence: 0 };
   const prUrl = pr.html_url ?? prUrlFor(cand.repo, cand.prNumber);
+  const closedHead = opts.closed.head?.sha;
+  if (prior && closedHead && prior.closedHeadSha === closedHead && pr.merge_commit_sha && prior.mergeCommitSha === pr.merge_commit_sha) {
+    return { merged: true, verified: prior.verified, method: prior.method, confidence: prior.confidence, prUrl, mergeCommitSha: pr.merge_commit_sha };
+  }
 
   const k = key(cand.repo, cand.prNumber);
   let candFiles = opts.filesCache.get(k);
   if (!candFiles) {
-    candFiles = await listFiles(inst, cand.repo, cand.prNumber).catch(() => []);
+    candFiles = await listFiles(gh, inst, cand.repo, cand.prNumber).catch(() => []);
     opts.filesCache.set(k, candFiles);
   }
 
@@ -183,28 +299,29 @@ async function verifyCandidate(opts: {
       .filter((t): t is DiffFile => !!t && t.patch == null && t.status === 'added')
       .slice(0, DETECT_LIMITS.maxContentFetch);
     for (const t of wanted) {
-      const c = await fileContent(inst, cand.repo, t.filename, pr.merge_commit_sha);
+      const c = await fileContent(gh, inst, cand.repo, t.filename, pr.merge_commit_sha);
       if (c != null) contents.set(t.filename, c);
     }
   }
 
   const content = verifyByContent(opts.closedFiles, candFiles, contents);
-  if (content.verified) return { merged: true, verified: true, method: 'content', confidence: content.ratio, prUrl };
+  const mergeCommitSha = pr.merge_commit_sha ?? undefined;
+  if (content.verified) return { merged: true, verified: true, method: 'content', confidence: content.ratio, prUrl, mergeCommitSha };
 
   const small = (n: number | undefined) => typeof n === 'number' && n > 0 && n <= DETECT_LIMITS.maxPatchIdCommits;
   if (small(opts.closed.commits) && small(pr.commits)) {
     try {
       const [a, b] = await Promise.all([
-        commitDiffs(opts.closedInst, opts.closedRepo, opts.closed.number),
-        commitDiffs(inst, cand.repo, cand.prNumber),
+        commitDiffs(gh, opts.closedInst, opts.closedRepo, opts.closed.number),
+        commitDiffs(gh, inst, cand.repo, cand.prNumber),
       ]);
       const pid = verifyByPatchId(a, b);
-      if (pid.verified) return { merged: true, verified: true, method: 'patch-id', confidence: 1, prUrl };
+      if (pid.verified) return { merged: true, verified: true, method: 'patch-id', confidence: 1, prUrl, mergeCommitSha };
     } catch (err) {
       console.warn(`[pr-supersession-detect] patch-id read failed for ${k}:`, err);
     }
   }
-  return { merged: true, verified: false, confidence: content.ratio, prUrl };
+  return { merged: true, verified: false, confidence: content.ratio, prUrl, mergeCommitSha };
 }
 
 /**
@@ -218,7 +335,19 @@ export async function detectPrSupersession(opts: {
   now?: Date;
   /** The kernel's delivery for the PR, when it owns it: its state, not the (possibly lagging) columns, says whether the PR is closed. */
   delivery?: { state: string } | null;
+  /** Opt-in time limits (the sweep's); absent, GitHub calls wait as long as they take. */
+  limits?: DetectLimits;
 }): Promise<DetectResult> {
+  const gh = new GhReader(opts.limits);
+  try {
+    return await detectOnce(opts, gh);
+  } finally {
+    // Nothing this run started may keep reading GitHub after it returns.
+    gh.close();
+  }
+}
+
+async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: GhReader): Promise<DetectResult> {
   const now = opts.now ?? new Date();
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, opts.workerId)),
@@ -246,15 +375,68 @@ export async function detectPrSupersession(opts: {
   let closed: GhPr;
   let closedFiles: DiffFile[];
   try {
-    closed = await githubApi(closedInst, `/repos/${closedRepo}/pulls/${prNumber}`);
+    closed = await gh.call(closedInst, `/repos/${closedRepo}/pulls/${prNumber}`);
     if (closed?.merged) return { outcome: 'skipped', reason: 'PR is merged on GitHub' };
-    closedFiles = await listFiles(closedInst, closedRepo, prNumber);
+    closedFiles = await listFiles(gh, closedInst, closedRepo, prNumber);
   } catch (err) {
     console.warn(`[pr-supersession-detect] could not read ${closedRepo}#${prNumber}:`, err);
-    return { outcome: 'skipped', reason: 'could not read the closed PR' };
+    // Not a verdict on the PR: the sweep would stamp a "skipped" row, so a timeout defers instead.
+    if (!gh.interrupted) return { outcome: 'skipped', reason: 'could not read the closed PR' };
+    closed = { number: prNumber };
+    closedFiles = [];
   }
 
   const prevScan: SupersessionScan | null = worker.supersessionScan ?? null;
+  // Verdicts this PR's earlier runs reached inside the rescan window, and the ones this run adds.
+  const judgedSince = now.getTime() - RESCAN_AFTER_MS;
+  const judged = new Map<string, JudgedPair>();
+  for (const j of prevScan?.judged ?? []) {
+    if (j && typeof j.prNumber === 'number' && typeof j.repo === 'string' && Date.parse(j.at) > judgedSince) judged.set(key(j.repo, j.prNumber), j);
+  }
+  const judgedList = () => [...judged.values()].slice(-JUDGED_KEEP);
+  // A row that never finished a scan carries no finished-scan time while it is deferred, so it still
+  // reads as reconciling (delivery-projection.ts) rather than "scanned, nothing found".
+  const unfinished = (): SupersessionScan => prevScan ?? { scannedAt: '', candidatesChecked: checked, suggestion: null };
+  const attempt = () => ({ judged: judgedList(), lastAttemptAt: now.toISOString() });
+  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
+  let checked = 0;
+
+  // A run GitHub or the pass's clock cut short: no verdict is written (no stamp, no suggestion).
+  // What it did judge is kept. A request timeout counts toward the deferral cap, the way a
+  // control-plane outage does; past the cap the row is settled so it cannot hold the queue forever.
+  const deferInterrupted = async (): Promise<DetectResult> => {
+    const base = unfinished();
+    if (gh.interrupted === 'budget' && !opts.limits?.first) {
+      // Cut off by the rows before it: not counted, but the attempt moves it behind them next tick.
+      await db.update(workers).set({ supersessionScan: { ...base, ...attempt() } }).where(scanRows);
+      return { outcome: 'deferred', reason: 'the supersession sweep ran out of time', candidatesChecked: checked };
+    }
+    const reason = gh.interrupted === 'budget'
+      ? 'this scan alone used the sweep\'s whole time budget'
+      : `a GitHub request did not answer within ${opts.limits?.requestTimeoutMs}ms`;
+    const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
+    if (!exhausted) {
+      await db.update(workers).set({ supersessionScan: { ...base, deferral: state, ...attempt() } }).where(scanRows);
+      return { outcome: 'deferred', reason, candidatesChecked: checked };
+    }
+    const { deferral: _done, ...rest } = base;
+    await db.update(workers)
+      .set({ supersessionScan: { ...rest, scannedAt: now.toISOString(), candidatesChecked: checked, suggestion: prevScan?.suggestion ?? null, deferralExhausted: state, ...attempt() }, supersessionScannedAt: now })
+      .where(scanRows);
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+      surface: SURFACE[opts.via],
+      outcome: 'stranded',
+      reason: `supersession scan never finished: cut short (${state.reason}) for ${state.count} sweep(s); settled without a verdict`,
+      workspaceId: worker.workspaceId ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id,
+      detail: { kind: 'github_timeout_deferral_exhausted', prNumber, repo: closedRepo, deferral: state },
+      callerOrigin: 'system',
+    });
+    return { outcome: 'skipped', reason: `cut short for ${state.count} sweep(s); settled without a verdict` };
+  };
+  if (gh.interrupted) return deferInterrupted();
   const dismissed = new Set((prevScan?.dismissed ?? []).map(u => u.toLowerCase()));
   const candidates = new Map<string, Candidate>();
   const add = (c: Candidate) => {
@@ -268,19 +450,21 @@ export async function detectPrSupersession(opts: {
   for (const c of parseSupersessionClaims(closed.body, closedRepo)) {
     add({ ...c, signal: 'claim', score: SIGNAL_SCORE.claim, why: `this PR's description names ${refOf(c, closedRepo)} as its replacement` });
   }
-  const comments = await githubApi(closedInst, `/repos/${closedRepo}/issues/${prNumber}/comments?per_page=50`).catch(() => []);
+  const comments = await gh.call(closedInst, `/repos/${closedRepo}/issues/${prNumber}/comments?per_page=50`).catch(() => []);
   for (const cm of Array.isArray(comments) ? comments : []) {
     for (const c of parseSupersessionClaims(cm?.body, closedRepo)) {
       add({ ...c, signal: 'claim', score: SIGNAL_SCORE.claim, why: `a comment on this PR says it was superseded by ${refOf(c, closedRepo)}` });
     }
   }
-  const timeline = await githubApi(closedInst, `/repos/${closedRepo}/issues/${prNumber}/timeline?per_page=100`).catch(() => []);
+  const timeline = await gh.call(closedInst, `/repos/${closedRepo}/issues/${prNumber}/timeline?per_page=100`).catch(() => []);
   for (const ev of Array.isArray(timeline) ? timeline : []) {
     const issue = ev?.event === 'cross-referenced' ? ev?.source?.issue : null;
     if (!issue?.pull_request || typeof issue.number !== 'number') continue;
     const repo = normalizeRepoFullName(issue.repository?.full_name) ?? closedRepo;
     add({ repo, prNumber: issue.number, signal: 'cross_reference', score: SIGNAL_SCORE.cross_reference, why: `${refOf({ repo, prNumber: issue.number }, closedRepo)} references this PR` });
   }
+  // An abandoned comments or timeline read would silently drop the claims it carries.
+  if (gh.interrupted) return deferInterrupted();
 
   // (b) Merged PRs from sibling tasks in the same mission, any repo.
   const missionId = worker.task?.missionId ?? null;
@@ -302,23 +486,72 @@ export async function detectPrSupersession(opts: {
 
   const filesCache = new Map<string, DiffFile[]>();
   const merged: Array<Candidate & { prUrl: string; confidence: number }> = [];
-  let checked = 0;
+
+  // A verified candidate the control plane did not take: deferred to the next sweep (nothing stamped),
+  // until the deferral runs out; then it is filed as a suggestion with why, and a stranded gate event.
+  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string): Promise<DetectResult> => {
+    const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
+    const base = unfinished();
+    if (!exhausted) {
+      await db.update(workers).set({ supersessionScan: { ...base, deferral: state, ...attempt() } }).where(scanRows);
+      return { outcome: 'deferred', reason, candidatesChecked: checked };
+    }
+    const suggestion: SupersessionSuggestion = {
+      repo: cand.repo, prNumber: cand.prNumber, prUrl: candUrl, signal: cand.signal,
+      why: `${cand.why}; its content verified, but the control plane did not take the record for ${state.count} sweep(s) since ${state.firstAt} (${reason})`,
+      score: Math.round(cand.score * 100) / 100,
+    };
+    const { deferral: _done, ...rest } = base;
+    await db.update(workers)
+      .set({ supersessionScan: { ...rest, scannedAt: now.toISOString(), candidatesChecked: checked, suggestion, deferralExhausted: state, ...attempt() }, supersessionScannedAt: now })
+      .where(scanRows);
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+      surface: SURFACE[opts.via],
+      outcome: 'stranded',
+      reason: `supersession content verified but never recorded: the control plane did not answer for ${state.count} sweep(s); suggested for a person instead`,
+      workspaceId: worker.workspaceId ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id,
+      detail: { kind: 'control_plane_deferral_exhausted', prNumber, repo: closedRepo, candidate: { repo: cand.repo, prNumber: cand.prNumber }, deferral: state },
+      callerOrigin: 'system',
+    });
+    return { outcome: 'suggested', suggestion, candidatesChecked: checked };
+  };
 
   const tryAll = async (list: Candidate[]): Promise<DetectResult | null> => {
     for (const cand of list) {
       if (checked >= DETECT_LIMITS.maxVerify) break;
+      if (gh.stopped()) return null;
       const inst = await installationFor(cand.repo);
       if (!inst) continue;
       checked++;
-      const v = await verifyCandidate({ closedRepo, closed, closedFiles, closedInst, cand, inst, filesCache })
+      const k = key(cand.repo, cand.prNumber);
+      const prior = judged.get(k);
+      const v = await verifyCandidate({ gh, closedRepo, closed, closedFiles, closedInst, cand, inst, filesCache, prior })
         .catch(err => {
-          console.warn(`[pr-supersession-detect] verify failed for ${key(cand.repo, cand.prNumber)}:`, err);
+          console.warn(`[pr-supersession-detect] verify failed for ${k}:`, err);
           return { merged: false, verified: false, confidence: 0 } as CandidateVerdict;
         });
+      // An abandoned read makes a candidate look unmerged or empty: never judge on it.
+      if (gh.interrupted) return null;
+      if (v.merged) {
+        const reused = prior && prior.mergeCommitSha === v.mergeCommitSha && prior.closedHeadSha === closed.head?.sha;
+        if (!reused) {
+          judged.set(k, {
+            repo: cand.repo, prNumber: cand.prNumber, prUrl: v.prUrl!, verified: v.verified, ...(v.method ? { method: v.method } : {}),
+            confidence: v.confidence, at: now.toISOString(),
+            ...(closed.head?.sha ? { closedHeadSha: closed.head.sha } : {}), ...(v.mergeCommitSha ? { mergeCommitSha: v.mergeCommitSha } : {}),
+          });
+        }
+      } else {
+        judged.delete(k);
+      }
       if (!v.merged) continue;
       merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence });
       if (!v.verified) continue;
       const recorded = await recordVerified({ workerId: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId, closedRepo, prNumber, cand, method: v.method!, confidence: v.confidence, via: opts.via });
+      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason);
       if (recorded) return recorded;
     }
     return null;
@@ -327,15 +560,18 @@ export async function detectPrSupersession(opts: {
   const ranked = () => [...candidates.values()].sort((a, b) => b.score - a.score);
   const first = await tryAll(ranked());
   if (first) return first;
+  if (gh.interrupted) return deferInterrupted();
 
   // (c) Nothing nominated it, or nothing nominated verified: merged PRs in
   // this repo since the closed PR opened that touch the same files.
   const seen = new Set(candidates.keys());
-  for (const c of await overlapCandidates({ inst: closedInst, repo: closedRepo, closed, closedFiles, filesCache })) {
+  for (const c of await overlapCandidates({ gh, inst: closedInst, repo: closedRepo, closed, closedFiles, filesCache })) {
     if (!seen.has(key(c.repo, c.prNumber))) add(c);
   }
+  if (gh.interrupted) return deferInterrupted();
   const second = await tryAll(ranked().filter(c => !seen.has(key(c.repo, c.prNumber))));
   if (second) return second;
+  if (gh.interrupted) return deferInterrupted();
 
   // No proof. Offer the strongest merged candidate, and record nothing durable.
   const best = merged.sort((a, b) => (b.score + b.confidence * 0.1) - (a.score + a.confidence * 0.1))[0];
@@ -356,10 +592,11 @@ export async function detectPrSupersession(opts: {
     candidatesChecked: checked,
     suggestion,
     ...(prevScan?.dismissed?.length ? { dismissed: prevScan.dismissed } : {}),
+    ...(judged.size ? { judged: judgedList() } : {}),
   };
   await db.update(workers)
     .set({ supersessionScan: scan, supersessionScannedAt: now })
-    .where(or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt))));
+    .where(scanRows);
 
   if (suggestion) {
     fireGateEvent({
@@ -405,7 +642,14 @@ async function recordVerified(opts: {
     ...(crossRepo ? { supersedingRepo: cand.repo } : {}),
     reason: `auto: content verified in ${refOf(cand, closedRepo)} (method: ${opts.method})`,
     recordedBy: AUTO_SUPERSESSION_ACTOR,
+    caller: 'system',
   });
+  if (!result.ok && isOutageAnswer(result.door?.body)) {
+    // The control plane did not answer: not a judgement on the candidate. Deferred, never a suggestion.
+    // A refusal or the command's own failure is deterministic and falls through to a suggestion below.
+    console.warn(`[pr-supersession-detect] verified ${refOf(cand, closedRepo)}; recording deferred, the control plane did not answer: ${result.error}`);
+    return { outcome: 'deferred', reason: result.error, candidatesChecked: 0 };
+  }
   if (!result.ok) {
     // Proven content but the write refused (repo outside the mission, say):
     // fall through and treat it as a suggestion a person can judge.
@@ -437,6 +681,7 @@ async function recordVerified(opts: {
 
 /** Merged PRs in `repo` since the closed PR opened, ranked by shared files. */
 async function overlapCandidates(opts: {
+  gh: GhReader;
   inst: number;
   repo: string;
   closed: GhPr;
@@ -446,14 +691,16 @@ async function overlapCandidates(opts: {
   const closedPaths = opts.closedFiles.filter(f => f.status !== 'removed');
   if (closedPaths.length === 0) return [];
   const since = opts.closed.created_at ? Date.parse(opts.closed.created_at) : 0;
-  const recent = await githubApi(opts.inst, `/repos/${opts.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${DETECT_LIMITS.overlapScan}`).catch(() => []);
+  const recent = await opts.gh.call(opts.inst, `/repos/${opts.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${DETECT_LIMITS.overlapScan}`).catch(() => []);
   const merged = (Array.isArray(recent) ? recent as GhPr[] : [])
     .filter(p => p.merged_at && Date.parse(p.merged_at) >= since && p.number !== opts.closed.number)
     .slice(0, DETECT_LIMITS.overlapFetch);
 
   const out: Candidate[] = [];
   for (const p of merged) {
-    const files = await listFiles(opts.inst, opts.repo, p.number).catch(() => [] as DiffFile[]);
+    if (opts.gh.stopped()) break;
+    const files = await listFiles(opts.gh, opts.inst, opts.repo, p.number).catch(() => [] as DiffFile[]);
+    if (opts.gh.interrupted) break;
     opts.filesCache.set(key(opts.repo, p.number), files);
     const shared = closedPaths.filter(f => mapPath(f.filename, files)).length;
     if (shared === 0) continue;
@@ -482,6 +729,15 @@ export interface ClosedPrSweepResult {
   suggested: number;
   none: number;
   skipped: number;
+  /**
+   * Left unstamped for the next tick: verified but not recorded (the kernel's host did not take it),
+   * a GitHub read that timed out, or the row in flight when the sweep's budget ran out.
+   */
+  deferred: number;
+  /** Rows never started because the sweep's budget ran out; the next tick takes them first. */
+  budgetStopped: number;
+  /** Each scanned PR (`owner/repo#n`), how long it took and how it ended, in sweep order. */
+  prs: Array<{ pr: string; ms: number; outcome: DetectResult['outcome'] | 'error' }>;
 }
 
 /**
@@ -489,10 +745,16 @@ export interface ClosedPrSweepResult {
  * no edge, no abandonment, and no recent scan. Covers webhook misses and the
  * backlog that predates the webhook door.
  */
-export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promise<ClosedPrSweepResult> {
-  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0 };
+/**
+ * The sweep's queue: completed mission tasks whose PR closed unmerged with no edge, no abandonment
+ * and no scan inside the rescan window. Never-tried rows first, then by when each was last looked at:
+ * the later of its last finished scan and its last unfinished attempt (`supersessionScan.lastAttemptAt`),
+ * so a row the budget keeps cutting off moves behind the others instead of holding the front.
+ */
+export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 3): Promise<Array<{ id: string; prUrl: string | null }>> {
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
-  const rows = await db
+  const lastAttempt = sql`(case when ${workers.supersessionScan}->>'lastAttemptAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' then (${workers.supersessionScan}->>'lastAttemptAt')::timestamptz end)`;
+  return db
     .select({ id: workers.id, prUrl: workers.prUrl })
     .from(workers)
     .innerJoin(tasks, eq(tasks.id, workers.taskId))
@@ -506,8 +768,17 @@ export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promis
       isNotNull(tasks.missionId),
       inArray(tasks.status, ['completed']),
     ))
-    .orderBy(sql`${workers.supersessionScannedAt} asc nulls first`, asc(workers.updatedAt))
-    .limit(SWEEP_CAP * 3);
+    .orderBy(sql`greatest(${workers.supersessionScannedAt}, ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
+    .limit(limit);
+}
+
+export async function sweepClosedUnsupersededPrs(
+  now: Date = new Date(),
+  limits: { budgetMs: number; requestTimeoutMs: number } = SWEEP_LIMITS,
+): Promise<ClosedPrSweepResult> {
+  const budget = AbortSignal.timeout(limits.budgetMs);
+  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0, deferred: 0, budgetStopped: 0, prs: [] };
+  const rows = await closedPrSweepQueue(now);
 
   // One scan per PR, not per row sharing it.
   const seen = new Set<string>();
@@ -518,11 +789,23 @@ export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promis
   }).slice(0, SWEEP_CAP);
   result.candidates = picked.length;
 
-  for (const r of picked) {
-    const out = await detectPrSupersession({ workerId: r.id, via: 'sweep', now }).catch(err => {
+  for (const [i, r] of picked.entries()) {
+    // Out of time: the rest wait, unstamped, and sort first next tick (never scanned, or scanned longest ago).
+    if (budget.aborted) {
+      result.budgetStopped = picked.length - i;
+      break;
+    }
+    const started = Date.now();
+    let failed = false;
+    const out = await detectPrSupersession({ workerId: r.id, via: 'sweep', now, limits: { budget, requestTimeoutMs: limits.requestTimeoutMs, first: i === 0 } }).catch(err => {
       console.error(`[pr-supersession-detect] sweep failed for ${r.prUrl}:`, err);
-      return { outcome: 'skipped', reason: 'error' } as DetectResult;
+      failed = true;
+      // A failure while the budget was running out is not a verdict on the row.
+      return (budget.aborted
+        ? { outcome: 'deferred', reason: 'error after the sweep budget ran out', candidatesChecked: 0 }
+        : { outcome: 'skipped', reason: 'error' }) as DetectResult;
     });
+    result.prs.push({ pr: shortPrRef(r.prUrl), ms: Date.now() - started, outcome: failed && out.outcome === 'skipped' ? 'error' : out.outcome });
     if (out.outcome === 'skipped') {
       result.skipped++;
       // Stamp it anyway so an unreadable PR does not starve the rest of the queue.
@@ -532,4 +815,11 @@ export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promis
     }
   }
   return result;
+}
+
+/** `owner/repo#n` for the sweep's per-PR timing line. */
+function shortPrRef(prUrl: string | null): string {
+  const repo = repoFullNameFromPrUrl(prUrl);
+  const n = prUrl?.match(/\/pull\/(\d+)/)?.[1];
+  return repo && n ? `${repo}#${n}` : String(prUrl);
 }

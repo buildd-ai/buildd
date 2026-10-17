@@ -14,6 +14,8 @@ mock.module('@/lib/specs/section-revise', () => ({
     return { ok: true, spec: { version: 2 }, revision: { revision: 2 }, unchanged: false };
   },
 }));
+let short: unknown = { state: 'none' };
+mock.module('@/lib/specs/short-id', () => ({ SHORT_ID: /^[0-9a-f]{8}$/, resolveSpecShortId: async () => short }));
 const { GET, PATCH } = await import('./route');
 const params = Promise.resolve({ specId: 's1' });
 
@@ -31,10 +33,28 @@ describe('/api/specs/[specId]', () => {
     expect((await send({ expectedVersion: 1, body: 'x' })).status).toBe(409);
     expect(sectionCalls).toHaveLength(2);
   });
+  it('a successful revise carries formatHints for the text sent (R-48), and writes it as sent', async () => {
+    const body = '## Flow\n1. Open\n2. Pick\n3. Pay\n';
+    const res = await PATCH(new NextRequest('http://l/api/specs/s1', { method: 'PATCH', body: JSON.stringify({ expectedVersion: 1, heading: 'Flow', body }) }), { params });
+    expect(res.status).toBe(200);
+    expect((await res.json()).formatHints.map((h: { kind: string }) => h.kind)).toEqual(['diagram']);
+    expect(sectionCalls.at(-1)).toEqual({ expectedVersion: 1, heading: 'Flow', body });
+  });
   it('GET passes revision through and refuses a malformed one; no caller is 401', async () => {
     expect((await (await GET(new NextRequest('http://l/api/specs/s1?revision=1'), { params })).json()).revision.revision).toBe(1);
     expect((await GET(new NextRequest('http://l/api/specs/s1?revision=0'), { params })).status).toBe(400);
     caller = null;
     expect((await GET(new NextRequest('http://l/api/specs/s1'), { params })).status).toBe(401);
+  });
+
+  it('GET resolves an 8-hex short id; several matches are a 409 listing full ids', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    short = { state: 'one', id: 'full-id' };
+    const ok = await GET(new NextRequest('http://l/api/specs/abcdef12'), { params: Promise.resolve({ specId: 'abcdef12' }) });
+    expect(ok.status).toBe(200);
+    short = { state: 'many', specs: [{ id: 'a', title: 'A', workspaceName: 'w' }, { id: 'b', title: 'B', workspaceName: 'w' }] };
+    const res = await GET(new NextRequest('http://l/api/specs/abcdef12'), { params: Promise.resolve({ specId: 'abcdef12' }) });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'ambiguous_short_id', specs: [{ id: 'a' }, { id: 'b' }] });
   });
 });

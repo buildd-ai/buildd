@@ -73,8 +73,8 @@ describe('InitiativeRow', () => {
   });
 
   it('links the mission that needs you, and makes Answer the one ink button', () => {
-    const html = render([mission('q', { statusLabel: 'Needs you', tone: 'warning', question: { label: 'urls', href: '/app/missions/q?task=t', prompt: 'Which?' } })]);
-    expect(html).toContain('1 mission needs you');
+    const html = render([mission('q', { statusLabel: 'Waiting on you', tone: 'warning', question: { label: 'urls', href: '/app/missions/q?task=t', prompt: 'Which?' } })]);
+    expect(html).toContain('1 mission waiting on you');
     expect(html).toContain('href="/app/missions/q?task=t"');
     const answer = html.match(/<a[^>]*data-kind="answer"[^>]*>/)?.[0] ?? '';
     expect(answer).toContain('btn-ink');

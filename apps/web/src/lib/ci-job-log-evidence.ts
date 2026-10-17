@@ -36,6 +36,13 @@ export interface CiJobLogEvidenceInput {
   /** The worker whose PR failed CI; evidence_objects.worker_id is required. */
   workerId: string;
   prNumber: number | null;
+  /**
+   * The object's name under the evidence key, without `.log.gz`. A caller that
+   * retries (the kernel's `capture_ci_evidence` effect) names it after what it
+   * captures, so a retry overwrites one object rather than writing a second.
+   * Absent: the capture time and job id.
+   */
+  objectName?: string;
 }
 
 export interface EvidenceObjectInsert {
@@ -116,7 +123,7 @@ async function capture(input: CiJobLogEvidenceInput, deps: CiJobLogEvidenceDeps)
   const rootTaskId = await deps.findRootTaskId(input.parentTaskId);
   const objectKey = buildEvidenceObjectKey(
     backend.prefix, input.workspaceId, rootTaskId, input.retryTaskId, input.workerId,
-    'ci_job_log', `${now.getTime()}-${input.failedJobId}.log.gz`,
+    'ci_job_log', `${input.objectName ?? `${now.getTime()}-${input.failedJobId}`}.log.gz`,
   );
   const expiresAt = new Date(now.getTime() + backend.retentionDays * 24 * 60 * 60 * 1000);
   const taskIds = [...new Set([input.retryTaskId, rootTaskId])];
@@ -204,6 +211,45 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// ── Rows ───────────────────────────────────────────────────────────────────
+
+/**
+ * One evidence_objects row per (object, task). A retried capture writes the
+ * same object (the caller names it), so it updates the row the earlier capture
+ * recorded instead of adding a second one. An object the indexer already has
+ * (queued or indexed) is not queued again, and a retry that failed never
+ * undoes a stored object, which is still in the bucket.
+ *
+ * Read then write, with no unique index behind it: rows recorded before this
+ * existed may already repeat an object, and an index would have to delete
+ * them at migration time. A capture runs as one leased effect, so two captures
+ * of one object at the same moment are not expected.
+ */
+export async function recordCiJobLogEvidenceRows(rows: EvidenceObjectInsert[]): Promise<void> {
+  const { db } = await import('@buildd/core/db');
+  const { evidenceObjects } = await import('@buildd/core/db/schema');
+  const { and, eq } = await import('drizzle-orm');
+  for (const row of rows) {
+    const same = and(eq(evidenceObjects.objectKey, row.objectKey), eq(evidenceObjects.taskId, row.taskId));
+    const prior = await db.query.evidenceObjects.findFirst({
+      where: sqlWhere(same),
+      columns: { id: true, uploadState: true, indexState: true },
+    });
+    if (!prior) {
+      await db.insert(evidenceObjects).values(row);
+      continue;
+    }
+    if (prior.uploadState === 'stored' && row.uploadState !== 'stored') continue;
+    const indexed = prior.indexState === 'queued' || prior.indexState === 'indexed';
+    await db.update(evidenceObjects)
+      .set({
+        backendId: row.backendId, bytes: row.bytes, sha256: row.sha256, uploadState: row.uploadState,
+        indexState: indexed ? prior.indexState : row.indexState, expiresAt: row.expiresAt, updatedAt: new Date(),
+      })
+      .where(eq(evidenceObjects.id, prior.id));
+  }
+}
+
 // ── Defaults ───────────────────────────────────────────────────────────────
 
 const defaultDeps: CiJobLogEvidenceDeps = {
@@ -264,11 +310,7 @@ const defaultDeps: CiJobLogEvidenceDeps = {
     }
     return current;
   },
-  async insertRows(rows) {
-    const { db } = await import('@buildd/core/db');
-    const { evidenceObjects } = await import('@buildd/core/db/schema');
-    await db.insert(evidenceObjects).values(rows);
-  },
+  insertRows: recordCiJobLogEvidenceRows,
   serverSecretValues() {
     return [
       process.env.GITHUB_APP_CLIENT_SECRET,

@@ -6,7 +6,8 @@ import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
-import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
+import { deliveryShipsForPrs, epochCompletionHold, missionEpochsOf, shipKey } from '@/lib/workflow/delivery-ship';
+import { claimMissionCompletion, readMissionEpochFingerprint } from '@/lib/workflow/mission-completion-write';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -14,8 +15,9 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/co
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
-import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditMissingReason, surfaceAuditPendingReason } from '@buildd/core/surface-audit';
 import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
+import type { VisualImpactAssessment } from '@/lib/workflow/visual-review-impact';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import { after } from 'next/server';
 
@@ -74,7 +76,9 @@ export type CompletionPath =
   | 'dormancy'
   | 'evaluation_task'
   | 'criteria_eval'
-  | 'release_trigger';
+  | 'release_trigger'
+  /** The kernel's epoch reconcile recorded a settlement or retirement (workflow/delivery-epochs.ts). */
+  | 'epoch_settled';
 
 export interface MissionCompletionDecision {
   ok: boolean;
@@ -166,6 +170,22 @@ export interface MissionCompletionDecision {
   visualReviewHold?: VisualReviewHold | null;
   /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
   surfaceAuditPaths?: string[];
+  /**
+   * Who clears `surface_audit_missing`. `system`: the Visual Review policy is
+   * `automatic` or `strict`, buildd files the `[surface audit]` itself and the
+   * mission closes when it passes; no owner prompt. `owner`: policy `ask`, a
+   * local executor, an audit that already failed or was cancelled, or the
+   * audit could not be filed.
+   */
+  surfaceAuditActor?: 'system' | 'owner';
+  /** The `[surface audit]` task this check filed or found. */
+  surfaceAuditTaskId?: string | null;
+  /**
+   * The visual impact classifier's applicability record behind the gate's
+   * answer (`assessVisualImpact`), when it was asked: why no audit was owed, or
+   * why one is. Distinct from a waiver.
+   */
+  surfaceAuditAssessment?: VisualImpactAssessment | null;
 }
 
 export interface VisualReviewHold {
@@ -237,6 +257,37 @@ function isBookkeepingByTitle(task: { title?: string | null; mode?: string | nul
   );
 }
 
+/**
+ * Who acts on a missing surface audit, filing it when that is the system.
+ * The system files it (idempotently, through `requestMissionSurfaceAudit`)
+ * unless the policy is `ask`, the mission runs locally, or an audit already ran
+ * and failed or was cancelled (a failed review is the scheduler's backoff or
+ * the owner's call, never a refile on every completion attempt). A read-only
+ * caller (`evaluateCriteria: false`) files nothing; the next real completion
+ * attempt does. Never throws: an audit that cannot be filed is the owner's.
+ */
+async function surfaceAuditFollowUp(
+  mission: { id: string; executor?: string | null },
+  policy: string | undefined,
+  allTasks: Array<{ title?: string | null; roleSlug?: string | null }>,
+  mayFile: boolean,
+): Promise<{ actor: 'system' | 'owner'; taskId: string | null }> {
+  if (policy === 'ask' || mission.executor === 'local') return { actor: 'owner', taskId: null };
+  const priorAudit = allTasks.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? ''));
+  if (priorAudit) return { actor: 'owner', taskId: null };
+  if (!mayFile) return { actor: 'system', taskId: null };
+  try {
+    const { requestMissionSurfaceAudit } = await import('@/lib/mission-surface-audit');
+    const res = await requestMissionSurfaceAudit(mission.id);
+    if (!res.ok) return { actor: 'owner', taskId: null };
+    if (res.created) console.log(`[surface-audit-gate] ${mission.id.slice(0, 8)} filed the surface audit ${res.taskId.slice(0, 8)} (policy ${policy ?? 'automatic'})`);
+    return { actor: 'system', taskId: res.taskId };
+  } catch (err) {
+    console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} could not file the surface audit (owner decides):`, err);
+    return { actor: 'owner', taskId: null };
+  }
+}
+
 /** Title prefix of a goal-criterion verification task. Kept in sync with mission-criteria-verify.ts. */
 export const VERIFY_TASK_TITLE_PREFIX = 'Verify goal criterion:';
 
@@ -303,6 +354,8 @@ export async function canCompleteMission(
       // The visual review hold reads the model, which scopes by workspace.
       workspaceId: true,
       autoSurfaceAudit: true,
+      // A local-executor mission's audit goes to the owner (no runner claims it).
+      executor: true,
     },
   });
 
@@ -321,6 +374,7 @@ export async function canCompleteMission(
     supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
     abandonedDetails: [] as MissionCompletionDecision['abandonedDetails'],
     visualReviewHold: null as VisualReviewHold | null,
+    surfaceAuditAssessment: null as VisualImpactAssessment | null,
   };
 
   if (!mission) {
@@ -364,8 +418,9 @@ export async function canCompleteMission(
       taskClass: true, creationSource: true, category: true, result: true,
       // Finds the visual audit, so a mission without one skips the hold check.
       roleSlug: true,
-      // The surface-audit gate reads the declared paths and each PR's repo.
-      workspaceId: true, pathManifest: true,
+      // The surface-audit gate reads the declared paths and each PR's repo,
+      // and context to recognise a trunk-refresh task.
+      workspaceId: true, pathManifest: true, context: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
@@ -590,7 +645,66 @@ export async function canCompleteMission(
     // all-cancelled deliverables DO allow completion, because the work was
     // deliberately called off, which is a decision, not an absence.
     const work = await evaluateMissionWorkState(missionId);
-    if (work.landedOnIntegrationCount > 0) {
+    // §6 (workflow-kernel-library.md): a mission with delivery records is
+    // judged by them. "A mission PR merged" is never enough on its own: the
+    // writable delivery must carry nothing that has not reached trunk.
+    const epochs = await missionEpochsOf(missionId);
+    if (epochs.length > 0) {
+      const hold = epochCompletionHold({ epochs }, (branch, after) =>
+        work.landedOnIntegration.filter(l => l.baseRef === branch && (!after || (!!l.mergedAt && l.mergedAt > after))).length);
+      if (hold.holds && hold.reason === 'unsettled') {
+        const e = hold.epoch;
+        const held = (e.settlement?.held ?? []).map((h) => `#${h.prNumber}`);
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason: held.length > 0
+            ? `Delivery ${e.epoch} reached trunk, but ${held.join(', ')} still ${held.length === 1 ? 'sits' : 'sit'} on its branch \`${e.branch}\` waiting for a decision. That work has not reached trunk.`
+            : `Delivery ${e.epoch} reached trunk, and the PRs left on its branch \`${e.branch}\` are still being moved to the next delivery.`,
+        };
+      }
+      if (hold.holds) {
+        const e = hold.epoch;
+        const owner = e.prNumber != null ? await findMissionPrOwner(missionId) : null;
+        const prUrl = e.prNumber != null && e.repoFullName ? `https://github.com/${e.repoFullName}/pull/${e.prNumber}` : null;
+        if (e.prNumber == null) {
+          return {
+            ...base,
+            ok: false,
+            code: 'awaiting_mission_pr',
+            reason:
+              `Delivery ${e.epoch} of this mission (\`${e.branch}\`) has work that has not reached trunk, `
+              + `and its PR is not open yet.`,
+          };
+        }
+        if (owner?.prNumber === e.prNumber && owner.state === 'closed') {
+          return {
+            ...base,
+            ok: false,
+            code: 'awaiting_mission_pr',
+            reason:
+              `Delivery ${e.epoch}'s PR #${e.prNumber} was closed without merging, so its work is still only on `
+              + `\`${e.branch}\`. Reopen it or land the work another way. This will not resolve on its own.`,
+          };
+        }
+        base.awaitingMerge = 1;
+        base.awaitingMergeDetails = [{
+          taskId: e.ownerTaskId ?? owner?.taskId ?? '',
+          title: `${MISSION_PR_TASK_PREFIX}${mission.title}`,
+          prNumber: e.prNumber,
+          prUrl: prUrl ?? owner?.prUrl ?? '',
+        }];
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason:
+            `Delivery ${e.epoch}'s PR #${e.prNumber} is open and unmerged. Its work is on \`${e.branch}\` `
+            + `and has not reached trunk.`,
+        };
+      }
+    } else if (work.landedOnIntegrationCount > 0) {
       // One implementation of "what state is the mission PR in", shared with
       // the opener. These two used to answer it separately and disagreed: the
       // opener scanned every worker of the mission while this took `workers[0]`
@@ -641,22 +755,36 @@ export async function canCompleteMission(
 
   // A mission that changed UI does not close unless something looked at it.
   // The audit is minted from declared paths at task filing; this reads what
-  // actually merged, so an undeclared or mis-declared manifest cannot skip it.
-  // A completed audit, a recorded human waiver, or autoSurfaceAudit=false clears it.
+  // actually merged, so an undeclared or mis-declared manifest cannot skip it,
+  // and the visual impact classifier clears a change that cannot render.
+  // A completed audit, a recorded human waiver, or the Visual Review policy
+  // `off` clears it. Under `automatic` and `strict` buildd files the audit
+  // itself (no owner prompt); under `ask` the owner runs or waives it.
   const surfaceGate = await evaluateSurfaceAuditGate(
-    mission as { id: string; autoSurfaceAudit?: boolean | null },
+    mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
     allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
   ).catch(err => {
     console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
     return null;
   });
+  if (surfaceGate?.assessment) base.surfaceAuditAssessment = surfaceGate.assessment;
   if (surfaceGate?.required) {
+    const followUp = await surfaceAuditFollowUp(
+      mission as { id: string; executor?: string | null },
+      surfaceGate.policy,
+      allTasks,
+      evaluateCriteria,
+    );
     return {
       ...base,
       ok: false,
       code: 'surface_audit_missing',
-      reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
+      reason: followUp.actor === 'system'
+        ? surfaceAuditPendingReason(surfaceGate.uiPaths, surfaceGate.source, followUp.taskId)
+        : surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source, { waiverAllowed: surfaceGate.waiverAllowed }),
       surfaceAuditPaths: surfaceGate.uiPaths,
+      surfaceAuditActor: followUp.actor,
+      surfaceAuditTaskId: followUp.taskId,
     };
   }
 
@@ -775,6 +903,9 @@ export async function completeMissionIfVerified(
     authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
+  // S4b: the delivery records the decision reads, fingerprinted before it reads them, so the write
+  // below lands only on the epoch state it was decided on (workflow/mission-completion-write.ts).
+  const epochFingerprint = await readMissionEpochFingerprint(missionId);
   const decision = opts.decision
     ?? await canCompleteMission(missionId, {
       path: opts.path,
@@ -823,12 +954,46 @@ export async function completeMissionIfVerified(
 
   // Atomic active → completed. Concurrent callers race here; exactly one wins,
   // and only the winner disables the schedule and announces completion.
-  const completedAt = new Date();
-  const [claimed] = await db
-    .update(missions)
-    .set({ status: 'completed', completedAt, updatedAt: completedAt })
-    .where(and(eq(missions.id, missionId), eq(missions.status, 'active')))
-    .returning({ id: missions.id, scheduleId: missions.scheduleId });
+  // For a mission with delivery records, also CAS on those records (§6): a merge, settlement or
+  // retirement recorded since the decision leaves it active, and so does any write holding the
+  // mission row (the xmin re-check). After a miss on a mission still active: records unchanged
+  // means another write held the row, so it claims once more; records moved means it decides once
+  // more on a fresh read, with the verdict it already has. A second miss is reported as such
+  // (completion_contended, deliveries_moved), never as a mission that left active.
+  let completedAt = new Date();
+  let claimed = await claimMissionCompletion(missionId, epochFingerprint, completedAt);
+  let finalDecision = decision;
+  if (!claimed) {
+    const fresh = await readMissionEpochFingerprint(missionId);
+    const stillActive = (await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { status: true } }))?.status === 'active';
+    if (stillActive && fresh === epochFingerprint) {
+      // The deliveries did not move and the mission is still active: another write held the row
+      // (any edit makes the xmin re-check miss). Not a lost race; claim once more.
+      completedAt = new Date();
+      claimed = await claimMissionCompletion(missionId, fresh, completedAt);
+      if (!claimed) {
+        return {
+          completed: false,
+          decision: { ...decision, ok: false, code: 'completion_contended', reason: 'Another change to the mission landed while completion was being written, twice. It stays active; the next change decides again.' },
+        };
+      }
+    } else if (stillActive) {
+      const again = await canCompleteMission(missionId, { path: opts.path, evaluateCriteria: false, proposed: opts.proposed });
+      if (!again.ok) {
+        console.log(`[mission-completion] ${missionId} via ${opts.path}: deliveries moved during the decision; now BLOCKED (${again.code})`);
+        return { completed: false, decision: again };
+      }
+      finalDecision = again;
+      completedAt = new Date();
+      claimed = await claimMissionCompletion(missionId, fresh, completedAt);
+      if (!claimed) {
+        return {
+          completed: false,
+          decision: { ...again, ok: false, code: 'deliveries_moved', reason: 'The mission\'s deliveries moved while completion was being decided, twice. It stays active; the next change decides again.' },
+        };
+      }
+    }
+  }
 
   if (!claimed) {
     return {
@@ -885,7 +1050,7 @@ export async function completeMissionIfVerified(
   // §4): a criterion warned weak, kept, and now passing on a clean completion
   // stops being warned on. Same scheduling as the shipped report; it never
   // throws and can never un-complete the mission.
-  if (decision.criteriaVerdict.kind === 'value' && decision.criteriaVerdict.value === 'pass') {
+  if (finalDecision.criteriaVerdict.kind === 'value' && finalDecision.criteriaVerdict.value === 'pass') {
     const storeAccepted = () => import('@/lib/goal-criteria-accepted')
       .then(m => m.recordAcceptedGoalCriteriaPatterns(missionId))
       .catch(e => console.error(`[mission-completion] accepted patterns failed for ${missionId}:`, e));
@@ -896,19 +1061,19 @@ export async function completeMissionIfVerified(
     }
   }
 
-  const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
+  const statusSummary = Object.entries(finalDecision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({
     missionId,
     type: 'update',
     title: MISSION_COMPLETED_NOTE_TITLE,
     body:
       `Deliverables: ${statusSummary || 'none'}\n` +
-      `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +
-      (decision.criteriaEvaluatedAt ? ` (evaluated ${decision.criteriaEvaluatedAt})` : '') +
+      `Goal criteria: ${finalDecision.criteriaVerdict.kind === 'value' ? finalDecision.criteriaVerdict.value : `unavailable (${finalDecision.criteriaVerdict.reason})`}` +
+      (finalDecision.criteriaEvaluatedAt ? ` (evaluated ${finalDecision.criteriaEvaluatedAt})` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
     // System is only ever right here because nothing external claimed this —
     // the label names the exact predicate that fired, not just "the engine did it".
-    actor: systemActor(`completion predicate (${opts.path}): ${decision.reason}`),
+    actor: systemActor(`completion predicate (${opts.path}): ${finalDecision.reason}`),
   }).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
 
   await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
@@ -918,8 +1083,8 @@ export async function completeMissionIfVerified(
   await triggerEvent(channels.mission(missionId), events.MISSION_LOOP_COMPLETED, {
     missionId,
     reason: `${opts.path}_complete`,
-    taskStatusCounts: decision.deliverableStatusCounts,
-    criteriaVerdict: decision.criteriaVerdict,
+    taskStatusCounts: finalDecision.deliverableStatusCounts,
+    criteriaVerdict: finalDecision.criteriaVerdict,
   }).catch(e => console.error(`[mission-completion] completed event failed for ${missionId}:`, e));
 
   // A mission clearing the gate is the moment an `on_mission_complete` release
@@ -933,7 +1098,7 @@ export async function completeMissionIfVerified(
     console.error(`[mission-completion] release attempt failed for ${missionId}:`, e)
   );
 
-  return { completed: true, decision };
+  return { completed: true, decision: finalDecision };
 }
 
 /**

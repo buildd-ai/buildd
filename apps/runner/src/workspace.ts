@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, mkdirSync, rmSync } from 'fs';
 import { join, resolve, basename } from 'path';
 import { execSync } from 'child_process';
+import { readdir } from 'fs/promises';
+import { gitArgsAsync, mapWithConcurrency } from './git-async';
 import { homedir, tmpdir } from 'os';
 import { isolatedWorkspacePath } from './isolation-paths.js';
 import { timedPhase } from './phase-lines';
@@ -88,14 +90,57 @@ export interface ResolveWorkspace {
 }
 
 export interface WorkspaceResolver {
+  /**
+   * Sync: matches against the repo-scan snapshot. Call warmGitCache() first on
+   * any hot path (the claim does), or a cold resolver scans synchronously.
+   */
   resolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): string | null;
-  debugResolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
+  /** Rescans (async) before resolving, so the answer reflects the disk now. */
+  debugResolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): Promise<ResolveDebugInfo>;
   listLocalDirectories(): string[];
   getPathOverrides(): Record<string, string>;
   setPathOverride(workspaceName: string, localPath: string): void;
-  scanGitRepos(): GitRepoInfo[];
+  /**
+   * Every directory under the project roots with its origin remote. Served from
+   * the snapshot while it is younger than `maxAgeMs` (default REPO_SCAN_TTL_MS);
+   * `{ maxAgeMs: 0 }` forces a rescan. Concurrent callers share one scan.
+   */
+  scanGitRepos(opts?: { maxAgeMs?: number }): Promise<GitRepoInfo[]>;
+  /**
+   * The last scan, without waiting: for sync callers (the heartbeat's Scout
+   * advert). Starts a background rescan when the snapshot is stale or absent,
+   * and returns [] until the first scan lands.
+   */
+  cachedGitRepos?(): GitRepoInfo[];
+  /** Make sure the snapshot is no older than `maxAgeMs` (default the TTL); async. */
+  warmGitCache?(opts?: { maxAgeMs?: number }): Promise<void>;
+  /**
+   * Wait for the first scan only: resolves at once when any snapshot exists
+   * (stale or not), and otherwise awaits the one in flight (or starts it). For
+   * resolve() callers that may run in the first seconds after start (a retry, a
+   * follow-up), so they never fall into the cold synchronous scan.
+   */
+  whenScanned?(): Promise<void>;
+  /**
+   * resolve(), for the claim: warms the snapshot to `maxAgeMs` first, and when
+   * the repo is not in it, rescans once (unless the snapshot was just taken)
+   * before falling through to auto-clone. A repo cloned by hand moments before
+   * the claim is found instead of cloned a second time.
+   */
+  resolveAsync?(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null, opts?: { maxAgeMs?: number }): Promise<string | null>;
   getProjectRoots(): string[];
 }
+
+/**
+ * How long a repo scan is reused. A scan runs `git remote get-url origin` in
+ * every directory under the project roots, so with many repos it is seconds of
+ * git; it was run on every heartbeat (the Scout advert) and again on idle
+ * polls. Directories rarely change; a clone through the runner invalidates it.
+ */
+export const REPO_SCAN_TTL_MS = 5 * 60 * 1000;
+
+/** Directories scanned at once. Each is one short git child. */
+const REPO_SCAN_CONCURRENCY = 8;
 
 // Common project locations to auto-discover
 const DEFAULT_PROJECT_PATHS = [
@@ -166,8 +211,6 @@ export interface ResolveDebugInfo {
 // Path overrides: workspace name -> local path
 const pathOverrides: Record<string, string> = {};
 
-// Cache git remotes for performance (cleared on each resolve-all)
-let gitRemoteCache: Map<string, string | null> | null = null;
 
 // Normalize git URL to comparable format (owner/repo)
 export function normalizeGitUrl(url: string | null | undefined): string | null {
@@ -192,7 +235,17 @@ export function normalizeGitUrl(url: string | null | undefined): string | null {
   return null;
 }
 
-// Get git remote URL for a directory
+/** A directory's origin remote, async (git-async.ts). Same command and timeout as getGitRemote. */
+export async function getGitRemoteAsync(dirPath: string): Promise<string | null> {
+  try {
+    return (await gitArgsAsync(['remote', 'get-url', 'origin'], { cwd: dirPath, timeoutMs: 5000 })).trim();
+  } catch {
+    return null;
+  }
+}
+
+// Get git remote URL for a directory. Sync: only for a cold resolver's first
+// resolve (see getGitCache); everything else uses getGitRemoteAsync.
 export function getGitRemote(dirPath: string): string | null {
   try {
     const result = execSync('git remote get-url origin', {
@@ -211,38 +264,109 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
   // Normalize to array
   const roots = Array.isArray(projectRoots) ? projectRoots : [projectRoots];
 
-  // Build git remote cache for all directories across all roots
-  const buildGitCache = (): Map<string, string | null> => {
-    const cache = new Map<string, string | null>();
+  // ── Repo-scan snapshot ──────────────────────────────────────────────────
+  // One snapshot per resolver: every directory under the roots -> its origin
+  // remote. Built async, reused for REPO_SCAN_TTL_MS, shared by resolve(), the
+  // Scout advert, knowledge ingest and the local API. It used to be rebuilt
+  // with a synchronous `git` per directory on every heartbeat, which froze the
+  // runner (and `buildd top`) for seconds at a time with many repos.
+  let snapshot: GitRepoInfo[] | null = null;
+  let snapshotAt = 0;
+  let scanning: Promise<GitRepoInfo[]> | null = null;
+  /** Bumped by invalidate(): a scan that started before it does not count as fresh. */
+  let generation = 0;
 
+  const listRootDirsAsync = async (): Promise<string[]> => {
+    const dirs: string[] = [];
     for (const root of roots) {
       try {
         if (!existsSync(root)) continue;
-
-        const dirs = readdirSync(root, { withFileTypes: true })
-          .filter(d => d.isDirectory() && !d.name.startsWith('.'));
-
-        for (const dir of dirs) {
-          const dirPath = join(root, dir.name);
-          const remote = getGitRemote(dirPath);
-          cache.set(dirPath, remote);
+        const entries = await readdir(root, { withFileTypes: true });
+        for (const d of entries) {
+          if (d.isDirectory() && !d.name.startsWith('.')) dirs.push(join(root, d.name));
         }
       } catch {
         // Ignore errors for this root
       }
     }
-    return cache;
+    return dirs;
   };
 
-  // Lazily initialize cache
-  const getGitCache = (): Map<string, string | null> => {
-    if (!gitRemoteCache) {
-      gitRemoteCache = buildGitCache();
+  const toInfo = (path: string, remoteUrl: string | null): GitRepoInfo => ({
+    path, remoteUrl, normalizedUrl: normalizeGitUrl(remoteUrl),
+  });
+
+  const startScan = (): Promise<GitRepoInfo[]> => {
+    if (scanning) return scanning;
+    const gen = generation;
+    const run = (async () => {
+      const dirs = await listRootDirsAsync();
+      const repos = await mapWithConcurrency(dirs, REPO_SCAN_CONCURRENCY, async (dir) => toInfo(dir, await getGitRemoteAsync(dir)));
+      if (gen === generation) {
+        snapshot = repos;
+        snapshotAt = Date.now();
+      }
+      return repos;
+    })().finally(() => { if (scanning === run) scanning = null; });
+    scanning = run;
+    return run;
+  };
+
+  const isFresh = (maxAgeMs: number) => snapshot !== null && maxAgeMs > 0 && Date.now() - snapshotAt < maxAgeMs;
+
+  const scanAsync = async (maxAgeMs = REPO_SCAN_TTL_MS): Promise<GitRepoInfo[]> => {
+    if (isFresh(maxAgeMs)) return snapshot!;
+    // A forced rescan must not reuse a scan that began before the call.
+    if (maxAgeMs <= 0 && scanning) await scanning.catch(() => {});
+    const repos = await startScan();
+    // invalidate() landed mid-scan: scan again so the caller sees the change.
+    if (snapshot !== repos) return startScan();
+    return repos;
+  };
+
+  /** Mark the snapshot stale (a clone, an override): the next reader rescans. */
+  const invalidate = (added?: { path: string; remoteUrl: string | null }) => {
+    generation++;
+    if (snapshot && added) {
+      snapshot = [...snapshot.filter(r => r.path !== added.path), toInfo(added.path, added.remoteUrl)];
     }
-    return gitRemoteCache;
+    snapshotAt = 0;
   };
 
-  const attemptResolve = (workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
+  // Sync view for resolve(). Uses the snapshot even when stale (refreshing it
+  // in the background); only a resolver that has never scanned scans here,
+  // synchronously, because resolve() promises a sync answer. The claim warms
+  // the snapshot first, so that path never takes this branch.
+  const getGitCache = (): Map<string, string | null> => {
+    if (!snapshot) {
+      const repos: GitRepoInfo[] = [];
+      for (const root of roots) {
+        try {
+          if (!existsSync(root)) continue;
+          const dirs = readdirSync(root, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+          for (const dir of dirs) {
+            const dirPath = join(root, dir.name);
+            repos.push(toInfo(dirPath, getGitRemote(dirPath)));
+          }
+        } catch {
+          // Ignore errors for this root
+        }
+      }
+      snapshot = repos;
+      snapshotAt = Date.now();
+    } else if (!isFresh(REPO_SCAN_TTL_MS)) {
+      void startScan().catch(() => {});
+    }
+    return new Map(snapshot.map(r => [r.path, r.remoteUrl]));
+  };
+
+  const attemptResolve = (
+    workspace: ResolveWorkspace,
+    taskContext?: Record<string, unknown> | null,
+    /** false: stop before auto-clone (a miss returns null). */
+    opts: { autoClone?: boolean } = {},
+  ): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
 
     // Cross-repo override from task context (e.g., conflict-retry on cross-repo PR).
@@ -388,7 +512,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     }
 
     // Auto-clone: workspace has a repo URL but no local clone exists
-    if (workspace.repo && roots.length > 0) {
+    if (opts.autoClone !== false && workspace.repo && roots.length > 0) {
       const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
       if (repoName) {
         const clonePath = join(roots[0], repoName);
@@ -411,8 +535,8 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
           // was just throttled there (git-clone.ts).
           timedPhase('clone', () => cloneRepo(cloneUrl, clonePath, { branch: workspace.defaultBranch }));
 
-          // Invalidate git cache so the new repo is discoverable
-          gitRemoteCache = null;
+          // The new clone is discoverable at once; the rest rescans lazily.
+          invalidate({ path: clonePath, remoteUrl: cloneUrl });
 
           attempts.push({ path: clonePath, exists: true, method: 'auto-clone' });
           console.log(`Auto-cloned workspace "${workspace.name}" to: ${clonePath}`);
@@ -443,31 +567,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return [...new Set(allDirs)]; // Dedupe
   };
 
-  const scanGitRepos = (): GitRepoInfo[] => {
-    const repos: GitRepoInfo[] = [];
-    for (const root of roots) {
-      try {
-        if (!existsSync(root)) continue;
-        const dirs = readdirSync(root, { withFileTypes: true })
-          .filter(d => d.isDirectory() && !d.name.startsWith('.'));
-
-        for (const dir of dirs) {
-          const dirPath = join(root, dir.name);
-          const remoteUrl = getGitRemote(dirPath);
-          repos.push({
-            path: dirPath,
-            remoteUrl,
-            normalizedUrl: normalizeGitUrl(remoteUrl),
-          });
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-    return repos;
-  };
-
-  return {
+  const resolver: WorkspaceResolver = {
     resolve(workspace, taskContext) {
       const { path } = attemptResolve(workspace, taskContext);
       if (!path) {
@@ -489,10 +589,9 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       return path;
     },
 
-    debugResolve(workspace, taskContext) {
-      // Clear cache to get fresh data
-      gitRemoteCache = null;
-
+    async debugResolve(workspace, taskContext) {
+      // Fresh data: rescan (async) before resolving against it.
+      const gitRepos = await scanAsync(0);
       const { path, attempts } = attemptResolve(workspace, taskContext);
       return {
         workspace,
@@ -500,7 +599,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
         attemptedPaths: attempts,
         resolvedPath: path,
         availableDirectories: listDirs(),
-        gitRepos: scanGitRepos(),
+        gitRepos,
       };
     },
 
@@ -514,19 +613,47 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
 
     setPathOverride(workspaceName: string, localPath: string) {
       pathOverrides[workspaceName] = localPath;
-      // Clear cache when override is set
-      gitRemoteCache = null;
+      // Rescan lazily when an override is set
+      invalidate();
       console.log(`Path override set: "${workspaceName}" -> "${localPath}"`);
     },
 
-    scanGitRepos() {
-      // Clear cache and rescan
-      gitRemoteCache = null;
-      return scanGitRepos();
+    scanGitRepos(opts) {
+      return scanAsync(opts?.maxAgeMs ?? REPO_SCAN_TTL_MS);
+    },
+
+    cachedGitRepos() {
+      if (!isFresh(REPO_SCAN_TTL_MS)) void startScan().catch(() => {});
+      return snapshot ?? [];
+    },
+
+    async warmGitCache(opts) {
+      await scanAsync(opts?.maxAgeMs ?? REPO_SCAN_TTL_MS);
+    },
+
+    async whenScanned() {
+      await scanAsync(Number.POSITIVE_INFINITY);
+    },
+
+    async resolveAsync(workspace, taskContext, opts) {
+      const startedAt = Date.now();
+      try { await scanAsync(opts?.maxAgeMs ?? REPO_SCAN_TTL_MS); } catch { /* resolve() falls back */ }
+      const matchesByRemote = !!(workspace.repo || (taskContext && typeof taskContext.prRepoUrl === 'string'));
+      if (matchesByRemote) {
+        const probe = attemptResolve(workspace, taskContext, { autoClone: false });
+        if (probe.path) return probe.path;
+        // Not in a snapshot taken before this call: look at the disk once more
+        // before cloning a repo that may already be here.
+        if (snapshotAt < startedAt) {
+          try { await scanAsync(0); } catch { /* resolve() falls back */ }
+        }
+      }
+      return resolver.resolve(workspace, taskContext);
     },
 
     getProjectRoots() {
       return [...roots];
     },
   };
+  return resolver;
 }

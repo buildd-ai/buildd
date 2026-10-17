@@ -1,7 +1,6 @@
 import { ownLineage } from '@/lib/attempt-lineage';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
-import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -9,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -24,7 +23,7 @@ import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { hasCodexCredential } from '@/lib/codex-credential';
+import { resolveCodexApiKey } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
@@ -61,6 +60,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
+import { runnerSeatKey } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -94,6 +94,7 @@ import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
@@ -109,13 +110,11 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { VISUAL_AUDIT_ROUTES } from '@/modules';
+import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
-  attachClaudeCredentials,
   attachCodexCredentials,
-  attachPendingCredentialRefreshes,
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
@@ -157,6 +156,7 @@ import {
   softOverlapStartVerdict,
   touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
+  type ClaimHoldNote,
   type ClaimRiskEvidence,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
@@ -164,12 +164,8 @@ import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
-
-// Per-runner claim cooldown after a worker error. Matches the typical
-// client-side breaker minimum (5m for generic errors, 60s default here since
-// the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
-// <1s). Scoped per-runner so healthy runners keep picking up tasks.
-const CLAIM_COOLDOWN_MS = 60_000;
+import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
+import { claimCandidateWhere } from '@/lib/claim-candidate-where';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -297,60 +293,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
   runner = resolveClaimRunner(runner, interactiveSession);
+  // Which login this caller's Claude runs draw on, as far as a wall is
+  // concerned (lib/runner-seat-wall.ts). A wall one runner's own machine login
+  // hit is recorded under that runner's key and holds only its claims. Null —
+  // a session on its own seat (exempt from walls anyway), a cloud run, or a
+  // caller that names no runner — reads every wall, seat-scoped ones included.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
   // from the no_slots exit before the query is built.
   let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
   const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
-    claimableWorkspaceIdsMemo ??= (async () => {
-      // A grant session claims only inside its granted workspaces (grant ∩
-      // current membership, this request), whatever the shared team account's
-      // open workspaces or links would allow, and a restricted workspace it was
-      // granted is claimable without a link (lib/grant-scope.ts).
-      if (isGrantSession(account)) {
-        return constrainToGranted(account, account.workspaceIds ?? [], 'write')
-          .filter((id) => !workspaceId || id === workspaceId);
-      }
-      // Get workspaces this account can claim from
-      // 1. Open workspaces of the account's own team ("open" = open within the team)
-      // 2. Any workspace where the account has an explicit canClaim link
-      const openWorkspaces = await db.query.workspaces.findMany({
-        where: sqlWhere(and(
-          eq(workspaces.accessMode, 'open'),
-          eq(workspaces.teamId, account.teamId),
-          workspaceId ? eq(workspaces.id, workspaceId) : undefined
-        )),
-      });
-
-      // Get cached account→workspace permissions (avoids DB hit on every claim)
-      const allPermissions = await getAccountWorkspacePermissions(account.id);
-      const claimablePermissions = allPermissions
-        .filter((p) => p.canClaim)
-        .filter((p) => !workspaceId || p.workspaceId === workspaceId);
-
-      // Resolve which linked workspaces still exist. An explicit canClaim link
-      // grants access whatever the workspace's accessMode — it is how an account
-      // outside the owning team is given access to an open workspace.
-      const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
-      let restrictedIds: string[] = [];
-      if (restrictedWsIds.length > 0) {
-        const restrictedWorkspaces = await db.query.workspaces.findMany({
-          where: sqlWhere(inArray(workspaces.id, restrictedWsIds)),
-          columns: { id: true },
-        });
-        restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
-      }
-
-      // Combine: open workspace IDs + restricted workspaces with permission
-      const openIds = openWorkspaces.map((ws) => ws.id);
-
-      // A workspace-restricted token claims only inside its own list, whatever
-      // the team's open workspaces or canClaim links would otherwise allow.
-      // Every candidate and taskId lookup below is bounded by this list.
-      return [...new Set([...openIds, ...restrictedIds])]
-        .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
-    })();
+    // The claim's reach, shared with the runner queue read (lib/claim-order.ts).
+    claimableWorkspaceIdsMemo ??= claimableWorkspaceIds(account, workspaceId);
     return claimableWorkspaceIdsMemo;
   };
 
@@ -564,6 +520,18 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // A runner a person put on hold (`buildd hold`, spec c7410e76 R-35) gets no
+  // work on a broad claim. It already stops asking while held; this is the
+  // server's own answer if a claim arrives anyway. A claim naming one task is
+  // a person's choice (Start, `c` in top) and goes on, and an interactive
+  // session is not a runner. Read from the claim's own environment: it is the
+  // runner's state as of this request, fresher than its last heartbeat.
+  if (!taskId && !interactiveSession && activeRunnerHold(body.environment)) {
+    return emptyClaim({
+      diagnostics: { reason: 'runner_held' } satisfies ClaimDiagnostics,
+    });
+  }
+
   const workspaceIds = await resolveClaimableWorkspaceIds();
   if (workspaceIds.length === 0) {
     return emptyClaim({
@@ -629,180 +597,29 @@ export async function POST(req: NextRequest) {
   // new task generation but does NOT block already-filed tasks from being claimed.
   // Tasks already in the queue when a mission is paused remain claimable so in-flight
   // work drains gracefully. Pause = stop producing new work, not abort existing work.
-  const claimableConditions = [
-    inArray(tasks.workspaceId, workspaceIds),
-    eq(tasks.status, 'pending'),
-    or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now)),
-    // A deferred task is inert until its concrete floor. This is deliberately
-    // enforced in the atomic claim query, not only in dispatch/UI. A force
-    // claim starts it now, as the dashboard override clears startAt.
-    ...(forceClaim ? [] : [or(isNull(tasks.startAt), lte(tasks.startAt, now))]),
-  ];
-
-  // If a specific taskId was requested, only claim that task
-  if (taskId) {
-    claimableConditions.push(eq(tasks.id, taskId));
-  }
-
-  // Named handles on the WHERE-clause gates, so an explicit-taskId claim that
-  // comes back empty can re-evaluate these exact predicates for that one task
-  // and say which one excluded it (./explicit-task-exclusion). Only populated
-  // for gates that are pushed below; each value is the predicate as pushed.
+  // The candidate WHERE is built by lib/claim-candidate-where.ts, the same
+  // builder the runner queue reads its gates from. `explicitTaskGates` are the
+  // named handles on it: an explicit-taskId claim that comes back empty
+  // re-evaluates these exact predicates for that one task and says which one
+  // excluded it (./explicit-task-exclusion).
+  const { conditions: claimableConditions, gates: builtGates } = claimCandidateWhere({
+    workspaceIds,
+    now,
+    accountType: account.type,
+    runner: runner ?? null,
+    availableSkills,
+    executor: cloudExecutor ? 'cloud' : 'host',
+    forceClaim,
+    interactiveSession: !!interactiveSession,
+    accountId: account.id,
+    taskId,
+  });
   const explicitTaskGates: ExplicitTaskGates = {};
-
-  if (account.type !== 'user') {
-    explicitTaskGates.runnerPreference = or(eq(tasks.runnerPreference, 'any'), eq(tasks.runnerPreference, account.type))!;
-    claimableConditions.push(explicitTaskGates.runnerPreference);
+  for (const [name, predicate] of Object.entries(builtGates)) {
+    // claimFree and startAt are not part of the explicit-claim probe's gate set.
+    if (name === 'claimFree' || name === 'startAt' || !predicate) continue;
+    (explicitTaskGates as Record<string, unknown>)[name] = predicate;
   }
-
-  // Exclude tasks that already have an active worker (prevents duplicate claims
-  // when stale cleanup resets a task to pending while another worker is still active)
-  explicitTaskGates.activeWorker = sql`NOT EXISTS (
-      SELECT 1 FROM ${workers} w
-      WHERE w.task_id = ${tasks.id}
-      AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
-    )`;
-  claimableConditions.push(explicitTaskGates.activeWorker);
-
-  // Exclude tasks whose mission is held. A held mission gates ALL its tasks
-  // until explicitly armed (mission.isHeld=false). Force-starting a single task
-  // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
-  if (!forceClaim) {
-    explicitTaskGates.missionHeld = missionNotHeld();
-    claimableConditions.push(explicitTaskGates.missionHeld);
-  }
-  // A mission with executor='local' is run from a person's own session: runners
-  // never auto-claim its tasks. A verified interactive session naming the task
-  // (claim_task {taskId}) is exactly that session, so the gate is not applied to
-  // it and it gets a normal tracked worker. The held gate above still applies to
-  // it — held is the pause and wins over the executor. Force claims and the
-  // dashboard force-start (context.bypassHeldGate) lift it.
-  if (!forceClaim && !(taskId && interactiveSession)) {
-    explicitTaskGates.missionLocal = missionNotLocal();
-    claimableConditions.push(explicitTaskGates.missionLocal);
-  }
-  // A single task held by a person (PATCH { held: true }) waits for resume.
-  explicitTaskGates.taskHeld = taskNotHeld();
-  claimableConditions.push(explicitTaskGates.taskHeld);
-  // A task an interactive session reserved (context.reservedBy, live until its
-  // expiresAt) is that session's: runners and other accounts skip it. The
-  // reserving account's own explicit claim_task passes. Not lifted by force.
-  explicitTaskGates.taskReserved = taskNotReserved(taskId && interactiveSession ? account.id : undefined);
-  claimableConditions.push(explicitTaskGates.taskReserved);
-
-  // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
-  // exclude tasks whose subject PR has been reconciled (marked dead by the
-  // reconciliation sweep) *and* whose anchor actually identifies the subject
-  // (source ∈ system|context). A PR number merely scraped from prose is
-  // advisory and never gates a claim — see lib/subject-gate-contract.ts.
-  // Reads persisted task columns only — zero extra DB calls. Tasks with no
-  // subject anchor are unaffected (backwards compat).
-  // context.bypassSubjectGate=true (written by /start with forceOverride)
-  // bypasses this gate for a single force-started task.
-  if (!forceClaim) {
-    explicitTaskGates.subject = subjectLivenessCondition();
-    claimableConditions.push(explicitTaskGates.subject);
-  }
-
-  // Exclude tasks whose dependencies haven't been satisfied yet.
-  // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
-  // dep with an open PR keeps blocking (root cause of the 6-overlapping-PR burst,
-  // PRs #1044-1049). A cancelled dep is intentionally non-blocking — cancelling a
-  // dead/abandoned dependency deliberately unblocks its dependents. failed /
-  // pending / in_progress deps still block. See dependenciesSatisfied().
-  // Exception: bypassDepsGate=true in task context lets a human override the gate
-  // (set by /api/tasks/[id]/start when forceOverride=true).
-  // No deps, empty deps, the force-start bypass, or every dependency satisfied.
-  // Two-valued (see depsGate) so the explicit-claim probe can name it.
-  if (!forceClaim) {
-    explicitTaskGates.deps = depsGate();
-    claimableConditions.push(explicitTaskGates.deps);
-  }
-
-  // Cap parallel workers per repo-backed workspace. Each task runs in its own git
-  // worktree+branch, so parallel work is safe on disk; the cap bounds merge-conflict
-  // surface from many branches on one repo. Skip this task if the count of active
-  // workers on OTHER tasks in the same workspace has reached the workspace's
-  // maxConcurrentTasks (default 3). Repo-less workspaces (coordination, etc.) never
-  // have a repo so the inner EXISTS is false → count 0 → never serialized.
-  // Workspace concurrency cap. A mission may raise the effective cap above the
-  // workspace default (e.g. a 6-task mission under a workspace cap of 3 gets
-  // effective cap = 6). GREATEST ensures the mission value can only raise, never
-  // lower, the workspace baseline — per-mission downward capping is handled by the
-  // mission-level gate in the dispatch loop below.
-  //
-  // context.capExempt=true is the operator override (written by /start with
-  // capExempt). It MUST be honoured here and not only in the dispatch loop:
-  // without this clause the exempted task is filtered out of the candidate set
-  // precisely when the workspace is at cap — i.e. every time the button is
-  // actually used — so the in-loop check below never saw the task at all.
-  // Same accepted value forms on both sides via lib/bypass-flags.ts.
-  if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
-  if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
-
-  // Workspace executor (gitConfig.executor, packages/shared/src/executor.ts):
-  // a host claim skips workspaces whose work runs in the cloud, so a runner's
-  // cross-workspace poll cannot beat the cold-starting container to the task;
-  // a cloud claim skips host-only workspaces. Applies to a person's explicit
-  // interactive claim_task {taskId} too (the container is already on its way
-  // for that task); only an admin force claim lifts it.
-  if (!forceClaim) {
-    explicitTaskGates.workspaceExecutor = workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host');
-    claimableConditions.push(explicitTaskGates.workspaceExecutor);
-  }
-
-  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
-  // Runner claims wait; a person's interactive session is never paused, and an
-  // admin force claim lifts it like the other workspace gates.
-  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
-    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
-    claimableConditions.push(explicitTaskGates.workspacePaused);
-  }
-
-  // Per-runner cooldown: skip tasks where this runner recently had a worker
-  // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
-  // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
-  // Scoped by runner so a healthy runner can still pick up the task.
-  const cooldownCutoff = new Date(Date.now() - CLAIM_COOLDOWN_MS);
-  // Per-runner cooldown covers both 'error' AND 'failed' — budget/session workers
-  // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
-  // only check missed them entirely and left the burn-loop gap that caused the
-  // 2026-06-25 session-limit storm.
-  //
-  // Not applied to a person's explicit claim from an MCP session: there is no
-  // runner loop to break, every MCP session shares the runner id 'mcp' (so one
-  // person's reaped worker cooled the task down for everyone), and re-claiming
-  // right after a worker was reaped is exactly what an organizer does.
-  if (!(taskId && interactiveSession)) {
-    explicitTaskGates.runnerCooldown = sql`NOT EXISTS (
-        SELECT 1 FROM ${workers} w_cd
-        WHERE w_cd.task_id = ${tasks.id}
-        AND w_cd.runner = ${runner}
-        AND w_cd.status IN ('error', 'failed')
-        AND w_cd.updated_at > ${cooldownCutoff}
-      )`;
-    claimableConditions.push(explicitTaskGates.runnerCooldown);
-  }
-
-  // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
-  // (visual-auditor) need an explicit availableSkills match; every other role
-  // keeps the legacy rule, where an empty list claims anything.
-  //
-  // Exception: an interactive session's explicit claim (taskId + interactiveSession)
-  // on a task whose mission runs locally (executor='local') skips the explicit-slug
-  // requirement too. Runners never see a local mission's tasks at all (missionLocal
-  // above already exempts this same claim from that gate), so the role gate's
-  // browser-capability signal has no runner to protect here — the person's own
-  // session can produce the same evidence a browser-capable runner would
-  // (scripts/qa/shoot.sh, or dispatching visual-qa.yml, per the visual-review
-  // skill), and the visual_evidence completion gate (workers/[id]/route.ts) still
-  // enforces it regardless of who claims. Scoped to local missions only: a
-  // runner-executed mission's browser-capability requirement is untouched, and a
-  // force claim still never lifts this gate (see the force-claim comment above).
-  const roleGateExempt = localMissionClaim;
-  const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
-  if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
-  claimableConditions.push(...roleConditions);
 
   // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
   // cannot exhaust the window and starve valid tasks behind it.
@@ -822,7 +639,8 @@ export async function POST(req: NextRequest) {
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
   const fetchCandidatePage = (offset: number) => db.query.tasks.findMany({
     where: sqlWhere(and(...claimableConditions)),
-    orderBy: sqlOrderByFn((tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)]),
+    // The claim order, shared with the runner queue read (lib/claim-order.ts).
+    orderBy: sqlOrderByFn(claimOrderBy),
     limit: candidateLimit,
     offset,
     with: { workspace: true },
@@ -902,7 +720,7 @@ export async function POST(req: NextRequest) {
     if (!teamId) return new Map();
     const cached = teamPauseCache.get(teamId);
     if (cached) return cached;
-    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id });
+    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id, seatKey: callerSeatKey });
     teamPauseCache.set(teamId, pauses);
     return pauses;
   };
@@ -975,16 +793,21 @@ export async function POST(req: NextRequest) {
   const runnerSupportsEndpointForCapabilityCheck = runnerSupportsAgentEndpoint(body.runnerFeatures);
 
   // Memoized per-workspace server-side Codex auth (scope-aware: team-wide,
-  // account, or workspace): a ChatGPT/OAuth connect, an OpenAI API key, or an
-  // OpenAI-compatible team endpoint this runner will apply. Exactly what
-  // attachCodexCredentials / attachAgentEndpoints can deliver below.
+  // account, or workspace): an OpenAI API key (in a codex_credential row or as
+  // openai_api_key), or an OpenAI-compatible team endpoint this runner will
+  // apply. Exactly what attachCodexCredentials / attachAgentEndpoints can
+  // deliver below.
   const codexAvailability = new Map<string, boolean>();
   const workspaceHasCodex = async (scope: { teamId: string; accountId?: string | null; workspaceId: string }): Promise<boolean> => {
     const wsId = scope.workspaceId;
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
+      // A stored ChatGPT/OAuth login is never delivered (model credentials spec
+      // R-2), so it must not let a Codex task through to a runner with no login
+      // of its own: that worker would have nothing to run on. Excluded here, the
+      // task stays pending for a runner that has its own `codex login`.
+      available = !!(await resolveCodexApiKey(scope)) || (await hasOpenAiApiKey(scope)) ||
         (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
@@ -1036,7 +859,7 @@ export async function POST(req: NextRequest) {
         ...(taskId ? {
           taskExclusion: {
             code: 'capability_mismatch',
-            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with local Codex auth nor access to a team Codex credential.',
+            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with its own Codex login (codex login or OPENAI_API_KEY) nor a team OpenAI API key (a stored Codex login is never sent). Run codex login on the runner or add an OpenAI API key; another runner with a Codex login can still take the task.',
           },
         } : {}),
       } satisfies ClaimDiagnostics,
@@ -1664,6 +1487,8 @@ export async function POST(req: NextRequest) {
     // wins, so the outcome join can grade a started pair and the dashboard can
     // say who decided.
     const softOverlapStarted: Array<Record<string, unknown>> = [];
+    const jevStartNotes: ClaimHoldNote[] = [];
+    let sawCoordinationBlocker = false;
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1776,6 +1601,11 @@ export async function POST(req: NextRequest) {
       // A PR into a different landing base (a trunk → mission refresh, for a
       // trunk-bound task) changes nothing this task lands on — see
       // ./open-pr-target-base.
+      // A fix attempt never waits on another PR that is itself waiting on a
+      // fix: two PRs sharing files each held the other's fix forever, and
+      // neither could merge. Fixes repair existing branches, so they may overlap.
+      const isRepairAttempt = (task as any).taskClass === 'attempt'
+        && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null;
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
@@ -1785,7 +1615,7 @@ export async function POST(req: NextRequest) {
             && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
         },
         splitOwnOpenPrs(task, openPrTasks).others,
-      ).sameBase;
+      ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
@@ -1800,7 +1630,9 @@ export async function POST(req: NextRequest) {
         : {};
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
       const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      if (blocking) sawCoordinationBlocker = true;
       if (blocking && openPrVerdict !== 'HOLD') {
+        if (openPrVerdict === 'START' && holdNote) jevStartNotes.push(holdNote);
         console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
         gatedStartPaths = holdNote!.candidate.concretePaths;
       } else if (blocking) {
@@ -1888,7 +1720,9 @@ export async function POST(req: NextRequest) {
           })
         : [];
       let softHeld = false;
+      if (softVerdicts.length) sawCoordinationBlocker = true;
       for (const v of softVerdicts) {
+        let softNote: ClaimHoldNote | null = null;
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
         // same-file or prefix one until an applied Jev START says otherwise.
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
@@ -1904,9 +1738,11 @@ export async function POST(req: NextRequest) {
           const assessed = holdCtx
             ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId), { probe })
             : null;
+          softNote = assessed?.note ?? null;
           if (assessed) risk = assessed.risk;
           verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
+        if (verdict === 'START' && softNote) jevStartNotes.push(softNote);
         if (verdict === 'START' || verdict === 'rule_start') {
           console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
           gatedStartPaths = concreteManifest;
@@ -2063,9 +1899,11 @@ export async function POST(req: NextRequest) {
           // Noted like layer 1 above. An applied gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
+          if (blockingPeer) sawCoordinationBlocker = true;
           const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
           const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
           if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
+            jevStartNotes.push(holdNote);
             console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
           } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
             // A person's dashboard Force start lifts this serialization for
@@ -2213,9 +2051,12 @@ export async function POST(req: NextRequest) {
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
     const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    // A pause carrying a seat key is this runner's own login wall (only the
+    // caller's own seat-scoped pauses are read, see callerSeatKey).
     if (pauses.has('claude')) {
       claudePoolBlocked = true;
-      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+      const claudePause = pauses.get('claude')!;
+      claudeWall ??= { kind: claudePause.seatKey ? 'runner_seat' : 'provider_pause', resetsAt: claudePause.resetsAt };
     }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
@@ -2774,6 +2615,21 @@ export async function POST(req: NextRequest) {
       console.log(`[claim] task ${task.id}: ${claimPin.reason}`);
     }
 
+    // A task filed under an earlier mission delivery names that delivery's
+    // branch as its base. It merged (and is retired once settled), so the task
+    // builds on the mission's writable branch instead, never the merged one
+    // (docs/specs/workflow-kernel-library.md §6).
+    {
+      const claimMission = taskMissionId ? missionClaimMap.get(taskMissionId) : null;
+      const filedBase = (patchedContext as Record<string, unknown>).baseBranch;
+      // A refresh is the one task that is FOR a specific branch: the delivery settlement retires it instead.
+      if (claimMission?.integrationBranchEnabled && claimMission.workingBranch
+        && (patchedContext as Record<string, unknown>).requireMergeCommit !== true
+        && isPriorEpochBranch(typeof filedBase === 'string' ? filedBase : null, claimMission.workingBranch)) {
+        (patchedContext as Record<string, unknown>).baseBranch = claimMission.workingBranch;
+      }
+    }
+
     // Gated START only (never as shipped): the relaxed overlap's declared
     // paths go through the exclusive primitive, all-or-nothing, before the
     // claim. Any conflict keeps the original path_overlap hold.
@@ -3064,6 +2920,31 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    // Learning observes only successful claims, never a decision that later lost a rail or race.
+    if (!forced && startForceBypassed.length === 0) {
+      for (const note of jevStartNotes) {
+        const c = note.candidate;
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
+          reason: 'claim_learning_jev_start', taskId: task.id, workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null, workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { gate: c.gate, paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [],
+            areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths), fingerprint: CLAIM_LEARNING_HOOKS.fingerprint,
+            candidateDigest: note.digest, startedAt: now.toISOString() },
+        });
+      }
+      const declared = (task.pathManifest ?? []).filter((p: string) => p !== '**');
+      if (!sawCoordinationBlocker && declared.length > 0) {
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
+          reason: 'claim_learning_clean_start', taskId: task.id, workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null, workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { paths: declared, areaClass: CLAIM_LEARNING_HOOKS.areaClass(declared), startedAt: now.toISOString() },
+        });
+      }
+    }
     // A START past a soft overlap (rule or Jev): one accepted row per holder,
     // the started half of the HOLD/START evaluation set.
     for (const s of softOverlapStarted) {
@@ -3493,13 +3374,11 @@ export async function POST(req: NextRequest) {
     await attachMcpConnectors(claimedWorkers, now, getSecretsProvider());
   }
 
-  // Attach agent-backend credentials and the runner's pre-refresh list.
-  // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
-  // read-only (refresh is runner-side). See ./credential-injection.
+  // Codex-backend tasks get a Codex API key. No subscription login is ever
+  // attached (model credentials spec R-2): the runner uses its own. See
+  // ./credential-injection.
   if (!cloudExecutor) {
     await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
-    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, modelCredentialDecided);
   } else {
     for (const cw of claimedWorkers) {
       const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);
@@ -3508,11 +3387,8 @@ export async function POST(req: NextRequest) {
       }
     }
   }
-  // Also announce at the top level so the runner has ONE field to read on every
-  // poll, claim or no claim. This one is account-team-scoped; the per-worker
-  // lists above stay because a claim may serve a workspace outside the
-  // authenticated account's own team, and the runner reads the claude_credential
-  // secretId off the per-worker entry when wiring that worker to its broker.
+  // The idle broker's account-team-scoped list, on every poll, claim or no
+  // claim. No claimed worker is wired to it (spec AC-6).
   const accountCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).

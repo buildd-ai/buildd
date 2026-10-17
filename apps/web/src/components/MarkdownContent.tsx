@@ -1,8 +1,10 @@
 'use client';
 
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MermaidBlock from '@/components/MermaidBlock';
+import SpecCriteriaBody, { specCriterionMarkdown } from './SpecCriteriaBody';
+import { type CriterionMark } from '@/lib/specs/delivery-words';
 
 interface MarkdownContentProps {
   content: string;
@@ -26,6 +28,23 @@ interface MarkdownContentProps {
    * rows. Every other surface renders exactly as before.
    */
   surface?: 'default' | 'spec';
+  /**
+   * A spec revision's attachments (living-specs.md §21): what
+   * `![caption](attachment:<name>)` resolves to, each a lasting buildd link.
+   * A name absent here renders as a visible "missing attachment" placeholder,
+   * never a broken image. Only these links load inline; any other image
+   * follows `images`.
+   */
+  attachments?: Record<string, { src: string; alt: string | null; image: boolean }>;
+  /** Work-specific marks for the revision being read, never an aggregate verdict. */
+  criterionVerdicts?: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
+}
+
+export const ATTACHMENT_SCHEME = 'attachment:';
+
+/** Keep `attachment:<name>` for the img renderer to resolve; every other URL gets the default sanitizing. */
+export function specUrlTransform(url: string): string {
+  return url.startsWith(ATTACHMENT_SCHEME) ? url : defaultUrlTransform(url);
 }
 
 type HastNode = { type?: string; tagName?: string; value?: string; properties?: { className?: unknown }; children?: HastNode[] };
@@ -40,7 +59,7 @@ export function mermaidSource(node: HastNode | undefined): string | null {
   return text(code!).replace(/\n$/, '');
 }
 
-export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default' }: MarkdownContentProps) {
+export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default', attachments, criterionVerdicts = [] }: MarkdownContentProps) {
   const compact = variant === 'compact';
   const spec = surface === 'spec';
   return (
@@ -48,8 +67,15 @@ export default function MarkdownContent({ content, className = '', variant = 'de
       <ReactMarkdown
         // GFM: tables, strikethrough, task lists, autolinks. Agent output leans on
         // tables; without this they rendered as raw `| a | b |` rows.
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={spec ? [remarkGfm, specCriterionMarkdown] : [remarkGfm]}
+        urlTransform={specUrlTransform}
         components={{
+          // Definition rows stay L1: no card frame or new colour.
+          div: ({ children, node, ...props }) => {
+            const id = node?.properties?.['data-criterion-id'];
+            if (typeof id !== 'string') return <div {...props}>{children}</div>;
+            return <SpecCriteriaBody id={id} criterionVerdicts={criterionVerdicts}>{children}</SpecCriteriaBody>;
+          },
           // Style overrides for better integration
           h1: ({ children }) => (
             <h1 className={compact ? 'text-[14px] font-semibold text-text-primary mt-3 mb-1' : 'text-xl font-bold mt-4 mb-2'}>{children}</h1>
@@ -62,7 +88,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           ),
           p: ({ children }) => <p className={compact ? 'my-1.5' : 'my-2'}>{children}</p>,
           ul: ({ children }) => <ul className="list-disc list-inside my-2 space-y-1">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-inside my-2 space-y-1">{children}</ol>,
+          ol: ({ children, start }) => <ol start={start} className="list-decimal list-inside my-2 space-y-1">{children}</ol>,
           li: ({ children }) => <li className="ml-2">{children}</li>,
           code: ({ children, className }) => {
             const isInline = !className;
@@ -93,13 +119,39 @@ export default function MarkdownContent({ content, className = '', variant = 'de
               {children}
             </a>
           ),
-          ...(images === 'link' ? {
-            img: ({ src, alt }: { src?: unknown; alt?: string }) => (
-              <a href={typeof src === 'string' ? src : undefined} target="_blank" rel="noopener noreferrer nofollow" className="text-primary hover:underline">
-                {alt || (typeof src === 'string' ? src : 'image')}
-              </a>
-            ),
-          } : {}),
+          img: ({ node: _node, src, alt, ...rest }: React.ImgHTMLAttributes<HTMLImageElement> & { node?: unknown; src?: unknown }) => {
+            const url = typeof src === 'string' ? src : undefined;
+            if (url?.startsWith(ATTACHMENT_SCHEME)) {
+              const name = url.slice(ATTACHMENT_SCHEME.length);
+              const hit = attachments && Object.hasOwn(attachments, name) ? attachments[name] : undefined;
+              if (!hit) {
+                return (
+                  <span className="my-2 block border-l-2 border-dashed border-border-default py-1 pl-3 text-meta text-text-muted not-italic [overflow-wrap:anywhere]" data-testid="spec-attachment-missing" role="note">
+                    Missing attachment: {name}{alt ? ` (${alt})` : ''}
+                  </span>
+                );
+              }
+              if (!hit.image) {
+                return <a href={hit.src} className="text-primary hover:underline [overflow-wrap:anywhere]" data-testid="spec-attachment-link">{alt || hit.alt || name}</a>;
+              }
+              return (
+                <span className="my-2 block" data-testid="spec-attachment-image">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- an access-checked redirect, not a static asset */}
+                  <img src={hit.src} alt={alt || hit.alt || name} loading="lazy" className="my-0 h-auto max-w-full rounded-md border border-border-default" />
+                  {hit.alt || alt ? <span className="mt-1 block text-meta text-text-muted">{hit.alt || alt}</span> : null}
+                </span>
+              );
+            }
+            if (images === 'link') {
+              return (
+                <a href={url} target="_blank" rel="noopener noreferrer nofollow" className="text-primary hover:underline">
+                  {alt || url || 'image'}
+                </a>
+              );
+            }
+            // eslint-disable-next-line @next/next/no-img-element
+            return <img {...rest} src={url} alt={alt} />;
+          },
           // A wide table scrolls inside its own box instead of widening the page.
           table: ({ children }) => (
             <div className="overflow-x-auto my-2 max-w-full" data-testid={spec ? 'spec-table' : undefined}>

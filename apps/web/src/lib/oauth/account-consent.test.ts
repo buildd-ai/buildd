@@ -358,3 +358,91 @@ describe('token parity with globals.css', () => {
     for (const k of keys) expect([k, pageDay[k]]).toEqual([k, appDay[k]]);
   });
 });
+
+describe('fonts', () => {
+  // The page is standalone, so it loads buildd's faces itself: the same
+  // self-hosted files the app's next/font setup reads, from this origin.
+  const { readFileSync, existsSync } = require('node:fs') as typeof import('node:fs');
+  const { join } = require('node:path') as typeof import('node:path');
+  const { CONSENT_CSS } = require('./account-consent') as typeof import('./account-consent');
+  const layout = readFileSync(join(import.meta.dir, '../../app/layout.tsx'), 'utf8');
+  const faces = [...CONSENT_CSS.matchAll(/@font-face\s*{([^}]*)}/g)].map((m) => m[1]);
+
+  it('declares Schibsted Grotesk, JetBrains Mono and Newsreader', () => {
+    const families = faces.map((f) => /font-family:\s*"([^"]+)"/.exec(f)?.[1]);
+    expect(families).toEqual(expect.arrayContaining(['Schibsted Grotesk', 'JetBrains Mono', 'Newsreader']));
+  });
+  it('loads each from a same-origin file in public/ that the app layout also loads', () => {
+    expect(faces.length).toBeGreaterThanOrEqual(3);
+    for (const face of faces) {
+      const src = /src:\s*url\("([^"]+)"\)\s*format\("woff2"\)/.exec(face)?.[1];
+      expect(src).toMatch(/^\/fonts\/[a-z0-9-]+\.woff2$/);
+      expect(existsSync(join(import.meta.dir, '../../../public', src!))).toBe(true);
+      expect(layout).toContain(`public${src}`);
+      expect(face).toContain('font-display: swap');
+    }
+  });
+  it('never reaches a third-party host', () => {
+    expect(CONSENT_CSS).not.toMatch(/url\(\s*["']?(https?:)?\/\//);
+    expect(CONSENT_CSS).not.toMatch(/@import/);
+  });
+  it('keeps the system fallbacks behind each face', () => {
+    expect(CONSENT_CSS).toMatch(/--font-sans: "Schibsted Grotesk", [^;]*sans-serif;/);
+    expect(CONSENT_CSS).toMatch(/--font-mono: "JetBrains Mono", [^;]*monospace;/);
+    expect(CONSENT_CSS).toMatch(/--font-voice: "Newsreader", [^;]*serif;/);
+  });
+});
+
+describe('narrow widths', () => {
+  const { CONSENT_CSS } = require('./account-consent') as typeof import('./account-consent');
+  const rule = (sel: string) => {
+    const i = CONSENT_CSS.indexOf(`\n${sel} {`);
+    expect(i).toBeGreaterThanOrEqual(0);
+    return CONSENT_CSS.slice(i, CONSENT_CSS.indexOf('}', i));
+  };
+  const html = renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
+
+  it('puts the team name and its chips in one head that wraps, so the chips drop below the name', () => {
+    expect(html).toMatch(/<summary><span class="team-head"><span class="team-name">Alpha<\/span><span class="team-chips"><span class="chip">[^<]+<\/span><span class="chip">[^<]+<\/span><\/span><\/span><\/summary>/);
+    expect(rule('.team-head')).toContain('flex-wrap: wrap');
+    expect(rule('.team-chips')).toContain('flex-wrap: wrap');
+  });
+  it('breaks a team name between words, never letter by letter', () => {
+    const name = rule('.team-name');
+    expect(name).not.toContain('anywhere');
+    expect(name).toContain('overflow-wrap: break-word');
+    expect(name).toMatch(/flex: 1 1 \d/);
+  });
+  it('keeps the search placeholder short enough for a 320 wide screen', () => {
+    const placeholder = /placeholder="([^"]*)"/.exec(html)?.[1] ?? '';
+    expect(placeholder.length).toBeGreaterThan(0);
+    expect(placeholder.length).toBeLessThanOrEqual(14);
+  });
+  it('at 390px and narrower, chips have flex-basis: 100% to wrap below the name', () => {
+    expect(CONSENT_CSS).toContain('@media (max-width: 390px)');
+    const mediaStart = CONSENT_CSS.indexOf('@media (max-width: 390px)');
+    const mediaBlock = CONSENT_CSS.slice(mediaStart, CONSENT_CSS.indexOf('}', mediaStart) + 1);
+    expect(mediaBlock).toContain('.team-chips');
+    expect(mediaBlock).toContain('flex-basis: 100%');
+  });
+});
+
+describe('one team', () => {
+  const solo: ConsentTeam[] = [{ id: 'ts', name: 'Solo', role: 'owner', workspaces: ws('ts', 3) }];
+  const render = (t: ConsentTeam[]) => renderAccountConsentPage({ clientName: 'C', redirectHost: 'h', hidden: [], teams: t, state: initialConsentState(t, agentOnly, null), requested: agentOnly });
+
+  it('shows one select pair, not a second one inside the only team', () => {
+    const html = render(solo);
+    expect(html).toContain('value="select_all"');
+    expect(html).toContain('value="clear_all"');
+    expect(html).not.toContain('team_all:');
+    expect(html).not.toContain('team_clear:');
+    expect(html).not.toContain('<div class="team-actions">');
+  });
+  it('keeps each team its own pair when there are several', () => {
+    const html = render(teams);
+    expect(html).toContain('value="select_all"');
+    expect(html).toContain('value="team_all:ta"');
+    expect(html).toContain('value="team_clear:tb"');
+  });
+});

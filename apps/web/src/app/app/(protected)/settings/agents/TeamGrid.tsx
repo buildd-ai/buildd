@@ -44,7 +44,7 @@ function RoleAvatar({ name, size = 32 }: { name: string; size?: number }) {
 function WorkerStatePill({ status, count }: { status: string; count: number }) {
   const trailing = count > 1 ? <span className="font-mono">{count}</span> : undefined;
   return status === 'waiting_input'
-    ? <StatePill state="waiting" label="Needs input" trailing={trailing} />
+    ? <StatePill state="waiting" label="Has a question" trailing={trailing} />
     : <StatePill state="running" label="Running" trailing={trailing} />;
 }
 

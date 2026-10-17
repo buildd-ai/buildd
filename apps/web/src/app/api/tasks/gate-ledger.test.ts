@@ -379,7 +379,7 @@ describe('POST /api/tasks — gate ledger wiring', () => {
     expect(events[0].outcome).toBe('rejected');
   });
 
-  // ── Advisory kind gate (mission-legibility.md Rule K2-13/K2-14) ───────────
+  // ── Advisory kind gate (mission-legibility.md R-25/R-26) ───────────
 
   it('AC-15 (rejection): a mission task with no kind is WARNED, never 400ed', async () => {
     // `kind` is meaningful on every task, so a hard gate would fire on all of

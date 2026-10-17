@@ -1,5 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
+import type { RunnerHold } from './runner-hold';
 import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
@@ -1351,6 +1352,13 @@ export interface WorkerEnvironment {
    * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
    */
   scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
+  /**
+   * A person's hold on this runner (`buildd hold`, ./runner-hold): nothing new
+   * starts while it is in force; running work finishes. Null or absent = not
+   * held. The claim route gives a held runner's broad claim nothing, and the
+   * dashboard shows it as on hold instead of idle.
+   */
+  hold?: RunnerHold | null;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1375,6 +1383,17 @@ export interface RunnerUpdateCanaryReport {
 }
 
 /**
+ * The workspaces one runner row of `GET /api/workers/active` serves, as the
+ * caller can see them. The three arrays run index for index. A team name is
+ * null when the team is unknown; older servers omit `workspaceTeamNames`.
+ */
+export interface ActiveRunnerWorkspaces {
+  workspaceIds: string[];
+  workspaceNames: string[];
+  workspaceTeamNames?: Array<string | null>;
+}
+
+/**
  * The runner's own live update-state — the same fields it reports on its
  * local, unauthenticated-off-box `/api/version` endpoint
  * (`apps/runner/src/index.ts`) — now also sent on every heartbeat (see
@@ -1392,8 +1411,41 @@ export interface RunnerUpdateSnapshot {
   commitDrift: boolean;
   updating: boolean;
   updateAvailable: boolean;
+  /** Set while claims are halted to drain busy workers before a self-update (epoch ms); null otherwise. */
+  updateDrain?: { since: number; endsAt: number; busy: number } | null;
   /** The branch this install tracks (its `BUILDD_BRANCH`). */
   trackedBranch: string;
+}
+
+/**
+ * Which model login a runner's agents use, as the runner detects it on its own
+ * machine (docs/specs/runner-model-login-detect-say-report.md). A label only: the runner
+ * never sends the credential, and the server stores nothing but one of these
+ * words. Sent on every heartbeat as `modelAuthSource`.
+ */
+export const RUNNER_MODEL_AUTH_SOURCES = ['machine_token', 'machine_login', 'api_key', 'none'] as const;
+export type RunnerModelAuthSource = (typeof RUNNER_MODEL_AUTH_SOURCES)[number];
+
+export function isRunnerModelAuthSource(value: unknown): value is RunnerModelAuthSource {
+  return typeof value === 'string' && (RUNNER_MODEL_AUTH_SOURCES as readonly string[]).includes(value);
+}
+
+/**
+ * Which Codex login a runner's Codex agents use, detected by the same rules as
+ * the Claude label (docs/specs/runner-model-login-detect-say-report.md R-10..R-13). A label
+ * only, sent on every heartbeat as `codexAuthSource`.
+ */
+export const RUNNER_CODEX_AUTH_SOURCES = ['machine_login', 'api_key', 'none'] as const;
+export type RunnerCodexAuthSource = (typeof RUNNER_CODEX_AUTH_SOURCES)[number];
+
+export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAuthSource {
+  return typeof value === 'string' && (RUNNER_CODEX_AUTH_SOURCES as readonly string[]).includes(value);
+}
+
+/** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
+export interface RunnerModelAuthHeartbeatFields {
+  modelAuthSource?: RunnerModelAuthSource;
+  codexAuthSource?: RunnerCodexAuthSource;
 }
 
 // ============================================================================
@@ -1619,7 +1671,9 @@ export type ClaimDiagnosticReason =
   | 'context_paused'
   | 'path_overlap_blocked'
   /** An interactive session's explicit claim of this task came too soon after its last one. */
-  | 'rate_limited';
+  | 'rate_limited'
+  /** A broad claim from a runner a person put on hold (`buildd hold`); a named task still claims. */
+  | 'runner_held';
 
 /**
  * Which gate excluded an explicitly requested task (claim with `taskId`). The
@@ -1664,8 +1718,8 @@ export type ClaimTaskExclusionCode =
 
 /** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
 export interface ClaimBudgetWall {
-  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
-  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; runner_seat: this runner's own machine login hit its limit (other runners are not held); tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'runner_seat' | 'tenant_budget';
   backend: AgentBackend;
   resetsAt: string | null;
 }
@@ -1677,6 +1731,13 @@ export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
   /** One human sentence, including the override when there is one. */
   detail: string;
+  /**
+   * When this exclusion lifts on its own (ISO), when the gate knows it: a
+   * deferred task's startAt, a workspace pause's end. The same time `detail`
+   * names in prose, so a caller (`buildd top`) can show it in local time
+   * without parsing the sentence. Absent when there is no known end.
+   */
+  until?: string;
 }
 
 export interface ClaimDiagnostics {
@@ -1897,7 +1958,7 @@ export interface ClaimCredentialDecision {
   scope: 'personal' | 'team' | 'none';
   /** Provider of the personal key, when `scope` is `personal`. */
   provider?: string;
-  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  /** May the runner's own machine credentials (machine login, llmProvider) take precedence? */
   runnerLocalAllowed: boolean;
 }
 
@@ -1923,28 +1984,22 @@ export interface ClaimTasksResponse {
     claudeAiArtifacts?: ClaudeAiArtifactAccess;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
-    /** Decrypted server-managed OAuth token (inline) */
+    /**
+     * @deprecated Never sent: a claim carries no subscription login (model
+     * credentials spec R-2). Kept until runners stop reading it.
+     */
     serverOauthToken?: string;
-    /**
-     * Access token from a managed claude_credential (centrally refreshed).
-     * When set, the runner creates a per-worker CLAUDE_CONFIG_DIR and writes
-     * a credentials file with ONLY this access_token — no refresh_token —
-     * preventing in-session token rotation by workers.
-     */
+    /** @deprecated Never sent (spec R-2): was a stored claude_credential access token. */
     claudeAccessToken?: string;
-    /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
+    /** @deprecated Never sent (spec R-2). */
     claudeTokenExpiresAt?: string | null;
-    /**
-     * OAuth scopes the managed claude_credential was granted, when recorded
-     * (the dashboard login records them). The runner writes these into the
-     * worker's .credentials.json; absent means the legacy `['user:inference']`.
-     */
+    /** @deprecated Never sent (spec R-2). */
     claudeTokenScopes?: string[];
     /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
-     * (docs/design/agent-model-endpoint.md). When set, serverApiKey,
-     * serverOauthToken, claudeAccessToken and pendingCredentialRefreshes are
-     * absent for this worker: it is the only model credential the agent sees.
+     * (docs/design/agent-model-endpoint.md). When set, serverApiKey and
+     * codexCredential are absent for this worker: it is the only model
+     * credential the agent sees.
      */
     modelEndpoint?: ClaimModelEndpoint;
     /**
@@ -1974,10 +2029,11 @@ export interface ClaimTasksResponse {
      * runner that declares the `scoped_github_token` feature, never on a cloud claim.
      */
     githubCredentials?: { mode: 'scoped' | 'runner' };
-    /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
-     *  Kept per-worker because the runner also reads the claude_credential secretId
-     *  off it to wire the worker to the broker at spawn time, and because a claim
-     *  may serve a workspace outside the authenticated account's own team. */
+    /**
+     * @deprecated Never sent: no claimed worker is wired to a stored login, so
+     * a task causes no refresh (model credentials spec AC-6). Kept until
+     * runners stop reading it.
+     */
     pendingCredentialRefreshes?: PendingCredentialRefresh[];
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
@@ -1986,10 +2042,14 @@ export interface ClaimTasksResponse {
       | { name: string; transport?: 'http' | 'stdio'; url?: string; command?: string; args?: string[]; headers?: Record<string, string>; env?: Record<string, string> }
       | AssertionConnectorEntry
     >;
-    /** Decrypted Codex credential (only present for backend=codex tasks) */
+    /**
+     * A decrypted Codex API key (only present for backend=codex tasks). Always
+     * `credentialType: 'api_key'`: a stored ChatGPT/OAuth login is never sent
+     * (model credentials spec R-2); the OAuth fields remain for older runners.
+     */
     codexCredential?: {
       credentialType: 'oauth' | 'api_key';
-      /** OAuth fields — present when credentialType === 'oauth' */
+      /** @deprecated Never sent (spec R-2). */
       accessToken?: string;
       refreshToken?: string;
       accountId?: string;
@@ -2022,10 +2082,8 @@ export interface ClaimTasksResponse {
    * Credentials of the AUTHENTICATED ACCOUNT'S OWN TEAM that expire within 2 hours.
    *
    * Announced on every claim poll — including polls that claim nothing — because
-   * the claim call is the runner's heartbeat. The per-worker field above only
-   * exists when something was claimed, so an idle-but-online runner's credential
-   * broker never discovered the credentials it is responsible for and never
-   * refreshed them. This is that discovery channel.
+   * the claim call is the runner's heartbeat: the discovery channel for an idle
+   * runner's credential broker. No claimed worker is wired to these.
    *
    * Scope is a single team (the account's), never wider. Metadata only.
    */
@@ -3022,7 +3080,8 @@ export type GoalCriterionType =
   | 'no_open_tasks'
   | 'artifact_exists'
   | 'metric'
-  | 'description';
+  | 'description'
+  | 'living_spec';
 
 /**
  * A criterion's verdict.
@@ -3105,7 +3164,43 @@ export type GoalCriterion =
        */
       grader?: CriteriaGrader;
       label?: string;
-    };
+    }
+  | LivingSpecGoalCriterion;
+
+/**
+ * The mission's selected outcome spec (Living Specs Slice 12, D-19/D-20): the
+ * mission completes only when every in-scope requirement of this pinned
+ * revision passes on the mission's integrated target. Written by the server
+ * (`selectMissionSpec`): the revision id, number and hash come from the
+ * database, never from the caller. Verdicts are mission-level rows in
+ * `spec_outcome_verdicts` recorded by the final verification, a check run, the
+ * visual audit or a person; a task PR's own verdicts are never read here, so a
+ * union of PR passes cannot stand in for the integrated audit.
+ */
+export interface LivingSpecGoalCriterion {
+  type: 'living_spec';
+  specId: string;
+  specRevisionId: string;
+  revision: number;
+  contentHash: string;
+  /** Pinned to a revision nobody has approved yet: shown as provisional. */
+  provisional?: true;
+  /** Narrowed scope (R-n / AC-n ids). Absent = every criterion of the revision. */
+  criteria?: string[];
+  /** Why the scope is narrowed (10+ chars). Required with `criteria`. */
+  narrowedReason?: string;
+  /** Criteria a person waived, with why. Shown as waived, never as passed. */
+  waived?: Array<{ criterionId: string; reason: string; by: string; at: string }>;
+  label?: string;
+}
+
+/** One criterion's standing under a `living_spec` goal criterion, for UI and MCP. */
+export interface LivingSpecCriterionStanding {
+  criterionId: string;
+  standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
+  headSha: string | null;
+  verdictId?: string;
+}
 
 /**
  * How a `description` (prose) criterion is graded.
@@ -3130,6 +3225,117 @@ export interface GoalCriteriaEvidenceRef {
   type: 'artifact' | 'task';
   id: string;
   title?: string;
+}
+
+/**
+ * A mission's stage as `GET /api/missions/stages` sends it, keyed by mission
+ * id; the runner puts it on each listed task's mission as `mission.stage`.
+ * The current step of the mission page's Build / Verify / Deliver rail in words, and what that step waits on in the rail's own words.
+ * Absent when the server could not derive it; clients then show done/total.
+ */
+export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delivered' | 'on_hold' | 'planning';
+export interface MissionStage {
+  step: MissionStageStep;
+  waitingOn: string | null;
+  /**
+   * One cell per task of the mission, in the mission page's Overview strip
+   * order and groups (done, in progress, waiting, then checks), from the same
+   * projection (`overviewProgress`, lib/mission-overview.ts). `buildd top`
+   * draws it as the selected mission's progress row (spec c7410e76 R-29).
+   * Organizer runs and cancelled tasks have no cell. Absent from older servers.
+   */
+  progress?: MissionProgressCell[];
+}
+
+/** The four groups of the mission page's Overview strip, in display order. */
+export type MissionProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+
+export interface MissionProgressCell {
+  /** The strip's display state (`StateKey` in components/ui/states.ts): landed, running, failed, ready, blocked... */
+  state: string;
+  group: MissionProgressGroup;
+}
+
+/**
+ * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
+ * open missions and those finished in the last 7 days, in the caller's
+ * reachable workspaces. All open missions are included; only recent deliveries
+ * are capped. `completedAt` is set only on a finished mission.
+ */
+export interface RecentMission {
+  id: string;
+  title: string;
+  workspaceId: string;
+  status: string;
+  isHeld: boolean;
+  executor: 'runner' | 'local' | string;
+  completedAt: string | null;
+  stage: MissionStage | null;
+}
+
+/**
+ * A claim gate that holds a task for now: the runner takes it once the hold
+ * lifts (spec c7410e76 R-26). `deferred` is a future startAt.
+ */
+export type RunnerQueueHold =
+  | 'deferred'
+  | 'deps_blocked'
+  | 'mission_held'
+  | 'task_held'
+  | 'workspace_paused'
+  | 'workspace_cap'
+  | 'runner_cooldown';
+
+/** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
+export type RunnerQueueExclusion =
+  | 'local_session'
+  | 'another_runner'
+  | 'role_missing'
+  | 'runner_type'
+  | 'workspace_executor'
+  | 'subject_dead';
+
+/** Why a task carries a start time: failures it is retrying after, a usage-limit reset, a credential probe, or a plain start time. */
+export type RunnerQueueHoldCause = 'retry_after_failures' | 'usage_limit_reset' | 'credential_probe' | 'scheduled';
+
+export interface RunnerQueueTask {
+  id: string;
+  title: string;
+  workspaceId: string;
+  workspaceName: string;
+  missionId: string | null;
+  missionTitle: string | null;
+  roleSlug: string | null;
+  backend: string | null;
+  priority: number;
+  createdAt: string;
+  dependsOn: string[];
+  /** The claim gates holding it now, in the claim's own check order; empty = claimable now. */
+  holds: RunnerQueueHold[];
+  /** When its timed hold lifts (a start time, a workspace pause), else null. */
+  holdUntil: string | null;
+  /** What set the start time in `holdUntil` when it is `deferred`; absent from an older server. */
+  holdCause?: RunnerQueueHoldCause | null;
+  /** The task's frozen p50 estimate in minutes; null when the team has estimates off or none was made. */
+  estimateMinutes: number | null;
+}
+
+export interface RunnerQueueTeam {
+  teamId: string;
+  teamName: string;
+  /** The team has task estimates switched on (the est. column shows only then). */
+  estimatesOn: boolean;
+  /** In the claim route's order: what this runner takes next, first. */
+  queue: RunnerQueueTask[];
+  /** Waiting work it never takes, with the reason, in the same order. */
+  notForRunner: Array<RunnerQueueTask & { reason: RunnerQueueExclusion }>;
+}
+
+/** `GET /api/workers/queue`: per team, the order the calling runner's claims take work. */
+export interface RunnerQueueResponse {
+  teams: RunnerQueueTeam[];
+  /** Set when the read was cut at its row limit. */
+  truncated: boolean;
 }
 
 export interface GoalCriteriaState {
@@ -3168,6 +3374,18 @@ export interface GoalCriteriaState {
      * stored verdict MUST match on this.
      */
     fingerprint?: string;
+    /**
+     * `living_spec` criteria: the integrated target the verdicts were read
+     * against and each in-scope criterion's standing there.
+     */
+    spec?: {
+      specId: string;
+      revision: number;
+      targetSha: string | null;
+      standings: LivingSpecCriterionStanding[];
+      /** Whether the mission's build work was done when this was evaluated. Absent on older states. */
+      buildDone?: boolean;
+    };
   }>;
 }
 
@@ -3605,6 +3823,33 @@ export interface LandingMetrics {
 }
 
 /**
+ * Review rounds per merged PR, split by why each round started (58c8961e):
+ * the kernel's `RoundTrigger`, or `unrecorded` for a round from before rounds
+ * carried one. Returned with the gate overview of get_failure_analytics.
+ */
+export interface ReviewRoundMetrics {
+  window: GateWindow;
+  /** Kernel-owned PRs merged in the window. */
+  mergedPrs: number;
+  /** Every review round those PRs had. */
+  rounds: number;
+  roundsPerMergedPr: number;
+  byTrigger: Array<{ trigger: string; rounds: number; perMergedPr: number }>;
+  /** Delta reviews that carried an approval to a new head. */
+  deltaApprovalRounds: number;
+  /** Rounds a newer round replaced before they reached a verdict. */
+  supersededRounds: number;
+  /**
+   * Of those, how many recorded no end reason. Only a push records one today
+   * (`superseded_by_push`); a merge, close, policy approval, composition carry or
+   * retarget supersedes without one, so this is not expected to be zero.
+   */
+  supersededWithoutReason: number;
+  /** The read hit its row cap: the counts are a floor. */
+  truncated: boolean;
+}
+
+/**
  * A rollup across every gate reason sharing a literal prefix — the gate-ledger
  * counterpart to `FailureSignatureFamily`, for a reason family whose surviving
  * free text makes each occurrence its own singleton.
@@ -3809,6 +4054,8 @@ export interface FleetRunner {
   /** Heartbeat id, or a synthetic key for workers on an unknown runner. */
   id: string;
   name: string;
+  /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
+  hold?: RunnerHold | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;
@@ -4094,6 +4341,9 @@ export interface OrchestrationDecisionCounts {
   unlabelled: number;
 }
 export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  actor?: string;
+  gate?: string;
+  areaClass?: string;
   capability: string;
   decisionId: string;
   fingerprint: string;

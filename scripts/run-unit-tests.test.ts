@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   attributeStoreReaches,
   storeGuardPath,
+  getFileWallTimeoutMs,
   getTestTimeoutMs,
   STORE_REACH_MARKER,
   diffStoreSnapshots,
@@ -28,6 +29,7 @@ import {
   UPDATE_DURATIONS_FLAG,
   formatDurationHintsFile,
   formatDurations,
+  formatHeartbeat,
   mergeDurationHints,
   orderByDuration,
   parseRunnerArgs,
@@ -178,6 +180,56 @@ describe('runTestFile', () => {
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Failed to launch Bun");
     expect(result.output).toContain("ENOENT: posix_spawn 'bun'");
+  });
+});
+
+describe('runTestFile wall-clock cap', () => {
+  it('kills a hung file and says why', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      let killed = false;
+      let resolveExit!: (n: number) => void;
+      const exited = new Promise<number>(r => (resolveExit = r));
+      const empty = () => new ReadableStream<Uint8Array>({ start: c => void exited.then(() => c.close()) });
+      const result = await runTestFile('hang.test.ts', () => ({
+        exited,
+        kill: () => { killed = true; resolveExit(137); },
+        stdout: empty(),
+        stderr: empty(),
+      }));
+      expect(killed).toBe(true);
+      expect(result.exitCode).toBe(137);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
+
+  it('resolves even when an orphan keeps stdout open after the kill', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      const result = await runTestFile('orphan.test.ts', () => ({
+        exited: new Promise<number>(() => {}),
+        kill: () => {},
+        stdout: new ReadableStream<Uint8Array>({ start: () => {} }),
+        stderr: new ReadableStream<Uint8Array>({ start: () => {} }),
+      }));
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
+});
+
+describe('getFileWallTimeoutMs', () => {
+  it('falls back to the default for unset, blank, invalid and <1 values', () => {
+    const def = getFileWallTimeoutMs(undefined);
+    expect(def).toBeGreaterThan(0);
+    for (const v of ['', '   ', 'abc', '0', '-5', '0.5']) expect(getFileWallTimeoutMs(v)).toBe(def);
+  });
+  it('uses a valid value', () => {
+    expect(getFileWallTimeoutMs('1234')).toBe(1234);
   });
 });
 
@@ -758,5 +810,17 @@ describe('duration hints file', () => {
       { file: 'c.test.ts', durationMs: 4_000 },
     ], 2);
     expect(lines).toEqual(['   57.3s  b.test.ts', '    4.0s  c.test.ts']);
+  });
+
+  it('formatHeartbeat reports progress, flags an oversubscribed host, and omits unknown ETA', () => {
+    const base = { done: 10, total: 40, failed: 1, running: ['a.test.ts'], elapsedMs: 61_000, cpus: 4 };
+    const calm = formatHeartbeat({ ...base, load1: 2, remainingHintMs: 90_000 });
+    expect(calm).toContain('10/40 files done (1 failed)');
+    expect(calm).toContain('61s elapsed');
+    expect(calm).toContain('~90s of hinted work left');
+    expect(calm).not.toContain('oversubscribed');
+    const busy = formatHeartbeat({ ...base, load1: 9.5, remainingHintMs: null });
+    expect(busy).toContain('oversubscribed');
+    expect(busy).not.toContain('hinted work');
   });
 });

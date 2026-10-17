@@ -1,5 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { cpus, homedir, loadavg, tmpdir } from 'os';
 import { join } from 'path';
 
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
@@ -27,6 +27,7 @@ const UNIT_TEST_ROOTS = [
   'packages/ai-kit/',
   'packages/dispatch-contract/',
   'packages/spec-contract/',
+  'packages/workflow-kernel/',
   'scripts/',
 ] as const;
 
@@ -395,6 +396,24 @@ export function getTestTimeoutMs(configured: string | undefined): number {
   return Math.floor(n);
 }
 
+/**
+ * Wall-clock cap for one test file's whole process. `bun test --timeout` is per
+ * test, so a file that hangs at module scope, in a hook, or in a subprocess it
+ * spawned (warm-repo on a loaded host) never trips it and the run stalls
+ * silently. Generous by default: it is a backstop, not a performance budget.
+ */
+const DEFAULT_FILE_WALL_TIMEOUT_MS = 600_000;
+/** How long to keep reading output after the kill before abandoning the pipes. */
+const KILL_GRACE_MS = 1_000;
+
+export function getFileWallTimeoutMs(configured: string | undefined): number {
+  const n = Number(configured);
+  if (configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1) {
+    return DEFAULT_FILE_WALL_TIMEOUT_MS;
+  }
+  return Math.floor(n);
+}
+
 export async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
@@ -418,6 +437,7 @@ type SpawnTestProcess = (
   options: Bun.SpawnOptions.OptionsObject<'ignore', 'pipe', 'pipe'>,
 ) => {
   exited: Promise<number>;
+  kill?: (signal?: number | NodeJS.Signals) => void;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
 };
@@ -463,6 +483,35 @@ export function attributeStoreReaches(
     .sort();
 }
 
+/** How often a non-TTY run prints a progress line. */
+export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * One progress line for a run whose stdout is a log file. A silent multi-minute
+ * run is indistinguishable from a hung one; this says how far along it is, the
+ * host load (a loaded shared host is the usual reason a run is slow), and the
+ * expected remaining time from the duration hints (`null` hints => no ETA).
+ */
+export function formatHeartbeat(opts: {
+  done: number;
+  total: number;
+  failed: number;
+  running: string[];
+  elapsedMs: number;
+  load1: number;
+  cpus: number;
+  remainingHintMs: number | null;
+}): string {
+  const parts = [
+    `[progress] ${opts.done}/${opts.total} files done (${opts.failed} failed)`,
+    `${Math.round(opts.elapsedMs / 1000)}s elapsed`,
+    `load ${opts.load1.toFixed(1)} on ${opts.cpus} cpus${opts.load1 > opts.cpus * 1.5 ? ' (host oversubscribed; expect slower than documented)' : ''}`,
+  ];
+  if (opts.remainingHintMs !== null) parts.push(`~${Math.round(opts.remainingHintMs / 1000)}s of hinted work left`);
+  if (opts.running.length > 0) parts.push(`running: ${opts.running.slice(0, 3).join(', ')}`);
+  return parts.join(' | ');
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
@@ -503,11 +552,47 @@ export async function runTestFile(
       // accumulating in the shared /tmp across runs.
       env: { ...process.env, BUILDD_HOME: buildHome, TMPDIR: testHome },
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
+    const wallMs = getFileWallTimeoutMs(process.env.BUILDD_TEST_FILE_TIMEOUT_MS);
+    let wallTimer: ReturnType<typeof setTimeout> | undefined;
+    let wallTimedOut = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    // Killing the bun process does not close the pipes while an orphaned
+    // grandchild (git, warm-repo) still holds them, so after the kill stop
+    // waiting for EOF once a short grace period has passed.
+    const gaveUp = new Promise<'gaveUp'>(resolve => {
+      wallTimer = setTimeout(() => {
+        wallTimedOut = true;
+        child.kill?.('SIGKILL');
+        graceTimer = setTimeout(() => resolve('gaveUp'), KILL_GRACE_MS);
+      }, wallMs);
+    });
+    let exitCode: number, stdout: string, stderr: string;
+    try {
+      const settled = await Promise.race([
+        Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]),
+        gaveUp,
+      ]);
+      if (settled === 'gaveUp') {
+        [exitCode, stdout, stderr] = [1, '', ''];
+      } else {
+        [exitCode, stdout, stderr] = settled;
+      }
+    } finally {
+      clearTimeout(wallTimer);
+      clearTimeout(graceTimer);
+    }
+    if (wallTimedOut) {
+      return {
+        file,
+        exitCode: exitCode || 1,
+        output: `${stdout}${stderr}\nKilled ${file} after ${wallMs}ms wall-clock (BUILDD_TEST_FILE_TIMEOUT_MS). The per-test --timeout does not cover a hang outside a test body (module scope, hooks, spawned subprocess).\n`,
+        durationMs: elapsed(),
+      };
+    }
     return { file, exitCode, output: `${stdout}${stderr}`, durationMs: elapsed() };
   } catch (error) {
     const detail = error instanceof Error ? error.stack ?? error.message : String(error);
@@ -828,14 +913,51 @@ async function main(): Promise<void> {
   const timings: Array<{ file: string; durationMs: number }> = [];
   const runStartedAt = performance.now();
 
+  const running = new Set<string>();
+  const heartbeat = process.stdout.isTTY
+    ? null
+    : setInterval(() => {
+        const finished = new Set(timings.map(t => t.file));
+        const remaining = files.filter(f => !finished.has(f));
+        const known = remaining.every(f => hints[f] !== undefined);
+        console.log(formatHeartbeat({
+          done: passed + failures.length,
+          total: files.length,
+          failed: failures.length,
+          running: [...running],
+          elapsedMs: performance.now() - runStartedAt,
+          load1: loadavg()[0],
+          cpus: cpus().length,
+          remainingHintMs: known ? remaining.reduce((s, f) => s + (hints[f] ?? 0), 0) : null,
+        }));
+      }, HEARTBEAT_INTERVAL_MS);
+  heartbeat?.unref?.();
+
+  // A killed run keeps its partial result: failures so far go to the log and the
+  // message names what was still running.
+  const onKill = (signal: NodeJS.Signals): void => {
+    console.error(`\n${signal} received before the run finished: ${passed + failures.length}/${files.length} files done (${failures.length} failed); still running: ${[...running].join(', ') || 'none'}`);
+    for (const failure of failures) console.error(`  failed so far: ${failure.file}`);
+    try {
+      const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n\n${partial}`);
+    } catch {}
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGTERM', onKill);
+  process.once('SIGINT', onKill);
+
   await runWithConcurrency(files, concurrency, async file => {
+    running.add(file);
     const result = await runTestFile(file);
+    running.delete(file);
     timings.push({ file, durationMs: result.durationMs });
     if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
       passed++;
     } else {
       failures.push(result);
+      if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
@@ -843,7 +965,10 @@ async function main(): Promise<void> {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
   });
+  if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
+  process.off('SIGTERM', onKill);
+  process.off('SIGINT', onKill);
   const wallMs = performance.now() - runStartedAt;
 
   // Files finish out of order under concurrency; sort so the failure section of

@@ -2,7 +2,7 @@
 title: Team / Workspace / Mission Onboarding
 status: active
 owner: max
-last_verified: 2026-09-26
+last_verified: 2026-10-15
 summary: The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx]
@@ -30,8 +30,7 @@ assertions:
 # Team → Workspace → Mission Onboarding
 
 Capabilities the dashboard must fulfill for a user to take a freshly-created
-team from empty to a running mission against a repo. Covers two entry use cases
-that are currently confusing or unsupported in the UI:
+team from empty to a running mission against a repo. Covers two entry use cases:
 
 1. **Connect an existing repo** into a team as a new workspace.
 2. **Create a brand-new repo** for a team (workspace + GitHub repo in one flow).
@@ -84,7 +83,7 @@ pasting a repo URL, in a single form submission.
 
 ---
 
-## Team selection during workspace creation ⚠️
+## Team selection during workspace creation ✅
 
 **Capability statement**: When a user belongs to more than one team, the New
 Workspace form MUST let them choose which team owns the workspace; the team they
@@ -92,19 +91,20 @@ Workspace form MUST let them choose which team owns the workspace; the team they
 
 **Invariants**:
 - The team selector MUST render whenever `userTeams.length > 1`.
-- The default selected team MUST be deterministic (personal team first, else the
-  first team returned).
+- The default selected team MUST be deterministic: the active team (the
+  `buildd-team` cookie) when the user belongs to it, else the personal team,
+  else the first team returned (`defaultTeamId` in
+  `apps/web/src/lib/active-team-client.ts`).
 
 **Acceptance criteria**:
-- AC-1: GIVEN a user in 2+ teams, WHEN `/app/settings/workspaces/new` loads, THEN a Team
+- AC-6: GIVEN a user in 2+ teams, WHEN `/app/settings/workspaces/new` loads, THEN a Team
   dropdown lists every team from `GET /api/teams` and submission includes the
   chosen `teamId`.
-- AC-2: GIVEN a user in exactly 1 team, WHEN the form loads, THEN no Team
+- AC-7: GIVEN a user in exactly 1 team, WHEN the form loads, THEN no Team
   selector renders and the workspace is created under that single team.
-- AC-3 (gap): GIVEN a user arrives from a specific team's page, WHEN the form
-  loads, THEN the Team selector MUST pre-select that team. *(Currently the form
-  always defaults to the personal team regardless of entry context — see
-  `settings/workspaces/new/page.tsx` `loadTeams()`.)*
+- AC-8: GIVEN a user whose active team is T, WHEN the form loads, THEN the Team
+  selector pre-selects T. *(Fixed: `loadTeams` calls
+  `defaultTeamId(teams, readActiveTeamCookie())`.)*
 
 **Code surface**:
 - UI: `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx` (`userTeams`,
@@ -130,18 +130,18 @@ or using the CLI/MCP.
   hint to use `gh repo create` + link via update.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a workspace with a linked installation, WHEN `POST /api/workspaces/[id]/create-repo`
+- AC-9: GIVEN a workspace with a linked installation, WHEN `POST /api/workspaces/[id]/create-repo`
   is called with `{ name, org?, private?, description? }`, THEN a repo is created
   (with `auto_init`) and `{ repoUrl, fullName }` is returned.
-- AC-2: GIVEN GitHub App not configured, WHEN create-repo is called, THEN it
+- AC-10: GIVEN GitHub App not configured, WHEN create-repo is called, THEN it
   rejects with HTTP 422 and a `hint` field.
-- AC-3: GIVEN a workspace with no installation and no matching `org`, WHEN
+- AC-11: GIVEN a workspace with no installation and no matching `org`, WHEN
   create-repo is called, THEN it rejects with HTTP 422.
-- AC-4: WHEN a user picks "Create new repo" mode on `/app/settings/workspaces/new`, THEN
+- AC-12: WHEN a user picks "Create new repo" mode on `/app/settings/workspaces/new`, THEN
   the form collects name + GitHub account + visibility + description, creates a
   workspace shell, and calls `create-repo`; a failed `create-repo` reuses the
   same workspace on retry (no duplicate). *(Implemented in `settings/workspaces/new/page.tsx`.)*
-- AC-5: GIVEN a personal (User) GitHub installation, WHEN create-repo runs, THEN
+- AC-13: GIVEN a personal (User) GitHub installation, WHEN create-repo runs, THEN
   it targets `POST /user/repos` (not `/orgs/{org}/repos`). *(Fixed — endpoint is
   chosen by `installation.accountType`.)*
 
@@ -155,7 +155,7 @@ the App must have repo-creation permission for the target org).
 
 ---
 
-## No-repo workspace with deferred repo linking ⚠️
+## No-repo workspace with deferred repo linking ✅
 
 **Capability statement**: A user MUST be able to create a workspace with no repo
 and link a repo (new or existing) to it later from the UI.
@@ -166,23 +166,26 @@ and link a repo (new or existing) to it later from the UI.
   not only the `repo` URL string.
 
 **Acceptance criteria**:
-- AC-1: WHEN `POST /api/workspaces` is submitted with no `repoUrl`, THEN a
+- AC-14: WHEN `POST /api/workspaces` is submitted with no `repoUrl`, THEN a
   workspace is created with null repo fields.
-- AC-2: GIVEN a no-repo workspace, WHEN its repo is set via update with a GitHub
+- AC-15: GIVEN a no-repo workspace, WHEN its repo is set via update with a GitHub
   repo, THEN `githubRepoId` is populated so `create_pr` succeeds. *(Regression
   fixed in PR #757 — auto-link `githubRepoId` on `repoUrl` update.)*
-- AC-3 (UI gap): GIVEN a no-repo workspace detail page, WHEN the user opens it,
-  THEN a "Link repo" / "Create repo" affordance MUST be present.
+- AC-16: GIVEN a no-repo workspace detail page and a user who can manage it,
+  WHEN the user opens it, THEN a "Link repository" / "Create repository"
+  affordance is present. *(Fixed: the workspace page renders `RepoLinkCard`
+  when `workspace.repo` is empty.)*
 
 **Code surface**:
 - Route: `apps/web/src/app/api/workspaces/[id]/route.ts` (PATCH), `create-repo/route.ts`
-- UI: `apps/web/src/app/app/(protected)/workspaces/[id]/`
+- UI: `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx`,
+  `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/RepoLinkCard.tsx`
 
 **Out of scope**: Runner directory provisioning for no-repo workspaces.
 
 ---
 
-## Create a mission within a team ✅ (workspace targeting ⚠️)
+## Create a mission within a team ✅
 
 **Capability statement**: A user MUST be able to create a mission scoped to a
 team from the dashboard with at minimum a title; the mission MAY target a
@@ -195,19 +198,18 @@ workspace and MAY carry a schedule.
 - A mission with a `cronExpression` MUST create a backing task schedule.
 
 **Acceptance criteria**:
-- AC-1: WHEN the user submits `/app/missions?new=1` (the New mission sheet) with a title, THEN `POST /api/missions`
+- AC-17: WHEN the user submits `/app/missions?new=1` (the New mission sheet) with a title, THEN `POST /api/missions`
   creates the mission and redirects to `/app/missions/[id]`.
-- AC-2: GIVEN a `cronExpression` is set, WHEN the mission is created, THEN a
+- AC-18: GIVEN a `cronExpression` is set, WHEN the mission is created, THEN a
   schedule is created and the UI previews the next runs.
-- AC-3 (error): WHEN `POST /api/missions` rejects, THEN the inline error renders
+- AC-19 (error): WHEN `POST /api/missions` rejects, THEN the inline error renders
   and no redirect occurs.
-- AC-4 (UI gap): The workspace picker is hidden under "Advanced options" and is
-  optional, so a mission can be created with no workspace and therefore no repo
-  to act on. WHEN a team has ≥1 workspace AND the mission description implies
-  code delivery, THEN mission creation SHOULD surface the workspace target
-  prominently (not buried) so the mission has a repo.
-  *(See `NewMissionForm.tsx` — `WorkspaceDropdown` lives behind `showAdvanced`.)*
-- AC-4b (documented behavior): A workspace-less mission (`workspaceId = null`)
+- AC-20: GIVEN a team with at least one workspace, WHEN the New mission form
+  renders, THEN the workspace picker is in the main form, not under "Advanced
+  options". It stays optional. *(Fixed: `NewMissionForm` renders the
+  `mission-workspace-select` field whenever `workspaces.length > 0`; Advanced
+  options holds only the cost budget and schedule.)*
+- AC-21 (documented behavior): A workspace-less mission (`workspaceId = null`)
   is intentionally valid for personal-agent missions (e.g., finance tracking,
   email triage, annual-cycle planning). For these missions:
   - `workingBranch` and `primaryPrUrl` are always null — expected, not broken.
@@ -231,15 +233,15 @@ MUST present a clear path to "add a repo" (connect existing OR create new) befor
 a mission can do useful work.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a team with zero workspaces, WHEN the user views the Settings
+- AC-22: GIVEN a team with zero workspaces, WHEN the user views the Settings
   Workspaces section, THEN it MUST render a header with a "+ New Workspace" link
   and an empty state linking to `/app/settings/workspaces/new` that explains workspace =
   repo. *(Implemented — `settings/workspaces/page.tsx` renders the list with a
   "New workspace" link and an empty state.)*
-- AC-2: GIVEN the New Workspace form, WHEN the user has no GitHub App connected,
+- AC-23: GIVEN the New Workspace form, WHEN the user has no GitHub App connected,
   THEN a "Connect GitHub" call-to-action MUST be shown (exists today via
   `/api/github/install`).
-- AC-3: GIVEN the user wants a new repo, WHEN on the New Workspace form, THEN a
+- AC-24: GIVEN the user wants a new repo, WHEN on the New Workspace form, THEN a
   visible "Create new repo" mode toggle MUST exist. *(Implemented.)*
 
 **Code surface**:
@@ -259,22 +261,22 @@ key, or let each person connect their own. Members MUST NOT see it. Chat is
 always on and runs as soon as a key resolves; there is no enable step.
 
 **Acceptance criteria**:
-- AC-1: GIVEN an owner or admin, no key resolving and the team key policy
+- AC-25: GIVEN an owner or admin, no key resolving and the team key policy
   `team` or `team_or_own`, WHEN they open Home, THEN the provider step renders
   above the fleet with "1 of 2" progress, OpenRouter first.
-- AC-2: GIVEN the step, WHEN the admin chooses "Not now", THEN it folds to one
+- AC-26: GIVEN the step, WHEN the admin chooses "Not now", THEN it folds to one
   line with "Resume" (per browser, per team) and stays folded on reload; it
   leaves Home once chat is available.
-- AC-3: GIVEN "Connect OpenRouter", WHEN OpenRouter redirects back with a code,
+- AC-27: GIVEN "Connect OpenRouter", WHEN OpenRouter redirects back with a code,
   THEN the callback checks the state against the httpOnly flow cookie,
   re-checks the caller may write that scope, exchanges the code with the PKCE
   verifier, and stores the key in `secrets` at team scope. The key is never
   logged or put in a URL.
-- AC-4: GIVEN "Let each person connect their own", THEN the team key policy
+- AC-28: GIVEN "Let each person connect their own", THEN the team key policy
   becomes `own`, and anyone without a key sees a single "Connect OpenRouter to
   start" card on Home and in place of chat, which uses the same flow at
   personal scope.
-- AC-5: GIVEN a member of a team with no key and policy `team`, THEN Home shows
+- AC-29: GIVEN a member of a team with no key and policy `team`, THEN Home shows
   nothing new.
 
 **Code surface**:
@@ -286,3 +288,18 @@ always on and runs as soon as a key resolves; there is no enable step.
 - Lib: `apps/web/src/lib/openrouter-oauth.ts`
 
 **Out of scope**: A multi-step product tour.
+
+---
+
+## Renumbered
+
+Each section used to restart at AC-1, so the ids collided. Ids now run once
+through the file:
+
+- Connect existing repo as a new workspace: AC-1 to AC-5 unchanged.
+- Team selection during workspace creation: AC-1..AC-3 to AC-6..AC-8.
+- Create a brand-new repo for a team: AC-1..AC-5 to AC-9..AC-13.
+- No-repo workspace with deferred repo linking: AC-1..AC-3 to AC-14..AC-16.
+- Create a mission within a team: AC-1..AC-4 to AC-17..AC-20, AC-4b to AC-21.
+- Cross-cutting discoverability: AC-1..AC-3 to AC-22..AC-24.
+- Model provider step for owners and admins: AC-1..AC-5 to AC-25..AC-29.

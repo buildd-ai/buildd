@@ -23,6 +23,7 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
 let mockQueryError: Error | null = null; // Set to throw during query iteration
+const queryLog: any[] = []; // every query() call's options, in order
 let lastQueryOptions: any = null; // options passed to the most recent SDK query()
 
 // Mock pusher-js — real Pusher tries to open a network connection on
@@ -42,6 +43,7 @@ mock.module('pusher-js', () => {
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     lastQueryOptions = _opts?.options ?? null;
+    queryLog.push(lastQueryOptions);
     const msgs = [...mockMessages];
     const throwErr = mockQueryError;
     let idx = 0;
@@ -163,11 +165,19 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 // Import WorkerManager after all mocks
-const { WorkerManager } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+// Sessions here run a mocked SDK with no model credential: skip the
+// pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
+__setModelAuthPreflightForTest(() => null);
 const { SESSION_BUDGET_CAP_ERROR } = await import('../../src/claim-budget-signals');
 const { isBudgetExhaustionError } = await import('@buildd/core/budget-error-classifier');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Poll instead of a fixed sleep: a fixed 200ms is too short on a loaded host.
+async function waitFor(cond: () => boolean, timeoutMs = 5000) {
+  for (const start = Date.now(); !cond() && Date.now() - start < timeoutMs;) await new Promise(r => setTimeout(r, 25));
+}
 
 function makeConfig(overrides?: Partial<LocalUIConfig>): LocalUIConfig {
   return {
@@ -262,6 +272,40 @@ describe('Error Handling', () => {
 
     initTestWorkspace();
     clearAllMocks();
+  });
+
+  // ─── 0. No model credential at all (model credentials spec R-5) ───────────
+
+  describe('Claude run with no model login', () => {
+    const REFUSAL = '[runner:no_model_auth] No model login for this Claude run. To fix: ... ANTHROPIC_API_KEY for metered billing';
+    afterEach(() => { __setModelAuthPreflightForTest(() => null); });
+
+    test('refused before spawn, reported as an infra requeue, paused briefly rather than as billing', async () => {
+      __setModelAuthPreflightForTest(() => REFUSAL);
+      lastQueryOptions = null;
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-no-auth', branch: 'buildd/no-auth', task: makeTask() }] }));
+
+      manager = new WorkerManager(makeConfig());
+      const events = collectEvents(manager);
+      await manager.claimAndStart(makeTask());
+      for (let i = 0; i < 100 && manager.getWorker('w-no-auth')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await new Promise(r => setTimeout(r, 100));
+
+      expect(manager.getWorker('w-no-auth')?.status).toBe('error');
+      // No agent was spawned.
+      expect(lastQueryOptions).toBeNull();
+      const failed = mockUpdateWorker.mock.calls.find((c: any[]) => c[0] === 'w-no-auth' && c[1]?.status === 'failed');
+      expect(failed).toBeDefined();
+      expect(failed![1].modelAuthMissing).toBe(true);
+      expect(failed![1].error).toContain('[runner:no_model_auth]');
+      expect(failed![1].resultMeta.closingTurnOutcome).toBe('skipped:infra_failure');
+      const pause = events.find((e: any) => e.type === 'circuit_breaker');
+      expect(pause?.reason).toContain('No model login on this runner');
+      expect(pause?.reason).not.toContain('Billing');
+      expect(pause.pausedUntil - Date.now()).toBeLessThanOrEqual(10 * 60_000);
+    });
   });
 
   // ─── 1. Abort Scenarios ──────────────────────────────────────────────────
@@ -522,32 +566,36 @@ describe('Error Handling', () => {
         }
       });
 
-      async function runWithBudget(id: string) {
+      async function runWithBudget(id: string, credVar: string) {
         mockMessages = [
           { type: 'system', subtype: 'init', session_id: `sess-${id}` },
           { type: 'result', subtype: 'success', session_id: `sess-${id}`, result: 'ok' },
         ];
         mockClaimTask.mockImplementation(async () => ({ workers: [{ id, branch: `buildd/${id}`, task: makeTask() }] }));
         lastQueryOptions = null;
+        queryLog.length = 0;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
         // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
-        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
-        expect(lastQueryOptions).not.toBeNull();
-        return lastQueryOptions;
+        // A previous test's worker can restart late and query() first, so pick
+        // this session's call by the credential this test put in its env.
+        const mine = () => queryLog.find(o => o?.env?.[credVar]);
+        for (let i = 0; i < 100 && !mine(); i++) await new Promise(r => setTimeout(r, 50));
+        expect(mine()).toBeDefined();
+        return mine();
       }
 
       test('OAuth session: maxBudgetUsd is not passed to the SDK', async () => {
         delete process.env.ANTHROPIC_API_KEY;
         delete process.env.ANTHROPIC_AUTH_TOKEN;
         process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-test';
-        const opts = await runWithBudget('w-oauth-budget');
+        const opts = await runWithBudget('w-oauth-budget', 'CLAUDE_CODE_OAUTH_TOKEN');
         expect(opts.maxBudgetUsd).toBeUndefined();
       });
 
       test('API-key session: maxBudgetUsd is passed to the SDK', async () => {
         process.env.ANTHROPIC_API_KEY = 'sk-test';
-        const opts = await runWithBudget('w-apikey-budget');
+        const opts = await runWithBudget('w-apikey-budget', 'ANTHROPIC_API_KEY');
         expect(opts.maxBudgetUsd).toBe(5);
       });
     });
@@ -951,7 +999,8 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Completion runs async git (stats) off the event loop: wait for it.
+      for (let i = 0; i < 100 && !['done', 'error'].includes(manager.getWorker('w-obs-fail')?.status ?? ''); i++) await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-obs-fail');
       // Task should still be done, not error
@@ -1326,7 +1375,7 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => !!manager.getWorker('w-meta')?.resultMeta);
 
       const worker = manager.getWorker('w-meta');
       expect(worker?.resultMeta).toBeDefined();
@@ -1387,7 +1436,7 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => manager.getWorker('w-retry')?.status === 'error');
 
       let worker = manager.getWorker('w-retry');
       expect(worker?.status).toBe('error');
@@ -1405,7 +1454,7 @@ describe('Error Handling', () => {
 
       await manager.retry('w-retry');
       // Retry session runs async via .catch — wait longer for completion
-      await new Promise(r => setTimeout(r, 500));
+      await waitFor(() => manager.getWorker('w-retry')?.status === 'done');
 
       worker = manager.getWorker('w-retry');
       expect(worker?.status).toBe('done');

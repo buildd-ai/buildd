@@ -2,7 +2,7 @@
 title: Worker Sandbox Isolation
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-15
 summary: An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 domain: runners
 surfaces: [apps/runner/src/bwrap-mount-allowlist.ts, apps/runner/src/workers.ts, apps/runner/src/env-scan.ts]
@@ -46,7 +46,7 @@ absent, degraded, or too narrow rather than continuing silently.
 `docs/specs/credential-isolation.md` decides **which secrets exist** in the agent
 process. This spec decides **what the process can reach**. The two are
 independent rings, and the second exists because the first has a documented hole:
-the read-jail (`apps/runner/src/read-jail.ts:11-13`) enforces its denied prefixes
+the read-jail (the module comment of `apps/runner/src/read-jail.ts`) enforces its denied prefixes
 via a `PreToolUse` hook on `Read`/`Glob`/`Grep` only — "Bash shell commands are
 not fully intercepted at this layer — use bwrap or Landlock for kernel-level
 enforcement". An agent with a shell is outside the application-layer jail by
@@ -58,7 +58,7 @@ Two facts a reader must carry into the rest of this document:
 
 1. **The boundary is opt-in and off by default.** `isMountAllowlistEnabled()`
    requires `BUILDD_SANDBOX_MOUNT_ALLOWLIST=1`
-   (`apps/runner/src/bwrap-mount-allowlist.ts:45-47`). A runner that sets nothing
+   (`apps/runner/src/bwrap-mount-allowlist.ts`). A runner that sets nothing
    runs agents with no outer namespace at all. This is phase 1 of the rollout in
    `docs/design/worker-mount-isolation.md` §5; phases 2-3 have not shipped.
 2. **The kernel-level denial probes run in CI.** The tests that assert an
@@ -74,46 +74,49 @@ Two facts a reader must carry into the rest of this document:
 
 ### 1. What the namespace contains
 
-`buildWorkerBwrapArgv()` (`apps/runner/src/bwrap-mount-allowlist.ts:86-133`)
+`buildWorkerBwrapArgv()` (`apps/runner/src/bwrap-mount-allowlist.ts`)
 composes one table per task. The table is the whole contract: containment is
 defined by absence, so adding a mount is a security change and must be reviewed
 as one.
 
 **Invariants**:
-- **WS-1**: The argv MUST begin with
+- **R-1**: The argv MUST begin with
   `--die-with-parent --new-session --unshare-user --unshare-pid --uid 0 --gid 0
-  --tmpfs /` (line 126). `--tmpfs /` is what makes the table exhaustive — the
+  --tmpfs /` (the first `argv` literal). `--tmpfs /` is what makes the table exhaustive, the
   host root is not inherited, so any path not bound afterwards does not exist
   inside the namespace. `--die-with-parent` is what prevents an agent subprocess
   outliving the worker session that is accountable for it.
-- **WS-2**: Exactly two paths are mounted writable for the task's own work: the
-  session worktree and `<repoPath>/.git` (lines 92-96). `.git` of the parent
+- **R-2**: Exactly two paths are mounted writable for the task's own work: the
+  session worktree and `<repoPath>/.git` (the first two `builtins` entries). `.git` of the parent
   clone is writable because a linked worktree writes refs, index state and new
   objects into the shared store; per-worker clones were rejected on setup cost
   in `docs/design/worker-mount-isolation.md` §1.
-- **WS-3**: The system toolchain is read-only. `SYSTEM_RO_BINDS` (lines 34-43) is
+- **R-3**: The system toolchain is read-only. `SYSTEM_RO_BINDS` is
   `/usr`, `/bin`, `/lib`, `/lib64`, `/usr/local`, `/etc/ssl`, `/etc/resolv.conf`,
   `/etc/nsswitch.conf` — TLS roots and DNS resolution, and nothing else from
   `/etc`.
-- **WS-4**: Exactly one backend credential surface is mounted, chosen by
-  `isCodexTask` (lines 104-113): the per-worker `CODEX_HOME` (rw) for Codex, the
+- **R-4**: Exactly one backend credential surface is mounted, chosen by
+  `isCodexTask` in `buildWorkerBwrapArgv()`: the per-worker `CODEX_HOME` (rw) for Codex, the
   per-worker `CLAUDE_CONFIG_DIR` (rw) when one was materialized, otherwise
   `~/.claude/.credentials.json` and `~/.claude/settings.json` (ro). The
-  non-active backend's credential path MUST NOT appear in the table.
-- **WS-5**: Package caches are the only shared-writable host state:
+  non-active backend's credential path MUST NOT appear in the table. The
+  resolved Claude Code binary (`executablePath`) is also bound read-only when
+  the runner passes one. In production only the Claude branch runs, because
+  `shouldWrapWorkerInBwrap()` excludes Codex (R-15).
+- **R-5**: Package caches are the only shared-writable host state:
   `$BUN_INSTALL` ro with `$BUN_INSTALL/install/cache` rw, and `~/.npm` rw
-  (lines 98-100). Nesting is expressed by order — the rw cache bind is emitted
+  (the `bunInstall` and `.npm` `builtins` entries). Nesting is expressed by order, the rw cache bind is emitted
   after its ro parent, so argv order is load-bearing and MUST NOT be sorted.
-- **WS-6**: `/proc`, `/dev`, a `/dev/shm` tmpfs, a `/tmp` tmpfs and a read-only
-  `/sys` are emitted after the `--dir` list and before every bind (line 128).
+- **R-6**: `/proc`, `/dev`, a `/dev/shm` tmpfs, a `/tmp` tmpfs and a read-only
+  `/sys` are emitted after the `--dir` list and before every bind.
   Because `/tmp` is a fresh tmpfs, sibling workers' `claude-cfg-*` dirs are
   invisible even though they share a host `/tmp`.
-- **WS-7**: Retired. It covered the code-graph binary and cache mounts, which
-  were removed with the code graph itself.
-- **WS-8**: Neither the runner's own source tree, `~/.buildd`, sibling worktrees
+- Retired (formerly WS-7, no id now): the code-graph binary and cache mounts,
+  removed with the code graph itself.
+- **R-8**: Neither the runner's own source tree, `~/.buildd`, sibling worktrees
   under `<repoPath>/.buildd-worktrees`, nor any other worker's credential dir
   appears in the table. This is the same denied set as
-  `buildReadJailDeniedPrefixes()` (`read-jail.ts:24-33`), enforced structurally
+  `buildReadJailDeniedPrefixes()` (`read-jail.ts`), enforced structurally
   instead of by hook.
 
 **Acceptance criteria**:
@@ -127,7 +130,8 @@ as one.
   `--die-with-parent --new-session --unshare-user --unshare-pid --uid 0 --gid 0
   --tmpfs /` in that order, and `--tmpfs /tmp` precedes every `--bind` /
   `--ro-bind` pair.
-- AC-4: Retired with WS-7.
+- Retired (formerly AC-4, no id now): the code-graph mount check, retired with
+  the former WS-7.
 - AC-5: GIVEN `worktreePath = <repo>/.buildd-worktrees/task` WHEN the argv is
   built THEN `<repo>/.buildd-worktrees` appears only as a `--dir` (an empty
   directory in the tmpfs root) and never as a bind — sibling worktrees are not
@@ -138,23 +142,25 @@ as one.
 ### 2. Mount resolution: absent, duplicate, and parent paths
 
 **Invariants**:
-- **WS-9**: Every candidate mount is filtered by existence on the host, and an
+- **R-9**: Every candidate mount is filtered by existence on the host, and an
   absent path is dropped with a `Skipping unavailable sandbox mount "<path>"`
-  warning (lines 118-122). Startup MUST NOT fail. This is the right invariant and
+  warning (the `present` filter in `buildWorkerBwrapArgv()`). Startup MUST NOT fail. This is the right invariant and
   is deliberate in both directions: a dropped mount can only *narrow* the
   namespace, so it is fail-closed for containment, while hard-failing on, say, a
   runner with no `~/.npm` would take a whole runner offline for a path most tasks
-  never touch. The availability cost is paid instead by the detection path in §4
-  — a dropped mount that the task actually needed surfaces as
-  `sandbox_mount_gap`, aborts that one session, and re-queues that one task.
-- **WS-10**: Mounts are deduped by absolute path (line 123). Insertion order of
+  never touch. The availability cost is paid instead by the detection path in §4:
+  a dropped mount that the task actually needed surfaces as a
+  `sandbox_mount_gap` trace and a milestone, and the agent's own failing
+  commands then reach the normal failure path.
+- **R-10**: Mounts are deduped by absolute path (the `deduped` Map in
+  `buildWorkerBwrapArgv()`). Insertion order of
   the first occurrence is preserved; the **mode of the last occurrence wins**.
-- **WS-11**: Every parent directory of every surviving mount is materialized with
-  `--dir` before the binds (lines 76-84, 124, 127). A `--dir` grants existence,
+- **R-11**: Every parent directory of every surviving mount is materialized with
+  `--dir` before the binds (`parentDirs()`, then the `--dir` loop). A `--dir` grants existence,
   not content: `/repo` and `/home/runner` exist inside the namespace as empty
   directories so their non-mounted children remain unreachable.
-- **WS-12**: All mount paths are `resolve()`d to absolute form before use
-  (lines 89-116), so no entry in the emitted table is relative or
+- **R-12**: All mount paths are `resolve()`d to absolute form before use
+  (every `builtins` entry and `parseExtraMounts()`), so no entry in the emitted table is relative or
   `~`-dependent.
 
 **Acceptance criteria**:
@@ -175,39 +181,45 @@ Three independent conditions must hold for an agent to run inside the outer
 namespace, and the wrapper is wired for the Claude backend only.
 
 **Invariants**:
-- **WS-13**: `isMountAllowlistEnabled()` returns true only when
+- **R-13**: `isMountAllowlistEnabled()` returns true only when
   `BUILDD_SANDBOX_MOUNT_ALLOWLIST === '1'` **and**
-  `BUILDD_DISABLE_SANDBOX !== '1'` (lines 45-47). It is read from `process.env`
+  `BUILDD_DISABLE_SANDBOX !== '1'`. It is read from `process.env`
   on every call, so the flags take effect without a restart.
-- **WS-14**: `BUILDD_DISABLE_SANDBOX=1` is the single global kill switch and it
-  turns off *everything* namespace-related, at three separate reads:
-  the mount allowlist (line 46), the cached capability probe
-  (`workers.ts:112-115`, checked ahead of the cache so a late-set flag still
-  wins), and the probe itself (`env-scan.ts:58`). Its downstream effects are the
-  SDK sandbox forced to `{enabled: false}` and
-  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` (`workers.ts:2271-2283`), plus the Codex
-  sandbox downgrade in WS-16. Legitimate use is exactly one case: a host whose
+- **R-14**: `BUILDD_DISABLE_SANDBOX=1` is the single global kill switch and it
+  turns off *everything* namespace-related, at separate reads:
+  `isMountAllowlistEnabled()`, the cached capability probes
+  (`isBwrapSupported()` and `isMountIsolationBwrapSupported()` in
+  `workers.ts`, checked ahead of the cache so a late-set flag still wins), and
+  the probe itself (`probeBwrapNamespaces()` in `env-scan.ts`). Its downstream
+  effects are the SDK sandbox forced to `{enabled: false}` and
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` (the `sandboxConfig` and `cleanEnv`
+  setup in `WorkerManager.startSession`), plus the Codex sandbox downgrade
+  in R-16. Legitimate use is exactly one case: a host whose
   outer runtime denies namespace creation in a way the probe cannot detect, where
   the operator has accepted running agents with no filesystem containment. It is
   not a debugging default, and it is not a fix for a mount gap — the fix for a
   mount gap is `BUILDD_MOUNT_ALLOWLIST_EXTRA` (§5).
-- **WS-15**: The outer wrapper is applied only when
-  `isMountAllowlistEnabled() && isBwrapSupported()` (`workers.ts:2396`) and only
-  for non-Codex tasks (`workers.ts:2420`). `isBwrapSupported()` is probed once
-  per process, warmed at boot before any task starts (`workers.ts:518-521`), and
-  caches its result so the answer cannot change mid-task except by the
-  degradation path in §4.
-- **WS-16**: Codex tasks receive no outer namespace. Their containment is the
+- **R-15**: The outer wrapper is applied only when
+  `shouldWrapWorkerInBwrap()` is true: not a Codex task,
+  `isMountAllowlistEnabled()`, and `isMountIsolationBwrapSupported()`. The
+  mount-isolation probe (`checkBwrapMountIsolationSupport()`, user and PID
+  namespaces) is separate from the inner-sandbox probe (`checkBwrapSupport()`,
+  user, PID and network), because the outer argv never unshares the network.
+  `isBwrapSupported()` is warmed at boot in the `WorkerManager` constructor
+  before any task starts. Both probes cache their result per process, so the
+  answer cannot change mid-task except by the degradation path in §4.
+- **R-16**: Codex tasks receive no outer namespace. Their containment is the
   Codex CLI's own `sandboxMode`, and `bwrapSupported: false` downgrades
   `workspace-write` to `danger-full-access` with a warning
-  (`backends/codex-backend.ts:336-348`, called at line 47). The mapping itself is
-  owned by `docs/specs/codex-backend-spec.md` INV-20; what this spec asserts is
+  (`mapSandboxMode()` in `backends/codex-backend.ts`). The mapping itself is
+  owned by `docs/specs/codex-backend-spec.md` (its sandbox mode rule); what this spec asserts is
   the consequence — on a namespace-denied host a Codex task runs with *no* write
   isolation, and that is a visible warning, not a failure.
-- **WS-17**: An opted-in runner advertises the `sandbox:mount-allowlist`
-  capability in its env keys (`env-scan.ts:286-290`,
-  `packages/shared/src/types.ts:1438`), using the same two-flag condition as
-  WS-13 so the advertised capability cannot disagree with the runtime gate.
+- **R-17**: An opted-in runner advertises the `sandbox:mount-allowlist`
+  capability in its env keys (`scanEnvironment()` in `env-scan.ts`,
+  `CAPABILITY_SANDBOX_MOUNT_ALLOWLIST` in `packages/shared/src/types.ts`) only
+  when the two flags of R-13 hold AND `checkBwrapMountIsolationSupport()`
+  passes, so the capability means the boundary is enforced, not just requested.
 
 **Acceptance criteria**:
 - AC-9: GIVEN `BUILDD_SANDBOX_MOUNT_ALLOWLIST` unset WHEN
@@ -231,39 +243,49 @@ created (containment impossible → keep working, lose the boundary) versus the
 namespace is too narrow (containment working → stop, widen it, retry).
 
 **Invariants**:
-- **WS-18**: `createBwrapSpawn()` watches the child's stderr for
+- **R-18**: `createBwrapSpawn()` watches the child's stderr for
   `bwrap: No permissions to create a new namespace` /
-  `bwrap: Creating new namespace failed`
-  (`bwrap-mount-allowlist.ts:146-157`) and fires `onNamespaceDenied` at most
+  `bwrap: Creating new namespace failed` and fires `onNamespaceDenied` at most
   once per child. The same pattern is a first-class error trace,
-  `bwrap_namespace_denied` (`error-trace-scanner.ts:47-48`), so the denial is
-  also detected when it surfaces through a tool result
-  (`workers.ts:4102-4110`).
-- **WS-19**: On namespace denial the runner flips the cached probe to false,
+  `bwrap_namespace_denied` (`error-trace-scanner.ts`), so the denial is
+  also detected when it surfaces through a tool result (the error-trace
+  handling of tool results in `workers.ts`, which flips only the inner-sandbox
+  cache).
+- **R-19**: On namespace denial the runner flips the cached probes to false,
   sets `worker.bwrapRetryPending`, aborts the session, and restarts it **without
-  the sandbox** rather than marking the task failed
-  (`workers.ts:2422-2432`, `3274-3282`, `3536-3537`). The restart preserves the
-  worktree (`workers.ts:3366`) and uses a fresh invocation session id
-  (`workers.ts:1581-1595`). The cache flip is the loop guard: the flag is only
-  set when `_bwrapSupported !== false`, so a second bwrap abort cannot occur in
+  the sandbox** rather than marking the task failed (the `onNamespaceDenied`
+  callback passed to `createBwrapSpawn()`, and the `bwrapRetryPending` branch of
+  the `startSession` catch block). The restart preserves the worktree (the
+  `bwrapRetryAfterCleanup` path skips worktree cleanup) and uses a fresh
+  `invocationSessionId`. The cache flip is the loop guard: the flag is only
+  set while a cache is not yet false, so a second bwrap abort cannot occur in
   the same process. This trades containment for task completion, once per runner
   process, and the trade is visible in the `bwrap_retry: restarting without
   sandbox` milestone and in the heartbeat's `sandboxEnabled` field
-  (`workers.ts:677-678`, `apps/web/src/lib/runner-heartbeats-shared.ts:22-25`).
-- **WS-20**: A `sandbox_mount_gap` trace MUST NOT flip the capability cache
-  (`workers.ts:4114-4133`). The sandbox is working; only the table is short. The
-  runner sets `worker.sandboxMountGap`, names the offending path in
-  `worker.error` together with the `BUILDD_MOUNT_ALLOWLIST_EXTRA` remedy, and
-  aborts that session only.
-- **WS-21**: The gap flag is reported to the control plane
-  (`workers.ts:3294`), which classifies `exitCause = 'sandbox_mount_gap'`, resets
-  the task to `pending`, and exempts it from the code-retry cap
-  (`apps/web/src/app/api/workers/[id]/route.ts:647-660`, `928-950`). Precedence:
+  (sent by the `WorkerManager` heartbeat, typed in
+  `apps/web/src/lib/runner-heartbeats-shared.ts`).
+- **R-20**: A `sandbox_mount_gap` trace MUST NOT flip the capability cache.
+  The sandbox is working; only the table is short. Today the runner only
+  annotates: it logs the suspected path and records a
+  `sandbox_mount_gap_suspected: <path>` milestone, and the session keeps
+  running. It does not set `worker.sandboxMountGap` or abort. The abort was
+  turned off because the detector matched file content as readily as real
+  denials; it comes back once the tightened scanner has a track record (see
+  the comment above the `sandbox_mount_gap` branch in `workers.ts`).
+- **R-21**: When a terminal update carries `sandboxMountGap: true` (the runner
+  sends it on an aborted session if the flag is set; nothing sets
+  it while R-20 is annotate-only), the control plane classifies
+  `exitCause = 'sandbox_mount_gap'` (`worker-exit-taxonomy.ts`), resets the task
+  to `pending`, and exempts it from the code-retry cap (the
+  `isSandboxMountGap` handling in `apps/web/src/app/api/workers/[id]/route.ts`).
+  Precedence:
   a task in a `budget_exhausted` mission is NOT re-queued, because a pending task
   in an exhausted mission is invisible to the claim loop.
-- **WS-22**: `sandbox_mount_gap` detection is deliberately narrow — ENOENT/EACCES
-  against `.npmrc`, `.gitconfig`, `/snap/`, `/opt/`
-  (`error-trace-scanner.ts:49-57`). A false positive on ordinary in-repo ENOENT
+- **R-22**: `sandbox_mount_gap` detection is deliberately narrow, ENOENT/EACCES
+  against `.npmrc`, `.gitconfig`, `/snap/`, `/opt/` (`isMountGapCandidate()`
+  in `error-trace-scanner.ts`), and only when the SDK marked the tool result an
+  error and a path can be extracted in a real error shape
+  (`extractMountGapPath()`). A false positive on ordinary in-repo ENOENT
   would re-queue tasks that deserve to fail, so misses are preferred to
   misfires.
 
@@ -274,10 +296,11 @@ namespace is too narrow (containment working → stop, widen it, retry).
   `updateWorker` is NOT called with `status: 'failed'`.
 - AC-14: GIVEN the session restarted by AC-13 THEN its invocation session id
   differs from the aborted one and the worktree still exists.
-- AC-15 (failure): GIVEN a worker whose tool output contains
-  `ENOENT ... .npmrc` WHEN the scanner runs THEN a `sandbox_mount_gap` trace is
-  emitted, the session is aborted with `worker.sandboxMountGap = true`, and the
-  cached bwrap support value is unchanged.
+- AC-15: GIVEN a worker whose errored tool output contains
+  `ENOENT: no such file or directory, open '/home/u/.npmrc'` WHEN the scanner
+  runs THEN a `sandbox_mount_gap` trace is emitted, a
+  `sandbox_mount_gap_suspected` milestone is recorded, the session is not
+  aborted, and the cached bwrap support value is unchanged.
 - AC-16: GIVEN a terminal worker update with `sandboxMountGap: true` WHEN the
   PATCH handler runs THEN `worker.exitCause = 'sandbox_mount_gap'` and the task
   is reset to `pending`, and that worker does not count toward the retry cap.
@@ -292,17 +315,18 @@ namespace is too narrow (containment working → stop, widen it, retry).
 
 `BUILDD_MOUNT_ALLOWLIST_EXTRA` is the documented remedy for a mount gap:
 comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
-`parseExtraMounts()` (`bwrap-mount-allowlist.ts:49-74`).
+`parseExtraMounts()` (`bwrap-mount-allowlist.ts`).
 
 **Invariants**:
-- **WS-23**: A relative path, or an entry whose trailing `:`-segment is neither
+- **R-23**: A relative path, or an entry whose trailing `:`-segment is neither
   `ro` nor `rw`, is skipped with a warning naming the entry. Malformed input MUST
   NOT be fatal and MUST NOT silently become a mount.
-- **WS-24**: The mode defaults to `ro` when omitted. Only a trailing `:ro` /
+- **R-24**: The mode defaults to `ro` when omitted. Only a trailing `:ro` /
   `:rw` is read as a mode, so absolute paths containing colons survive parsing.
-- **WS-25**: Extra mounts are appended after the base table, so by WS-10 an extra entry naming a path already in the
-  table replaces that path's mode. Widening a system bind to `rw` this way is
-  possible and unguarded — see **Verification gaps**.
+- **R-25**: Extra mounts are additive only. `buildWorkerBwrapArgv()` assembles
+  the built-in binds first and rejects, with a warning, any operator entry
+  whose path equals a built-in, whatever mode it names. An extra entry cannot
+  change a built-in bind's mode (see **Verification gaps** item 4).
 
 **Acceptance criteria**:
 - AC-19: GIVEN `BUILDD_MOUNT_ALLOWLIST_EXTRA=/opt/tools:ro,/shared/cache:rw,/data`
@@ -316,33 +340,36 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 ---
 
 **Code surface**:
-- Table + argv builder: `apps/runner/src/bwrap-mount-allowlist.ts` —
-  `SYSTEM_RO_BINDS` (34-43), `isMountAllowlistEnabled()` (45-47),
-  `parseExtraMounts()` (49-74), `parentDirs()` (76-84),
-  `buildWorkerBwrapArgv()` (86-133), `createBwrapSpawn()` (135-159)
-- Call site + lifecycle: `apps/runner/src/workers.ts` — `isBwrapSupported()`
-  (105-123), boot probe (518-521), heartbeat report (677-678), SDK sandbox +
-  env-scrub forcing (2271-2283), argv assembly (2396-2410),
-  `spawnClaudeCodeProcess` wiring (2420-2432), `bwrapSupported` handoff to the
-  backend (2809), retry-on-denial (3274-3282, 3536-3537), gap flag on the PATCH
-  (3294), worktree preservation (3366), runtime denial + gap detection
-  (4102-4133)
-- Capability probe: `apps/runner/src/env-scan.ts` — `checkBwrapSupport()`
-  (54-91), capability advertisement (286-290); operator check:
-  `apps/runner/src/doctor.ts` — `checkBwrap()` (304-319)
-- Detection patterns: `apps/runner/src/error-trace-scanner.ts` (47-57)
-- Application-layer complement: `apps/runner/src/read-jail.ts` —
-  `buildReadJailDeniedPrefixes()` (24-33)
-- Codex interaction: `apps/runner/src/backends/codex-backend.ts` —
-  `mapSandboxMode()` (336-348); `apps/runner/src/backends/types.ts` —
-  `bwrapSupported` (34-40)
-- Worker flags: `apps/runner/src/types.ts` — `sandboxMountGap`,
-  `bwrapRetryPending` (197-198)
-- Control plane: `apps/web/src/app/api/workers/[id]/route.ts` — gap
-  classification (647-660) and re-queue with budget precedence (928-950);
-  `apps/web/src/lib/runner-heartbeats-shared.ts` — `sandboxEnabled`,
-  `sandboxProbeAt` (22-25)
-- Capability constant: `packages/shared/src/types.ts:1438` —
+- Table + argv builder: `apps/runner/src/bwrap-mount-allowlist.ts`:
+  `SYSTEM_RO_BINDS`, `isMountAllowlistEnabled()`, `shouldWrapWorkerInBwrap()`,
+  `parseExtraMounts()`, `parentDirs()`, `buildWorkerBwrapArgv()`,
+  `createBwrapSpawn()`
+- Call site + lifecycle: `apps/runner/src/workers.ts`: `isBwrapSupported()`,
+  `isMountIsolationBwrapSupported()`, `getBwrapProbeAt()`, the boot probe in
+  the `WorkerManager` constructor, the heartbeat's `sandboxEnabled`, and in
+  `startSession`: SDK sandbox and env-scrub forcing, argv assembly,
+  `spawnClaudeCodeProcess` wiring, the `bwrapRetryPending` restart, the
+  `sandboxMountGap` field on the abort PATCH; the tool-result error-trace
+  handling for runtime denial and gap annotation
+- Capability probes: `apps/runner/src/env-scan.ts`: `probeBwrapNamespaces()`,
+  `checkBwrapSupport()`, `checkBwrapMountIsolationSupport()`, capability
+  advertisement in `scanEnvironment()`; operator check:
+  `apps/runner/src/doctor.ts`: `checkBwrap()`
+- Detection patterns: `apps/runner/src/error-trace-scanner.ts`
+  (`bwrap_namespace_denied`, `sandbox_mount_gap`, `extractMountGapPath()`,
+  `isMountGapCandidate()`)
+- Application-layer complement: `apps/runner/src/read-jail.ts`:
+  `buildReadJailDeniedPrefixes()`
+- Codex interaction: `apps/runner/src/backends/codex-backend.ts`:
+  `mapSandboxMode()`; `apps/runner/src/backends/types.ts`: `bwrapSupported`
+- Worker flags: `apps/runner/src/types.ts`: `sandboxMountGap`,
+  `bwrapRetryPending`
+- Control plane: `apps/web/src/app/api/workers/[id]/route.ts`:
+  `isSandboxMountGap` classification and re-queue with budget precedence
+  (`sandboxGapMissionExhausted`); `apps/web/src/lib/worker-exit-taxonomy.ts`;
+  `apps/web/src/lib/runner-heartbeats-shared.ts`: `sandboxEnabled`,
+  `sandboxProbeAt`, `deriveSandboxPosture()`
+- Capability constant: `packages/shared/src/types.ts`:
   `CAPABILITY_SANDBOX_MOUNT_ALLOWLIST`
 - Design origin: `docs/design/worker-mount-isolation.md` (bind table, rollout
   phases, probe design)
@@ -354,8 +381,8 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 - **Which credentials exist in the process.** `cleanEnv` composition, MCP bearer
   injection and the `Read`/`Bash` denylists belong to
   `docs/specs/credential-isolation.md`.
-- **The Codex `sandboxMode` mapping** (`read-only` vs `workspace-write`) —
-  `docs/specs/codex-backend-spec.md` INV-20. This spec covers only the
+- **The Codex `sandboxMode` mapping** (`read-only` vs `workspace-write`):
+  `docs/specs/codex-backend-spec.md`. This spec covers only the
   `bwrapSupported=false` downgrade as an observable consequence.
 - **The Claude Code SDK's own inner bwrap sandbox** (`gitConfig.sandbox`) beyond
   the fact that the runner force-disables it when namespaces are unavailable.
@@ -378,11 +405,11 @@ it is recognisable rather than discovered.
    probe bound only `/usr`, so on a merged-usr host the ELF loader was missing
    and exec failed ENOENT, which read as "namespaces denied". The probe now
    binds the loader dirs and the CI job fails on a skip. The same job runs the
-   Quality Scout probe sandbox suite (`scout-sandbox.e2e.ts`). WS-8 is still
+   Quality Scout probe sandbox suite (`scout-sandbox.e2e.ts`). R-8 is still
    asserted by absence from a snapshot, not by a failed read.
 2. **FIXED** — The wrapper is never exercised for Codex, but the code pretends otherwise.**
-   `buildWorkerBwrapArgv()` has a full Codex branch (WS-4) with its own snapshot
-   test, yet `workers.ts:2420` gates the wrapper on `!isCodexTask`. No production
+   `buildWorkerBwrapArgv()` has a full Codex branch (R-4) with its own snapshot
+   test, yet `startSession` in `workers.ts` gated the wrapper on `!isCodexTask`. No production
    path passes a Codex config to the builder. Either the Codex branch is dead
    code or the gate is an unfinished rollout; the snapshot makes it look shipped.
 
@@ -390,7 +417,7 @@ it is recognisable rather than discovered.
 
 3. **FIXED** — The capability probe is stricter than the wrapper it gates.**
    `checkBwrapSupport()` requires `--unshare-user --unshare-pid --unshare-net`
-   to succeed (`env-scan.ts:83`) because it mirrors Claude Code's *inner*
+   to succeed because it mirrors Claude Code's *inner*
    sandbox. The outer wrapper never unshares the network. A host that permits
    user and PID namespaces but denies network namespaces therefore reports
    `bwrapSupported: false` and gives up a mount boundary that would have worked.
@@ -398,7 +425,7 @@ it is recognisable rather than discovered.
 
    Closed here: probes are per consumer. The strict user+pid+net probe still gates the inner sandbox and env scrubbing; a user+pid probe gates mount isolation, which is what the outer argv actually needs.
 
-4. **FIXED** — `BUILDD_MOUNT_ALLOWLIST_EXTRA` can widen the base table (WS-25).** Dedupe is
+4. **FIXED**: `BUILDD_MOUNT_ALLOWLIST_EXTRA` can widen the base table (R-25).** Dedupe is
    last-writer-wins on mode, and `parseExtraMounts()` applies no denylist — the
    read-jail's denied prefixes are not consulted. Two classes of weakness follow,
    both operator-triggered and both currently untested: an `rw` entry covering a
@@ -411,7 +438,7 @@ it is recognisable rather than discovered.
 
    Closed here: built-ins are assembled first and an operator entry colliding with one is rejected with a warning, whatever mode it names — it can no longer downgrade a system bind to rw.
 
-5. **The rw `.git` bind (WS-2) is a real residual exposure.** The parent clone's
+5. **The rw `.git` bind (R-2) is a real residual exposure.** The parent clone's
    `.git` must be writable for commit and push, which means the agent's writable
    view includes git's own configuration and hook directory — content that the
    runner later executes *outside* the namespace during ordinary git operations.
@@ -421,10 +448,11 @@ it is recognisable rather than discovered.
    and it deserves a hook-integrity check.
 6. **FIXED** — The health surface reports the wrong thing.** `sandboxEnabled` on the
    heartbeat is `isBwrapSupported()` — kernel capability — not whether the mount
-   allowlist is active. Since WS-13 is default-off, a runner can display
+   allowlist is active. Since R-13 is default-off, a runner can display
    "sandbox ok" while running agents with no outer namespace at all. Similarly
-   `doctor.ts:307-309` returns status **ok** with "bwrap not installed —
-   sandboxing disabled (expected)". Nothing in CI asserts these two surfaces
+   `checkBwrap()` in `doctor.ts` returns status **ok** with "bwrap not
+   installed — sandboxing disabled (expected)". That doctor message is still
+   true today. Nothing in CI asserts these two surfaces
    agree with `isMountAllowlistEnabled()`.
 
    Closed here: the `sandbox:mount-allowlist` capability is advertised only when the opt-in is set AND the probe passes, and a derived posture drives the badge. Green now means enforced; bwrap-present-allowlist-off renders `mounts unrestricted` as a warning. Still open by choice: the Health problems panel does not COUNT a degraded runner, because with the allowlist default-off that would flag every runner today.
@@ -433,12 +461,25 @@ it is recognisable rather than discovered.
    `apps/runner/install.sh` never mentions bubblewrap; the only mentions in the
    repo are the probe, the e2e suite, and the design doc. A fresh runner is
    unsandboxed by default and nothing during installation says so.
-8. **WS-19's degradation is untested as a security event.** Tests cover that the
+8. **The degradation in R-19 is untested as a security event.** Tests cover that the
    retry happens and that the task is not failed
    (`bwrap-runtime-recovery.test.ts`); nothing asserts that the resulting
    unsandboxed run is recorded anywhere an operator would notice beyond a log
    line and a milestone.
-9. **WS-9's warning path is asserted only indirectly.** The unit tests exercise
+9. **The warning path in R-9 is asserted only indirectly.** The unit tests exercise
    `pathExists` returning false for one file; no test asserts the warning text
    or that a dropped *required* mount (for example a credential dir) is what
    later produces `sandbox_mount_gap`.
+10. **Mount-gap recovery is off.** R-20 is annotate-only, so a real mount gap
+   no longer re-queues the task; it fails through the normal path when the
+   agent's own commands keep failing. R-21 and AC-16/AC-17 describe the control
+   plane's handling, which stays wired but is not reached while the runner
+   never sets `sandboxMountGap`.
+
+---
+
+## Renumbered
+
+- WS-n to R-n for every n (WS-1 to R-1 ... WS-25 to R-25), so the invariants
+  parse as gradable requirements.
+- WS-7 and AC-4 (both retired with the code graph) no longer carry an id.

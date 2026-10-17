@@ -1,0 +1,65 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`token mapping night, truecolor 1`] = `
+{
+  "accent": ""\\u001b[38;2;245;155;78mx\\u001b[39m"",
+  "error": ""\\u001b[38;2;224;138;127mx\\u001b[39m"",
+  "faint": ""\\u001b[38;2;122;114;105mx\\u001b[39m"",
+  "info": ""\\u001b[38;2;147;184;214mx\\u001b[39m"",
+  "muted": ""\\u001b[38;2;168;159;150mx\\u001b[39m"",
+  "queue": ""\\u001b[38;2;168;159;150mx\\u001b[39m"",
+  "selected": ""\\u001b[38;2;47;44;40mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;2;237;232;226mx\\u001b[39m"",
+  "success": ""\\u001b[38;2;134;201;157mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
+  "warning": ""\\u001b[38;2;245;155;78mx\\u001b[39m"",
+}
+`;
+
+exports[`token mapping night, 256 1`] = `
+{
+  "accent": ""\\u001b[38;5;209mx\\u001b[39m"",
+  "error": ""\\u001b[38;5;174mx\\u001b[39m"",
+  "faint": ""\\u001b[38;5;243mx\\u001b[39m"",
+  "info": ""\\u001b[38;5;110mx\\u001b[39m"",
+  "muted": ""\\u001b[38;5;247mx\\u001b[39m"",
+  "queue": ""\\u001b[38;5;247mx\\u001b[39m"",
+  "selected": ""\\u001b[38;5;236mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;5;254mx\\u001b[39m"",
+  "success": ""\\u001b[38;5;115mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
+  "warning": ""\\u001b[38;5;209mx\\u001b[39m"",
+}
+`;
+
+exports[`token mapping day, truecolor 1`] = `
+{
+  "accent": ""\\u001b[38;2;154;74;18mx\\u001b[39m"",
+  "error": ""\\u001b[38;2;151;57;31mx\\u001b[39m"",
+  "faint": ""\\u001b[38;2;143;136;125mx\\u001b[39m"",
+  "info": ""\\u001b[38;2;45;90;124mx\\u001b[39m"",
+  "muted": ""\\u001b[38;2;107;101;92mx\\u001b[39m"",
+  "queue": ""\\u001b[38;2;95;89;79mx\\u001b[39m"",
+  "selected": ""\\u001b[38;2;238;235;228mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;2;38;35;31mx\\u001b[39m"",
+  "success": ""\\u001b[38;2;47;100;64mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
+  "warning": ""\\u001b[38;2;169;82;26mx\\u001b[39m"",
+}
+`;
+
+exports[`token mapping day, 256 1`] = `
+{
+  "accent": ""\\u001b[38;5;94mx\\u001b[39m"",
+  "error": ""\\u001b[38;5;94mx\\u001b[39m"",
+  "faint": ""\\u001b[38;5;102mx\\u001b[39m"",
+  "info": ""\\u001b[38;5;24mx\\u001b[39m"",
+  "muted": ""\\u001b[38;5;241mx\\u001b[39m"",
+  "queue": ""\\u001b[38;5;240mx\\u001b[39m"",
+  "selected": ""\\u001b[38;5;255mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;5;235mx\\u001b[39m"",
+  "success": ""\\u001b[38;5;238mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
+  "warning": ""\\u001b[38;5;130mx\\u001b[39m"",
+}
+`;

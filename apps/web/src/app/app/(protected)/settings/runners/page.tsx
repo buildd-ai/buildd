@@ -4,7 +4,7 @@ import SettingsSection from '../SettingsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
 import { StatusChip } from '../_components/ConnectionRow';
-import { loadAccountLastSeen, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
+import { loadAccountLastSeen, loadAccountModelAuth, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 import { loadFleetSnapshot } from '@/lib/home-fleet';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import type { FleetSnapshot } from '@buildd/shared';
@@ -15,6 +15,7 @@ import NewRunnerTokenSheet from './NewRunnerTokenSheet';
 import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { pickShownTeam } from '../_lib/shown-team';
+import { resolveRunnersQaState, withQaModelAuth } from './qa-state';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,13 +30,15 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
  * Models), then runner tokens (how a runner reaches buildd). `?new=1` opens the
  * New runner token sheet over it. Shows the active team, or `?team=<id>` when
  * it names one of the person's teams (the workspace page links here that way).
+ * `?state=model-auth-<source>` (dev server only) shows that model login on every
+ * token, `?state=model-auth-codex` adds the Codex line — see ./qa-state.ts.
  */
 export default async function RunnersSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ new?: string | string[]; team?: string | string[] }>;
+  searchParams: Promise<{ new?: string | string[]; team?: string | string[]; state?: string | string[] }>;
 }) {
-  const { new: newParam, team: teamParam } = await searchParams;
+  const { new: newParam, team: teamParam, state: stateParam } = await searchParams;
   const { user, teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
   const shown = pickShownTeam(teams, teamParam, currentTeam) ?? teams[0] ?? null;
   const teamId = shown?.id ?? currentTeamId ?? null;
@@ -49,20 +52,26 @@ export default async function RunnersSettingsPage({
     // Status only: null (unknown) drops the chip rather than guessing.
     teamId ? teamHasAgentCredential(teamId).catch(() => null) : Promise.resolve(null),
   ]);
-  const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
+  const accountIds = accounts.map((a) => a.id as string);
+  const [lastSeen, modelAuth] = await Promise.all([
+    loadAccountLastSeen(accountIds).catch(() => ({} as Record<string, string>)),
+    loadAccountModelAuth(accountIds).catch(() => ({} as Awaited<ReturnType<typeof loadAccountModelAuth>>)),
+  ]);
   // Each control follows the permission its route enforces, with each team's
   // overrides (a personal team counts as owned): the host-runner flag is
   // manage_team_keys, the Cloudflare token manage_team_model_keys.
   const adminTeamIds = new Set(teamIdsHolding(permsByTeam, 'manage_team_keys'));
   const cloudflareTeamIds = teamIdsHolding(permsByTeam, 'manage_team_model_keys');
   // Who minted a key stays on the server: the client gets only what it may do.
-  const tokens = accounts.map(({ createdByUserId, ...a }) => ({
+  const tokens = withQaModelAuth(accounts.map(({ createdByUserId, ...a }) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
+    modelAuthSource: modelAuth[a.id]?.claude ?? null,
+    codexAuthSource: modelAuth[a.id]?.codex ?? null,
     canManageHostRunner: adminTeamIds.has(a.teamId),
     // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
     canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),
-  }));
+  })), resolveRunnersQaState(stateParam));
   const cloudTeams = teams.map((t) => ({ id: t.id, name: t.name }));
 
   return (

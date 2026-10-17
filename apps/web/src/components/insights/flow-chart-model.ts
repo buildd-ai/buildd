@@ -8,7 +8,7 @@ export type BandKey = 'running' | 'waiting' | 'review' | 'merged' | 'released' |
 
 export const BAND_LABEL: Record<BandKey, string> = {
   running: 'Agents running',
-  waiting: 'Needs input',
+  waiting: 'Has a question',
   review: 'In review / CI',
   merged: 'Merged, not released',
   released: 'Released',

@@ -81,6 +81,13 @@ export interface PrCardProps {
     pending: number;
     runs: CiCheckRun[];
   } | null;
+  /**
+   * The delivery's review rounds in words ("2 rounds · latest: approved · no
+   * open findings"), the same line get_pr and the PR activity comment print
+   * (workflow-kernel-library.md §7, AC-24). When present it replaces the
+   * GitHub review counts: buildd's reviewer records rounds, not GitHub reviews.
+   */
+  reviewRounds?: string | null;
   /** Review summary — shown on task detail page (AC-4). */
   reviews?: {
     approved: number;
@@ -200,6 +207,7 @@ export default function PrCard(props: PrCardProps) {
     filesChanged,
     ciChecks,
     reviews,
+    reviewRounds,
     mergeable,
     mergeableState,
     openAttempt,
@@ -212,7 +220,7 @@ export default function PrCard(props: PrCardProps) {
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
   const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
 
-  const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
+  const reviewLine = reviewRounds ? reviewRounds : reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
         reviews.changesRequested > 0 ? `${countOf(reviews.changesRequested, 'change')} requested` : null,
@@ -549,7 +557,7 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
   );
 }
 
-function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt, statedAbove = false }: PrCardProps & { outcome: PrOutcome }) {
+function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, mergeable, mergeableState, reviews, reviewRounds, outcome, hideAction = false, openAttempt, statedAbove = false }: PrCardProps & { outcome: PrOutcome }) {
   const state = cardPrState({ prState, prLifecycleStatus });
   const lifecycle = PR_PILL[state];
   const merged = state === 'merged';
@@ -557,7 +565,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
   const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
-  const reviewLine = reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
+  const reviewLine = reviewRounds ? `review ${reviewRounds}` : reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
         reviews.changesRequested > 0 ? `${countOf(reviews.changesRequested, 'change')} requested` : null,

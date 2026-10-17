@@ -165,6 +165,26 @@ describe('GET /api/workspaces', () => {
     expect(data.workspaces[0].runners).toBeUndefined();
   });
 
+  // Spec c7410e76 R-19: buildd top's header names the team when the runner serves one.
+  it('names each workspace\'s team for API key auth, reading only the team name', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockImplementation(() => Promise.resolve([
+      { id: 'ws-1', name: 'Linked', teamId: 'team-1', team: { name: 'Acme' }, accountWorkspaces: [] },
+      { id: 'ws-2', name: 'Orphan', teamId: 'team-2', accountWorkspaces: [] },
+    ]) as any);
+
+    const data = await (await GET(createMockGetRequest({ Authorization: 'Bearer bld_test' }))).json();
+
+    expect(data.workspaces[0].teamName).toBe('Acme');
+    expect(data.workspaces[1].teamName).toBeNull();
+    expect(data.workspaces[0].team).toBeUndefined();
+    const query = (mockWorkspacesFindMany.mock.calls.at(-1) as any[])[0];
+    expect(query.with.team).toEqual({ columns: { name: true } });
+  });
+
   it('returns workspaces for API key auth', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockGetCurrentUser.mockResolvedValue(null);

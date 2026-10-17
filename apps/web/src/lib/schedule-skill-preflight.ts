@@ -33,6 +33,7 @@ import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 /** Why a required slug cannot be delivered by a claim in this workspace. */
 export type MissingSkillReason = 'not_registered' | 'team_level_only' | 'not_on_every_claim_account';
@@ -85,7 +86,7 @@ export async function diagnoseScheduleSkills(workspaceId: string, slugs: string[
 
   const [claimLinks, workspace] = await Promise.all([
     db.query.accountWorkspaces.findMany({
-      where: sqlWhere(and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true))),
+      where: sqlWhere(and(eq(accountWorkspaces.workspaceId, workspaceId), eq(accountWorkspaces.canClaim, true), liveLinkCondition())),
       columns: { accountId: true },
     }),
     db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } }),

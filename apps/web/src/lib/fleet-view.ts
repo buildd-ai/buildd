@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -27,7 +27,7 @@ export interface FleetHeartbeatRow {
   localUiUrl: string;
   maxConcurrentWorkers: number;
   /** `fleet`: a `--once` run's identity (@buildd/shared runner-fleet). */
-  environment?: { labels?: Record<string, string> | null; fleet?: unknown } | null;
+  environment?: { labels?: Record<string, string> | null; fleet?: unknown; hold?: unknown } | null;
   lastHeartbeatAt: DateLike;
   /** What the runner last reported running. Decides an ephemeral run's share of capacity. */
   activeWorkerCount?: number | null;
@@ -51,7 +51,7 @@ export interface FleetWorkerRow {
   completedAt?: DateLike;
   updatedAt?: DateLike;
   prNumber?: number | null;
-  waitingFor?: { prompt?: string; type?: string | null } | null;
+  waitingFor?: { prompt?: string; type?: string | null; since?: string | null } | null;
   /** The worker's error text, only ever read for its class (lib/fleet-view-end-reason.ts), never shown. */
   error?: string | null;
   /** This run's own PR merged. */
@@ -211,6 +211,7 @@ export function buildFleetSnapshot(
       endReason: runEndReason({
         status: w.status, error: w.error ?? null, prNumber: w.prNumber ?? null,
         mergedAt: w.mergedAt ? new Date(w.mergedAt) : null, taskMergedPr: w.taskMergedPr ?? null, waitingFor: w.waitingFor ?? null,
+        now,
       }),
       href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
     });
@@ -221,7 +222,7 @@ export function buildFleetSnapshot(
         label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
-        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
+        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Has a question' : null,
       };
     } else {
       slot.last = {
@@ -278,7 +279,9 @@ export function buildFleetSnapshot(
     for (const iv of [...intervals].sort((a, b) => a.start - b.start)) {
       place(slots[laneOf.get(iv.id) ?? 0], byId.get(iv.id)!, iv);
     }
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots });
+    // A person's hold (`buildd hold`): shown as on hold, not idle, while in force.
+    const hold = g.hb ? activeRunnerHold(g.hb.environment, now) : null;
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots, ...(hold ? { hold } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
@@ -392,15 +395,15 @@ export function fleetLabel(fleet: Pick<FleetSnapshot, 'runners'>): string {
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };
 
-/** "5 agents working. 2 need you." / "No agents working. Multi-currency invoices shipped." */
+/** "5 agents working. 2 waiting on you." / "No agents working. Multi-currency invoices shipped." */
 export function homeHeadline(input: { live: number; needsYou: number; shipped?: string | null }): HeadlinePart[] {
   const { live, needsYou, shipped } = input;
-  const needs: HeadlinePart = { text: `${needsYou} need${needsYou === 1 ? 's' : ''} you.`, tone: 'accent' };
+  const needs: HeadlinePart = { text: `${needsYou} waiting on you.`, tone: 'accent' };
   if (live > 0) {
-    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
+    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing waiting on you.' }];
   }
   if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing needs input.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing waiting on you.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */

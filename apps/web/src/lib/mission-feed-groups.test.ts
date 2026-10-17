@@ -220,3 +220,20 @@ describe('scale', () => {
     expect(new Set(ids).size).toBe(45);
   });
 });
+
+describe('phase counts are the build count (spec f7f67f1a R-14)', () => {
+  it('audit, fix and refresh rows are listed in their phase but not counted', () => {
+    const tasks = [
+      t('b1', { status: 'completed' }),
+      t('b2'),
+      t('au', { title: '[surface audit] Mission' }),
+      t('fx', { title: '[surface fix] /app: tidy', status: 'completed' }),
+    ];
+    const model = buildMissionFeedGroups(tasks);
+    const phase = model.groups.find((g): g is Extract<FeedGroup, { kind: 'phase' }> => g.kind === 'phase')!;
+    const listed = phase.items.map(i => (i.type === 'row' ? i.row.taskId : i.taskId));
+    expect(listed).toEqual(expect.arrayContaining(['b1', 'b2', 'au', 'fx']));
+    expect({ done: phase.done, total: phase.total }).toEqual({ done: 1, total: 2 });
+    expect(pulseDoneCounts(buildPulseSegments(tasks))).toEqual({ done: 1, total: 2 });
+  });
+});

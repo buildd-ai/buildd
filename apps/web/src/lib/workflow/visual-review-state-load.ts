@@ -15,6 +15,7 @@ import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surf
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
+import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
 import {
@@ -71,7 +72,7 @@ export async function getMissionVisualReviewState(
   const gate = await evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null);
   const gateUiChange: VisualReviewStateInput['uiChange'] =
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
-    : gate && gate.why === 'no_ui_change' ? { state: 'no', source: null, uiFiles: 0 }
+    : gate && (gate.why === 'no_ui_change' || gate.why === 'no_render_impact') ? { state: 'no', source: null, uiFiles: 0 }
     : { state: 'unknown', source: null, uiFiles: 0 };
   const uiChange = opts.uiChange ?? gateUiChange;
 
@@ -95,9 +96,14 @@ export async function getMissionVisualReviewState(
   const ledger = await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
   const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
-  const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType } : null;
+  const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType, status: model.audit.status } : null;
 
-  return deriveMissionVisualReview({
+  // R-33: a queued audit names the claim loop's hold on it.
+  const holdReason = latestAudit?.status === 'pending'
+    ? (await loadClaimHoldReasons([latestAudit.id])).get(latestAudit.id) ?? null
+    : null;
+
+  const state = deriveMissionVisualReview({
     policy,
     uiChange,
     audit,
@@ -120,4 +126,5 @@ export async function getMissionVisualReviewState(
     captureConfigError: latestAudit?.captureConfigError ?? null,
     branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },
   });
+  return holdReason ? { ...state, holdReason } : state;
 }

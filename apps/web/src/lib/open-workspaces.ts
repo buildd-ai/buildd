@@ -15,9 +15,10 @@
  * platform-wide cache of one.
  */
 import { db } from '@buildd/core/db';
-import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { readReachLink } from '@/lib/granted-links';
 
 /**
  * WHERE predicate: open workspaces owned by one of `teamIds`. Callers with no
@@ -71,14 +72,11 @@ export async function workspaceOpenToCaller(
     columns: { teamId: true, accessMode: true },
   });
   if (!ws || ws.accessMode !== 'open') return false;
+  // For an API account the link is read first: a person's pick whose grant no
+  // longer holds is a deny even inside the account's own team
+  // (granted-links.ts readReachLink, workspace-reach.ts).
+  const link = caller.accountId ? await readReachLink(caller.accountId, workspaceId) : null;
+  if (link?.revoked) return false;
   if (isOpenWithinTeams(ws, caller.teamIds)) return true;
-  if (!caller.accountId) return false;
-  const link = await db.query.accountWorkspaces.findFirst({
-    where: sqlWhere(and(
-      eq(accountWorkspaces.accountId, caller.accountId),
-      eq(accountWorkspaces.workspaceId, workspaceId),
-    )),
-    columns: { workspaceId: true },
-  });
   return !!link;
 }

@@ -50,6 +50,7 @@ const LABEL: Record<string, string> = {
   'capability.use': 'Capability use',
   'task_token.mint': 'buildd token',
   'runner.size': 'Runner size',
+  'runner.verification_run': 'Check run',
   'pr.create': 'Open PR',
   'pr.adopt': 'Record PR',
   'pr.close': 'Close PR',

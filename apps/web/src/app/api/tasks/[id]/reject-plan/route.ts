@@ -134,7 +134,7 @@ export async function POST(
 
     // Create a new planning task with feedback context. It re-attempts the
     // rejected plan, so it carries that plan's backend, role, routing kind and
-    // phase (Rule P1-7) — its parentTaskId is the plan's parent, not the plan.
+    // phase (mission-legibility R-7) — its parentTaskId is the plan's parent, not the plan.
     const [newTask] = await db
       .insert(tasks)
       .values({

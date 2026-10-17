@@ -27,7 +27,8 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
+import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
@@ -40,6 +41,7 @@ import {
 } from '@/lib/pr-review-request';
 import {
   derivePrReviewStatus,
+  isReviewBudgetSpent,
   pickReviewerRole,
   MAX_REVIEW_WAIT_SECONDS,
   type PrReviewWaitFor,
@@ -49,6 +51,11 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
+/**
+ * 2ded4e88: the review rounds are spent and the PR waits on a person. Says where a person acts
+ * rather than "pass force": an interactive session reading the hint would just retry with it.
+ */
+const REVIEW_BUDGET_SPENT_HINT = 'the review rounds for this PR are spent and it waits on a person; a person can request one more review from the PR\'s page, or approve it';
 const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
 /**
@@ -60,6 +67,8 @@ const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, 
 interface TargetScope {
   teamIds: string[];
   workspaceIds: () => Promise<string[]>;
+  /** A per-task token's one workspace: a name or repo is matched against it directly. */
+  ownWorkspaceId?: string;
   foreignWorkspace: 'forbidden' | 'not_found';
 }
 
@@ -68,7 +77,7 @@ function accountScope(account: Account): TargetScope {
   // it as missing rather than forbidden.
   if (account.taskScope) {
     const workspaceId = account.taskScope.workspaceId;
-    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], foreignWorkspace: 'not_found' };
+    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], ownWorkspaceId: workspaceId, foreignWorkspace: 'not_found' };
   }
   return {
     teamIds: [account.teamId],
@@ -109,6 +118,19 @@ async function resolveTarget(
   workspaceIdInput: string | null,
 ): Promise<ResolvedTarget | { error: string; status: number; candidates?: string[] }> {
   if (workspaceIdInput) {
+    // A task token's workspace may not be owned by its team, so the team-wide
+    // lookup would miss it. Match the input against that one workspace instead.
+    if (scope.ownWorkspaceId) {
+      const own = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, scope.ownWorkspaceId)) });
+      const lower = workspaceIdInput.toLowerCase();
+      const matches = !!own && (
+        own.id === workspaceIdInput ||
+        own.name.toLowerCase() === lower ||
+        own.repo?.toLowerCase() === lower ||
+        !!own.repo?.toLowerCase().endsWith('/' + lower)
+      );
+      if (own && matches) return { workspace: own as ResolvedTarget['workspace'] };
+    }
     const ws = await resolveWorkspace(workspaceIdInput, { teamIds: scope.teamIds });
     if (!ws) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     if (!scope.teamIds.includes(ws.teamId)) {
@@ -247,10 +269,13 @@ export async function POST(req: NextRequest) {
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
-  }).catch((err) => {
+  }, { principal: kernelPrincipalOf({ person, account }) }).catch((err) => {
+    // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
+    if (isDoorError(err)) return err;
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
+  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
   // §8.1: the reviewer that answers is the round's at the live head, never the
   // newest reviewer row of the PR number (§14 Slice A retired that rule here).
   // A reviewTaskId whose row is gone is no review task at all: fall through and
@@ -273,6 +298,7 @@ export async function POST(req: NextRequest) {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
+        ...(r.reason === 'review_budget_spent' ? { hint: REVIEW_BUDGET_SPENT_HINT } : {}),
       });
     }
     const latest = kernelReviewTask;
@@ -282,10 +308,19 @@ export async function POST(req: NextRequest) {
         .where(eq(tasks.id, latest.id));
     }
     const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    // 1bd26ae7: never "already under review" with nothing behind it. A round with no reviewer task
+    // yet says so, with the live head it is for; the seam has re-queued its dispatch when every
+    // earlier one finished without filing a reviewer.
+    const noReviewer = !latest
+      ? { state: 'queued' as const, headSha: (pr.head?.sha as string | undefined) ?? null, reason: r.result === 'applied'
+          ? 'a review round is queued at this head; buildd is filing its reviewer now'
+          : `no reviewer task exists for this head yet (${r.reason})` }
+      : null;
     return NextResponse.json({
       ok: true,
       kernel: true,
       alreadyRequested: r.result !== 'applied',
+      ...(noReviewer ? { queued: noReviewer } : {}),
       ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
         ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
         : {}),
@@ -311,6 +346,13 @@ export async function POST(req: NextRequest) {
     if (prior && prior.headSha === (pr.head?.sha ?? '')) {
       return bad('Review not requested: force_requires_human', 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
     }
+  }
+
+  // 2ded4e88: the round budget is the PR's. Spent, force does not file a reviewer from here, at the
+  // judged head or a moved one; a person asks from the PR's page (the dashboard re-review route).
+  if (force && !inFlight && existingReview
+    && isReviewBudgetSpent(derivePrReviewStatus({ reviewTask: existingReview, worker: existingWorker ?? null, autoMergeExpected: false }))) {
+    return bad('Review not requested: review_budget_spent', 409, { code: 'review_budget_spent', hint: REVIEW_BUDGET_SPENT_HINT });
   }
 
   // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished
