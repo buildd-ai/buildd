@@ -182,8 +182,10 @@ describe('workflow kernel tables have one writer', () => {
  * web host, and in own mode only the control plane applies it (AC-9). So is `observeCiFailure`
  * (T10): the red-PR sweep (`cron:ci-red`), the landing path and the check_suite subscriber
  * report a CI failure through `ci-failure-retry.ts`, and only the control plane applies it.
+ * And `observeCiGreen` (CiGreenObserved, and the CiObserved reading outside a repair): the
+ * check_suite success webhook reports a green head, and only the control plane applies it.
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -243,6 +245,8 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`import { attemptEnded } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { observeCiFailure } from '@/lib/workflow/seam';`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
+    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeCiGreen']);
+    expect(seamDoorImports(`import { observeCiGreen } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     // Every allowed file still exists and still needs the exception, so the list cannot rot.
     for (const f of Object.keys(DOOR_DIRECT_ALLOWED)) {
       expect(files).toContain(f);

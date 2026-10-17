@@ -67,6 +67,7 @@ export interface CheckRunRow {
   conclusion?: string | null;
   started_at?: string | null;
   check_suite?: { id?: number } | null;
+  app?: { id?: number | null } | null;
 }
 
 /**

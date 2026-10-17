@@ -975,6 +975,20 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(mockFireGateEvent.mock.calls.some((c: any[]) => c[0].outcome === 'rejected' && /CI is red/.test(c[0].reason))).toBe(true);
   });
 
+  it('shadow/off: a failing run still refuses when the workflow-runs read fails (502)', async () => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => {
+      if (/\/actions\/runs/.test(path)) throw new Error('GitHub API error: 502');
+      return /\/check-runs/.test(path)
+        ? { total_count: 1, check_runs: [{ id: 1, name: 'build', status: 'completed', conclusion: 'failure', check_suite: { id: 10 } }] }
+        : { head: { sha: 'head-A' }, base: { ref: 'dev' } };
+    });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect((await res.json()).ciFailing).toEqual(['build']);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('shadow/off: a re-run that went green replaces the red run (latest run per name)', async () => {
     mockGithubApi.mockImplementation(async (_i: number, path: string) =>
       /\/check-runs/.test(path)
