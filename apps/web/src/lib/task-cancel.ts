@@ -142,5 +142,10 @@ async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<
     localHeadSha: null,
     commitCount: worker?.commitCount ?? 0,
     source: 'cancel',
+    // A person cancelling a review round is taking it over: the kernel
+    // escalates (review_unavailable) instead of re-filing a reviewer at once.
+    // Rounds the platform itself superseded are no longer current, so the
+    // kernel treats this end as stale for them.
+    ...(task.deliveryRole === 'review' ? { reviewFailure: 'human_takeover' as const } : {}),
   });
 }
