@@ -199,6 +199,13 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
       .toBe('3 of 3 tasks complete · delivery 2 PR #11 awaiting merge');
   });
 
+  it('a delivery PR that is closed reads as closed from the delivery prLifecycleStatus, even without owner worker', () => {
+    const dClosed = (epoch: number, state: 'open' | 'merged', prNumber: number | null, prLifecycleStatus?: string | null) =>
+      ({ epoch, branch: epoch === 1 ? BRANCH : `${BRANCH}-delivery-${epoch}`, state, prNumber, repoFullName: 'acme/app', prLifecycleStatus: prLifecycleStatus ?? null });
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [dClosed(1, 'merged', 10, 'merged'), dClosed(2, 'open', 11, 'closed')] })!;
+    expect(v).toMatchObject({ state: 'closed', delivery: 2, prNumber: 11 });
+  });
+
   it('every delivery merged: the newest is the view, the earlier ones named', () => {
     const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'merged', 11)] })!;
     expect(v).toMatchObject({ state: 'merged', delivery: 2 });
@@ -210,5 +217,14 @@ describe('deriveMissionIntegrationPr with delivery records', () => {
     const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'open', null)] })!;
     expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 4, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
       .toBe('2 of 4 tasks complete · delivery 1 shipped');
+  });
+
+  it('delivery 1 with a single open delivery uses delivery-specific wording', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'open', 11)] })!;
+    expect(v).toMatchObject({ state: 'open', delivery: 1, prNumber: 11 });
+    const words = describeMissionDelivery(v);
+    expect(words.heading).toBe('Delivery 1');
+    expect(words.line).toContain("Delivery 1's work ships in this PR");
+    expect(words.earlier).toBeNull();
   });
 });

@@ -63,6 +63,8 @@ export interface MissionDeliveryLike {
   prNumber: number | null;
   repoFullName: string | null;
   ownerTaskId?: string | null;
+  /** The PR's lifecycle status if known from the delivery. */
+  prLifecycleStatus?: string | null;
 }
 
 const prUrlOf = (d: MissionDeliveryLike): string | null =>
@@ -113,7 +115,7 @@ export function deriveMissionIntegrationPr(args: {
       ? 'merged'
       : current.prNumber == null
         ? 'not_opened'
-        : ownerWorker?.w.prLifecycleStatus === 'closed' ? 'closed' : 'open';
+        : current.prLifecycleStatus === 'closed' || ownerWorker?.w.prLifecycleStatus === 'closed' ? 'closed' : 'open';
     return {
       branch: current.branch, state, prNumber: current.prNumber, prUrl: prUrlOf(current) ?? ownerWorker?.w.prUrl ?? null,
       taskId: current.ownerTaskId ?? ownerWorker?.t.id ?? null, delivery: current.epoch, shippedDeliveries,
