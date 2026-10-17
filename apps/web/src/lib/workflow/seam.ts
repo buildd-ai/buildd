@@ -1228,10 +1228,38 @@ export async function observeCiFailure(p: {
   if (notRed && liveChecks?.complete && d?.state === 'REPAIRING' && d.stateReason === 'ci' && d.currentHeadSha === p.headSha
     && reader.ciGreen && (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true) {
     await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: p.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+  } else if (result.result !== 'applied' && liveChecks && live.headSha === p.headSha) {
+    // 6900a317: T10 did not act (a fix still in flight, a state CI does not move, a re-run
+    // already green): the head's reading is still recorded, so it never reads "Checking".
+    await recordCiReading({ deliveryId, headSha: p.headSha, liveChecks, source: p.source, reader, repoFullName: p.repoFullName }, deps);
   }
   await drainDelivery(deliveryId, deps);
   if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
+}
+
+/**
+ * 6900a317: record the head's CI reading (CiObserved) from a live read. Red when a current
+ * run fails (superseded re-runs are already dropped by the reader), so a failure outranks
+ * runs still going; green only when every run completed, none fails and every suite passed;
+ * running (nothing failing, not finished) withdraws a red on this head that a re-run replaced.
+ * An unreadable suite read records nothing.
+ */
+async function recordCiReading(p: {
+  deliveryId: string; headSha: string; liveChecks: { complete: boolean; failing: string[] }; source: string;
+  reader: GithubFactReader; repoFullName: string;
+}, deps: SeamDeps): Promise<CommandResult | null> {
+  const ref = { ref: { deliveryId: p.deliveryId }, exec: deps.exec };
+  if (p.liveChecks.failing.length > 0) {
+    return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'red', liveChecks: p.liveChecks }, ref);
+  }
+  if (!p.liveChecks.complete) {
+    return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'running', liveChecks: p.liveChecks }, ref);
+  }
+  if (!p.reader.ciGreen) return null;
+  const allPassing = (await p.reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true;
+  if (!allPassing) return null;
+  return applyCommand({ type: 'CiObserved', actor: `${p.source}:ci_reading`, headSha: p.headSha, verdict: 'green', liveChecks: p.liveChecks, allPassing }, ref);
 }
 
 const TRUNK_SOURCE_STATES: ReadonlySet<string> = new Set(['AWAITING_REVIEW', 'APPROVED', 'LANDING']);
@@ -1249,11 +1277,17 @@ export async function observeCiGreen(p: {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
   const d = (await loadView({ deliveryId }, deps.exec)).delivery;
-  // Only a CI repair at this head is answered by a green; anything else needs no command.
-  if (!d || d.state !== 'REPAIRING' || d.stateReason !== 'ci' || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
+  // A green for another head (a late or out-of-order webhook) says nothing about this one.
+  if (!d || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
   const reader = readerFor(deps, p.installationId);
   const liveChecks = reader.checkRuns ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
   if (!liveChecks) return { handled: true, result: null };
+  // 6900a317: outside a CI repair the green is a reading on the head, recorded without moving the delivery.
+  if (d.state !== 'REPAIRING' || d.stateReason !== 'ci') {
+    const result = await recordCiReading({ deliveryId, headSha: p.headSha, liveChecks, source: p.source, reader, repoFullName: p.repoFullName }, deps);
+    if (result) await drainDelivery(deliveryId, deps);
+    return { handled: true, result };
+  }
   // The check runs say nothing failed; only GitHub's passing allow-list (every suite completed
   // and passed) says everything passed. A cancelled or stale run is not green.
   const allPassing = reader.ciGreen ? (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true : false;

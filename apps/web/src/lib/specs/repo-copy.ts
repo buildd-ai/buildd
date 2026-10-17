@@ -11,7 +11,7 @@ import {
 } from '@buildd/spec-contract/repo-spec';
 import { linkedRepo } from './repo-source';
 import { scanForProdData } from './no-prod-data-scan';
-import { publicationMark, readPublicationPolicy } from './publication';
+import { decisionHit, publicationMark, publicationReason, publicationSentence, readPublicationPolicy } from './publication';
 import { fail, type SpecCaller, type SpecError, type SpecRow } from './store';
 import type { PublicationDecideInput, PublicationOutcome } from '@/lib/spec-publication-decision';
 
@@ -386,16 +386,17 @@ export async function decideSpecPublication(spec: SpecRow, built: Extract<BuiltC
     });
     const anyway = spec.repoCopy?.publishAnyway;
     if (!out.publish && anyway && anyway.revision === built.revision && !HARD_KEEP_PRIVATE.has(out.reasonCode)) {
-      return { publish: true, source: 'person', reasonCode: 'person_published_anyway', reason: 'Published: a person published it anyway.', policyVersion: out.policyVersion, decisionRecordId: out.decisionRecordId, revision: built.revision, decidedAt };
+      return { publish: true, source: 'person', reasonCode: 'person_published_anyway', reason: publicationReason({ publish: true, reasonCode: 'person_published_anyway' }), policyVersion: out.policyVersion, decisionRecordId: out.decisionRecordId, revision: built.revision, decidedAt };
     }
     return {
       publish: out.publish, source: out.source, reasonCode: out.reasonCode, reason: out.reason, ...(out.line ? { line: out.line } : {}),
+      ...(out.hit ? { hit: out.hit } : {}), ...(out.markFrom ? { markFrom: out.markFrom } : {}),
       policyVersion: out.policyVersion, confidence: out.confidence, model: out.model, decisionRecordId: out.decisionRecordId,
       revision: built.revision, decidedAt,
     };
   } catch (err) {
     console.warn('[living-specs] publication decision failed (kept private):', errMsg(err));
-    return { publish: false, source: 'fallback', reasonCode: 'fallback_error', reason: 'Not published: no decision model could read it against the policy, so it stays in buildd.', policyVersion: null, revision: built.revision, decidedAt };
+    return { publish: false, source: 'fallback', reasonCode: 'fallback_error', reason: publicationReason({ publish: false, reasonCode: 'fallback_error' }), policyVersion: null, revision: built.revision, decidedAt };
   }
 }
 
@@ -526,7 +527,7 @@ export async function publishSpecAnyway(caller: SpecCaller, specId: string, deps
   if (!person) return fail(403, 'Only someone who may approve specs here can publish one anyway.');
   const rc = spec.repoCopy;
   if (rc?.state !== 'private' || !rc.publication || spec.approvedRevision == null) return fail(409, 'This spec is not being kept private, so there is nothing to publish anyway.');
-  if (HARD_KEEP_PRIVATE.has(rc.publication.reasonCode)) return fail(409, rc.publication.reason);
+  if (HARD_KEEP_PRIVATE.has(rc.publication.reasonCode)) return fail(409, publicationSentence(rc.publication));
   const anyway = { by: `user:${person}`, at: deps.now().toISOString(), revision: spec.approvedRevision };
   await saveState(spec.id, { ...rc, publishAnyway: anyway, updatedAt: anyway.at });
   if (rc.publication.decisionRecordId) {
@@ -682,32 +683,39 @@ export async function repoCopyPreflight(spec: SpecRow, revision: number, deps: R
   return result;
 }
 
-/** The spec page's source line (R-13) and how the repo copy stands (AC-79). */
-export function repoCopyLine(on: boolean, rc: SpecRepoCopyState | null | undefined, approved: boolean, imported?: SpecRepoSource | null): { source: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null {
+/**
+ * The spec page's source line (R-13) and how the repo copy stands (AC-79).
+ * Words only where the person has something to do, and then only that; a
+ * published copy is its path, a kept-private one at most an Add to repo
+ * button (`publishAnyway`). Why a revision was kept private stays on the
+ * stored decision (publicationReason), not on the page.
+ */
+export function repoCopyLine(on: boolean, rc: SpecRepoCopyState | null | undefined, _approved: boolean, imported?: SpecRepoSource | null): { source: string | null; path?: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null {
   // R-13: an unconfirmed import names its repo file as the source, opted in or not.
   if (imported?.state === 'imported') {
-    return { source: `Imported from ${imported.path}@${imported.commitSha.slice(0, 7)}, waiting for confirmation`, copy: on ? 'No repo copy is written until a person confirms the import; the repo file stays the source.' : null, behind: false };
+    return { source: `Imported from ${imported.path}@${imported.commitSha.slice(0, 7)}`, copy: null, behind: false };
   }
-  if (!on) return null;
-  if (!rc) return { source: 'Source: buildd', copy: approved ? 'No repo copy written yet.' : 'A repo copy is written when a revision is approved.', behind: false };
-  const at = rc.path ? `, repo copy at ${rc.path}` : '';
-  const source = `Source: buildd${at}`;
+  if (!on || !rc) return null;
+  const none = { source: null, copy: null, behind: false };
+  const act = (copy: string) => ({ source: null, copy, behind: true });
   switch (rc.state) {
-    case 'merged': return { source, copy: `Repo copy is up to date at revision ${rc.revision}.`, behind: false };
-    case 'open': return { source, copy: `Repo copy of revision ${rc.revision} is waiting on CI in PR #${rc.prNumber}.`, behind: false };
-    case 'behind': return { source, copy: `Repo copy is behind: ${rc.failingCheck ?? 'a check'} failed on PR #${rc.prNumber}. The approval stands; fix it with a new revision or a metadata change.`, behind: true };
-    case 'refused': return { source, copy: `Repo copy is behind: PR #${rc.prNumber} has a commit buildd did not write, so it does not land without review.`, behind: true };
-    case 'unfiled': return { source, copy: 'No repo copy: file this spec under an area first, which gives it its domain.', behind: true };
-    case 'failed': return { source, copy: `Repo copy is behind: ${rc.error ?? 'the PR could not be written'}.`, behind: true };
+    case 'merged': return rc.path ? { ...none, path: rc.path } : null;
+    case 'open': return null;
+    case 'behind': return act(`PR #${rc.prNumber} failed ${rc.failingCheck ?? 'a check'}. Fix it in a new revision.`);
+    case 'refused': return act(`PR #${rc.prNumber} has a commit buildd didn't write. Review it before it lands.`);
+    case 'unfiled': return act('File this spec under an area to add it to the repo.');
+    case 'failed': return act(`Couldn't write the repo copy${rc.error ? `: ${rc.error}` : ''}.`);
     case 'private': {
       const p = rc.publication;
-      const why = p?.publish ? 'The publication policy now allows this spec; its repo copy is written on its next approval.' : (p?.reason ?? 'Not published: the publication policy keeps it in buildd.');
       const r = rc.removal;
-      const removal = !r ? (rc.prNumber && !p?.publish ? ` PR #${rc.prNumber} holds an earlier copy and will not land; close it.` : '')
+      const removal = !r ? (rc.prNumber && !p?.publish ? `Close PR #${rc.prNumber}; it holds an earlier copy.` : '')
         : r.error === COPY_GONE ? ''
-        : r.prNumber ? ` Its earlier copy is still in the repo at ${r.path}; PR #${r.prNumber} removes it once a person merges it. Removing it does not erase it from the repo's history.`
-          : ` Its earlier copy is still in the repo at ${r.path}, and the PR to remove it could not be opened${r.error ? ` (${r.error})` : ''}.`;
-      return { source: 'Source: buildd', copy: `${why}${removal}`, behind: !!r && r.error !== COPY_GONE, publishAnyway: !!p && !p.publish && !HARD_KEEP_PRIVATE.has(p.reasonCode) };
+        : r.prNumber ? `Merge PR #${r.prNumber} to remove the earlier copy at ${r.path}.`
+          : `Couldn't open a PR to remove the earlier copy at ${r.path}${r.error ? ` (${r.error})` : ''}.`;
+      const hit = p && !p.publish && p.reasonCode === 'rule_prod_data' ? decisionHit(p) : null;
+      const prodData = p && !p.publish && p.reasonCode === 'rule_prod_data' ? `Looks like production data${hit ? ` (${hit})` : ''}. Remove it in a new revision.` : '';
+      const copy = [prodData, removal].filter(Boolean).join(' ') || null;
+      return { source: null, copy, behind: !!copy, publishAnyway: !!p && !p.publish && !HARD_KEEP_PRIVATE.has(p.reasonCode) };
     }
   }
 }
