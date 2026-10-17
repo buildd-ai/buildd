@@ -1571,6 +1571,8 @@ export class WorkerManager {
       worker.pauseRequestedAt = Date.now();
       worker.currentAction = 'Pausing after the current step';
       this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      // Persisted: a SIGKILL before the tool ends must still read as a person's pause.
+      try { storeSaveWorker(worker); } catch { /* the next save covers it */ }
       this.emit({ type: 'worker_update', worker });
       const timer = setInterval(() => {
         if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
@@ -1726,6 +1728,25 @@ export class WorkerManager {
     if (this.shuttingDown || this.config?.singleTask) return out;
     const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause' && !!w.resumeOnStart);
     for (const w of due) {
+      // One continue per worker at a time: a hold lifting while the startup
+      // pass still waits on the server must not send the carry-on twice.
+      if (this.continuing.has(w.id)) continue;
+      this.continuing.add(w.id);
+      try {
+        await this.continueRestoredAgent(w, out);
+      } finally {
+        this.continuing.delete(w.id);
+      }
+    }
+    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
+    return out;
+  }
+
+  /** Workers continueRestoredAgents is continuing right now. */
+  private continuing = new Set<string>();
+
+  private async continueRestoredAgent(w: LocalWorker, out: { continued: string[]; held: string[]; ended: string[] }): Promise<void> {
+    {
       let res: any = null;
       try {
         res = await this.buildd.updateWorker(w.id, {
@@ -1745,17 +1766,17 @@ export class WorkerManager {
         storeSaveWorker(w);
         this.emit({ type: 'worker_update', worker: w });
         out.ended.push(w.id);
-        continue;
+        return;
       }
+      // The other pass may have continued it while the server was answering.
+      if (w.status !== 'waiting' || !w.resumeOnStart) return;
       if (claimsHeldByPerson()) {
         out.held.push(w.id);
-        continue;
+        return;
       }
       console.log(`[Worker ${w.id}] Continuing in its own session after the restart`);
       if (await this.sendMessage(w.id, RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
     }
-    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
-    return out;
   }
 
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
