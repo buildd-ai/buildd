@@ -82,9 +82,9 @@ describe('DEFAULT_ROLES', () => {
     });
   });
 
-  it('seeds the full nine-role set', () => {
+  it('seeds the full ten-role set', () => {
     expect(Object.keys(bySlug).sort()).toEqual([
-      'analyst', 'builder', 'operator', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
+      'analyst', 'builder', 'copy-editor', 'operator', 'organizer', 'researcher', 'reviewer', 'spec-validator', 'visual-auditor', 'writer',
     ]);
   });
 
