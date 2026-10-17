@@ -71,13 +71,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
-- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-15
+- [Mission State and Completion](./mission-completion.md) · @max — verified 2026-10-17
   Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-10-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-15
+- [Mission Surface Audit](./mission-surface-audit.md) · @max — verified 2026-10-17
   A mission touching UI surfaces MUST receive a dependent surface audit and enforce its visual review policy before shipping.
 - [Organizer Context](./organizer-context.md) · @max — verified 2026-10-15
   Organizer prompts MUST include prior work and bounded current workspace context while degrading safely on retrieval failure.
@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-15
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-17
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)

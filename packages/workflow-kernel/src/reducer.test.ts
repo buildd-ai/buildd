@@ -12,6 +12,7 @@ import {
   deliveryProof,
   headCoverage,
   reduce,
+  reviewBudgetHeld,
   stableIdempotencyKey,
   verifyCompositionAttestation,
 } from './reducer';
@@ -2358,5 +2359,63 @@ describe('2ded4e88: a spent review budget is final for the delivery until a pers
     const approved = V(D({ state: 'APPROVED', currentRound: 3, resumeState: 'ESCALATED', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [decided3]);
     const pushed = applied(run(approved, { type: 'HeadObserved', actor: 'webhook', live: live('H2') }));
     expect({ to: pushed.toState, resume: pushed.patch.resumeState }).toEqual({ to: 'AWAITING_REVIEW', resume: null });
+  });
+});
+
+// Task 79649a80: closing the PR cleared the hold and reopening it started a fresh round, so a
+// close and a reopen escaped a spent review budget. The hold now rides through CLOSED_UNMERGED.
+describe('79649a80: closing and reopening a PR does not reset a spent review budget', () => {
+  const decided3 = R({ id: 'r3', round: 3, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+  const close = (d: DeliverySnapshot) => applied(run(V(d, [decided3]), { type: 'PrClosedUnmerged', actor: 'webhook', live: live('H1', { state: 'closed', updatedAt: 'u1' }), closeCause: 'manual' }));
+  const reopen = (d: DeliverySnapshot, head = 'H1') => applied(run(V(d, [decided3]), { type: 'PrReopened', actor: 'webhook', live: live(head, { updatedAt: 'u2' }) }));
+  const closed = (o: Partial<DeliverySnapshot> = {}) => D({ state: 'CLOSED_UNMERGED', stateReason: 'manual', currentRound: 3, resumeState: 'ESCALATED', ...o });
+  const noReview = (dec: ApplyDecision) => {
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch).toMatchObject({ stateReason: 'review_exhausted', resumeState: null });
+    expect(dec.patch.currentRound ?? 3).toBe(3);
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  };
+
+  test('closing a delivery whose budget is spent keeps the hold; any other close clears resumeState', () => {
+    expect(close(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3 })).patch.resumeState).toBe('ESCALATED');
+    // A repair out of the spent escalation, a red base during it, a push not yet visible, a spent repair budget on top.
+    for (const state of ['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH', 'ESCALATED'] as const)
+      expect(close(D({ state, stateReason: 'ci', currentRound: 3, resumeState: 'ESCALATED' })).patch.resumeState).toBe('ESCALATED');
+    expect(close(D({ state: 'ESCALATED', stateReason: 'review_escalated', currentRound: 3 })).patch.resumeState).toBeNull();
+    expect(close(D({ state: 'BLOCKED_ON_TRUNK', currentRound: 1, resumeState: 'APPROVED', trunkIncidentId: 'i1' })).patch.resumeState).toBeNull();
+  });
+
+  test('reopening it returns to the person with no round, at the reopened head', () => {
+    const dec = reopen(closed(), 'H2');
+    noReview(dec);
+    expect(dec.patch.currentHeadSha).toBe('H2');
+    expect(dec.evidence).toMatchObject({ reviewBudgetSpent: true, heldFrom: 'CLOSED_UNMERGED' });
+    // The person is told it is back with them, once per reopen.
+    const told = dec.effects.filter((e) => e.kind === 'escalate_exhaustion');
+    expect(told).toEqual([{ kind: 'escalate_exhaustion', dedupeKey: 'exhaust:d1:H2@v5', payload: { family: 'review_fix', rounds: 3, reopened: true } }]);
+    const again = reopen(closed({ version: 9 }), 'H2').effects.find((e) => e.kind === 'escalate_exhaustion');
+    expect(again?.dedupeKey).toBe('exhaust:d1:H2@v9');
+  });
+
+  test('the closed delivery itself reads as held, so nothing automatic asks for a review there', () => {
+    expect(reviewBudgetHeld(closed())).toBe(true);
+    expect(reviewBudgetHeld(closed({ resumeState: null }))).toBe(false);
+  });
+
+  test('a delivery closed without a spent budget is reviewed on reopen, as before', () => {
+    const dec = reopen(closed({ resumeState: null, currentRound: 1 }));
+    expect({ to: dec.toState, round: dec.patch.currentRound, review: effectKinds(dec).includes('dispatch_review') }).toEqual({ to: 'AWAITING_REVIEW', round: 2, review: true });
+    expect(effectKinds(dec)).not.toContain('escalate_exhaustion');
+  });
+
+  test('after the reopen, only a person forcing a round asks again', () => {
+    const v = V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3 }), [decided3]);
+    expectResult(run(v, { type: 'ReviewRequested', actor: 'kernel', headSha: 'H1', live: live('H1') }), 'rejected', 'review_budget_spent');
+  });
+
+  test('superseding or abandoning the closed delivery drops the marker', () => {
+    const ab = applied(run(V(closed(), [decided3]), { type: 'Abandon', actor: 'human:u', reason: 'not needed' }));
+    expect({ to: ab.toState, resume: ab.patch.resumeState }).toEqual({ to: 'ABANDONED', resume: null });
   });
 });
