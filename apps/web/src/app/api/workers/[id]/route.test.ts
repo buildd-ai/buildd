@@ -9166,6 +9166,21 @@ describe('PATCH /api/workers/[id]', () => {
         expect(mockLandPr.mock.calls.length + mockTryAutoMergeWorkerPr.mock.calls.length).toBeGreaterThan(0);
       });
 
+      it('fails closed: a kernel round naming another workspace\'s delivery is refused, and the PATCH posts no review and merges nothing', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        // What the door raises when the seam's lookup throws DeliveryWorkspaceMismatchError there.
+        mockRecordReviewVerdict.mockRejectedValue(new Error('delivery delivery-1 is not a delivery of workspace ws-1'));
+        mockKernelDeliveryForPr.mockClear();
+        mockAdoptReviewVerdict.mockClear();
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        // Not read as a release to legacy: the legacy authority lookup and adoption never run.
+        expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
+        expect(mockAdoptReviewVerdict).not.toHaveBeenCalled();
+      });
+
       it('a delivery released to legacy by the kill switch falls back to the legacy verdict path', async () => {
         setupReviewerTaskCompletion('approve', { kernel: true });
         mockRecordReviewVerdict.mockResolvedValue({ handled: false });

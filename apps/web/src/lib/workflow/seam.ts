@@ -25,7 +25,7 @@ import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
+import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
@@ -822,7 +822,11 @@ export async function recordReviewVerdict(p: {
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
-  const deliveryId = await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec, p.workspaceId);
+  // Fail closed: a delivery of another workspace throws, never `handled: false`, which the PATCH reads
+  // as a release to legacy and would answer with a GitHub review and possibly a merge.
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.reviewerTask.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
   const result = await applyCommand({
     type: 'ReviewVerdictRecorded',
@@ -856,7 +860,9 @@ export async function adoptReviewVerdict(p: {
   confidence: number | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
-  const deliveryId = await kernelDeliveryById(p.deliveryId, deps.exec, p.workspaceId);
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.deliveryId, deps.exec);
   if (!deliveryId) return null;
   const result = await applyCommand({
     type: 'ReviewVerdictAdopted',

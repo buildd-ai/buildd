@@ -204,18 +204,21 @@ describe('AC-9: a review verdict and a fix claim are applied by the control plan
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
   });
 
-  test('a verdict named for another workspace acts on nothing: the delivery is not found there', async () => {
+  test('a verdict named for another workspace fails closed: refused, never read as a release to legacy, and nothing is applied', async () => {
     const { pr, head, rv } = await inReview('feat/own-verdict-other-ws');
     const { workspaceId: other } = await seedWorkspace();
     const before = (await w!.delivery(pr)).version;
     cp = installControlPlane();
 
-    const kv = await recordReviewVerdict({
+    const err = await recordReviewVerdict({
       workspaceId: other, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
       verdict: 'approve', effectiveVerdict: 'approve', headSha: head, confidence: 0.9,
-    }, { principal: reviewer });
+    }, { principal: reviewer }).catch((e: unknown) => e);
 
-    expect(kv).toEqual({ handled: false });
+    // The control plane's command threw (the PATCH's catch: it acts on nothing), not `handled: false`.
+    expect(err).toBeInstanceOf(Error);
+    expect(String((err as Error).message)).toContain('is not a delivery of workspace');
+    expect((await w!.delivery(pr)).state).toBe('AWAITING_REVIEW');
     expect((await w!.delivery(pr)).version).toBe(before);
     expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
   });

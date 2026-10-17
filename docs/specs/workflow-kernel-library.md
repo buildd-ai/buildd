@@ -362,7 +362,11 @@ the control plane, authenticated as the caller).
     the kernel owns) and `claim_fix` (T9 from the claim route, one request in
     place of the seam's own reads), each for the caller that reported it,
     with the same skew rule; each names its workspace on the input, and the
-    host acts only on a delivery of that workspace. The same
+    host acts only on a delivery of that workspace (a verdict for another
+    workspace's delivery is refused, never read as a release to legacy). A
+    claim request's fix claims share one control-plane budget; once it is
+    spent the next fix candidate defers at once as `kernel_unavailable` and
+    the rest of the batch is claimed. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
