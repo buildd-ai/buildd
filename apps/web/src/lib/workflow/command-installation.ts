@@ -11,7 +11,6 @@
  *    workspace's own repo costs one parallel read).
  */
 import { and, eq, isNotNull, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
 
 export type InstallationResolution =
   | { installationId: number }
@@ -75,27 +74,30 @@ export async function repoInScope(workspaceId: string, repoFullName: string): Pr
     .where(and(eq(workers.workspaceId, workspaceId), prIn(workers.prUrl)))
     .limit(1);
 
-  const here = alias(tasks, 'scope_here');
-  const sibling = alias(tasks, 'scope_sibling');
-  const siblingWorker = alias(workers, 'scope_sibling_worker');
-  const mission = db.select({ one: sql<number>`1` }).from(here)
-    .innerJoin(sibling, eq(sibling.missionId, here.missionId))
-    .innerJoin(workspaces, eq(workspaces.id, sibling.workspaceId))
+  // The workspace's missions and their tasks, each read once through an index as an array
+  // (`= any(array(...))`, an InitPlan), so a check costs the missions' own size, never a pass over a
+  // whole table or one row per pair of mission tasks, and stops at its first hit.
+  const anyOf = (col: AnyColumn, sub: SQL | object): SQL => sql`${col} = any(array(${sub}))`;
+  const missionIds = db.selectDistinct({ id: tasks.missionId }).from(tasks)
+    .where(and(eq(tasks.workspaceId, workspaceId), isNotNull(tasks.missionId)));
+
+  // A workspace of one of those missions is bound to the repo.
+  const missionWorkspace = db.select({ one: sql<number>`1` }).from(workspaces)
     .leftJoin(githubRepos, eq(githubRepos.id, workspaces.githubRepoId))
-    .leftJoin(siblingWorker, eq(siblingWorker.taskId, sibling.id))
     .where(and(
-      eq(here.workspaceId, workspaceId),
-      isNotNull(here.missionId),
-      or(
-        sql`${normalizedRepoSql(githubRepos.fullName)} = ${repo}`,
-        sql`${normalizedRepoSql(workspaces.repo)} = ${repo}`,
-        prIn(siblingWorker.prUrl),
-      ),
+      anyOf(workspaces.id, db.selectDistinct({ id: tasks.workspaceId }).from(tasks).where(anyOf(tasks.missionId, missionIds))),
+      or(sql`${normalizedRepoSql(githubRepos.fullName)} = ${repo}`, sql`${normalizedRepoSql(workspaces.repo)} = ${repo}`),
     ))
     .limit(1);
 
-  const [a, b] = await Promise.all([own, mission]);
-  return a.length > 0 || b.length > 0;
+  // A worker on one of those missions' tasks has a PR in the repo.
+  const missionPr = db.select({ one: sql<number>`1` }).from(tasks)
+    .innerJoin(workers, eq(workers.taskId, tasks.id))
+    .where(and(anyOf(tasks.missionId, missionIds), prIn(workers.prUrl)))
+    .limit(1);
+
+  const hits = await Promise.all([own, missionWorkspace, missionPr]);
+  return hits.some((rows) => rows.length > 0);
 }
 
 const defaultLookups: InstallationLookups = { workspace: workspaceIdentity, forRepo, inScope: repoInScope };
