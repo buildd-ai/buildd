@@ -1837,6 +1837,12 @@ export interface ClaimDiagnostics {
      */
     fix_not_needed?: number;
     /**
+     * Workflow-kernel fix claim rolled back to pending because the kernel could not answer: the
+     * control plane did not respond in time, or the claim request's control-plane budget was spent.
+     * Retried on the next poll.
+     */
+    kernel_unavailable?: number;
+    /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
      * path_overlap / advisory_manifest deferral for that task.

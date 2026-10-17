@@ -741,8 +741,8 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
-const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
-const mockAdoptReviewVerdict = mock(async (_p: any): Promise<any> => ({ result: 'applied' }));
+const mockRecordReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
+const mockAdoptReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ result: 'applied' }));
 const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
@@ -752,15 +752,16 @@ mock.module('@/lib/repair-completion', () => ({
 }));
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded }));
+// T6 too (recorded or adopted): the verdict is the kernel's door, not the seam's.
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict }));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
-  recordReviewVerdict: mockRecordReviewVerdict,
-  adoptReviewVerdict: mockAdoptReviewVerdict,
+  recordReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s recordReviewVerdict, not the kernel client\'s'); }),
+  adoptReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s adoptReviewVerdict, not the kernel client\'s'); }),
   noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
   fixedElsewhereOf: (o: any) => (o?.fixedElsewhere?.findingIds?.length ? o.fixedElsewhere : null),
   isKernelReviewRound: mockIsKernelReviewRound,
@@ -9146,8 +9147,10 @@ describe('PATCH /api/workers/[id]', () => {
         expect(res.status).toBe(200);
         expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
         expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({
-          reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
+          workspaceId: 'ws-1', reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
         });
+        // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
+        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
         expect(mockLandPr).not.toHaveBeenCalled();
@@ -9183,6 +9186,21 @@ describe('PATCH /api/workers/[id]', () => {
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockLandPr.mock.calls.length + mockTryAutoMergeWorkerPr.mock.calls.length).toBeGreaterThan(0);
+      });
+
+      it('fails closed: a kernel round naming another workspace\'s delivery is refused, and the PATCH posts no review and merges nothing', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        // What the door raises when the seam's lookup throws DeliveryWorkspaceMismatchError there.
+        mockRecordReviewVerdict.mockRejectedValue(new Error('delivery delivery-1 is not a delivery of workspace ws-1'));
+        mockKernelDeliveryForPr.mockClear();
+        mockAdoptReviewVerdict.mockClear();
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        // Not read as a release to legacy: the legacy authority lookup and adoption never run.
+        expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
+        expect(mockAdoptReviewVerdict).not.toHaveBeenCalled();
       });
 
       it('a delivery released to legacy by the kill switch falls back to the legacy verdict path', async () => {
@@ -9428,7 +9446,8 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       // Not dropped: the kernel keeps it as the head's review (applied when the owner ends).
       expect(mockAdoptReviewVerdict).toHaveBeenCalledTimes(1);
-      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-9', verdict: 'approve' });
+      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', deliveryId: 'delivery-9', verdict: 'approve' });
+      expect(mockAdoptReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
     });
 
     it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {

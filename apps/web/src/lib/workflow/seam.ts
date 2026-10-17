@@ -25,7 +25,7 @@ import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
+import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
@@ -758,7 +758,8 @@ export type ClaimDecision = { action: 'proceed' } | { action: 'cancel'; reason: 
  */
 export async function claimFix(task: AttemptTask, deps: SeamDeps = {}): Promise<ClaimDecision> {
   if (!task.deliveryId || !isRepairRole(task.deliveryRole)) return { action: 'proceed' };
-  const deliveryId = await kernelDeliveryById(task.deliveryId, deps.exec);
+  // Only the task's own workspace's delivery: the command's input names the workspace it was checked for.
+  const deliveryId = await kernelDeliveryById(task.deliveryId, deps.exec, task.workspaceId);
   if (!deliveryId) return { action: 'proceed' };
   const attemptId = ctxOf(task).workflowAttemptId as string | undefined;
   if (!attemptId) return { action: 'proceed' };
@@ -812,6 +813,8 @@ export function toKernelVerdict(v: string): Verdict {
  * escalation notices — is an effect the kernel already ran.
  */
 export async function recordReviewVerdict(p: {
+  /** The workspace the verdict is for: a delivery of any other is not this round's (AC-9's reach check judged this one). */
+  workspaceId?: string;
   reviewerTask: { id: string; deliveryId: string | null; context: unknown };
   verdict: string;
   effectiveVerdict: string;
@@ -822,7 +825,11 @@ export async function recordReviewVerdict(p: {
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
-  const deliveryId = await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
+  // Fail closed: a delivery of another workspace throws, never `handled: false`, which the PATCH reads
+  // as a release to legacy and would answer with a GitHub review and possibly a merge.
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.reviewerTask.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
   const result = await applyCommand({
     type: 'ReviewVerdictRecorded',
@@ -846,6 +853,8 @@ export async function recordReviewVerdict(p: {
  * reviewed a second time. A verdict for another head is stale and does nothing.
  */
 export async function adoptReviewVerdict(p: {
+  /** The workspace the verdict is for: a delivery of any other is not adopted. */
+  workspaceId?: string;
   deliveryId: string;
   reviewerTaskId: string;
   verdict: string;
@@ -854,7 +863,9 @@ export async function adoptReviewVerdict(p: {
   confidence: number | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
-  const deliveryId = await kernelDeliveryById(p.deliveryId, deps.exec);
+  const deliveryId = p.workspaceId
+    ? await kernelDeliveryInWorkspace(p.deliveryId, p.workspaceId, deps.exec)
+    : await kernelDeliveryById(p.deliveryId, deps.exec);
   if (!deliveryId) return null;
   const result = await applyCommand({
     type: 'ReviewVerdictAdopted',
