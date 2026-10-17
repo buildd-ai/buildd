@@ -106,7 +106,7 @@ export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 async function afterRevisionWritten(spec: SpecRow, revision: SpecRevisionRow, body: string): Promise<void> {
   try {
     await writeCriterionRecords(spec.id, revision, body);
-    const { keepRevisionReviews } = await import('./review');
+    const { keepRevisionReviews } = await import('./revision-changes');
     await keepRevisionReviews(spec, revision.revision, body);
   } catch (err) {
     console.error(`[specs] keeping the criteria of ${spec.id} revision ${revision.revision} failed:`, err);

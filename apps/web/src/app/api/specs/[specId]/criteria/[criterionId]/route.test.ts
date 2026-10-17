@@ -5,7 +5,7 @@ let caller: unknown = { kind: 'user', userId: 'u1' };
 const seen: unknown[] = [];
 // The history itself is real-Postgres tested (tests/db/spec-criteria-records.test.ts); here the route's mapping.
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
-mock.module('@/lib/specs/review', () => ({
+mock.module('@/lib/specs/revision-changes', () => ({
   specCriterionHistory: async (_c: unknown, specId: string, id: string) => {
     seen.push([specId, id]);
     return id === 'R-26'

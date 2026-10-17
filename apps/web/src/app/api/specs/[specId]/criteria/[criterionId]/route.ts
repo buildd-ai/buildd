@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { specCaller } from '@/lib/specs/caller';
-import { specCriterionHistory } from '@/lib/specs/review';
+import { specCriterionHistory } from '@/lib/specs/revision-changes';
 
 type Ctx = { params: Promise<{ specId: string; criterionId: string }> };
 

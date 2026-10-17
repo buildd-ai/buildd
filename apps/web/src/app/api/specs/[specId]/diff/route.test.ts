@@ -13,7 +13,7 @@ mock.module('@/lib/specs/page-view', () => ({
     ? { ok: true, review: { revision: 2, replaces: 1, hunks: [], omittedLines: 0, linesAdded: 0, linesRemoved: 0, sectionCount: 0, body: 'B', version: 4 } }
     : { ok: false, status: 403, error: 'Only someone who may approve specs here can review a revision for approval.' }),
 }));
-mock.module('@/lib/specs/review', () => ({
+mock.module('@/lib/specs/revision-changes', () => ({
   pairChanges: async () => ({ summary: 's', lines: [{ kind: 'changed', id: 'R-1' }], otherText: [], mismatch: null }),
 }));
 const { GET } = await import('./route');

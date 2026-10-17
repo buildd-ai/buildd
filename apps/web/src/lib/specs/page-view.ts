@@ -21,7 +21,7 @@ import type { RepoRef } from './repo-refs';
 import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
 import { readSpecDelivery, type SpecDelivery } from './delivery';
 import { specRetirement, type RetirementView } from './retire';
-import { revisionReview, type RevisionReview } from './review';
+import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
 
 /**

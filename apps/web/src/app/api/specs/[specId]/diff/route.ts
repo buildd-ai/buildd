@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { diffSpecRevisions } from '@/lib/specs/diff';
 import { specCaller } from '@/lib/specs/caller';
 import { specReviewView } from '@/lib/specs/page-view';
-import { pairChanges } from '@/lib/specs/review';
+import { pairChanges } from '@/lib/specs/revision-changes';
 
 type Ctx = { params: Promise<{ specId: string }> };
 

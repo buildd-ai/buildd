@@ -14,7 +14,7 @@
  */
 // Everything DB-shaped comes through the app module: the repo root does not
 // depend on drizzle-orm, apps/web does.
-import { backfillSpecCriteria } from '../apps/web/src/lib/specs/review';
+import { backfillSpecCriteria } from '../apps/web/src/lib/specs/revision-changes';
 
 const dryRun = process.argv.includes('--dry-run');
 const r = await backfillSpecCriteria({ dryRun });
