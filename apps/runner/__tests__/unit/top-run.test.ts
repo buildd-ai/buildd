@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { serveRunnerSocket, type RunnerSocketServer } from '../../src/runner-socket';
 import { OSC11_QUERY, createPalette, stripAnsi } from '../../src/terminal-palette';
-import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, LEAVE_SCREEN, runTop, type TopTerminal } from '../../src/top/run';
+import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, IDLE_PAUSE_MS, LEAVE_SCREEN, MISSION_REFRESH_MS, TASK_EVENT_MIN_MS, TASK_REFRESH_MS, runTop, type TopTerminal } from '../../src/top/run';
 import { TASKS, WORKERS } from './top-fixture';
 
 let dir: string;
@@ -19,6 +19,7 @@ let server: RunnerSocketServer | null = null;
 let sse: ReadableStreamDefaultController<Uint8Array> | null = null;
 const posts: Array<{ path: string; body: any }> = [];
 let missionFetches = 0;
+let taskFetches = 0;
 let serveMissions = false;
 
 function push(event: unknown) {
@@ -30,6 +31,7 @@ beforeEach(() => {
   sock = join(dir, 'runner.sock');
   posts.length = 0;
   missionFetches = 0;
+  taskFetches = 0;
   serveMissions = false;
   sse = null;
 });
@@ -54,7 +56,7 @@ function serveFakeRunner() {
       case '/api/runner': return Response.json({ pid: 4242, version: '0.340.0' });
       case '/api/config': return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
       case '/api/workers': return Response.json({ workers: WORKERS });
-      case '/api/tasks': return Response.json({ tasks: TASKS });
+      case '/api/tasks': taskFetches++; return Response.json({ tasks: TASKS });
       case '/api/workspaces': return Response.json({ workspaces: [
         { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
         { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
@@ -270,7 +272,7 @@ describe('runTop', () => {
     await done;
   });
 
-  test('each minute timer refreshes missions even when its clock is slightly early', async () => {
+  test('each mission timer refreshes missions even when its clock is slightly early', async () => {
     serveFakeRunner();
     const intervals: Array<{ callback: () => void; ms: number }> = [];
     const realInterval = globalThis.setInterval;
@@ -284,10 +286,14 @@ describe('runTop', () => {
     try {
       await until(() => intervals.length === 4 && missionFetches === 1);
       const now = Date.now();
-      clock = spyOn(Date, 'now').mockReturnValue(now + 59_900);
+      // The keyboard stays busy, so the idle pause never applies here.
+      t.type('j');
+      clock = spyOn(Date, 'now').mockReturnValue(now + MISSION_REFRESH_MS - 100);
+      t.type('k');
       intervals[2].callback();
       await until(() => missionFetches === 2);
-      clock.mockReturnValue(now + 119_800);
+      clock.mockReturnValue(now + 2 * MISSION_REFRESH_MS - 200);
+      t.type('j');
       intervals[2].callback();
       await until(() => missionFetches === 3);
     } finally {
@@ -298,7 +304,61 @@ describe('runTop', () => {
     }
   });
 
-  test('lists the missions the server names, and never fetches them faster than once a minute (R-24)', async () => {
+  test('timers poll the server no faster than every 2 minutes (tasks) and 5 (missions)', () => {
+    // Pushed events refetch sooner; the timers are only the backstop.
+    expect(TASK_REFRESH_MS).toBeGreaterThanOrEqual(120_000);
+    expect(MISSION_REFRESH_MS).toBeGreaterThanOrEqual(300_000);
+    expect(TASK_EVENT_MIN_MS).toBeGreaterThanOrEqual(10_000);
+    expect(IDLE_PAUSE_MS).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  test('a burst of queue events refetches the task list once, after the event floor', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { taskEventMinMs: 1_500 } });
+    await until(() => taskFetches === 1 && sse !== null);
+    for (let i = 0; i < 3; i++) { push({ type: 'task_assigned' }); await Bun.sleep(300); }
+    // Without the floor each event would have refetched: 1 + 3.
+    expect(taskFetches).toBe(1);
+    await until(() => taskFetches === 2, 2_500);
+    await Bun.sleep(400);
+    expect(taskFetches).toBe(2);
+    t.type('q');
+    await done;
+  });
+
+  test('left idle, top stops asking the server, says so, and catches up on the next key', async () => {
+    serveFakeRunner();
+    const intervals: Array<{ callback: () => void; ms: number }> = [];
+    const realInterval = globalThis.setInterval;
+    const timer = spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, ms: number) => {
+      intervals.push({ callback, ms });
+      return realInterval(() => {}, 1_000_000);
+    }) as typeof setInterval);
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { idlePauseMs: 200 } });
+    try {
+      await until(() => intervals.length === 4 && taskFetches === 1 && missionFetches === 1 && sse !== null);
+      await Bun.sleep(300);
+      intervals[1].callback();
+      intervals[2].callback();
+      push({ type: 'task_assigned' });
+      await Bun.sleep(400);
+      intervals[0].callback();
+      await until(() => /paused/i.test(t.screen()));
+      expect(taskFetches).toBe(1);
+      expect(missionFetches).toBe(1);
+      t.type('j');
+      await until(() => taskFetches === 2 && missionFetches === 2);
+      await until(() => !/paused/i.test(t.screen()));
+    } finally {
+      timer.mockRestore();
+      t.type('q');
+      await done;
+    }
+  });
+
+  test('lists the missions the server names, and never fetches them faster than the mission timer (R-24)', async () => {
     serveMissions = true;
     serveFakeRunner();
     const t = fakeTerminal();
