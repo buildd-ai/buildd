@@ -1,11 +1,26 @@
 import type { ReactNode } from 'react';
 import Chip from '@/components/ui/Chip';
 import { criterionWords, type CriterionMark } from '@/lib/specs/delivery-words';
-import type { Root, BlockContent, DefinitionContent, Paragraph, PhrasingContent } from 'mdast';
-import type { Processor } from 'unified';
 import { requirementIds, tableRowId } from '@buildd/spec-contract/requirements';
 
-type Block = BlockContent | DefinitionContent;
+// Only the Markdown node fields this transform reads or creates. Keeping these
+// structural types local avoids adding dependencies for a single remark plugin.
+type Position = { start: { line: number; offset?: number }; end: { line: number; offset?: number } };
+type NodeData = { hName?: string; hProperties?: Record<string, unknown> };
+type BaseNode = { position?: Position; data?: NodeData };
+type PhrasingContent = BaseNode & { type: string; value?: string; children?: PhrasingContent[] };
+type Paragraph = BaseNode & { type: 'paragraph'; children: PhrasingContent[] };
+type DefinitionContent = BaseNode & { type: 'definition' };
+type TableCell = BaseNode & { type: 'tableCell'; children: PhrasingContent[] };
+type TableRow = BaseNode & { type: 'tableRow'; children: TableCell[] };
+type Block = Paragraph | DefinitionContent
+  | (BaseNode & { type: 'table'; children: TableRow[] })
+  | (BaseNode & { type: 'list'; ordered?: boolean; start?: number | null; children: Array<BaseNode & { type: 'listItem'; children: Block[] }> })
+  | (BaseNode & { type: 'blockquote' | 'footnoteDefinition'; children: Block[] })
+  | (BaseNode & { type: 'heading'; children: PhrasingContent[] })
+  | (BaseNode & { type: 'code' | 'html' | 'thematicBreak'; value?: string });
+type Root = { type: 'root'; children: Block[] };
+type Processor = { parse(text: string): unknown };
 
 /** Recognition and first-definition wins come exclusively from the grading parser.
  * Transform the Markdown tree, retaining ordinary Markdown nodes and inline styles.
@@ -127,17 +142,17 @@ export default function SpecCriteriaBody({ id, children, criterionVerdicts }: {
   children: ReactNode;
   criterionVerdicts: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
 }) {
-            return (
-              <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
-                <div className="flex max-w-32 shrink-0 flex-col items-start gap-1">
-                  <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
-                    <Chip tone="muted" dot={false}>{id}</Chip>
-                  </a>
-                  {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
-                    <a key={v.href} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
-                  ))}
-                </div>
-                <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
-              </div>
-            );
+  return (
+    <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
+      <div className="flex max-w-32 shrink-0 flex-col items-start gap-1">
+        <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
+          <Chip tone="muted" dot={false}>{id}</Chip>
+        </a>
+        {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
+          <a key={v.href} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
+        ))}
+      </div>
+      <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
+    </div>
+  );
 }
