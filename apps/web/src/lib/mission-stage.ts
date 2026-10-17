@@ -28,6 +28,14 @@ import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { missionTrunkMergedAt } from './mission-delivery';
 
+/**
+ * At most this many missions' stages per read (`loadMissionStages`): the
+ * batched reads grow with every listed mission's tasks and workers, and
+ * `buildd top` polls them. GET /api/missions/stages refuses more; GET
+ * /api/missions/recent stages only the first this many it lists.
+ */
+export const MAX_STAGE_MISSION_IDS = 100;
+
 export interface MissionStagePr {
   prUrl: string | null;
   prNumber: number | null;
