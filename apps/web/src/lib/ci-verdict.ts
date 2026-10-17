@@ -92,3 +92,32 @@ export function listAllCommitStatuses<T extends { context?: string; state?: stri
 ): Promise<PagedRead<T>> {
   return readPaged<T>(api, installationId, `/repos/${repoFullName}/commits/${sha}/status`, 'statuses');
 }
+
+function isNewer(a: { name: string; id?: number; started_at?: string | null }, b: { name: string; id?: number; started_at?: string | null }): boolean | null {
+  if (typeof a.id === 'number' && typeof b.id === 'number') return a.id > b.id;
+  if (a.started_at && b.started_at) return Date.parse(a.started_at) > Date.parse(b.started_at);
+  return null;
+}
+
+/**
+ * Collapse to the most recent run per check name. A re-run or a re-triggered
+ * workflow (e.g. a PR-body edit) leaves the superseded run attached to the same
+ * head SHA, and its stale failure must not outvote the run that replaced it.
+ *
+ * Fails closed: two same-name runs with nothing to order them by are both
+ * kept, so an unorderable failure still blocks.
+ */
+export function latestRunPerName<T extends { name: string; id?: number; started_at?: string | null }>(checkRuns: T[]): T[] {
+  const kept: T[] = [];
+  for (const run of checkRuns) {
+    const i = kept.findIndex((k) => k.name === run.name);
+    if (i === -1) {
+      kept.push(run);
+      continue;
+    }
+    const newer = isNewer(run, kept[i]);
+    if (newer === true) kept[i] = run;
+    else if (newer === null) kept.push(run);
+  }
+  return kept;
+}

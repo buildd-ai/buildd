@@ -1,6 +1,5 @@
 import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
-import { latestRunPerName } from '@/lib/auto-merge-bound';
-import { listAllCheckRuns } from '@/lib/ci-verdict';
+import { latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 // GitHub App configuration

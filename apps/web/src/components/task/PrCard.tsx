@@ -161,7 +161,7 @@ export function RepairLinkLine({ links }: { links?: RepairLinks | null }) {
   const fixes = links?.fixes ?? [];
   if (!parent && fixes.length === 0) return null;
   return (
-    <div data-testid="pr-repair-links" className="text-[12px] text-text-muted">
+    <div data-testid="pr-repair-links" className="text-meta text-text-muted">
       {parent && (
         <>
           Repair of{' '}
