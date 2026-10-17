@@ -81,3 +81,19 @@ it('keeps parser definitions visible inside otherwise hidden Markdown wrappers',
   render(body);
   expect(rows().map(r => r.id)).toEqual(requirementIds(body).map(r => r.id));
 });
+
+it('resolves document references in split criteria and adjacent prose', () => {
+  render('Before [policy][p] and ![before][pic].\nR-1: A [policy][p] and ![criterion][pic].\nAfter [policy][p] and ![after][pic].\n\n[p]: https://example.test/policy\n[pic]: https://example.test/image.png');
+  expect(container.querySelectorAll('a[href="https://example.test/policy"]')).toHaveLength(3);
+  expect(container.querySelector('#R-1 a[href="https://example.test/policy"]')?.textContent).toBe('policy');
+  expect(container.querySelectorAll('img[src="https://example.test/image.png"]')).toHaveLength(3);
+  expect(container.querySelector('#R-1 img')?.getAttribute('alt')).toBe('criterion');
+});
+
+it('resolves references for list, heading and table criteria with definitions before the body', () => {
+  for (const criterion of ['- **R-1**: [policy][p] ![diagram][pic]', '### R-1 [policy][p] ![diagram][pic]', '| ID | Rule |\n|---|---|\n| R-1 | [policy][p] ![diagram][pic] |']) {
+    render(`[p]: https://example.test/policy\n[pic]: https://example.test/image.png\n\n${criterion}`);
+    expect(container.querySelector('#R-1 a[href="https://example.test/policy"]')?.textContent).toBe('policy');
+    expect(container.querySelector('#R-1 img')?.getAttribute('src')).toBe('https://example.test/image.png');
+  }
+});

@@ -3,9 +3,8 @@
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MermaidBlock from '@/components/MermaidBlock';
-import Chip from '@/components/ui/Chip';
-import specCriterionMarkdown from './markdown-criteria';
-import { criterionWords, type CriterionMark } from '@/lib/specs/delivery-words';
+import SpecCriteriaBody, { specCriterionMarkdown } from './SpecCriteriaBody';
+import { type CriterionMark } from '@/lib/specs/delivery-words';
 
 interface MarkdownContentProps {
   content: string;
@@ -75,19 +74,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           div: ({ children, node, ...props }) => {
             const id = node?.properties?.['data-criterion-id'];
             if (typeof id !== 'string') return <div {...props}>{children}</div>;
-            return (
-              <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
-                <div className="flex max-w-32 shrink-0 flex-col items-start gap-1">
-                  <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
-                    <Chip tone="muted" dot={false}>{id}</Chip>
-                  </a>
-                  {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
-                    <a key={v.href} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
-                  ))}
-                </div>
-                <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
-              </div>
-            );
+            return <SpecCriteriaBody id={id} criterionVerdicts={criterionVerdicts}>{children}</SpecCriteriaBody>;
           },
           // Style overrides for better integration
           h1: ({ children }) => (
