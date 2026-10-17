@@ -192,6 +192,7 @@ export default function DevFixturesPage() {
         return <TaskErrorEvidenceFixture />;
     }
 
+
     if (state === TASK_SHIPPED_FIXTURE_STATE) {
         return <TaskShippedFixture />;
     }
