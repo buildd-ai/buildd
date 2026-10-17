@@ -201,9 +201,14 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
     expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim (runner-wide): held by a usage limit');
   });
 
+  test('a mixed deferral is shortened to held for several reasons', () => {
+    const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
+    expect(waitingReason(loose(), s, NOW)).toBe('held for several reasons');
+  });
+
   test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
     let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
-    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim, for reasons it did not tie to this task');
+    expect(waitingReason(loose(), s, NOW)).toBe('held for several reasons');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
     expect(waitingReason(loose(), s, NOW)).toBe('local session');
   });

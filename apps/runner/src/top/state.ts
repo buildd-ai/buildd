@@ -1294,7 +1294,7 @@ function broadDeferralWords(o: ClaimOutcome): string | null {
   const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0);
   if (entries.length === 0) return null;
   if (entries.length === 1) return `held at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
-  return 'held at the last claim, for reasons it did not tie to this task';
+  return 'held for several reasons';
 }
 
 /**
