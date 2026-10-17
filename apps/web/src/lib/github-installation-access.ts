@@ -20,8 +20,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * The teams that own the installation with row id `installationDbId`, by the same rule
  * `installationBelongsToTeam` reads for one team (one read): teams with a workspace linked
  * to an installation of the same GitHub account, through the workspace's repo or its
- * direct pointer, and the teams of the user who installed it (their memberships and
- * personal team, as `getUserTeamIds` counts them).
+ * direct pointer, and the teams the user who installed it is a member of.
  */
 export async function getInstallationOwnerTeamIds(installationDbId: string): Promise<string[]> {
   const r = await db.execute(sql`
@@ -37,8 +36,6 @@ export async function getInstallationOwnerTeamIds(installationDbId: string): Pro
       WHERE s.account_id = gi.account_id
       UNION
       SELECT m.team_id FROM team_members m WHERE m.user_id = gi.installed_by_user_id
-      UNION
-      SELECT p.id FROM teams p WHERE p.slug = 'personal-' || gi.installed_by_user_id::text
     ) t
     WHERE gi.id = ${installationDbId}::uuid AND t.team_id IS NOT NULL`);
   return (((r as unknown as { rows?: Array<{ team_id: string }> }).rows ?? [])).map((row) => row.team_id);
@@ -107,8 +104,6 @@ export async function installationBelongsToTeam(installationId: number, teamId: 
             )
         )
         OR EXISTS (SELECT 1 FROM team_members m WHERE m.team_id = ${teamId}::uuid AND m.user_id = gi.installed_by_user_id)
-        -- The installer's personal team, as getUserTeamIds counts it for an account with no membership row.
-        OR EXISTS (SELECT 1 FROM teams p WHERE p.id = ${teamId}::uuid AND p.slug = 'personal-' || gi.installed_by_user_id::text)
       )
     LIMIT 1`);
   return (((r as { rows?: unknown[] }).rows ?? []) as unknown[]).length > 0;

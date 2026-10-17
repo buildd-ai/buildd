@@ -56,12 +56,6 @@ describe('settings and the doors agree on what a team owns', () => {
     const reinstallOfPointer = await installation(`b${uniq()}`, { accountId: viaPointer.accountId });
     const byMember = await installation(`c${uniq()}`, { installedBy: await member(w.teamId) });
     const unrelated = await installation(`d${uniq()}`, { installedBy: await member(stranger.teamId) });
-    // An installer with no membership row, whose personal team is the one asking.
-    const [solo] = await q<{ id: string }>(sql`INSERT INTO users (email) VALUES (${`u-${uniq()}@example.test`}) RETURNING id`);
-    const [personal] = await q<{ id: string }>(sql`INSERT INTO teams (name, slug) VALUES ('p', ${`personal-${solo.id}`}) RETURNING id`);
-    const byPersonal = await installation(`e${uniq()}`, { installedBy: solo.id });
-    expect(await installationBelongsToTeam(byPersonal.installationId, personal.id)).toBe(true);
-    expect(await getInstallationOwnerTeamIds(byPersonal.rowId)).toEqual([personal.id]);
 
     for (const i of [viaRepo, viaPointer, reinstallOfRepo, reinstallOfPointer, byMember]) {
       expect(await installationBelongsToTeam(i.installationId, w.teamId)).toBe(true);
@@ -70,6 +64,20 @@ describe('settings and the doors agree on what a team owns', () => {
     }
     expect(await installationBelongsToTeam(unrelated.installationId, w.teamId)).toBe(false);
     expect(await getInstallationOwnerTeamIds(unrelated.rowId)).toEqual([stranger.teamId]);
+  }, 30_000);
+});
+
+describe('an installer who leaves the team', () => {
+  test('stops giving that team ownership through the member clause, in both readers', async () => {
+    const w = await seedWorkspace();
+    const installer = await member(w.teamId);
+    const inst = await installation(`m${uniq()}`, { installedBy: installer });
+    expect(await installationBelongsToTeam(inst.installationId, w.teamId)).toBe(true);
+    expect(await getInstallationOwnerTeamIds(inst.rowId)).toEqual([w.teamId]);
+
+    await q(sql`DELETE FROM team_members WHERE team_id = ${w.teamId}::uuid AND user_id = ${installer}::uuid`);
+    expect(await installationBelongsToTeam(inst.installationId, w.teamId)).toBe(false);
+    expect(await getInstallationOwnerTeamIds(inst.rowId)).toEqual([]);
   }, 30_000);
 });
 

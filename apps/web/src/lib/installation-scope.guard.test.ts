@@ -2,8 +2,9 @@
  * Every repo-to-installation lookup is team-scoped: a PR is read or acted on only through
  * its own workspace's team's GitHub App installation. Callers go through
  * `createTeamInstallationResolver` or `teamInstallationIdForRepo`
- * (lib/workspace-installation.ts), never the bare `installationIdForRepo`, and never a
- * hand-rolled `github_repos` → `github_installations` join by repo name.
+ * (lib/workspace-installation.ts), never the bare `installationIdForRepo`, never a
+ * hand-rolled `github_repos` → `github_installations` join by repo name, and never an
+ * installation picked by account login without an ownership check (`teamInstallationIdForOwner`).
  *
  * A new hit fails until it uses the scoped lookup or is listed below with the reason it
  * already checks team ownership itself.
@@ -17,8 +18,9 @@ const ROOTS = ['apps/web/src', 'packages/core'];
 
 const PATTERNS = [
   /\binstallationIdForRepo\s*\(/,
-  // An installation picked by account login alone.
-  /eq\(\s*githubInstallations\.accountLogin\b/,
+  // An installation picked by account login, in any form: eq(), a sql`lower(...)` template, raw SQL.
+  /githubInstallations\.accountLogin\b/,
+  /\baccount_login\b/,
   /\.innerJoin\(\s*githubInstallations\s*,\s*eq\(\s*githubRepos\.installationId/,
 ];
 
@@ -27,6 +29,9 @@ const ALLOWED: Record<string, string> = {
   'apps/web/src/lib/workspace-installation.ts': 'defines installationIdForRepo; teamInstallationIdForRepo wraps it with installationBelongsToTeam (tests/db/team-installation-ownership.test.ts)',
   'apps/web/src/lib/workflow/command-installation.ts': 'expectedInstallation checks the answer with ownedByTeam and refuses installation_not_team_owned (tests/db/command-installation-scope.test.ts)',
   'apps/web/src/lib/mission-invariant-scan.ts': 'the join reads each workspace\'s own linked repo by github_repos.id (its own link, the team\'s by the ownership rule); any other repo goes through teamInstallationIdForOwner',
+  'packages/core/db/schema.ts': 'defines the column and its index',
+  'apps/web/src/app/api/workspaces/[id]/create-repo/route.ts': 'checks installationBelongsToTeam on each installation on the org before using it (create-repo/route.test.ts)',
+  'apps/web/src/lib/github-repo-access-store.ts': 'checks teamOwns on each installation on the owner before offering it',
   'apps/web/src/lib/knowledge-full-ingest-fallback.ts': 'its local installationIdForRepo(repo, workspaceId) goes through createTeamInstallationResolver().forWorkspace',
 };
 

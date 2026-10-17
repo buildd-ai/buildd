@@ -148,7 +148,9 @@ export async function teamInstallationIdForOwner(owner: string, teamId: string |
   const rows = await db
     .select({ installationId: githubInstallations.installationId, suspendedAt: githubInstallations.suspendedAt })
     .from(githubInstallations)
-    .where(sql`lower(${githubInstallations.accountLogin}) = ${owner.toLowerCase()}`);
+    .where(sql`lower(${githubInstallations.accountLogin}) = ${owner.toLowerCase()}`)
+    // A handful of installations per account at most (reinstalls); bound the read anyway.
+    .limit(10);
   const { installationBelongsToTeam } = await import('@/lib/github-installation-access');
   for (const r of rows) {
     if (!r.suspendedAt && await installationBelongsToTeam(r.installationId, teamId)) return r.installationId;
