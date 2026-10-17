@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
-import { healthObjectiveLookup } from './decision-health-objectives';
+import { CAPABILITY_OBJECTIVES, healthObjectiveLookup } from './decision-health-objectives';
+import { STRAND_CHOICE_CAPABILITY } from './strand-choice-decision';
 import { strandChoiceObjective } from './strand-choice-gold';
 import { postSessionTriageObjective } from '@buildd/core/decision-kind-post-session-triage';
 import { scoutProbeSelectionObjective } from '@buildd/core/decision-kind-scout-probe-selection';
@@ -25,4 +26,8 @@ it('a feature with no objective of its own has none: its labels stay coverage on
   const lookup = await healthObjectiveLookup();
   expect(lookup('escalation_gate')).toBeUndefined();
   expect(lookup('buildd.spec_duplicate')).toBeUndefined();
+});
+
+it('names the strand choice by the same id its decisions are recorded under', () => {
+  expect(Object.keys(CAPABILITY_OBJECTIVES)).toEqual([STRAND_CHOICE_CAPABILITY]);
 });

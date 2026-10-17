@@ -11,12 +11,15 @@
  */
 import type { DecisionObjective } from '@buildd/core/decision-readout';
 import { listBuilddDecisionKinds } from '@buildd/core/decision-kinds';
-import { STRAND_CHOICE_CAPABILITY } from './strand-choice-decision';
 import { strandChoiceObjective } from './strand-choice-gold';
 
-/** Objectives for features that write `decision_records` under a bare capability id, not a kind id. */
+/**
+ * Objectives for features that write `decision_records` under a bare capability id, not a kind id.
+ * The id is spelled out, not imported from strand-choice-decision.ts: that module reaches the decision
+ * ledger's writers, and a read route must not pull them in (a test pins it equal to STRAND_CHOICE_CAPABILITY).
+ */
 export const CAPABILITY_OBJECTIVES: Readonly<Record<string, DecisionObjective>> = {
-  [STRAND_CHOICE_CAPABILITY]: strandChoiceObjective,
+  mission_strand_choice: strandChoiceObjective,
 };
 
 /** The kinds whose bindings carry an objective. Loaded lazily: importing one registers it. */
