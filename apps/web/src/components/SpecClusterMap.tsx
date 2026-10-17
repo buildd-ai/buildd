@@ -9,6 +9,9 @@ const FILL: Record<SpecMixState, string> = {
   failing: 'var(--status-error)',
 };
 
+/** Inner padding shared by the block buttons. */
+const PAD = 'p-1.5';
+
 /** The id `onSelect` gets for the loose dots (specs buildd could not place). */
 export const UNFILED = 'unfiled';
 
@@ -36,7 +39,7 @@ export default function SpecClusterMap({ areas, unfiledCount, selected, onSelect
           <button
             key={a.id} type="button" onClick={() => toggle(a.id)} aria-pressed={selected === a.id}
             data-testid="spec-cluster-block" data-area-id={a.id} data-count={a.count}
-            className={`flex min-h-11 min-w-[5.5rem] flex-col gap-1 rounded-[var(--radius-cell)] border bg-surface-1 p-1.5 text-left hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--text-primary)] ${selected === a.id ? 'border-[var(--text-primary)]' : 'border-[var(--line-soft)]'}`}
+            className={`flex min-h-11 min-w-[5.5rem] flex-col gap-1 rounded-[var(--radius-cell)] border bg-surface-1 ${PAD} text-left hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--text-primary)] ${selected === a.id ? 'border-[var(--text-primary)]' : 'border-[var(--line-soft)]'}`}
             style={{ flexGrow: a.count, flexBasis: `${Math.min(4 + a.count * 1.5, 16)}rem` }}
           >
             <span className="text-meta font-medium text-text-primary [overflow-wrap:anywhere]">{a.title}</span>
@@ -52,7 +55,7 @@ export default function SpecClusterMap({ areas, unfiledCount, selected, onSelect
           <button
             type="button" onClick={() => toggle(UNFILED)} aria-pressed={selected === UNFILED}
             data-testid="spec-cluster-unfiled"
-            className={`flex min-h-11 flex-col justify-center gap-1 rounded-[var(--radius-cell)] border border-dashed bg-surface-1 p-1.5 text-left hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--text-primary)] ${selected === UNFILED ? 'border-[var(--text-primary)]' : 'border-[var(--border-strong)]'}`}
+            className={`flex min-h-11 flex-col justify-center gap-1 rounded-[var(--radius-cell)] border border-dashed bg-surface-1 ${PAD} text-left hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--text-primary)] ${selected === UNFILED ? 'border-[var(--text-primary)]' : 'border-[var(--border-strong)]'}`}
           >
             <span className="text-meta font-medium text-text-primary">Unfiled</span>
             <span className="flex max-w-[8rem] flex-wrap gap-1" aria-hidden="true">
