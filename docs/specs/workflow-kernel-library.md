@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -810,7 +810,19 @@ push, refresh, completion or owner change can make it disappear.
   rebase and force-push does not descend from it, so ancestry is not asked), only when nothing local can be lost: a completed end or
   one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
   round (T27, re-queued twice with a backoff, then `review_unavailable`)
-  instead of leaving it open with nobody on it.
+  instead of leaving it open with nobody on it. A re-queued dispatch is due
+  minutes later but runs only when something drains: an event on the delivery
+  or the hourly floor. Nothing schedules a drain for it, so on a quiet PR
+  `review_unavailable` arrives within about two floor ticks of the first
+  failure (up to about two hours), and until then `request_pr_review` answers
+  that a review is in flight (a81a100f). Each retry's backoff stays under one
+  floor period, so neither retry waits a tick longer than that
+  (`kernel-floor.test.ts`).
+- A moved head names the repair tasks it made moot in `cancel_open_attempts`
+  (`taskIds`), so a retried effect never cancels a newer one. A mechanical
+  repair has no task: it names none and cancels nothing (a81a100f). An agent
+  row not yet linked to its task, and an effect recorded before `taskIds`
+  existed, keep the role-wide cancel.
 - `request_pr_review` never claims a review exists when none does: an open
   round with no reviewer task whose dispatches all finished gets its dispatch
   again (the floor's rule, run for the asker), and the answer says what is
@@ -846,8 +858,9 @@ later work and nothing refreshes or re-ships a branch that already landed.
 
 **Invariants**:
 - A mission's integration PR is a delivery of role mission, opened when the
-  branch is cut (today `openMissionIntegrationPr`). #4686 is the case of a
-  mission PR with none.
+  branch is cut (today `openMissionIntegrationPr`, which opens it itself rather
+  than waiting for the `opened` webhook, so the merge policy tier does not decide
+  whether a mission PR has one). #4686 is the case of a mission PR with none.
 - Epochs (task f3bda4e1): `workflow_mission_epochs`, one row per epoch (one
   integration branch and, once its work is in, one PR into trunk), written only
   by the kernel. The transition table is the package's

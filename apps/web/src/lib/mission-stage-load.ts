@@ -24,7 +24,8 @@ import { resolvePolicy } from './merge-policy';
 import type { MergeTier } from './mission-checks';
 import { missionStage, type MissionStagePr, type MissionStageTask } from './mission-stage';
 import { taskRowsProgress } from './mission-strip-order';
-import { getOwnerDeliveryDisplays } from './workflow/delivery-view';
+import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from './workflow/delivery-view';
+import { overlayDeliveryLifecycle } from './delivery-overlay';
 import { loadDependencyRows } from './dependency-rows';
 import { foreignDependencyIds } from './mission-helpers';
 import { loadMissionsReleasedEdges } from './mission-board-waiting';
@@ -64,7 +65,7 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
     if (own.length > 0) foreignIdsByMission.set(id, foreignDependencyIds(own as never));
   }
   const foreignIds = [...new Set([...foreignIdsByMission.values()].flat())];
-  const [workerRows, deliveries, foreignDeps, releasedEdges] = await Promise.all([
+  const [rawWorkerRows, deliveries, deliveryViews, foreignDeps, releasedEdges] = await Promise.all([
     taskIds.length > 0
     ? db.select({
         id: workers.id, taskId: workers.taskId, status: workers.status,
@@ -77,9 +78,14 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
     : [],
     // The page's own loads, by the ids above: one query each, never throwing past the list.
     getOwnerDeliveryDisplays(taskIds),
+    // §7: a kernel-owned delivery's merged/open/closed reading replaces its PR worker's columns.
+    getDeliveryViewsForTasks(taskIds).catch(() => new Map()),
     foreignIds.length > 0 ? loadDependencyRows(foreignIds).catch(() => new Map()) : new Map(),
     loadMissionsReleasedEdges(missionIds, workspaceIds),
   ]);
+
+  const overlaid = overlayDeliveryLifecycle(taskIds.map(id => ({ id, workers: rawWorkerRows.filter(w => w.taskId === id) })), deliveryViews);
+  const workerRows = overlaid.flatMap(t => t.workers);
 
   const prsByTask = new Map<string, MissionStagePr[]>();
   const workersByTask = new Map<string, Array<Record<string, unknown>>>();
