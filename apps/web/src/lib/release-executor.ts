@@ -10,6 +10,7 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
+import { landingAuthority } from '@/lib/workflow/landing-authority';
 import {
   IN_FLIGHT_GATED_STATES,
   advanceGatedRowForMerge,
@@ -183,6 +184,9 @@ async function mergeIntoProd(
   // "not mergeable" (405) is exactly the answer from required reviews, required
   // checks, conflicts or a draft: the gates the PR exists to enforce.
   if (prNumber) {
+    // §13.13 rule 6 (D9): the release executors merge over no open finding either.
+    const authority = await landingAuthority({ repoFullName, prNumber, door: 'release_executor_prod' });
+    if (authority.blocks) return { merged: false, message: `PR #${prNumber} merge refused: ${authority.reason}` };
     try {
       const mergeResp = await githubApi(
         installationId,
@@ -852,8 +856,11 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       rbPreviousSha = ref?.object?.sha as string | undefined;
     } catch { /* non-fatal */ }
 
-    // CI is passing — merge the release PR now
-    const mergeResp = await githubApi(
+    // CI is passing — merge the release PR now (§13.13 rule 6, D8: after the review authority agrees)
+    const rbAuthority = await landingAuthority({ repoFullName: repo.fullName, prNumber: releasePr.number, door: 'release_executor_pr' });
+    const mergeResp = rbAuthority.blocks
+      ? ({ merged: false, message: `release PR #${releasePr.number} merge refused: ${rbAuthority.reason}` } as Record<string, unknown>)
+      : await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${releasePr.number}/merge`,
       {

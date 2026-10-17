@@ -14,13 +14,14 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import type { ApplyDecision, AttemptOp, Command, CurrentView, DeliveryPatch, RecordOnly, RoundOp } from './commands';
+import type { ApplyDecision, AttemptOp, Command, CurrentView, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { currentOf, reduce, stableIdempotencyKey } from './reducer';
 import type {
   ApprovalBasis,
   AttemptSnapshot,
   DeliverySnapshot,
   DeliveryState,
+  FindingSnapshot,
   KernelView,
   RoundSnapshot,
 } from './types';
@@ -114,6 +115,38 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   RETURNING rr.id
 )`);
   });
+  return out;
+}
+
+/**
+ * §13.13 rule 2: finding writes ride the transition's own statement. An insert
+ * is `ON CONFLICT DO NOTHING` on (delivery, round, fingerprint), so a replayed
+ * verdict adds nothing; a close only touches a row still `open`, so a finding
+ * closes once and its first closure is the record.
+ */
+function findingCtes(ops: FindingOp[], src: string): SQL[] {
+  const out: SQL[] = [];
+  const inserts = ops.filter((o): o is Extract<FindingOp, { op: 'insert' }> => o.op === 'insert');
+  if (inserts.length) {
+    const rows = inserts.map((o) => ({ id: o.id, round_id: o.roundId, round: o.round, head_sha: o.headSha, path: o.path, line: o.line, text: o.text, fingerprint: o.fingerprint }));
+    out.push(sql`f_ins AS (
+  INSERT INTO workflow_review_findings (id, delivery_id, round_id, round, reviewed_head_sha, path, line, text, fingerprint)
+  SELECT x.id, s.delivery_id, x.round_id, x.round, x.head_sha, x.path, x.line, x.text, x.fingerprint
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round_id uuid, round int, head_sha text, path text, line int, text text, fingerprint text)
+  ON CONFLICT (delivery_id, round, fingerprint) DO NOTHING
+  RETURNING id
+)`);
+  }
+  const closes = ops.filter((o): o is Extract<FindingOp, { op: 'close' }> => o.op === 'close');
+  if (closes.length) {
+    const rows = closes.map((o) => ({ id: o.findingId, status: o.status, resolution: o.resolution }));
+    out.push(sql`f_close AS (
+  UPDATE workflow_review_findings wf SET status = x.status, resolution = x.resolution, closed_at = now()
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, status text, resolution jsonb)
+  WHERE wf.id = x.id AND wf.delivery_id = s.delivery_id AND wf.status = 'open'
+  RETURNING wf.id
+)`);
+  }
   return out;
 }
 
@@ -235,6 +268,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
 
   ctes.push(...roundCtes(d.rounds, 't'));
   ctes.push(...attemptCtes(d.attempts, 't'));
+  ctes.push(...findingCtes(d.findings ?? [], 't'));
 
   if (ref.factId) {
     ctes.push(sql`f AS (
@@ -283,7 +317,8 @@ SELECT to_jsonb(d.*) || jsonb_build_object('push_pending_local_head', (
     SELECT max(t.to_version) FROM workflow_transitions t
     WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH')) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
-  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts
+  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
+  COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.round, f.created_at, f.id) FROM workflow_review_findings f WHERE f.delivery_id = d.id), '[]'::jsonb) AS findings
 FROM workflow_deliveries d
 WHERE ${where}
 LIMIT 1`;
@@ -350,6 +385,14 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
   };
 }
 
+export function toFindingSnapshot(r: J): FindingSnapshot {
+  return {
+    id: String(r.id), roundId: s(r.round_id), round: n(r.round), reviewedHeadSha: String(r.reviewed_head_sha),
+    path: s(r.path), line: r.line == null ? null : Number(r.line), text: String(r.text), fingerprint: String(r.fingerprint),
+    status: (r.status as FindingSnapshot['status']) ?? 'open', resolution: (r.resolution as Record<string, unknown> | null) ?? null,
+  };
+}
+
 export function toAttemptSnapshot(r: J): AttemptSnapshot {
   return {
     id: String(r.id), family: r.family as AttemptSnapshot['family'], attemptNo: n(r.attempt_no), mode: r.mode as AttemptSnapshot['mode'],
@@ -374,12 +417,13 @@ export interface KernelDeps {
 }
 
 export async function loadView(ref: DeliveryRef, exec: Exec = dbExec): Promise<KernelView> {
-  const row = ((await exec(loadViewSql(ref))).rows ?? [])[0] as { delivery: J; rounds: J[]; attempts: J[] } | undefined;
-  if (!row) return { delivery: null, rounds: [], attempts: [] };
+  const row = ((await exec(loadViewSql(ref))).rows ?? [])[0] as { delivery: J; rounds: J[]; attempts: J[]; findings?: J[] } | undefined;
+  if (!row) return { delivery: null, rounds: [], attempts: [], findings: [] };
   return {
     delivery: toDeliverySnapshot(row.delivery),
     rounds: (row.rounds ?? []).map(toRoundSnapshot),
     attempts: (row.attempts ?? []).map(toAttemptSnapshot),
+    findings: (row.findings ?? []).map(toFindingSnapshot),
   };
 }
 

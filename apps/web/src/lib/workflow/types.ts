@@ -151,10 +151,34 @@ export interface AttemptSnapshot {
   trigger?: 'automatic' | 'human';
 }
 
+/**
+ * One required finding of a request-changes round (§13.13 rule 2), keyed to the
+ * delivery, the round, the head it was raised on and its scope (path and line,
+ * or the whole round when the reviewer named none). It stays `open` until an
+ * explicit resolution or an authorised waiver closes it; no push, CI result,
+ * refresh, approval of a child, task completion or owner replacement touches it.
+ */
+export type FindingStatus = 'open' | 'resolved' | 'waived';
+export interface FindingSnapshot {
+  id: string;
+  roundId: string | null;
+  round: number;
+  reviewedHeadSha: string;
+  path: string | null;
+  line: number | null;
+  text: string;
+  fingerprint: string;
+  status: FindingStatus;
+  /** How it closed: the resolving round and head, or the waiver's actor, reason and scope. */
+  resolution?: Record<string, unknown> | null;
+}
+
 export interface KernelView {
   delivery: DeliverySnapshot | null;
   rounds: RoundSnapshot[];
   attempts: AttemptSnapshot[];
+  /** Absent in fixtures = none recorded. */
+  findings?: FindingSnapshot[];
 }
 
 // ── Actors ──────────────────────────────────────────────────────────────────
@@ -235,4 +259,13 @@ export interface ConstituentEvidence {
   effectiveVerdict: Verdict | null;
   /** That delivery's own approved_heads (verdict + carry-forward), never its composition heads. */
   deliveryApprovedHeads: string[];
+  /**
+   * §13.13 rule 1, resolved by the caller: the verdict of that delivery's LATEST decided
+   * round at `roundHeadSha` (a later request-changes round supersedes an earlier approve),
+   * the delivery's state and head, and how many findings of it are open. Absent = not read.
+   */
+  latestDecidedVerdictAtHead?: Verdict | null;
+  deliveryState?: DeliveryState | null;
+  deliveryHeadSha?: string | null;
+  openFindings?: number;
 }

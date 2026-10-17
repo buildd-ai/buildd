@@ -8,7 +8,8 @@ import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { integrationRefreshOf, resolveMergeMethod } from '@/lib/integration-refresh';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
-import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
+import { githubApi, githubGraphQL, githubAppBotLogin } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
 import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
@@ -2258,13 +2259,15 @@ export async function PUT(req: NextRequest) {
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           })
         : null;
-      return kernel ? { kernel } : { legacy: await mergePullRequest(
-        repo.installation.installationId,
-        repo.fullName,
+      return kernel ? { kernel } : { legacy: await mergeWithAuthority({
+        door: 'merge_pr_mcp',
+        installationId: repo.installation.installationId,
+        repoFullName: repo.fullName,
         prNumber,
-        effectiveMergeMethod,
+        method: effectiveMergeMethod,
         headSha,
-      ) };
+        workspaceId: worker.workspaceId,
+      }) };
     });
     if ('refused' in slotted) {
       return NextResponse.json({

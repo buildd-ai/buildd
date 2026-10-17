@@ -62,6 +62,10 @@ export interface ReviewerTaskOutput {
   confidence: number;
   summary: string;
   feedback?: string;
+  /** (request-changes) One entry per distinct issue; each stays blocking until a later review resolves it. */
+  findings?: Array<{ path?: string; line?: number; text: string }>;
+  /** (approve) Ids of the previously open findings this head fixes; any not named stay blocking. */
+  resolvedFindings?: string[];
   escalationReason?: string;
   /**
    * What the human should actually do next. Requested on escalate because the
@@ -140,6 +144,20 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
     feedback: {
       type: 'string',
       description: 'Specific, actionable feedback (for request-changes only)',
+    },
+    findings: {
+      type: 'array',
+      description: '(request-changes) One entry per distinct issue, each with its file path and line when it has one.',
+      items: {
+        type: 'object',
+        required: ['text'],
+        properties: { path: { type: 'string' }, line: { type: 'number' }, text: { type: 'string' } },
+      },
+    },
+    resolvedFindings: {
+      type: 'array',
+      description: '(approve) The ids of the open findings listed in the prompt that this head fixes. A finding you do not name stays blocking.',
+      items: { type: 'string' },
     },
     escalationReason: {
       type: 'string',
@@ -500,6 +518,22 @@ export interface CreateReviewerTaskParams {
    * attested, so this review covers ONLY these novel paths.
    */
   compositionScope?: { novelDeltaPaths: string[] };
+  /** The delivery's open findings (§13.13 rule 2), which this round must resolve explicitly or leave blocking. */
+  openFindings?: Array<{ id: string; path: string | null; line: number | null; text: string }>;
+}
+
+/** The prompt section listing the findings a re-review must account for. */
+export function openFindingsSection(findings: NonNullable<CreateReviewerTaskParams['openFindings']>): string {
+  return [
+    '',
+    '## Open findings from earlier reviews',
+    '',
+    'Each finding below is still blocking. Check whether THIS head fixes it. List the ids of the ones it fixes in',
+    '`resolvedFindings` when you approve. A finding you do not list stays blocking, and so does the PR.',
+    '',
+    ...findings.map((f) => `- \`${f.id}\` ${f.path ? `${f.path}${f.line ? `:${f.line}` : ''}` : 'whole PR'}: ${sanitizeUntrustedText(f.text).text.split('\n')[0].slice(0, 300)}`),
+    '',
+  ].join('\n');
 }
 
 /** The prompt section that scopes a composition delta review to its novel paths. */
@@ -750,7 +784,7 @@ export async function createReviewerTask(
     prNumber,
     files: params.priorVerdict ? params.deltaFiles : params.prFiles,
   });
-  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${copySection}`;
+  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.openFindings?.length ? openFindingsSection(params.openFindings) : ''}${copySection}`;
 
   const title = reviewerTitle(prNumber, originalTask.title);
 

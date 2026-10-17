@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { landingAuthorityPassthrough } from '@/lib/workflow/testing/landing-authority-passthrough';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing-authority', () => landingAuthorityPassthrough());
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,

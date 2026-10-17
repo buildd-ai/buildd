@@ -1,6 +1,7 @@
 process.env.NODE_ENV = 'test';
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { landingAuthorityPassthrough } from '@/lib/workflow/testing/landing-authority-passthrough';
 import { NextRequest } from 'next/server';
 
 // ── Mock functions ──────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ const mockApplyTaskReopenSideEffects = mock(() => Promise.resolve());
 // reads exactly which event the route recorded and with what arguments. The
 // real builders and their dedupe keys are covered in lib/subscriptions.test.ts.
 const mockRecordEvent = mock((_e: any) => Promise.resolve({ recorded: 0 }));
+mock.module('@/lib/workflow/landing-authority', () => landingAuthorityPassthrough());
 mock.module('@/lib/subscriptions', () => ({
   recordEvent: mockRecordEvent,
   prMergedEvent: (a: any) => ({ type: 'pr.merged', ...a }),

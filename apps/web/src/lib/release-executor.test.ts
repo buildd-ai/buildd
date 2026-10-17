@@ -1,6 +1,7 @@
 process.env.NODE_ENV = 'test';
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { landingAuthorityPassthrough } from '@/lib/workflow/testing/landing-authority-passthrough';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── Mocks (must be set up before any import of the module under test) ─────────
@@ -51,6 +52,7 @@ import { githubRepos as githubReposTable, workspaces as workspacesTable, release
 const mockDbSelectReleases = mock(() => Promise.resolve([] as any[]));
 let releasesSelectWhere: any[] = [];
 
+mock.module('@/lib/workflow/landing-authority', () => landingAuthorityPassthrough());
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {

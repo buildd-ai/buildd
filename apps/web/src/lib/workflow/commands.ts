@@ -5,6 +5,7 @@
  * of (view, command); the caller (fact ingestion, a route) does the read.
  */
 import type { BaseDeltaFact } from './base-delta';
+import type { FindingInput } from './findings';
 import type {
   Actor,
   AttemptFamily,
@@ -33,6 +34,8 @@ export interface LivePr {
   baseRef: string | null;
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
+  /** GitHub's `merged_by.login`, when it reported one. */
+  mergedByLogin?: string | null;
   updatedAt?: string | null;
   /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `draft`, `unknown`, ...). */
   mergeableState?: string | null;
@@ -112,6 +115,27 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /**
+       * §13.13 rule 2: what a request-changes verdict leaves behind, one row per
+       * distinct issue (`findingsFromReview`). Ignored for any other verdict.
+       */
+      findings?: FindingInput[];
+      /**
+       * The open findings this round says are fixed, with the paths that differ
+       * between the finding's head and this round's head (read by the caller).
+       * A finding closes only if named here AND its path changed.
+       */
+      resolution?: { findingIds: string[]; changedPaths: string[] };
+    })
+  | (Base & {
+      /**
+       * An authorised waiver of open findings (§13.13 rule 2): a person, a
+       * reason and the scope waived, recorded as a bypass. The only way other
+       * than a later round's explicit resolution that a finding closes.
+       */
+      type: 'FindingsWaived';
+      scope: string[] | 'all';
+      reason: string;
     })
   | (Base & { type: 'ReviewBudgetExhausted' })
   | (Base & {
@@ -280,14 +304,23 @@ export type Command =
        * and unmerged at the head (or the head moved under the call), so nothing
        * landed and landing may be requested again.
        */
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged';
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'blocked_open_findings';
       detail?: string;
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
       /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
       retryAt?: string;
     })
-  | (Base & { type: 'PrMerged'; live: LivePr })
+  | (Base & {
+      type: 'PrMerged';
+      live: LivePr;
+      /**
+       * Who merged it, as GitHub reported it. `app` = a buildd door (the
+       * installation token); `person` = a manual merge outside buildd (§13.13
+       * door D12). Absent = unknown, which is never treated as `app`.
+       */
+      mergedBy?: { kind: 'app' | 'person' | 'unknown'; login?: string | null; committer?: string | null };
+    })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
   | (Base & {
@@ -383,7 +416,7 @@ export const EFFECT_KINDS = [
   'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
-  'escalate_exhaustion', 'gate_event',
+  'escalate_exhaustion', 'gate_event', 'publish_verdict_status', 'file_merged_findings_followup',
 ] as const;
 
 export type EffectKind = (typeof EFFECT_KINDS)[number];
@@ -440,6 +473,11 @@ export type RoundOp =
       };
     };
 
+/** §13.13 rule 2: finding rows written in the transition's own statement. */
+export type FindingOp =
+  | { op: 'insert'; id: string; roundId: string; round: number; headSha: string; path: string | null; line: number | null; text: string; fingerprint: string }
+  | { op: 'close'; findingId: string; status: 'resolved' | 'waived'; resolution: Record<string, unknown> };
+
 export type AttemptOp =
   | {
       op: 'insert';
@@ -495,6 +533,8 @@ export interface ApplyDecision {
   patch: DeliveryPatch;
   rounds: RoundOp[];
   attempts: AttemptOp[];
+  /** Absent = no finding writes. */
+  findings?: FindingOp[];
   effects: EffectSpec[];
   evidence: Record<string, unknown>;
   bypass?: Record<string, unknown> | null;

@@ -5697,6 +5697,7 @@ async function handleReviewerOutcomeIfNeeded(
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
+      output: output as unknown as { findings?: unknown; feedback?: string | null; summary?: string | null; resolvedFindings?: unknown },
     }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });

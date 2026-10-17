@@ -42,6 +42,7 @@ import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import { withFindingsEffects } from '@/lib/workflow/review-findings-effects';
 import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
@@ -157,7 +158,7 @@ export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
  */
 let workflowEffectHandlersMemo: EffectHandlers | null = null;
 export function workflowEffectHandlers(): EffectHandlers {
-  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
+  return (workflowEffectHandlersMemo ??= withFindingsEffects(withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers)))))));
 }
 
 /**

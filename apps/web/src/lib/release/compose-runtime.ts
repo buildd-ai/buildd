@@ -5,7 +5,8 @@
  */
 
 import { NextRequest } from 'next/server';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
 import { teamIdsWhere } from '@/lib/permissions';
 import { fetchDeployedSha } from '@/lib/release-health-watcher';
 import { loadReleaseFlow, type LoadFlowResult } from './compose-source';
@@ -48,7 +49,7 @@ export function composeActionDeps(target: ReleaseTarget, origin: string): Compos
     },
     recordAndDispatch: (params) => recordAndDispatchRelease(params),
     dispatch: (installationId, owner, name, opts) => dispatchWorkflowRelease(installationId, owner, name, opts),
-    mergePr: (installationId, repo, prNumber, method, sha) => mergePullRequest(installationId, repo, prNumber, method, sha),
+    mergePr: (installationId, repo, prNumber, method, sha) => mergeWithAuthority({ door: 'compose_release', installationId, repoFullName: repo, prNumber, method, headSha: sha }),
     branchHead: async (branch) => {
       const ref = await githubApi(target.installationId, `/repos/${target.repoFullName}/git/ref/heads/${encodeURIComponent(branch)}`);
       return (ref?.object?.sha as string | undefined) ?? null;

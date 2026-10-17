@@ -33,7 +33,8 @@ import { OPEN_TASK_STATUSES, type MergePolicy } from '@buildd/shared';
 import type { GateCallerOrigin, GateOutcome } from '@buildd/core/gate-events';
 import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
 import {
   evaluateAutoMergeSafety,
   classifyAutoMergeRefusal,
@@ -1074,7 +1075,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
       ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
     });
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
+    return kernel ? { kernel } : { legacy: await mergeWithAuthority({
+      door: input.door === 'sweep' ? 'landing_sweep' : 'land_pr', installationId, repoFullName, prNumber, method: mergeMethod, headSha: liveHead, workspaceId,
+      ...(kernelOverride && actor.kind === 'human' ? { override: { actor: `human:${actor.userId ?? 'unknown'}`, reason: kernelOverride.reason } } : {}),
+    }) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
   if (slotted.result.kernel) return kernelLanded(slotted.result.kernel);

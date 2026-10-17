@@ -13,6 +13,8 @@
  *
  * Routes reach this through seam.ts.
  */
+import { githubAppBotLogin } from '@/lib/github';
+import { mergedByOf } from './github-facts';
 import type { BaseDeltaFact } from './base-delta';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -393,7 +395,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         : null;
       const closeCause: CloseCause = baseExists === false ? 'base_deleted' : 'unknown';
       const command: Command = live!.merged
-        ? { type: 'PrMerged', actor, live: live! }
+        ? { type: 'PrMerged', actor, live: live!, mergedBy: mergedByOf(live!.mergedByLogin, githubAppBotLogin()) }
         : live!.state === 'open'
           ? { type: 'PrReopened', actor, live: live! }
           : { type: 'PrClosedUnmerged', actor, live: live!, closeCause };

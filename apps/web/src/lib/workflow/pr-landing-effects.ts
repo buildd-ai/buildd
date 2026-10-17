@@ -31,6 +31,7 @@ import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
 import { prUrlOf } from './pr-fact-effects';
+import { describeFinding, openFindings } from './findings';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -102,6 +103,17 @@ const mergeCall: EffectHandler = async (e) => {
   const headSha = String(e.payload.headSha ?? '');
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
   if (d.state !== 'LANDING' || d.currentHeadSha !== headSha) return { outcome: `skipped:state_${d.state}` };
+  // §13.13 rule 6 / AC-31: T15 asked once; the merge asks again when it runs. A finding recorded
+  // since (or one a racing writer left behind) means no call is made and landing is left.
+  const standing = openFindings((await loadView({ deliveryId: e.deliveryId }, dbExec)).findings);
+  if (standing.length) {
+    const landingVersion = typeof e.payload.landingVersion === 'number' ? e.payload.landingVersion : undefined;
+    await applyCommand(
+      { type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: 'blocked_open_findings', detail: standing.map(describeFinding).join('; ').slice(0, 500), ...(landingVersion !== undefined ? { landingVersion } : {}) },
+      { ref: { deliveryId: d.id }, exec: dbExec },
+    );
+    return { outcome: 'skipped:open_findings' };
+  }
   const repo = await workspaceRepo(d.workspaceId);
   if (!repo) throw new Error('no GitHub installation for the workspace');
   const method = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';

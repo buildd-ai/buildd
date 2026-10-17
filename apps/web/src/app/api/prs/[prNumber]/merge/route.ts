@@ -14,7 +14,8 @@ import { tasks, workers, workspaces, missionNotes, missions } from '@buildd/core
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
-import { mergePullRequest, githubApi } from '@/lib/github';
+import { githubApi } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
@@ -640,7 +641,10 @@ export async function POST(
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
+    return kernel ? { kernel } : { legacy: await mergeWithAuthority({
+      door: 'dashboard_merge', installationId, repoFullName, prNumber, method: mergeMethod, headSha: liveHeadSha!, workspaceId: worker.workspaceId,
+      ...(kernelOverride?.kinds.includes('verdict') ? { override: { actor: `human:${user.id}`, reason: kernelOverride.reason } } : {}),
+    }) };
   });
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });

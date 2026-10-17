@@ -26,6 +26,8 @@ import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { githubApi } from '@/lib/github';
+import { findingsFromReview } from './findings';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
@@ -59,6 +61,19 @@ export interface SeamDeps {
   reader?: (installationId: number) => GithubFactReader;
   repoFor?: typeof workspaceRepo;
   drain?: (deliveryId: string) => Promise<DrainSummary | null>;
+  /** The paths that differ between two commits (finding resolution evidence); null = unreadable. */
+  changedPaths?: (installationId: number, repoFullName: string, from: string, to: string) => Promise<string[] | null>;
+}
+
+/** The compare API lists at most 300 files: a longer list may be cut, and a cut list proves nothing. */
+async function compareChangedPaths(installationId: number, repoFullName: string, from: string, to: string): Promise<string[] | null> {
+  try {
+    const cmp = await githubApi(installationId, `/repos/${repoFullName}/compare/${from}...${to}`) as { files?: Array<{ filename?: string; previous_filename?: string }> } | null;
+    if (!cmp?.files || cmp.files.length >= 300) return null;
+    return cmp.files.flatMap((f) => [f.filename, f.previous_filename]).filter((x): x is string => typeof x === 'string');
+  } catch {
+    return null;
+  }
 }
 
 const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => (deps.reader ?? githubReader)(installationId);
@@ -710,19 +725,40 @@ export async function recordReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** The reviewer's structured output: `findings`, prose `feedback`/`summary`, and `resolvedFindings` (ids it says are fixed). */
+  output?: { findings?: unknown; feedback?: string | null; summary?: string | null; resolvedFindings?: unknown };
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
   const deliveryId = await kernelDeliveryById(p.reviewerTask.deliveryId, deps.exec);
   if (!deliveryId) return { handled: false };
+  const verdict = toKernelVerdict(p.effectiveVerdict);
+  const resolvedIds = Array.isArray(p.output?.resolvedFindings) ? (p.output!.resolvedFindings as unknown[]).map(String) : [];
+  let resolution: { findingIds: string[]; changedPaths: string[] } | undefined;
+  if (resolvedIds.length && toKernelVerdict(p.verdict) === 'approve') {
+    // Resolution evidence: what changed between the head each finding was raised on and this round's head.
+    const view = await loadView({ deliveryId }, deps.exec);
+    const named = (view.findings ?? []).filter((f) => f.status === 'open' && resolvedIds.includes(f.id));
+    const repo = view.delivery?.repoFullName && view.delivery.workspaceId ? await (deps.repoFor ?? workspaceRepo)(view.delivery.workspaceId) : null;
+    const changed = new Set<string>();
+    if (repo && view.delivery?.repoFullName) {
+      for (const from of new Set(named.map((f) => f.reviewedHeadSha))) {
+        const paths = await (deps.changedPaths ?? compareChangedPaths)(repo.installationId, view.delivery.repoFullName, from, p.headSha);
+        for (const x of paths ?? []) changed.add(x);
+      }
+    }
+    resolution = { findingIds: resolvedIds, changedPaths: [...changed] };
+  }
   const result = await applyCommand({
     type: 'ReviewVerdictRecorded',
     actor: `reviewer:${p.reviewerTask.id}`,
     roundId,
     verdict: toKernelVerdict(p.verdict),
-    effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
+    effectiveVerdict: verdict,
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(verdict === 'request_changes' ? { findings: findingsFromReview(p.output ?? {}) } : {}),
+    ...(resolution ? { resolution } : {}),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
   return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null };

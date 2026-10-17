@@ -2,6 +2,7 @@
 process.env.NODE_ENV = 'production';
 
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { landingAuthorityPassthrough } from '@/lib/workflow/testing/landing-authority-passthrough';
 import { NextRequest } from 'next/server';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
@@ -66,6 +67,7 @@ const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
 // The visual review half of the mission-PR gate (lib/ready-to-merge.ts). Default: passed on this head.
 let visualReviewOwed = false;
+mock.module('@/lib/workflow/landing-authority', () => landingAuthorityPassthrough());
 mock.module('@/lib/workflow/visual-review-state-load', () => ({
   getMissionVisualReviewState: async () => visualReviewOwed
     ? { status: 'needed', pendingVerification: true, staleEvidence: false, nextActor: 'system', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } }

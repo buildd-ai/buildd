@@ -5255,6 +5255,36 @@ export const workflowReviewRounds = pgTable('workflow_review_rounds', {
 
 export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
 
+// §13.13 rule 2 — durable review findings. One row per distinct issue a
+// request-changes round raised, keyed to the delivery, the round, the head it
+// was raised on and its scope (path and line; both NULL = the whole round).
+// A row stays 'open' until a later round explicitly resolves it or a person
+// waives it; nothing else in the kernel updates `status`. The table belongs to
+// the workflow kernel: writes come only from its CAS statement (kernel.ts).
+export const workflowReviewFindings = pgTable('workflow_review_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  // No FK: a round is superseded or failed without losing what it found.
+  roundId: uuid('round_id'),
+  round: integer('round').notNull(),
+  reviewedHeadSha: text('reviewed_head_sha').notNull(),
+  path: text('path'),
+  line: integer('line'),
+  text: text('text').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'resolved' | 'waived'>(),
+  // How it closed: the resolving round and head, or the waiver's actor, reason and scope.
+  resolution: jsonb('resolution').$type<Record<string, unknown>>(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One row per (delivery, round, issue): a replayed verdict inserts nothing new.
+  roundFingerprintUnique: uniqueIndex('workflow_review_findings_round_fp_unique').on(t.deliveryId, t.round, t.fingerprint),
+  openIdx: index('workflow_review_findings_open_idx').on(t.deliveryId).where(sql`${t.status} = 'open'`),
+}));
+
+export type WorkflowReviewFindingRow = typeof workflowReviewFindings.$inferSelect;
+
 // §5.3 — append-only observations. A duplicate fact_key is a no-op that
 // returns the first application's result. payload holds normalised fields the
 // reducer read, never a raw webhook body.

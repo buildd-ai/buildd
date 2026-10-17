@@ -683,7 +683,7 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
   test('request_changes under budget: CHANGES_REQUESTED + dispatch_fix; at budget: ESCALATED(review_exhausted) (S8)', () => {
     const dec = applied(verdict(v()));
     expect(dec.toState).toBe('CHANGES_REQUESTED');
-    expect(effectKinds(dec)).toEqual(['post_review', 'dispatch_fix', 'render_activity']);
+    expect(effectKinds(dec)).toEqual(['post_review', 'dispatch_fix', 'publish_verdict_status', 'render_activity']);
     const ex = applied(verdict(v({ currentRound: 3 }, { round: 3 })));
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
@@ -706,7 +706,7 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
     expect((already as { record: { rounds: Array<{ whenStatus: string[] }> } }).record.rounds[0].whenStatus).toEqual(['superseded']);
   });
   test('a verdict arriving after the delivery moved on is stale; S5 replay is duplicate', () => {
-    expectResult(verdict(v({ state: 'APPROVED' })), 'stale', 'round_superseded');
+    expectResult(verdict(v({ state: 'APPROVED' }), { verdict: 'approve', effectiveVerdict: 'approve' }), 'stale', 'round_superseded');
     expectResult(verdict(v({}, { status: 'decided', verdict: 'request_changes' })), 'duplicate', 'verdict_already_recorded');
     expectResult(verdict(v({}, { status: 'decided', verdict: 'approve' })), 'stale', 'round_closed');
     expectResult(verdict(v({}, { status: 'failed' })), 'stale', 'round_closed');

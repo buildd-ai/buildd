@@ -35,6 +35,8 @@ import { insertFollowupEffectSql } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { collectComposition, compositionConstituentBase } from './review-composition';
+import { describeFinding, openFindings } from './findings';
+import { compositionBlock, withCompositionBlock } from './composition-description';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { KernelView, RoundSnapshot } from './types';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -150,7 +152,23 @@ async function tryCompositionAttestation(p: {
       repoFullName: d.repoFullName, prNumber: d.prNumber, baseRef, headRef, aggregateHeadSha: round.headSha, refreshTrunk,
       constituentBase: refreshTrunk ? null : constituentBase,
     });
+    // §13.13 rule 1: the PR description says which part is reviewed work, which is proof, which is
+    // owed a review, and that the final gate is separate. Best effort: a failed write changes nothing.
+    const writeBlock = async (rejectedBecause?: string[], deltaReview?: 'pending' | 'approved') => {
+      try {
+        const current = (await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`)) as { body?: string | null } | null;
+        const openCount = openFindings((await loadView({ deliveryId: d.id }, dbExec)).findings).length;
+        const next = withCompositionBlock(current?.body, compositionBlock({
+          attestation: built.attestation, novelCommits: built.novelCommits, deltaReview, rejectedBecause,
+          gate: { state: d.state, openFindings: openCount },
+        }));
+        if (next !== (current?.body ?? '')) await githubApi(p.repo.installationId, `/repos/${d.repoFullName}/pulls/${d.prNumber}`, { method: 'PATCH', body: JSON.stringify({ body: next }) });
+      } catch (err) {
+        console.warn(`[workflow] composition block of ${d.repoFullName}#${d.prNumber} not written:`, err instanceof Error ? err.message : err);
+      }
+    };
     if (built.attestation.novelDelta.result === 'unverifiable') {
+      await writeBlock();
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} unverifiable (${built.attestation.novelDelta.reason}); full review`);
       return null;
     }
@@ -159,9 +177,11 @@ async function tryCompositionAttestation(p: {
       { exec: dbExec },
     );
     if (res.result !== 'applied' && res.result !== 'duplicate') {
+      await writeBlock([String((res as { reason?: string }).reason ?? res.result)]);
       console.log(`[workflow] composition of ${d.repoFullName}#${d.prNumber} not accepted: ${(res as { reason?: string }).reason ?? res.result}; full review`);
       return null;
     }
+    await writeBlock(undefined, 'pending');
     return built.attestation.novelDelta.result === 'none' ? 'ok:composition_attested' : 'skipped:composition_delta';
   } catch (err) {
     console.warn(`[workflow] composition check failed for ${d.repoFullName}#${d.prNumber}; full review:`, err instanceof Error ? err.message : err);
@@ -246,6 +266,7 @@ const dispatchReview: EffectHandler = async (e) => {
     baseRef: d.baseRef,
     priorVerdict,
     compositionScope: compositionScopeOf(round),
+    openFindings: openFindings(view.findings).map((f) => ({ id: f.id, path: f.path, line: f.line, text: f.text })),
     workflowRound: { deliveryId: d.id, roundId: round.id, round: round.round },
   });
   if (!created) return { outcome: 'skipped:dispatch_refused' };
@@ -345,7 +366,9 @@ const dispatchFix: EffectHandler = async (e) => {
   if (!owner) return { outcome: 'skipped:no_owner' };
   const out = await roundOutput(round);
   const reviewerFeedback = out.feedback ?? (human ? out.escalationReason : null) ?? out.summary ?? null;
-  const feedback = humanInstructions ?? reviewerFeedback ?? 'Reviewer requested changes';
+  const standing = openFindings(view.findings);
+  const findingsText = standing.length ? `\n\nOpen findings (each stays blocking until a review resolves it):\n${standing.map((f) => `- [${f.id}] ${describeFinding(f)}`).join('\n')}` : '';
+  const feedback = (humanInstructions ?? reviewerFeedback ?? 'Reviewer requested changes') + findingsText;
   if (isDependencyBotPrContext(owner.context)) {
     await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', detail: 'dependency-bot PR · no fix pushed', note: feedback }, workspaceId: d.workspaceId });
     return { outcome: 'skipped:dependency_bot' };

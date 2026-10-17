@@ -19,11 +19,23 @@ interface GithubPull {
   merged?: boolean;
   merged_at?: string | null;
   merge_commit_sha?: string | null;
+  merged_by?: { login?: string | null } | null;
   updated_at?: string | null;
   mergeable_state?: string | null;
   draft?: boolean;
   head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
+}
+
+/**
+ * Who merged, as GitHub reported it (§13.13 rule 10). Every buildd door merges with the
+ * installation token, which GitHub attributes to the App's bot; any other human login is a
+ * manual merge outside buildd (door D12). No login is `unknown`, never `app`.
+ */
+export function mergedByOf(login: string | null | undefined, appBotLogin: string): { kind: 'app' | 'person' | 'unknown'; login: string | null } {
+  if (!login) return { kind: 'unknown', login: null };
+  if (login.toLowerCase() === appBotLogin.toLowerCase()) return { kind: 'app', login };
+  return { kind: login.endsWith('[bot]') ? 'unknown' : 'person', login };
 }
 
 export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
@@ -38,6 +50,7 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     baseRef: pr.base?.ref ?? null,
     mergedAt: pr.merged_at ?? null,
     mergeCommitSha: pr.merge_commit_sha ?? null,
+    ...(pr.merged_by?.login ? { mergedByLogin: pr.merged_by.login } : {}),
     updatedAt: pr.updated_at ?? null,
     mergeableState: pr.mergeable_state ?? null,
     ...(pr.draft ? { draft: true } : {}),

@@ -20,6 +20,7 @@ import type {
   Decision,
   DeliveryPatch,
   EffectSpec,
+  FindingOp,
   LivePr,
   RoundOp,
 } from './commands';
@@ -45,6 +46,7 @@ import {
   type BaseDeltaFact,
   type BaseDeltaVerdict,
 } from './base-delta';
+import { describeFinding, findingFingerprint, openFindings, resolveFindings, waiverClosure } from './findings';
 
 export interface ReduceOptions {
   newId?: () => string;
@@ -203,6 +205,11 @@ export function verifyCompositionAttestation(
     }
     if (ev.roundHeadSha !== c.reviewedHeadSha) reasons.push(`constituent_head_mismatch:${c.roundId}`);
     if (ev.roundStatus !== 'decided' || ev.effectiveVerdict !== 'approve') reasons.push(`constituent_not_approved:${c.roundId}`);
+    // §13.13 rule 1: an approve is the constituent's word only while it is its LATEST decided
+    // round at that head, its delivery is not blocked there, and no finding of it is open.
+    if (ev.latestDecidedVerdictAtHead != null && ev.latestDecidedVerdictAtHead !== 'approve') reasons.push(`constituent_approval_superseded:${c.roundId}`);
+    if ((ev.deliveryState === 'CHANGES_REQUESTED' || ev.deliveryState === 'ESCALATED') && ev.deliveryHeadSha === c.reviewedHeadSha) reasons.push(`constituent_delivery_blocked:${c.roundId}`);
+    if ((ev.openFindings ?? 0) > 0) reasons.push(`constituent_open_findings:${c.roundId}`);
     const unrecorded = c.equivalentHeadShas.filter((h) => !ev.deliveryApprovedHeads.includes(h));
     if (unrecorded.length > 0) reasons.push(`constituent_equivalence_unrecorded:${c.roundId}`);
     // GitHub merged the reviewed head or a head its delivery recorded as equivalent…
@@ -359,6 +366,8 @@ class Ctx {
   lastDecided(): RoundSnapshot | undefined {
     return this.view.rounds.filter((r) => r.status === 'decided').sort((a, b) => b.round - a.round)[0];
   }
+  /** §13.13 rule 2: the findings still blocking this delivery, whatever state it is in. */
+  openFindings() { return openFindings(this.view.findings); }
   attempt(id: string | null | undefined): AttemptSnapshot | undefined { return id ? this.view.attempts.find((a) => a.id === id) : undefined; }
   ledger(family: AttemptFamily, mode: AttemptMode): AttemptSnapshot[] {
     return this.view.attempts.filter((a) => a.family === family && a.mode === mode);
@@ -395,7 +404,7 @@ class Ctx {
 
   apply(key: string, toState: DeliveryState, o: {
     states?: DeliveryState[]; guardHead?: boolean; guardRound?: boolean;
-    patch?: DeliveryPatch; rounds?: RoundOp[]; attempts?: AttemptOp[]; effects?: EffectSpec[];
+    patch?: DeliveryPatch; rounds?: RoundOp[]; attempts?: AttemptOp[]; findings?: FindingOp[]; effects?: EffectSpec[];
     evidence?: Record<string, unknown>; bypass?: Record<string, unknown> | null;
     create?: ApplyDecision['create'];
   } = {}): ApplyDecision {
@@ -404,6 +413,12 @@ class Ctx {
     const patch = o.patch ?? {};
     const effects = [...(o.effects ?? [])];
     const prBound = (patch.prNumber ?? d?.prNumber) != null;
+    // §13.13 rule 7: buildd's verdict reaches GitHub as a commit status at the head. It is
+    // re-published whenever findings change and whenever the head moves under open findings.
+    const headMoves = patch.currentHeadSha !== undefined && patch.currentHeadSha !== d?.currentHeadSha;
+    if (prBound && (o.findings?.length || (headMoves && openFindings(this.view.findings).length > 0))) {
+      effects.push({ kind: 'publish_verdict_status', dedupeKey: `verdict_status:${this.did}:${version + 1}`, payload: { version: version + 1 } });
+    }
     if (prBound) {
       // §12.1: the activity comment is regenerated from canonical state; one
       // render per version, the handler drops all but the newest.
@@ -425,6 +440,7 @@ class Ctx {
       patch,
       rounds: o.rounds ?? [],
       attempts: o.attempts ?? [],
+      ...(o.findings?.length ? { findings: o.findings } : {}),
       effects,
       evidence: { actor: this.cmd.actor, ...(o.evidence ?? {}) },
       bypass: o.bypass ?? null,
@@ -551,12 +567,45 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
         set: { status: 'superseded', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
       };
+      // §13.13 rule 2: an approve closes only the findings it names whose path this head changed,
+      // and never one a delta round did not read. Any finding left open makes the round
+      // request-changes, so no verdict clears what it did not explicitly resolve.
+      const deltaPaths = round.scope?.composition === true && Array.isArray(round.scope.novelDeltaPaths)
+        ? (round.scope.novelDeltaPaths as unknown[]).map(String)
+        : null;
+      const resolution = resolveFindings(c.view.findings, { deltaPaths, headSha: round.headSha, round: round.round, roundId: round.id }, cmd.resolution?.findingIds, cmd.resolution?.changedPaths);
+      const closeOps: FindingOp[] = cmd.effectiveVerdict === 'approve'
+        ? resolution.resolved.map((f) => ({ op: 'close', findingId: f.id, status: 'resolved', resolution: { roundId: round.id, round: round.round, headSha: round.headSha, path: f.path, resolvedBy: cmd.actor } }))
+        : [];
+      const heldOpen = cmd.effectiveVerdict === 'approve' ? resolution.stillOpen : [];
+      const eff = heldOpen.length > 0 ? 'request_changes' as const : cmd.effectiveVerdict;
       const decide: RoundOp = {
         op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
-        set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
+        set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: eff, confidence: cmd.confidence ?? null, decided: true },
       };
+      // New findings: one per distinct issue the reviewer raised, unless an identical one is already open.
+      const raised: FindingOp[] = [];
+      if (cmd.effectiveVerdict === 'request_changes') {
+        const already = new Set(c.openFindings().map((f) => f.fingerprint));
+        for (const f of cmd.findings?.length ? cmd.findings : [{ path: null, line: null, text: 'The reviewer requested changes without naming a finding.' }]) {
+          const fp = findingFingerprint(f);
+          if (already.has(fp)) continue;
+          already.add(fp);
+          raised.push({ op: 'insert', id: c.newId(), roundId: round.id, round: round.round, headSha: round.headSha, path: f.path, line: f.line, text: f.text, fingerprint: fp });
+        }
+      }
+      const findingOps = [...closeOps, ...raised];
       const key = `verdict:${round.id}`;
-      const common = { guardHead: true, guardRound: true, evidence: { roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict } };
+      const common = {
+        guardHead: true, guardRound: true,
+        findings: findingOps,
+        evidence: {
+          roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: eff,
+          ...(heldOpen.length ? { approveHeldByFindings: heldOpen.map((f) => f.id) } : {}),
+          ...(closeOps.length ? { findingsResolved: closeOps.map((o) => (o as { findingId: string }).findingId) } : {}),
+          ...(raised.length ? { findingsRaised: raised.map((o) => (o as { id: string }).id) } : {}),
+        },
+      };
       const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
         kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
       });
@@ -567,7 +616,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // not move, and leaving the hold re-enters it (resumeAfterRepair / T26 / T4 via
         // reenterVerdict). A head move before then supersedes it like any other verdict.
         // Never superseded here, or the resume would start a second round at the same head.
-        const ev = cmd.effectiveVerdict === 'approve' ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
+        const ev = eff === 'approve' ? 'APPROVE' : eff === 'request_changes' ? 'REQUEST_CHANGES' : null;
         return c.apply(key, dd.state, {
           ...common,
           evidence: { ...common.evidence, heldBy: dd.state, deferred: true },
@@ -576,11 +625,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           effects: ev && round.scope?.composition !== true ? [postReview(ev)] : [],
         });
       }
-      if (dd.state !== 'AWAITING_REVIEW' || !current) {
+      // §13.13 rule 6 / AC-31: a request-changes at the current head moves an APPROVED or LANDING
+      // delivery out of landing (the queued merge_call then finds LANDING gone and skips).
+      const landingHeld = current && (dd.state === 'APPROVED' || dd.state === 'LANDING') && eff === 'request_changes';
+      if ((dd.state !== 'AWAITING_REVIEW' && !landingHeld) || !current) {
         // A verdict for a superseded head/round: kept for audit, never applied.
         return c.stale('round_superseded', { rounds: [keep], attempts: [] });
       }
-      if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
+      if (eff === 'approve' && round.scope?.composition === true) {
         // §5.9 / S33: the delta round of a composition reviewed only the novel
         // paths; every other change rests on its own constituent's verdict. The
         // approval stays a composition one (head in composition_heads, never in
@@ -599,7 +651,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           effects: [{ ...postReview('APPROVE'), payload: { ...postReview('APPROVE').payload, scope } }, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
         });
       }
-      if (cmd.effectiveVerdict === 'approve') {
+      if (eff === 'approve') {
         return c.apply(key, 'APPROVED', {
           ...common,
           patch: { approvedHeads: [round.headSha], approvalBasis: 'verdict', stateReason: null },
@@ -608,7 +660,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           effects: [postReview('APPROVE'), { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
         });
       }
-      if (cmd.effectiveVerdict === 'escalate') {
+      if (eff === 'escalate') {
         return c.apply(key, 'ESCALATED', {
           ...common,
           patch: { stateReason: 'review_escalated' },
@@ -616,6 +668,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
         });
       }
+      // The iteration limit never turns a request-changes into a pass: it escalates with the
+      // findings still open, and no door lands an open finding (§13.13 rule 6, 9).
       if (dd.currentRound >= dd.maxRounds) {
         return c.apply(key, 'ESCALATED', {
           ...common,
@@ -632,6 +686,20 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
           payload: { roundId: round.id, round: round.round, headSha: round.headSha, attemptNo: c.nextNo('review_fix', 'agent') },
         }],
+      });
+    }
+
+    // §13.13 rule 2: a person's waiver of open findings.
+    case 'FindingsWaived': {
+      const dd = d!;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      const w = waiverClosure(c.view.findings, { actor: cmd.actor, reason: cmd.reason, scope: cmd.scope });
+      if (!w.ok) return c.rejected(w.reason);
+      const scope = cmd.scope === 'all' ? 'all_open' : 'listed';
+      return c.apply(`waive:${dd.id}:v${dd.version}`, dd.state, {
+        findings: w.closes.map((f) => ({ op: 'close', findingId: f.id, status: 'waived', resolution: { actor: cmd.actor, reason: cmd.reason.trim(), scope, headSha: dd.currentHeadSha } })),
+        evidence: { waivedFindings: w.closes.map((f) => f.id), reason: cmd.reason.trim() },
+        bypass: { kind: 'finding_waiver', actor: cmd.actor, reason: cmd.reason.trim(), scope, findings: w.closes.map((f) => f.id) },
       });
     }
 
@@ -878,6 +946,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!['ESCALATED', 'CHANGES_REQUESTED', 'AWAITING_REVIEW'].includes(dd.state)) return c.stale('state_not_allowed');
       if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
       if (!cmd.hasMergePermission) return c.rejected('no_merge_permission');
+      // A GitHub approval is not a waiver (§13.13 rule 2): only a recorded person's waiver closes a finding.
+      if (c.openFindings().length) return c.rejected('open_findings', { missing: c.openFindings().map(describeFinding) });
       return c.apply(`approve:${c.prKey}:${cmd.reviewId}`, 'APPROVED', {
         guardHead: true,
         patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
@@ -896,6 +966,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       // A destructive migration is a person's whatever the paths say.
       if (dd.policyEvidence?.destructive) return c.rejected('destructive_migration');
+      // AC-32: no rule lifts a request-changes. It may lift a policy escalation, never `review_exhausted` over a finding.
+      if (c.openFindings().length) return c.rejected('open_findings', { missing: c.openFindings().map(describeFinding) });
       return c.apply(`policymerge:${c.prKey}:${cmd.headSha}`, 'APPROVED', {
         guardHead: true,
         patch: { approvedHeads: [...dd.approvedHeads.filter((h) => h !== cmd.headSha), cmd.headSha], approvalBasis: 'policy_rule', stateReason: null },
@@ -931,6 +1003,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       }
       if (cmd.rails.redCi || cmd.rails.denyPaths) return c.rejected('rail_not_overridable', { missing: cmd.rails.reasons });
       if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
+      // §13.13 rule 6: one landing authority. An open finding blocks every door; only a person's
+      // recorded verdict override passes it, and that override is then the finding's waiver.
+      const blocking = c.openFindings();
+      const findingsOverride = overrideDoor && (!ov?.kinds || ov.kinds.includes('verdict'));
+      if (blocking.length && !findingsOverride) return c.rejected('open_findings', { missing: blocking.map(describeFinding) });
+      const waiverOps: FindingOp[] = blocking.length
+        ? blocking.map((f) => ({ op: 'close', findingId: f.id, status: 'waived', resolution: { actor: cmd.actor, grantedBy: ov?.grantedBy ?? null, reason: ov!.reason, scope: 'landing_override', door: cmd.door, headSha: cmd.headSha } }))
+        : [];
       const coverage = headCoverage(dd, cmd.headSha);
       if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
       // S15: a door landing a head that is behind its base, under the disjoint-delta rule. The base
@@ -947,13 +1027,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         guardHead: true,
         states: [dd.state],
         patch: { stateReason: null },
+        findings: waiverOps,
         effects: [{
           kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
           payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
         }],
         evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state, ...(freshness ? { freshness } : {}) },
         bypass: overrideDoor
-          ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}) }
+          ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}), ...(blocking.length ? { overrodeFindings: blocking.map((f) => f.id) } : {}) }
           : null,
       });
     }
@@ -965,6 +1046,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const key = mergeResultKey(c.prKey, cmd);
       const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null, ...(cmd.retryAt ? { retryAt: cmd.retryAt } : {}) };
+      if (cmd.outcome === 'blocked_open_findings') {
+        // AC-31: the merge_call asked again when it ran and found a finding. Nothing was called;
+        // the delivery leaves landing for a person or a fresh review (a review escalation).
+        return c.apply(key, 'ESCALATED', {
+          guardHead: true, patch: { stateReason: 'review_escalated' },
+          effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing_blocked:${cmd.headSha}:${cmd.landingVersion ?? 'x'}`, payload: { event: 'landing_blocked_open_findings', detail: cmd.detail ?? null } }],
+          evidence: { ...evidence, findings: c.openFindings().map((f) => f.id) },
+        });
+      }
       if (cmd.outcome === 'merged' || cmd.outcome === 'indeterminate') {
         // The merged fact comes from a live read (verify_merge → PrMerged), never from this response.
         return c.apply(key, 'LANDING', {
@@ -1001,8 +1091,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const mergedHead = cmd.live.headSha;
       const coverage = headCoverage(dd, mergedHead);
       const rc = c.view.rounds.some((r) => r.headSha === mergedHead && r.status === 'decided' && r.effectiveVerdict === 'request_changes');
-      const reviewClass = coverage !== 'none' ? `covered:${coverage}` : rc ? 'merged_over_verdict' : 'merged_unreviewed';
+      // §13.13 rule 10: a merge over open findings is recorded as exactly that. It is never an
+      // approval, a resolution or a waiver, so the findings stay open and attached, one follow-up
+      // is filed against trunk, and a person is told. The actor is recorded as GitHub reported it.
+      const overFindings = c.openFindings();
+      const reviewClass = overFindings.length ? 'merged_over_open_findings'
+        : coverage !== 'none' ? `covered:${coverage}` : rc ? 'merged_over_verdict' : 'merged_unreviewed';
       const fx = (kind: EffectSpec['kind']): EffectSpec => ({ kind, dedupeKey: `${kind}:${dd.id}:merged`, payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null } });
+      const overFx: EffectSpec[] = overFindings.length ? [
+        { kind: 'file_merged_findings_followup', dedupeKey: `merged_findings_followup:${dd.id}`, payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null, findingIds: overFindings.map((f) => f.id), mergedBy: cmd.mergedBy ?? { kind: 'unknown' } } },
+        { kind: 'notify', dedupeKey: `notify:${dd.id}:merged_over_open_findings`, payload: { event: 'merged_over_open_findings', findingCount: overFindings.length, mergedBy: cmd.mergedBy ?? { kind: 'unknown' } } },
+      ] : [];
       return c.apply(`merged:${c.prKey}`, 'MERGED', {
         states: NON_TERMINAL,
         patch: { mergedAt: cmd.live.mergedAt ?? null, mergeCommitSha: cmd.live.mergeCommitSha ?? null, boundAttemptId: null, resumeState: null },
@@ -1010,8 +1109,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
         // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr')],
-        evidence: { live: cmd.live, reviewClass },
+        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr'), ...overFx],
+        evidence: {
+          live: cmd.live, reviewClass,
+          ...(overFindings.length ? { mergedOverOpenFindings: overFindings.map((f) => f.id), mergedBy: cmd.mergedBy ?? { kind: 'unknown' } } : {}),
+        },
       });
     }
 
@@ -1196,10 +1298,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         if (!cmd.commitId) return c.rejected('commit_id_required');
         if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
         if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        // A person approving over open findings is the waiver (§13.13 rule 2): it needs a reason
+        // and closes each finding with who, why and the scope, in this one transition.
+        const standing = c.openFindings();
+        if (standing.length && !cmd.reason?.trim()) return c.rejected('reason_required_for_waiver', { missing: standing.map(describeFinding) });
         return c.apply(key, 'APPROVED', {
           guardHead: true,
           patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
-          evidence: { commitId: cmd.commitId },
+          findings: standing.map((f) => ({ op: 'close', findingId: f.id, status: 'waived', resolution: { actor: cmd.actor, reason: cmd.reason!.trim(), scope: 'human_approval', headSha: cmd.commitId! } })),
+          evidence: { commitId: cmd.commitId, ...(standing.length ? { waivedFindings: standing.map((f) => f.id) } : {}) },
           bypass,
         });
       }
@@ -1352,6 +1459,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (att.repoFullName !== dd.repoFullName || att.prNumber !== dd.prNumber) return c.rejected('attestation_pr_mismatch');
       if (att.aggregateHeadSha !== dd.currentHeadSha) return c.stale('head_not_current');
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_not_allowed');
+      // §13.13 rule 2 / AC-24: an attestation covers a head, it never closes a finding.
+      if (c.openFindings().length) return c.rejected('open_findings', { missing: c.openFindings().map(describeFinding) });
       if (att.novelDelta.result === 'unverifiable') return c.rejected('composition_unverifiable', { missing: [att.novelDelta.reason] });
       const v = verifyCompositionAttestation(att, cmd.constituents);
       if (!v.ok) return c.rejected('composition_not_verified', { missing: v.reasons });

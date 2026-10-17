@@ -5,7 +5,8 @@ import { db } from '@buildd/core/db';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
+import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyOperator } from '@/lib/pushover';
@@ -1432,7 +1433,7 @@ async function handleReleasePrCiSuccess(
     return;
   }
 
-  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
+  const mergeResult = await mergeWithAuthority({ door: 'release_pr_ci', installationId, repoFullName, prNumber, method: 'merge', headSha, workspaceId: pendingReleaseTasks[0]!.workspaceId });
 
   for (const task of pendingReleaseTasks) {
     const ctx = (task.context ?? {}) as Record<string, unknown>;

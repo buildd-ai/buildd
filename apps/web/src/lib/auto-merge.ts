@@ -9,7 +9,8 @@
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi } from '@/lib/github';
+import { mergeWithAuthority } from '@/lib/workflow/landing-authority';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
@@ -884,7 +885,7 @@ export async function tryAutoMergeWorkerPr(params: {
     const kernel = landingWorkspaceId
       ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
+    return kernel ? { kernel } : { legacy: await mergeWithAuthority({ door: 'auto_merge', installationId, repoFullName, prNumber, method: mergeMethod, headSha, workspaceId: landingWorkspaceId }) };
   });
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);

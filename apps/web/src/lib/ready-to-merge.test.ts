@@ -124,7 +124,7 @@ describe('every merge door consults the mission gate', () => {
       const src = read(file);
       const guard = src.indexOf('await guardMissionPrMerge(');
       expect(guard).toBeGreaterThan(-1);
-      const merge = Math.min(...['landThroughKernel(', 'kernelLand(', 'mergePullRequest('].map(m => {
+      const merge = Math.min(...['landThroughKernel(', 'kernelLand(', 'mergePullRequest(', 'mergeWithAuthority('].map(m => {
         const at = src.indexOf(m, guard);
         return at === -1 ? Infinity : at;
       }));
@@ -132,12 +132,14 @@ describe('every merge door consults the mission gate', () => {
     });
   }
 
-  it('any other file that merges a PR is a known non-mission door', () => {
+  it('any other file that merges a PR is a known non-mission door', { timeout: 90_000 }, () => {
     const allowed = new Set([
       'lib/github.ts', // the primitive
+      'lib/workflow/landing-authority.ts', // §13.13 rule 6: the one REST merge every door calls, after the review authority
       'lib/surface-ordering-door.ts', // names it in a doc comment; it wraps a door's own call
       'lib/workflow/pr-landing-effects.ts', // the kernel's merge_call, reached only through landPr
       'lib/workflow/landing.ts', 'lib/workflow/seam.ts',
+      'lib/workflow/testing/landing-authority-passthrough.ts', // test helper: stands in for the authority in door tests
       'lib/release-executor.ts', // dev -> main release PRs, not a mission integration PR
       'lib/release/compose-runtime.ts', // binds the release executor's merge; dev -> main release PRs only
       'app/api/github/webhook/route.ts', // release-pr ci-success only
@@ -148,5 +150,11 @@ describe('every merge door consults the mission gate', () => {
       .split('\n').map(f => f.replace(/^\.\//, '')).filter(f => f && !/\.test\.ts$/.test(f));
     const unknown = files.filter(f => !allowed.has(f));
     expect(unknown).toEqual([]);
+    // §13.13 rule 6 / AC-30: a door reaches `PUT .../merge` only through `mergeWithAuthority`, which asks
+    // the review authority first. Only the primitive, the kernel's own `merge_call` (it rechecks findings
+    // itself) and a doc comment may name `mergePullRequest(`; the authority wrapper calls it by reference.
+    const direct = execSync(`grep -rlE "mergePullRequest\\(" --include=*.ts . || true`, { cwd: root, encoding: 'utf8' })
+      .split('\n').map(f => f.replace(/^\.\//, '')).filter(f => f && !/\.test\.ts$/.test(f) && !f.startsWith('lib/workflow/testing/'));
+    expect(direct.sort()).toEqual(['lib/github.ts', 'lib/surface-ordering-door.ts', 'lib/workflow/pr-landing-effects.ts']);
   });
 });

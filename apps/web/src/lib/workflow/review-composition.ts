@@ -24,7 +24,7 @@ import { isCiVerifiedGeneratedPath, isMigrationSqlPath, pairMovedMigrations } fr
 import { classifyReleasePr, releaseConstituentBase, type ReleasePrFacts } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import type { Exec } from './kernel';
-import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, NovelDelta, RoundStatus, Verdict } from './types';
+import type { CompositionAttestation, CompositionConstituent, ConstituentEvidence, DeliveryState, NovelDelta, RoundStatus, Verdict } from './types';
 
 // ── Which PRs are composed ──────────────────────────────────────────────────
 
@@ -241,7 +241,11 @@ export function renumberedMigrations(t: RefreshMergeTrees): Set<string> {
 export interface ConstituentDelivery {
   deliveryId: string;
   approvedHeads: string[];
-  rounds: Array<{ id: string; headSha: string; status: RoundStatus; effectiveVerdict: Verdict | null }>;
+  rounds: Array<{ id: string; headSha: string; status: RoundStatus; effectiveVerdict: Verdict | null; round?: number }>;
+  /** §13.13 rule 1: the constituent's own state at its head and how many of its findings are still open. */
+  state?: DeliveryState | null;
+  currentHeadSha?: string | null;
+  openFindings?: number;
 }
 
 export interface ConstituentPr {
@@ -288,7 +292,15 @@ export interface CompositionResult {
 
 /** The decided approve round that covers `head` in a constituent's delivery. */
 export function coveringRound(dl: ConstituentDelivery, head: string) {
-  const approves = dl.rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict === 'approve');
+  // §13.13 rule 1: a constituent's approve counts only while it is the LATEST decided round at its
+  // head (a later request-changes at the same head supersedes it), its delivery is not blocked
+  // there, and none of its findings is open. Otherwise the change is owed a review again.
+  if ((dl.openFindings ?? 0) > 0) return null;
+  const latestAt = (h: string) => dl.rounds.map((r, i) => ({ r, i })).filter(({ r }) => r.status === 'decided' && r.headSha === h)
+    .sort((a, b) => (b.r.round ?? b.i) - (a.r.round ?? a.i))[0]?.r;
+  const standing = (h: string) => latestAt(h)?.effectiveVerdict === 'approve';
+  if ((dl.state === 'CHANGES_REQUESTED' || dl.state === 'ESCALATED') && dl.currentHeadSha === head) return null;
+  const approves = dl.rounds.filter((r) => r.status === 'decided' && r.effectiveVerdict === 'approve' && standing(r.headSha));
   const exact = approves.find((r) => r.headSha === head);
   if (exact) return { round: exact, equivalent: [] as string[] };
   // The merged head is a recorded content-equivalent of an approved head (§8.3 carry-forward).
@@ -297,6 +309,11 @@ export function coveringRound(dl: ConstituentDelivery, head: string) {
     if (cited) return { round: cited, equivalent: [head] };
   }
   return null;
+}
+
+function latestDecidedVerdict(dl: ConstituentDelivery, head: string): Verdict | null {
+  return dl.rounds.map((r, i) => ({ r, i })).filter(({ r }) => r.status === 'decided' && r.headSha === head)
+    .sort((a, b) => (b.r.round ?? b.i) - (a.r.round ?? a.i))[0]?.r.effectiveVerdict ?? null;
 }
 
 export function buildCompositionAttestation(input: CompositionInput): CompositionResult {
@@ -382,6 +399,10 @@ export function buildCompositionAttestation(input: CompositionInput): Compositio
       roundStatus: cov.round.status,
       effectiveVerdict: cov.round.effectiveVerdict,
       deliveryApprovedHeads: pr.delivery.approvedHeads,
+      latestDecidedVerdictAtHead: latestDecidedVerdict(pr.delivery, cov.round.headSha),
+      deliveryState: pr.delivery.state ?? null,
+      deliveryHeadSha: pr.delivery.currentHeadSha ?? null,
+      openFindings: pr.delivery.openFindings ?? 0,
     });
   }
 
@@ -441,8 +462,9 @@ function toFileDiffs(r: GhFiles | null): FileDiff[] | null {
 
 export function deliveryRoundsSql(workspaceId: string, repoFullName: string, prNumbers: number[]) {
   return sql`-- workflow:composition_constituents
-SELECT d.id, d.pr_number, d.approved_heads,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id', r.id, 'head_sha', r.head_sha, 'status', r.status, 'effective_verdict', r.effective_verdict))
+SELECT d.id, d.pr_number, d.approved_heads, d.state, d.current_head_sha,
+  (SELECT count(*) FROM workflow_review_findings f WHERE f.delivery_id = d.id AND f.status = 'open') AS open_findings,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id', r.id, 'round', r.round, 'head_sha', r.head_sha, 'status', r.status, 'effective_verdict', r.effective_verdict))
      FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds
 FROM workflow_deliveries d
 WHERE d.workspace_id = ${workspaceId}::uuid AND d.repo_full_name = ${repoFullName}::text AND d.authority = 'kernel'
@@ -521,8 +543,11 @@ export async function collectComposition(p: {
       deliveries.set(Number(r.pr_number), {
         deliveryId: String(r.id),
         approvedHeads: (r.approved_heads as string[] | null) ?? [],
+        state: (r.state ?? null) as DeliveryState | null,
+        currentHeadSha: (r.current_head_sha ?? null) as string | null,
+        openFindings: Number(r.open_findings ?? 0),
         rounds: ((r.rounds as Array<Record<string, unknown>>) ?? []).map((x) => ({
-          id: String(x.id), headSha: String(x.head_sha), status: x.status as RoundStatus, effectiveVerdict: (x.effective_verdict ?? null) as Verdict | null,
+          id: String(x.id), round: x.round == null ? undefined : Number(x.round), headSha: String(x.head_sha), status: x.status as RoundStatus, effectiveVerdict: (x.effective_verdict ?? null) as Verdict | null,
         })),
       });
     }
