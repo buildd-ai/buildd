@@ -14,7 +14,8 @@ const mockReconcile = mock(async (_e: unknown) => ({ cancelled: [], lostRace: []
 mock.module('@/lib/supersession', () => ({ reconcileSubjectEvent: mockReconcile }));
 
 const mockDetect = mock(async (_p: unknown) => ({ outcome: 'none' }));
-mock.module('@/lib/pr-supersession-detect', () => ({ detectPrSupersession: mockDetect }));
+const mockRescan = mock(async (_p: unknown) => ({ nominated: 0, results: [] }));
+mock.module('@/lib/pr-supersession-detect', () => ({ detectPrSupersession: mockDetect, rescanOnMerge: mockRescan }));
 
 const mockKernelDeliveryForPr = mock(async (_ws: string, _repo: string, _pr: number): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
@@ -96,5 +97,28 @@ describe('supersession-detect-on-close (the sibling already guarded)', () => {
     mockKernelDeliveryForPr.mockResolvedValue('delivery-1');
     await run(closedEvent());
     expect(mockDetect).not.toHaveBeenCalled();
+  });
+});
+
+// b6cfdbb9: a re-land merged after the close-time scan, and nothing looked again.
+describe('supersession-rescan-on-merge', () => {
+  const run = byLabel('supersession-rescan-on-merge');
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  beforeEach(() => mockRescan.mockClear());
+
+  it.each([false, true])('a new merge (kernel-owned=%p) re-checks the closed PRs it may carry', async (owned) => {
+    mockKernelDeliveryForPr.mockResolvedValue(owned ? 'delivery-1' : null);
+    await run(closedEvent({ merged: true }));
+    await settle();
+    expect(mockRescan).toHaveBeenCalledTimes(1);
+    expect(mockRescan.mock.calls[0]![0]).toEqual({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, taskId: 't1' });
+  });
+
+  it('a close without a merge, or a redelivered merge, does not', async () => {
+    await run(closedEvent({ merged: false, mergeIsNew: false }));
+    await run(closedEvent({ merged: true, mergeIsNew: false }));
+    await settle();
+    expect(mockRescan).not.toHaveBeenCalled();
   });
 });

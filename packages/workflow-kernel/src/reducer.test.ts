@@ -2357,3 +2357,34 @@ describe('79649a80: closing and reopening a PR does not reset a spent review bud
     expect({ to: ab.toState, resume: ab.patch.resumeState }).toEqual({ to: 'ABANDONED', resume: null });
   });
 });
+
+describe('b6cfdbb9: a close or a merge names the queued work it makes moot', () => {
+  const closeCmd: Command = { type: 'PrClosedUnmerged', actor: 'webhook', live: live('H1', { state: 'closed', updatedAt: 'u1' }), closeCause: 'manual' };
+  const cancelPayload = (dec: ApplyDecision) => dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload;
+
+  test('closed with a queued review repair: the cancel effect names that task, and says why', () => {
+    const dec = applied(run(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC], [A({ taskId: 'ft1' })]), closeCmd));
+    expect(dec.toState).toBe('CLOSED_UNMERGED');
+    expect(cancelPayload(dec)).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: ['ft1'] });
+  });
+
+  test('every open repair family is named, ended rows are not, and a queued reviewer goes with them', () => {
+    const view = V(D({ state: 'REPAIRING', currentRound: 1 }), [R({ id: 'r2', round: 2, status: 'queued', reviewerTaskId: 'rv2' })], [
+      A({ id: 'a1', family: 'ci', taskId: 'ci1', status: 'queued' }),
+      A({ id: 'a2', family: 'conflict', taskId: 'cf1', status: 'running' }),
+      A({ id: 'a3', family: 'review_fix', taskId: 'old', status: 'ended', outcome: 'delivered' }),
+    ]);
+    expect(cancelPayload(applied(run(view, closeCmd)))).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: ['ci1', 'cf1', 'rv2'] });
+  });
+
+  test('an open repair not yet linked to its task falls back to its role, never silently', () => {
+    const dec = applied(run(V(D({ state: 'REPAIRING' }), [], [A({ family: 'ci', taskId: null })]), closeCmd));
+    expect(cancelPayload(dec)).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: [], unlinkedRoles: ['ci_fix'] });
+  });
+
+  test('a merge names them the same way', () => {
+    const merged = live('H1', { state: 'closed', merged: true, mergedAt: '2026-10-06T01:00:00Z', mergeCommitSha: 'M1' });
+    const dec = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'] }), [], [A({ family: 'ci', taskId: 'ci1' })]), { type: 'PrMerged', actor: 'webhook', live: merged }));
+    expect(cancelPayload(dec)).toEqual({ mergeCommitSha: 'M1', reason: 'merged', taskIds: ['ci1'] });
+  });
+});
