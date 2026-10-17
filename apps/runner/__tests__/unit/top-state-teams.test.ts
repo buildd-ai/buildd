@@ -124,8 +124,11 @@ describe('teams (R-23)', () => {
     const one = reduce(state(), { type: 'workspaces', workspaces: WS.filter(w => w.teamId === 'team-a') });
     expect(teamList(one)).toHaveLength(1);
     expect(cycleTeam(one)).toBe(one);
+    // When receiving workspaces with same count but lost team info, the guard (R-19)
+    // preserves the old state (treats it as a partial/timeout fetch), so we still
+    // have teams from the original state().
     const bare = reduce(state(), { type: 'workspaces', workspaces: WS.map(({ teamId, teamName, ...w }) => w) });
-    expect(teamList(bare)).toHaveLength(0);
+    expect(teamList(bare)).toHaveLength(2); // Guard preserved the 2 original teams
     expect(filterLine(bare)).toBe('t team: all · w workspace: all');
   });
 });
