@@ -553,6 +553,11 @@ export async function POST(req: NextRequest) {
     // The landing escape hatch's grant (context.landingOverride) is a person's call: only a
     // dashboard/chat session or an OAuth MCP session may set it, and the server stamps who.
     const grantPerson = requestingPerson(user, apiAccount);
+    // So is aiming the task at one runner: that runner runs it even while on
+    // hold (spec c7410e76 R-34), so an API key or per-task token may not.
+    if (assignToLocalUiUrl && !grantPerson) {
+      return NextResponse.json({ error: 'Only a person can file a task onto a specific runner; omit assignToLocalUiUrl.' }, { status: 403 });
+    }
     const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
     if (!stampedGrant.ok) {
       return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });
@@ -1786,7 +1791,7 @@ export async function POST(req: NextRequest) {
         // in the insert's own transaction: otherwise a drain running in another
         // request could broadcast the bare creation wake to every runner first.
         [created] = assignToLocalUiUrl
-          ? await withDispatchHint({ metadata: { targetLocalUiUrl: assignToLocalUiUrl } }, insert)
+          ? await withDispatchHint({ metadata: { targetLocalUiUrl: assignToLocalUiUrl, byPerson: true } }, insert)
           : await insert;
       } catch (error) {
         // The partial unique index tasks_active_planning_per_mission (one
@@ -1871,7 +1876,7 @@ export async function POST(req: NextRequest) {
 
     if (intake.outcome.action !== 'attached') {
       await announceTaskCreated(task, targetWorkspace);
-      await wakeTask(task.id, 'task.created', { targetLocalUiUrl: assignToLocalUiUrl });
+      await wakeTask(task.id, 'task.created', { targetLocalUiUrl: assignToLocalUiUrl, ...(assignToLocalUiUrl ? { byPerson: true } : {}) });
     }
 
     // Who reacts to a committed filing is the modules' business (the
