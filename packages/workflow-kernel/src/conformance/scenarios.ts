@@ -2487,6 +2487,47 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    // Review of #5038: the CI fix's title counted dispatched attempts, but a review, conflict or
+    // migration fix's title still used the raw attempt_no, so after one skipped row its title said
+    // "#2" while the checks list said "1 of 3".
+    name: '295486ba: review and conflict fix titles count dispatched attempts: a skipped row in front does not number the next one',
+    async run(host) {
+      // Review fix: the first is skipped at claim (the PR was approved meanwhile); the second is fix 1.
+      const s = await new Delivery(host, 123).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const first = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
+      notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: first.id, revalidation: { live: s.live('H1'), approved: true } }), 'rejected', 'fix_not_needed', 'skipped at claim');
+      eq((await s.view()).attempts.find((a) => a.id === first.id)!.status, 'skipped', 'the first review fix spent nothing');
+      eq((await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix'))).outcome, 'ok', 'the next review fix is filed');
+      const fixes = f.work.filed.filter((w) => w.role === 'fix');
+      const second = (await s.view()).attempts.find((a) => a.family === 'review_fix' && a.status === 'queued')!;
+      eq({ row: second.attemptNo, title: fixes.at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1, as the checks list counts it');
+
+      // Agent conflict fix: the first is skipped at claim (the conflict resolved itself); the next is fix 1.
+      const c = await new Delivery(host, 124).open();
+      applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const g = fakePorts(host);
+      const h = kernelEffectHandlers(g.ports);
+      g.github.setPr(c.repo, c.prNumber, c.live('H1', { mergeableState: 'dirty' }));
+      g.conflicts.refreshAnswer = { kind: 'refused', refusal: { reason: 'merge conflict', mode: 'textual' } };
+      const toAgent = async (label: string) => {
+        applied(await c.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', `conflict (${label})`);
+        eq(await h.refresh_branch!(await direct(host, c, 'refresh_branch')), { outcome: 'ok:refused:merge conflict' }, `refused to an agent (${label})`);
+        return (await c.view()).attempts.find((x) => x.mode === 'agent' && x.status === 'queued')!;
+      };
+      const a1 = await toAgent('first');
+      eq((await c.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a1.id, revalidation: { live: c.live('H1'), approved: false, conflictResolved: true } })).result, 'applied', 'resolved before it started: skipped');
+      eq((await c.view()).attempts.find((x) => x.id === a1.id)!.status, 'skipped', 'the first conflict fix spent nothing');
+      const a2 = await toAgent('second');
+      eq(await h.dispatch_conflict_fix!(await direct(host, c, 'dispatch_conflict_fix')), { outcome: 'ok' }, 'filed');
+      eq({ row: a2.attemptNo, title: g.work.filed.filter((w) => w.role === 'conflict_fix').at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1');
+    },
+  },
+  {
     name: 'delta approval (58c8961e): carried deltas are capped together, measured from the last full review',
     async run(host) {
       const s = await (await new Delivery(host, 96).open()).approvedAt('H1');
