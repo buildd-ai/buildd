@@ -810,7 +810,19 @@ push, refresh, completion or owner change can make it disappear.
   rebase and force-push does not descend from it, so ancestry is not asked), only when nothing local can be lost: a completed end or
   one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
   round (T27, re-queued twice with a backoff, then `review_unavailable`)
-  instead of leaving it open with nobody on it.
+  instead of leaving it open with nobody on it. A re-queued dispatch is due
+  minutes later but runs only when something drains: an event on the delivery
+  or the hourly floor. Nothing schedules a drain for it, so on a quiet PR
+  `review_unavailable` arrives within about two floor ticks of the first
+  failure (up to about two hours), and until then `request_pr_review` answers
+  that a review is in flight (a81a100f). Each retry's backoff stays under one
+  floor period, so neither retry waits a tick longer than that
+  (`kernel-floor.test.ts`).
+- A moved head names the repair tasks it made moot in `cancel_open_attempts`
+  (`taskIds`), so a retried effect never cancels a newer one. A mechanical
+  repair has no task: it names none and cancels nothing (a81a100f). An agent
+  row not yet linked to its task, and an effect recorded before `taskIds`
+  existed, keep the role-wide cancel.
 - `request_pr_review` never claims a review exists when none does: an open
   round with no reviewer task whose dispatches all finished gets its dispatch
   again (the floor's rule, run for the asker), and the answer says what is
