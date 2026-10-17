@@ -1366,16 +1366,27 @@ describe('enforceServerSideEscalation', () => {
   });
 
   it('escalates approve when the file list could not be read', () => {
-    // A real PR always has files, so an empty list means the GitHub fetch
-    // failed. Failing open here would let a transient 502 grant a merge.
+    // Failing open here would let a transient 502 grant a merge.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: null,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('could not');
+  });
+
+  it('#4913: a file list that was read and is empty is a PR that changes nothing, not an unreadable one', () => {
+    // A redundant refresh (its base already has everything) has no files. No gate can apply to
+    // no files; escalating it as "could not read the file list" sent a person a false alarm.
     const result = enforceServerSideEscalation({
       verdict: 'approve',
       prFiles: [],
       policy: OPEN_POLICY,
     });
 
-    expect(result.verdict).toBe('escalate');
-    expect(result.overrideReason).toContain('could not');
+    expect(result).toEqual({ verdict: 'approve', overrideReason: null });
   });
 
   it('leaves request-changes alone even on a migration', () => {

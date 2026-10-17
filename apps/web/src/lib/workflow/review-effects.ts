@@ -18,6 +18,7 @@
  *    supersession of the open fix, the escalation notice.
  *  - `reviewEscalate` (`Escalate`, family `review_fix`).
  */
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -229,6 +230,7 @@ export const fixWork: WorkBuilder = async (req) => {
   // mission branch far ahead of trunk. Unreadable: the legacy fields stay the worker's branch.
   const pull = await githubApi(repo.installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null) as { head?: { ref?: string } ; base?: { ref?: string } } | null;
   const target = repairBranchContext({ prNumber, workerBranch: branch, headRef: pull?.head?.ref ?? null, headSha, baseRef: pull?.base?.ref ?? prw?.prBaseRef ?? req.target.baseRef ?? null });
+  const repairFiles = await readRepairPrFiles((path) => githubApi(repo.installationId, path), { repoFullName, prNumber, headSha });
   const identity = attemptIdentityFrom(owner);
   const pinned = pinnedFixDescription({
     prNumber, round: typeof detail.round === 'number' ? detail.round : null, headRef: target.repairTarget?.headRef ?? (branch || null), headSha,
@@ -271,7 +273,7 @@ export const fixWork: WorkBuilder = async (req) => {
         workflowRoundId: detail.roundId,
         ...lineageStamp(owner as never, [prNumber]),
       },
-      pathManifest: owner.pathManifest,
+      pathManifest: repairPathManifest(owner.pathManifest as string[] | null, repairFiles),
       release: 'false',
       priority: 8,
       status: 'pending',
