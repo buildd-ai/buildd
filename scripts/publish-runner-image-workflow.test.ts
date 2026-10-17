@@ -33,7 +33,7 @@ function runScript(script: string, cwd: string, env: Record<string, string>) {
   const res = spawnSync('bash', ['-c', script], {
     cwd,
     encoding: 'utf8',
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env, GITHUB_OUTPUT: outFile },
+    env: { PATH: process.env.PATH ?? '', HOME: cwd, ...env, GITHUB_OUTPUT: outFile },
   });
   const outputs = Object.fromEntries(
     readFileSync(outFile, 'utf8')
