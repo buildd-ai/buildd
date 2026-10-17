@@ -154,7 +154,7 @@ describe('settleFinishedBranch', () => {
   };
   const view = (terminal = false): MissionEpochView => ({ missionId: 'm1', integrationBranch: BR, terminal, scopeVersion: 1, epochs: [epoch], work: { unfinishedTasks: 0, openTaskPrs: 0 } });
 
-  function world(opts: { deliveryPr?: unknown; successors?: number[]; contained?: boolean; supersededBy?: number | null; refreshHead?: string } = {}) {
+  function world(opts: { deliveryPr?: unknown; successors?: number[]; contained?: boolean; supersededBy?: number | null; refreshHead?: string; failRecord?: number } = {}) {
     const calls: string[] = [];
     const comments: Array<{ pr: number; body: string }> = [];
     const closed: number[] = [];
@@ -163,7 +163,7 @@ describe('settleFinishedBranch', () => {
       calls.push(`${method} ${path}`);
       if (method === 'GET' && path === '/repos/o/r/pulls/40') return opts.deliveryPr ?? { state: 'closed', merged: false };
       if (method === 'GET' && path.startsWith('/repos/o/r/pulls?state=open&base=mission%2Fx')) {
-        return [{ number: 50, head: { sha: 'r1' }, base: { ref: BR } }, { number: 51, head: { sha: 't1' }, base: { ref: BR } }];
+        return [...(closed.includes(50) ? [] : [{ number: 50, head: { sha: 'r1' }, base: { ref: BR } }]), { number: 51, head: { sha: 't1' }, base: { ref: BR } }];
       }
       if (method === 'GET' && path.startsWith('/repos/o/r/pulls?state=open&head=')) {
         return (opts.successors ?? []).map((n) => ({ number: n }));
@@ -182,13 +182,19 @@ describe('settleFinishedBranch', () => {
     const superseded: Array<{ prNumber: number; by: number }> = [];
     const cancelled: string[] = [];
     const notes: string[] = [];
+    let failRecord = opts.failRecord ?? 0;
     const deps: EpochDeps = {
       refreshPrsOf: async () => new Set([50]),
+      // The rows: a refresh closed on the branch whose resolution is not recorded yet.
+      unsettledClosedRefreshesOf: async () => (closed.includes(50) && !superseded.some((x) => x.prNumber === 50) && !notes.length ? [50] : []),
       supersessionOf: async () => (opts.supersededBy != null ? { prNumber: opts.supersededBy, url: null } : null),
       obsoleteRefreshTasksOf: async () => ['t-unstarted'],
       cancelTask: async (id) => { cancelled.push(id); },
-      recordSupersession: async (p) => { superseded.push({ prNumber: p.prNumber, by: p.satisfiedBy.prNumber }); },
-      noteHeld: async (_m, title, body) => { notes.push(`${title}\n${body}`); },
+      recordSupersession: async (p) => {
+        if (failRecord > 0) { failRecord--; throw new Error('kernel unavailable'); }
+        superseded.push({ prNumber: p.prNumber, by: p.satisfiedBy.prNumber });
+      },
+      noteOnce: async (_m, title, body) => { notes.push(`${title}\n${body}`); },
       newId: () => 'fixed-id-0000',
     };
     return { api, deps, calls, comments, closed, superseded, cancelled, notes };
@@ -197,7 +203,7 @@ describe('settleFinishedBranch', () => {
   it('the #4913 shape: the integration PR closed and its work landed elsewhere, so its refresh PR is closed and points there', async () => {
     const w = world({ supersededBy: 61 });
     const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
-    expect(r.outcome).toBe('finished:superseded:closed=1:cancelled=1');
+    expect(r.outcome).toBe('finished:superseded:closed=1:cancelled=1:recorded=1');
     expect(w.closed).toEqual([50]);
     expect(w.comments).toHaveLength(1);
     expect(w.comments[0]!.body).toContain('its PR #40 closed without merging and its work landed in #61');
@@ -245,8 +251,36 @@ describe('settleFinishedBranch', () => {
   it('a refresh PR pushed to since it was listed is left for the next pass', async () => {
     const w = world({ supersededBy: 61, refreshHead: 'moved' });
     const r = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
-    expect(r.outcome).toBe('finished:superseded:closed=0:cancelled=1:skipped=1');
+    expect(r.outcome).toBe('finished:superseded:closed=0:cancelled=1:recorded=0:skipped=1');
     expect(w.closed).toEqual([]);
+  });
+
+  // Review of #5021, finding 1: a record that fails after the close is not lost
+  // because the PR no longer lists as open.
+  it('a supersession that fails after the close is recorded on the next pass, from the rows', async () => {
+    const w = world({ supersededBy: 61, failRecord: 1 });
+    const first = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(first.outcome).toBe('finished:superseded:closed=1:cancelled=1:recorded=0');
+    expect(w.closed).toEqual([50]);
+    expect(w.superseded).toEqual([]);
+    const second = await settleFinishedBranch(w.api, repo, view(), epoch, w.deps);
+    expect(second.outcome).toBe('finished:superseded:closed=0:cancelled=1:resettled=1:recorded=1');
+    expect(w.closed).toEqual([50]);
+    expect(w.superseded).toEqual([{ prNumber: 50, by: 61 }]);
+    // Settled: a third pass finds nothing left.
+    expect((await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, obsoleteRefreshTasksOf: async () => [] })).outcome).toBe('skip:nothing_to_settle');
+  });
+
+  it('a note that fails after the close is posted on the next pass', async () => {
+    const w = world({ contained: true });
+    let fail = true;
+    const noteOnce: EpochDeps['noteOnce'] = async (m, t, b) => { if (fail) { fail = false; throw new Error('db'); } await w.deps.noteOnce!(m, t, b); };
+    await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, noteOnce });
+    expect(w.notes).toEqual([]);
+    const second = await settleFinishedBranch(w.api, repo, view(), epoch, { ...w.deps, noteOnce });
+    expect(second.outcome).toBe('finished:contained_in_trunk:closed=0:cancelled=1:resettled=1');
+    expect(w.notes).toHaveLength(1);
+    expect(w.notes[0]).toContain('#50');
   });
 
   it('a closed mission finishes the branch without reading its PR, and asks nobody', async () => {
