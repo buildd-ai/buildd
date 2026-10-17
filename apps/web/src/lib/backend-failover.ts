@@ -50,9 +50,11 @@ export interface BackendScope {
    * a pause recorded for ANOTHER runner's own login is not this caller's wall
    * and is ignored; shared pauses (NULL seat key) still apply. Unset: every
    * pause applies, seat-scoped ones included, which is the fail-safe for any
-   * reader that cannot say which login it runs on.
+   * reader that cannot say which login it runs on. Several keys: the caller
+   * answers to each (its login's and its runner's, runner-seat-wall
+   * callerSeatKeys).
    */
-  seatKey?: string | null;
+  seatKey?: string | readonly string[] | null;
 }
 
 /** How long an expired pause row is kept before the next write prunes it. */
@@ -117,8 +119,14 @@ export interface ActivePause {
  * The seat predicate for a pause read: shared rows, plus the caller's own
  * seat-scoped ones. No predicate when the caller has no seat key.
  */
-export function pauseSeatScope(seatKey: string | null | undefined) {
-  return seatKey ? or(isNull(backendPauses.seatKey), eq(backendPauses.seatKey, seatKey)) : undefined;
+export function pauseSeatScope(seatKey: string | readonly string[] | null | undefined) {
+  const keys = seatKeysOf(seatKey);
+  return keys.length ? or(isNull(backendPauses.seatKey), ...keys.map(k => eq(backendPauses.seatKey, k))) : undefined;
+}
+
+function seatKeysOf(seatKey: string | readonly string[] | null | undefined): string[] {
+  if (!seatKey) return [];
+  return (typeof seatKey === 'string' ? [seatKey] : [...seatKey]).filter(k => !!k);
 }
 
 /**
@@ -131,6 +139,7 @@ export function pauseSeatScope(seatKey: string | null | undefined) {
 export async function getActiveBackendPauses(scope: BackendScope): Promise<Map<AgentBackend, ActivePause>> {
   const out = new Map<AgentBackend, ActivePause>();
   const now = new Date();
+  const callerKeys = seatKeysOf(scope.seatKey);
 
   if (scope.teamId) {
     try {
@@ -146,7 +155,7 @@ export async function getActiveBackendPauses(scope: BackendScope): Promise<Map<A
       for (const row of rows) {
         const rowSeat = (row as { seatKey?: string | null }).seatKey ?? null;
         // Re-check the seat scoping in code so a loose query cannot widen it.
-        if (rowSeat && scope.seatKey && rowSeat !== scope.seatKey) continue;
+        if (rowSeat && callerKeys.length && !callerKeys.includes(rowSeat)) continue;
         const backend = row.backend as AgentBackend;
         if (!out.has(backend)) out.set(backend, { backend, resetsAt: row.resetsAt, reason: row.reason, seatKey: rowSeat });
       }
