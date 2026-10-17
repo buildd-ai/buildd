@@ -84,3 +84,21 @@ describe('buildAgentAccessReport', () => {
     expect(r.adminGranted).toBe(1);
   });
 });
+
+describe('summarizeAccess source', () => {
+  const r = (capability: string, o: Partial<CapabilityRow> = {}): CapabilityRow => ({
+    occurredAt: new Date(T0), workspaceId: 'ws', workerId: 'w', capability, decision: 'allowed',
+    resource: null, reasonCode: null, expiresAt: null, sideEffect: null, ...o,
+  });
+  it('treats the buildd token and repo access as run credentials, not governed grants', () => {
+    const items = summarizeAccess([r('task_token.mint'), r('github.repo_grant'), r('capability.use', { resource: 'grant:g1' })]);
+    expect(items.map(i => i.source)).toEqual(['run', 'run', 'grant']);
+    expect(items[2].grantId).toBe('g1');
+  });
+  it('marks a request pending until a later row decides its grant', () => {
+    const req = r('capability.request', { decision: 'refused', resource: 'grant:g1', reasonCode: 'pending_approval:needs_person' });
+    expect(summarizeAccess([req])[0].pending).toBe(true);
+    const approve = r('capability.approve', { resource: 'grant:g1', occurredAt: new Date(T0 + 60_000) });
+    expect(summarizeAccess([req, approve])[0].pending).toBe(false);
+  });
+});
