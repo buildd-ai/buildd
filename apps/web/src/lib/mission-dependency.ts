@@ -1,7 +1,18 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, workers } from '@buildd/core/db/schema';
-import { eq, and, or, ne, isNull, isNotNull, inArray, count } from 'drizzle-orm';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { missions, tasks } from '@buildd/core/db/schema';
+import { eq, and, isNull } from 'drizzle-orm';
+import { sqlWhere, sqlOrderByFn } from '@buildd/core/db/relational-sql';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
+import { withDeliveryShip } from '@buildd/core/pr-shipped';
+import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
+import {
+  evaluateUpstreamGate,
+  gateBlockedReason,
+  type GateCondition,
+  type GateTask,
+  type GateVerdict,
+  type UnmetCondition,
+} from '@/lib/mission-dependency-gate';
 
 type MissionForBlockCheck = {
   id: string;
@@ -15,15 +26,75 @@ export interface BlockedStatus {
   reason?: string;
   dependsOnTitle?: string;
   dependsOnMissionId?: string;
+  /** What is still left on the upstream mission, first one first. Empty when unblocked. */
+  unmet?: UnmetCondition[];
+}
+
+const asGate = (g: string | null | undefined): GateCondition => (g === 'completed' ? 'completed' : 'merged');
+
+/**
+ * Reads an upstream mission and decides a gate (`evaluateUpstreamGate`). A
+ * read: nothing is written. Null when the upstream no longer exists.
+ */
+export async function evaluateMissionGate(
+  upstreamMissionId: string,
+  gate: GateCondition,
+): Promise<(GateVerdict & { title: string }) | null> {
+  const upstream = await db.query.missions.findFirst({
+    where: sqlWhere(eq(missions.id, upstreamMissionId)),
+    columns: { id: true, title: true, status: true, integrationBranchEnabled: true, workingBranch: true },
+  });
+  if (!upstream) return null;
+  const head = { title: upstream.title, status: upstream.status, integrationBranch: missionIntegrationBase(upstream) !== null };
+  // Completed meets both gates and the completed gate reads nothing else: no task load.
+  if (upstream.status === 'completed' || gate === 'completed') return { ...evaluateUpstreamGate(gate, head, []), title: upstream.title };
+
+  const rows = await db.query.tasks.findMany({
+    where: sqlWhere(eq(tasks.missionId, upstreamMissionId)),
+    columns: {
+      id: true, title: true, status: true, taskClass: true, parentTaskId: true, mode: true, kind: true,
+      category: true, creationSource: true, roleSlug: true, context: true, workspaceId: true,
+    },
+    with: {
+      workers: {
+        columns: {
+          prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true,
+          supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true,
+        },
+        orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]),
+        limit: 1,
+      },
+    },
+  });
+  const latest = rows.map(r => ({ row: r, w: (r as unknown as { workers?: GateTask['worker'][] }).workers?.[0] ?? null }));
+  const ships = await deliveryShipsForPrs(latest.flatMap(({ row, w }) => (w ? [{ workspaceId: row.workspaceId, prUrl: w.prUrl }] : [])));
+  const gateTasks: GateTask[] = latest.map(({ row, w }) => ({
+    id: row.id, title: row.title, status: row.status, taskClass: row.taskClass ?? null, parentTaskId: row.parentTaskId ?? null,
+    mode: row.mode ?? null, kind: row.kind ?? null, category: row.category ?? null, creationSource: row.creationSource ?? null,
+    roleSlug: row.roleSlug ?? null, context: row.context,
+    worker: w ? withDeliveryShip(w, ships.get(shipKey(row.workspaceId, w.prUrl) ?? '')) : null,
+  }));
+  return { ...evaluateUpstreamGate(gate, head, gateTasks), title: upstream.title };
+}
+
+/** Stamp the gate cleared. Guarded on IS NULL, so only one writer clears it; true when this call did. */
+async function stampDependencyMet(missionId: string, now = new Date()): Promise<boolean> {
+  const [cleared] = await db
+    .update(missions)
+    .set({ dependencyMetAt: now, updatedAt: now })
+    .where(and(eq(missions.id, missionId), isNull(missions.dependencyMetAt)))
+    .returning({ id: missions.id });
+  return !!cleared;
 }
 
 /**
- * Returns true if the mission is blocked by an unmet dependency.
- * A mission is blocked when it has a dependsOnMissionId AND the gate
- * condition hasn't been cleared yet (dependencyMetAt is null).
+ * Is the mission blocked by an unmet dependency?
  *
- * For 'completed' gate: also unblocked when upstream.status === 'completed'
- * even before dependencyMetAt is set (handles cases where webhook didn't fire).
+ * `dependencyMetAt` set: no. Otherwise the gate is decided from the upstream's
+ * live state (`evaluateMissionGate`), not only from the events that stamp it:
+ * those are lossy (a lost webhook, or a merge that fired while a sibling was
+ * still open and nothing re-asked afterwards). A met gate is stamped here so
+ * every later read agrees. A blocked answer names the first unmet condition.
  */
 export async function isMissionBlocked(
   mission: MissionForBlockCheck,
@@ -36,34 +107,27 @@ export async function isMissionBlocked(
     return { blocked: false };
   }
 
-  const upstream = await db.query.missions.findFirst({
-    where: sqlWhere(eq(missions.id, mission.dependsOnMissionId)),
-    columns: { id: true, title: true, status: true },
-  });
+  const gate = asGate(mission.gateCondition);
+  const verdict = await evaluateMissionGate(mission.dependsOnMissionId, gate);
 
-  if (!upstream) {
+  if (!verdict) {
     // Upstream deleted — unblock automatically
     return { blocked: false };
   }
 
-  if (mission.gateCondition === 'completed') {
-    if (upstream.status === 'completed') {
-      return { blocked: false };
-    }
-    return {
-      blocked: true,
-      reason: `Waiting for mission "${upstream.title}" to complete`,
-      dependsOnTitle: upstream.title,
-      dependsOnMissionId: upstream.id,
-    };
+  if (verdict.met) {
+    await stampDependencyMet(mission.id).catch(err =>
+      console.error(`[mission-dependency] stamping the met gate failed for ${mission.id}:`, err),
+    );
+    return { blocked: false };
   }
 
-  // 'merged' gate: only cleared when dependencyMetAt is set by the webhook
   return {
     blocked: true,
-    reason: `Waiting for mission "${upstream.title}" PRs to merge`,
-    dependsOnTitle: upstream.title,
-    dependsOnMissionId: upstream.id,
+    reason: gateBlockedReason(verdict.title, gate, verdict.unmet),
+    dependsOnTitle: verdict.title,
+    dependsOnMissionId: mission.dependsOnMissionId,
+    unmet: verdict.unmet,
   };
 }
 
@@ -101,49 +165,6 @@ export async function wouldCreateCycle(
 }
 
 /**
- * Does the upstream mission actually have nothing left to merge?
- *
- * The `merged` gate is worded "PRs to merge" — plural — and it means it. The
- * signal that drives it fires from a single PR's merge webhook, so on its own it
- * says only "one PR of this mission merged". Two things still count as
- * outstanding:
- *
- *  1. a worker holding an open PR (`prUrl` set, `mergedAt` null), and
- *  2. a non-terminal deliverable task, whose PR has not been opened yet.
- *
- * Bookkeeping rows are excluded: an aggregator or planning slot is not a
- * deliverable and must not hold a downstream mission behind it. Rows predating
- * the `taskClass` backfill (NULL) are counted, which errs toward staying
- * blocked — the safe direction for a gate.
- */
-async function missionHasUnmergedWork(missionId: string): Promise<boolean> {
-  const [openPrs] = await db
-    .select({ count: count() })
-    .from(workers)
-    .innerJoin(tasks, eq(tasks.id, workers.taskId))
-    .where(
-      and(
-        eq(tasks.missionId, missionId),
-        isNotNull(workers.prUrl),
-        isNull(workers.mergedAt),
-      ),
-    );
-  if (Number(openPrs?.count ?? 0) > 0) return true;
-
-  const [pendingWork] = await db
-    .select({ count: count() })
-    .from(tasks)
-    .where(
-      and(
-        eq(tasks.missionId, missionId),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-        or(isNull(tasks.taskClass), ne(tasks.taskClass, 'bookkeeping')),
-      ),
-    );
-  return Number(pendingWork?.count ?? 0) > 0;
-}
-
-/**
  * Called when an upstream mission satisfies the gate condition.
  * Finds all blocked dependents with a matching gateCondition and sets
  * their dependencyMetAt, releasing the block.
@@ -153,6 +174,10 @@ async function missionHasUnmergedWork(missionId: string): Promise<boolean> {
  * rather than at the call sites is deliberate: three separate places raise this
  * signal (the webhook's worker-match and branch-match paths, and the manual
  * merge route) and they must not be able to drift apart.
+ *
+ * The `completed` signal releases both gates: completion already required
+ * everything the `merged` gate asks for, so a `merged` dependent must not be
+ * left waiting on a merge event that fired before its upstream finished.
  *
  * Each unblocked mission is then woken (`wakeMission(id, 'dependency_met')`),
  * so its next step is planned now rather than on the next heartbeat tick.
@@ -175,27 +200,25 @@ export async function checkAndUnblockDependentMissions(
 
   if (dependents.length === 0) return [];
 
-  const toUnblock = dependents.filter(d => d.gateCondition === signal);
+  const toUnblock = signal === 'completed'
+    ? dependents
+    : dependents.filter(d => asGate(d.gateCondition) === 'merged');
   if (toUnblock.length === 0) return [];
 
   // Checked only after we know a dependent is actually waiting on this signal,
   // so the common no-dependents case costs no extra queries.
-  if (signal === 'merged' && await missionHasUnmergedWork(upstreamMissionId)) {
-    return [];
+  if (signal === 'merged') {
+    const verdict = await evaluateMissionGate(upstreamMissionId, 'merged');
+    if (verdict && !verdict.met) return [];
   }
 
   const now = new Date();
   const unblockedIds: string[] = [];
 
   for (const dep of toUnblock) {
-    // `.returning()` so only the caller whose write actually cleared the gate
+    // Guarded write, so only the caller whose write actually cleared the gate
     // wakes the mission: GitHub redelivers, and two merges can race here.
-    const [cleared] = await db
-      .update(missions)
-      .set({ dependencyMetAt: now, updatedAt: now })
-      .where(and(eq(missions.id, dep.id), isNull(missions.dependencyMetAt)))
-      .returning({ id: missions.id });
-    if (cleared) unblockedIds.push(dep.id);
+    if (await stampDependencyMet(dep.id, now)) unblockedIds.push(dep.id);
   }
 
   // Clearing the gate used to only let the next heartbeat tick through; a

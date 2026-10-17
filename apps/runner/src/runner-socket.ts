@@ -154,9 +154,26 @@ export async function checkSingleInstance(input: {
   return { probe, decision: decideStart({ probe, isTTY: input.isTTY, foreground: input.foreground, socketPath: input.socketPath }) };
 }
 
+/** A request the socket accepted whose handler has not answered yet. */
+export interface InFlightRequest {
+  method: string;
+  path: string;
+  ageMs: number;
+}
+
 export interface RunnerSocketServer {
   path: string;
   stop(): void;
+  /**
+   * Close every connection, drop the listening socket and bind a fresh one at
+   * the same path. The watchdog's remedy for a socket that accepts but never
+   * answers (createSocketWatchdog).
+   */
+  rebind(): void;
+  /** Requests handed to the handler that have not resolved, oldest first. */
+  inFlight(): InFlightRequest[];
+  /** Bun's own count of requests it holds open, streams included. */
+  pendingRequests(): number;
 }
 
 /**
@@ -176,24 +193,48 @@ export function serveRunnerSocket(
   fetch: (req: Request) => Response | Promise<Response>,
   opts: { error?: (err: Error) => Response | Promise<Response> } = {},
 ): RunnerSocketServer {
-  const prevUmask = process.umask(0o177);
-  let server: ReturnType<typeof Bun.serve>;
-  try {
-    server = Bun.serve({
-      unix: socketPath,
-      development: false,
-      // `buildd top` holds /api/events open for as long as it runs.
-      idleTimeout: 0,
-      fetch,
-      ...(opts.error ? { error: opts.error } : {}),
-    } as Parameters<typeof Bun.serve>[0]);
-  } finally {
-    process.umask(prevUmask);
-  }
-  try { chmodSync(socketPath, 0o600); } catch { /* umask already applied it */ }
+  // What each accepted request is waiting on, so a socket that stops answering
+  // can say whether a handler is stuck or Bun never called one.
+  const open = new Map<number, { method: string; path: string; startedAt: number }>();
+  let seq = 0;
+  const tracked = (req: Request): Response | Promise<Response> => {
+    const id = ++seq;
+    let path = req.url;
+    try { path = new URL(req.url).pathname; } catch { /* keep the raw url */ }
+    open.set(id, { method: req.method, path, startedAt: Date.now() });
+    let out: Response | Promise<Response>;
+    try {
+      out = fetch(req);
+    } catch (err) {
+      open.delete(id);
+      throw err;
+    }
+    if (out instanceof Promise) return out.finally(() => open.delete(id));
+    open.delete(id);
+    return out;
+  };
 
+  let server: ReturnType<typeof Bun.serve>;
   let ino: number | null = null;
-  try { ino = statSync(socketPath).ino; } catch { /* ignore */ }
+  const bind = () => {
+    const prevUmask = process.umask(0o177);
+    try {
+      server = Bun.serve({
+        unix: socketPath,
+        development: false,
+        // `buildd top` holds /api/events open for as long as it runs.
+        idleTimeout: 0,
+        fetch: tracked,
+        ...(opts.error ? { error: opts.error } : {}),
+      } as Parameters<typeof Bun.serve>[0]);
+    } finally {
+      process.umask(prevUmask);
+    }
+    try { chmodSync(socketPath, 0o600); } catch { /* umask already applied it */ }
+    ino = null;
+    try { ino = statSync(socketPath).ino; } catch { /* ignore */ }
+  };
+  bind();
 
   const removeIfOurs = () => {
     try {
@@ -209,7 +250,210 @@ export function serveRunnerSocket(
       try { server.stop(true); } catch { /* ignore */ }
       removeIfOurs();
     },
+    rebind() {
+      // Cut every connection the old server holds (a hung request, top's
+      // event stream), then take the path again. Only our own file is removed:
+      // if something else holds the path now, bind() throws EADDRINUSE.
+      try { server.stop(true); } catch { /* a wedged server may not stop cleanly */ }
+      open.clear();
+      removeIfOurs();
+      bind();
+    },
+    inFlight() {
+      const now = Date.now();
+      return [...open.values()]
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .map(r => ({ method: r.method, path: r.path, ageMs: now - r.startedAt }));
+    },
+    pendingRequests() {
+      try { return server.pendingRequests; } catch { return -1; }
+    },
   };
+}
+
+// ── Event stream readers ────────────────────────────────────────────────────
+
+/**
+ * Events queued for one /api/events reader before it is cut off. A reader that
+ * stops reading but keeps the connection (a `buildd top` suspended with ^Z, a
+ * terminal left behind a sleeping session) otherwise queues every event in the
+ * runner's memory for as long as the runner runs. A live top drains each event
+ * as it arrives, so it never comes near this; a cut-off one reconnects and gets
+ * a fresh init.
+ */
+export const SSE_MAX_QUEUED_EVENTS = 1_000;
+
+/**
+ * Queue one event for a stream reader. False when the reader is gone or so far
+ * behind it was closed: the caller drops it from its set.
+ */
+export function enqueueEvent(controller: ReadableStreamDefaultController, chunk: Uint8Array): boolean {
+  try {
+    if (controller.desiredSize !== null && controller.desiredSize < -SSE_MAX_QUEUED_EVENTS) {
+      try { controller.close(); } catch { /* already closed */ }
+      return false;
+    }
+    controller.enqueue(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── Watchdog ────────────────────────────────────────────────────────────────
+
+export type SocketHealth =
+  | { ok: true; status: number; ms: number }
+  | { ok: false; reason: 'timeout' | 'absent' | 'refused' | 'error'; detail?: string; ms: number };
+
+/**
+ * Ask the socket for /health the way `buildd top` and `buildd hold` would.
+ * Any HTTP answer, 503 "starting" included, means it is serving. Never throws.
+ */
+export async function checkSocketHealth(socketPath: string, timeoutMs: number): Promise<SocketHealth> {
+  const started = Date.now();
+  try { lstatSync(socketPath); } catch { return { ok: false, reason: 'absent', ms: 0 }; }
+  try {
+    const res = await fetch('http://localhost/health', {
+      unix: socketPath,
+      signal: AbortSignal.timeout(timeoutMs),
+    } as RequestInit);
+    try { await res.arrayBuffer(); } catch { /* the status is the answer */ }
+    return { ok: true, status: res.status, ms: Date.now() - started };
+  } catch (err) {
+    const e = err as { name?: string; code?: string; message?: string } | null;
+    const ms = Date.now() - started;
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') return { ok: false, reason: 'timeout', ms };
+    const text = `${e?.code ?? ''} ${e?.message ?? ''}`;
+    if (isRefusal(err)) return { ok: false, reason: 'refused', detail: text.trim(), ms };
+    return { ok: false, reason: 'error', detail: text.trim() || String(err), ms };
+  }
+}
+
+export interface SocketWatchdogState {
+  socketPath: string;
+  consecutiveFailures: number;
+  rebinds: number;
+  lastFailure: string | null;
+}
+
+export type WatchdogTick = 'skipped' | 'ok' | 'recovered' | 'failed' | 'rebound' | 'rebind-failed' | 'rebound-still-failing';
+
+export const SOCKET_WATCHDOG_INTERVAL_MS = 60_000;
+const SOCKET_WATCHDOG_TIMEOUT_MS = 5_000;
+const SOCKET_WATCHDOG_FAILURES_BEFORE_REBIND = 2;
+
+function describeOpen(server: RunnerSocketServer): string {
+  const open = server.inFlight();
+  const shown = open.slice(0, 8).map(r => `${r.method} ${r.path} (${Math.round(r.ageMs / 1000)}s)`).join(', ');
+  const more = open.length > 8 ? `, +${open.length - 8} more` : '';
+  return `handlers not answered: ${open.length ? shown + more : 'none'}; Bun pending requests: ${server.pendingRequests()}`;
+}
+
+/**
+ * The runner probes its own socket. A socket that accepts and never answers
+ * cuts the owner off from the runner (`buildd top`, `hold`, `stop`) while it
+ * goes on claiming work, so a missed probe is logged loudly, naming the
+ * requests still open, and after `failuresBeforeRebind` misses in a row the
+ * socket is rebound. The caller drives `tick` on a timer.
+ */
+export function createSocketWatchdog(opts: {
+  server: RunnerSocketServer;
+  timeoutMs?: number;
+  failuresBeforeRebind?: number;
+  probe?: (socketPath: string, timeoutMs: number) => Promise<SocketHealth>;
+  log: (msg: string) => void;
+  warn: (msg: string) => void;
+}): { tick(): Promise<WatchdogTick>; state(): SocketWatchdogState } {
+  const { server, log, warn } = opts;
+  const timeoutMs = opts.timeoutMs ?? SOCKET_WATCHDOG_TIMEOUT_MS;
+  const threshold = Math.max(1, opts.failuresBeforeRebind ?? SOCKET_WATCHDOG_FAILURES_BEFORE_REBIND);
+  const probe = opts.probe ?? checkSocketHealth;
+  const st: SocketWatchdogState = { socketPath: server.path, consecutiveFailures: 0, rebinds: 0, lastFailure: null };
+  let busy = false;
+
+  const reasonOf = (h: SocketHealth) => h.ok ? '' : `${h.reason}${h.detail ? ` (${h.detail})` : ''} after ${h.ms}ms`;
+
+  async function tick(): Promise<WatchdogTick> {
+    // A probe still waiting on its timeout: let it finish.
+    if (busy) return 'skipped';
+    busy = true;
+    try {
+      const health = await probe(server.path, timeoutMs);
+      if (health.ok) {
+        const wasFailing = st.consecutiveFailures > 0;
+        st.consecutiveFailures = 0;
+        st.lastFailure = null;
+        if (wasFailing) log(`[runner-socket] ${server.path} answers again`);
+        return wasFailing ? 'recovered' : 'ok';
+      }
+
+      st.consecutiveFailures++;
+      st.lastFailure = reasonOf(health);
+      warn(`[runner-socket] ${server.path} did not answer /health: ${st.lastFailure} (miss ${st.consecutiveFailures} of ${threshold}). buildd top, hold and stop cannot reach this runner. ${describeOpen(server)}`);
+      if (st.consecutiveFailures < threshold) return 'failed';
+
+      try {
+        server.rebind();
+      } catch (err) {
+        warn(`[runner-socket] rebinding ${server.path} failed: ${(err as Error)?.message ?? err}. Restart the runner to get the socket back.`);
+        st.consecutiveFailures = 0;
+        return 'rebind-failed';
+      }
+      st.rebinds++;
+      st.consecutiveFailures = 0;
+      const after = await probe(server.path, timeoutMs);
+      if (after.ok) {
+        st.lastFailure = null;
+        log(`[runner-socket] rebound ${server.path}; it answers again (rebind ${st.rebinds})`);
+        return 'rebound';
+      }
+      st.lastFailure = reasonOf(after);
+      warn(`[runner-socket] ${server.path} still does not answer after the rebind: ${st.lastFailure}. Restart the runner to get the socket back.`);
+      return 'rebound-still-failing';
+    } finally {
+      busy = false;
+    }
+  }
+
+  return { tick, state: () => ({ ...st }) };
+}
+
+/**
+ * The doctor's `runner-process` line when the runner runs it on itself: the
+ * process is plainly running, so what matters is whether its socket answers.
+ * Never `fixable`: the watchdog already rebinds, and the doctor has nothing
+ * more to try.
+ */
+export function socketHealthCheck(state: SocketWatchdogState | null): {
+  name: 'runner-process'; status: 'ok' | 'warn' | 'error'; message: string; fixable?: boolean;
+} {
+  if (!state) {
+    return { name: 'runner-process', status: 'warn', message: 'Runner running, but it serves no socket: buildd top, hold and stop cannot reach it' };
+  }
+  if (state.consecutiveFailures > 0 || state.lastFailure) {
+    return {
+      name: 'runner-process',
+      status: 'error',
+      message: `Runner running, but ${state.socketPath} does not answer (${state.lastFailure ?? 'no answer'}; ${state.rebinds} rebind(s) so far)`,
+    };
+  }
+  return { name: 'runner-process', status: 'ok', message: `Runner running; ${state.socketPath} answers` };
+}
+
+/** `buildd --doctor`'s runner-process line, from a probe of the socket. */
+export function runnerProcessFromProbe(probe: SocketProbe, socketPath: string): ReturnType<typeof socketHealthCheck> {
+  if (probe.state === 'live' && probe.pid !== null) {
+    return { name: 'runner-process', status: 'ok', message: `Runner running (pid ${probe.pid}); ${socketPath} answers` };
+  }
+  if (probe.state === 'live') {
+    return {
+      name: 'runner-process',
+      status: 'error',
+      message: `A process holds ${socketPath} but did not say who it is: a runner whose socket is wedged, or an older one. Find it with: lsof ${socketPath}`,
+    };
+  }
+  return { name: 'runner-process', status: 'error', message: `No runner answers on ${socketPath}` };
 }
 
 // ── Actions for `buildd top` ────────────────────────────────────────────────
