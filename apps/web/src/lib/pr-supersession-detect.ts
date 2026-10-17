@@ -753,7 +753,9 @@ export interface ClosedPrSweepResult {
  */
 export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 3): Promise<Array<{ id: string; prUrl: string | null }>> {
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
-  const lastAttempt = sql`(case when ${workers.supersessionScan}->>'lastAttemptAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' then (${workers.supersessionScan}->>'lastAttemptAt')::timestamptz end)`;
+  // Validate with pg_input_is_valid to ensure the timestamp is actually valid, not just formatted correctly.
+  // ISO strings sort correctly as text, so no cast needed.
+  const lastAttempt = sql`(case when pg_input_is_valid(${workers.supersessionScan}->>'lastAttemptAt', 'timestamptz') then ${workers.supersessionScan}->>'lastAttemptAt' else null end)`;
   return db
     .select({ id: workers.id, prUrl: workers.prUrl })
     .from(workers)
@@ -768,7 +770,7 @@ export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 
       isNotNull(tasks.missionId),
       inArray(tasks.status, ['completed']),
     ))
-    .orderBy(sql`greatest(${workers.supersessionScannedAt}, ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
+    .orderBy(sql`greatest(to_char(${workers.supersessionScannedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
     .limit(limit);
 }
 
