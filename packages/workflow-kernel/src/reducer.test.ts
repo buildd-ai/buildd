@@ -870,6 +870,68 @@ describe('T23 HumanResolve(apply_recommendation) → T8 with trigger=human (§5.
   });
 });
 
+describe('CiObserved: the CI reading on the current head, recorded without moving the delivery (6900a317)', () => {
+  const obs = (v: KernelView, o: Partial<Extract<Command, { type: 'CiObserved' }>> = {}) =>
+    run(v, { type: 'CiObserved', actor: 'webhook', headSha: 'H1', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true, ...o });
+  test('a green head with no repair is recorded, so the Tests row stops reading Checking', () => {
+    const dec = applied(obs(V(D({ state: 'AWAITING_REVIEW' }))));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ ci: 'green', ciHeadSha: 'H1' });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.rounds).toEqual([]);
+    expect(applied(obs(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })))).toState).toBe('APPROVED');
+  });
+  test('a red head the repair path did not act on is recorded: failed outranks still running', () => {
+    // A CI fix still open (it pushed this head and has not ended) defers T10; the fact still lands.
+    const v = V(D({ state: 'AWAITING_REVIEW' }), [], [A({ family: 'ci', status: 'running', boundHeadSha: 'H0' })]);
+    const dec = applied(obs(v, { verdict: 'red', liveChecks: { complete: false, failing: ['check'] }, allPassing: false }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ ci: 'red', ciHeadSha: 'H1' });
+    expect(dec.effects.map((e) => e.kind)).not.toContain('dispatch_ci_fix');
+    expect(applied(obs(V(D({ state: 'WORKING' })), { verdict: 'red', liveChecks: { complete: true, failing: ['build'] } })).toState).toBe('WORKING');
+  });
+  test('an older head, or a hint the live read contradicts, records nothing', () => {
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { verdict: 'red', liveChecks: { complete: true, failing: [] } }), 'rejected', 'ci_not_red');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { liveChecks: { complete: false, failing: [] } }), 'rejected', 'ci_not_green');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { liveChecks: { complete: true, failing: ['check'] } }), 'rejected', 'ci_not_green');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { allPassing: false }), 'rejected', 'ci_not_green');
+  });
+  test('the same reading twice is stale; a flip on the same head (a re-run) is recorded', () => {
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' }))), 'stale', 'already_recorded');
+    const flip = applied(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' }))));
+    expect(flip.patch).toMatchObject({ ci: 'green', ciHeadSha: 'H1' });
+    // A green on a new head replaces the old head's red.
+    expect(applied(obs(V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', ci: 'red', ciHeadSha: 'H1' })), { headSha: 'H2' })).patch).toMatchObject({ ci: 'green', ciHeadSha: 'H2' });
+  });
+  test('a failed run re-run on the same head withdraws the red: the head is being checked again', () => {
+    const running = { verdict: 'running' as const, liveChecks: { complete: false, failing: [] }, allPassing: false };
+    const dec = applied(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' })), running));
+    expect(dec.patch).toMatchObject({ ci: null, ciHeadSha: null });
+    // Nothing red on this head: nothing to withdraw, and a still-failing run is not "running".
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), running), 'stale', 'already_recorded');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' })), running), 'stale', 'already_recorded');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' })), { ...running, liveChecks: { complete: false, failing: ['check'] } }), 'rejected', 'ci_not_running');
+  });
+  test('a CI repair, a merge in flight and a finished delivery are left to their own commands', () => {
+    expectResult(obs(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1' }), [], [A({ id: 'c1', family: 'ci', status: 'running' })])), 'stale', 'ci_repair_owns_head');
+    expectResult(obs(V(D({ state: 'LANDING' }))), 'stale', 'state_not_allowed');
+    expectResult(obs(V(D({ state: 'MERGED' }))), 'stale', 'state_not_allowed');
+    expectResult(obs(V(D({ state: 'CLOSED_UNMERGED' }))), 'stale', 'state_not_allowed');
+  });
+  test('the key carries head, verdict and version, so a replay is a duplicate and a later flip is not', () => {
+    const cmd: Command = { type: 'CiObserved', actor: 'webhook', headSha: 'H1', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true };
+    expect(applied(run(V(D({ state: 'AWAITING_REVIEW' })), cmd)).idempotencyKey).toBe('cifact:d1:H1:green@v5');
+    expect(stableIdempotencyKey(cmd, D({ state: 'AWAITING_REVIEW' }))).toBe('cifact:d1:H1:green@v5');
+  });
+  test('a spent review budget is never re-entered by recording a reading', () => {
+    const dec = applied(obs(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' }))));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch.stateReason).toBeUndefined();
+    expect(dec.effects.map((e) => e.kind)).not.toContain('dispatch_review');
+  });
+});
+
 describe('T10 CiFailedObserved (S23, S28)', () => {
   const ci = (v: KernelView, o: Partial<Extract<Command, { type: 'CiFailedObserved' }>> = {}) =>
     run(v, { type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'sig', maxAttempts: 3, ...o });
