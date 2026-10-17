@@ -80,6 +80,8 @@ describe('applyTaskCancelSideEffects', () => {
     expect(mockAttemptEnded.mock.calls[0][0]).toMatchObject({
       task: { id: 'task-1', workspaceId: 'ws-1', deliveryId: 'd1', deliveryRole: 'fix' },
       status: 'lost',
+      // 295486ba: says it is a cancel, so a CI repair nobody claimed spends nothing.
+      cancelled: true,
       source: 'cancel',
     });
     // Through the kernel client (AC-9): the control plane applies it in own mode.
