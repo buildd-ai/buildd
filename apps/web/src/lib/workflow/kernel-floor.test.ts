@@ -19,6 +19,7 @@ function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>>
     reconcileKernelDeliveries: step('reconcileKernelDeliveries', { checked: 3, imported: 1, enqueued: 1, errors: 0 }),
     restartTreadmillCycles: step('restartTreadmillCycles', { checked: 1, restarted: 1, refused: 0, errors: 0 }) as KernelFloorDeps['restartTreadmillCycles'],
     pruneCommands: step('pruneCommands', 4),
+    drainParkedCommands: step('drainParkedCommands', { claimed: 2, done: 1, retried: 1, dead: 0, pruned: 0 }),
   };
   return { ran, deps };
 }
@@ -29,8 +30,8 @@ describe('the scheduled pass', () => {
     const s = steps();
     const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
-    expect(s.ran.sort()).toEqual(['drainDueEffects', 'pruneCommands', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
-    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 7, changed: 6, errors: 0 });
+    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainParkedCommands', 'pruneCommands', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
+    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 9, changed: 7, errors: 0 });
   });
 
   it('does nothing in shadow, without the command key (not switched over), or on the web host whatever its mode', async () => {
@@ -82,6 +83,16 @@ describe('isolation', () => {
     expect(r.kernelFloor).toEqual({ error: 'github down' });
     expect(r.kernelOutbox).toMatchObject({ done: 2 });
     expect(r.commandsPruned).toBe(4);
+    expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+
+  it('a parked door command given up counts as an error; the parked step failing is isolated like any other', async () => {
+    const buried = steps({ drainParkedCommands: async () => ({ claimed: 1, done: 0, retried: 0, dead: 1, pruned: 0 }) });
+    expect(kernelFloorOutcome(await runKernelFloor(buried.deps)).errors).toBe(1);
+    const failing = steps({ drainParkedCommands: async () => { throw new Error('db down'); } });
+    const r = await runKernelFloor(failing.deps);
+    expect(r.parkedCommands).toEqual({ error: 'db down' });
+    expect(r.kernelOutbox).toMatchObject({ done: 2 });
     expect(kernelFloorOutcome(r).errors).toBe(1);
   });
 });
