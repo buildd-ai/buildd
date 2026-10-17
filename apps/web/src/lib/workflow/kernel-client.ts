@@ -570,6 +570,16 @@ export async function observeCiFailure(p: KernelOps['observe_ci_failure']['input
   return doorOrHereOnSkew('observe_ci_failure', p, c, `the CI failure on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
 }
 
+/**
+ * A green head from the check_suite success webhook: CiGreenObserved ends a CI repair bound to it, and
+ * outside a repair it is recorded as a CiObserved reading; applied where the kernel is hosted (AC-9).
+ * GitHub sends the green once, so during release skew it is applied here (`doorOrHereOnSkew`) rather
+ * than leave a repair waiting on a green nobody records.
+ */
+export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], c: DoorCall): Promise<KernelOps['observe_ci_green']['result']> {
+  return doorOrHereOnSkew('observe_ci_green', p, c, `the green CI on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
+
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {
   const k = req.headers.get('idempotency-key')?.trim();
