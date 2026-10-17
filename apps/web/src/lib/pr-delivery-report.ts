@@ -29,7 +29,7 @@ export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
     .sort((a, b) => a.family.localeCompare(b.family) || a.attemptNo - b.attemptNo)
     .map(a => {
       const phase = repairPhaseOf(a, v);
-      return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
+      return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of up to ${a.maxAttempts}`, phase, words: REPAIR_PHASE_WORDS[phase], taskId: a.taskId };
     });
   return {
     state: v.state,
