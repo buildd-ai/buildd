@@ -162,3 +162,69 @@ describe('writeCodexAgentsMd / restoreCodexAgentsMd', () => {
     await expect(restoreCodexAgentsMd(dir, result)).resolves.toBeUndefined();
   });
 });
+
+describe('Codex instruction block never reaches a commit', () => {
+  const { execFileSync } = require('child_process') as typeof import('child_process');
+  const { symlink, lstat, readlink } = require('fs/promises') as typeof import('fs/promises');
+  let dir: string;
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf-8' });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codex-leak-'));
+    g('init', '-q');
+    g('config', 'user.email', 't@example.com');
+    g('config', 'user.name', 't');
+    g('config', 'commit.gpgsign', 'false');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function committedText(): Promise<string> {
+    g('add', '-A');
+    try { g('commit', '-q', '-m', 'work', '--allow-empty'); } catch { /* nothing to commit */ }
+    return g('log', '-p', '--all', '--format=');
+  }
+
+  test('AGENTS.md symlinked to CLAUDE.md: CLAUDE.md is untouched and nothing leaks', async () => {
+    await writeFile(join(dir, 'CLAUDE.md'), 'repo rules\n');
+    await symlink('CLAUDE.md', join(dir, 'AGENTS.md'));
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+
+    const result = await writeCodexAgentsMd(dir, 'ROLE BLOCK');
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toContain(BUILDD_AGENTS_BEGIN);
+    expect(await readFile(join(dir, 'CLAUDE.md'), 'utf-8')).toBe('repo rules\n');
+
+    await writeFile(join(dir, 'feature.txt'), 'x\n');
+    const patch = await committedText();
+    expect(patch).not.toContain('BEGIN buildd agent instructions');
+    expect(patch).toContain('feature.txt');
+
+    await restoreCodexAgentsMd(dir, result);
+    expect((await lstat(join(dir, 'AGENTS.md'))).isSymbolicLink()).toBe(true);
+    expect(await readlink(join(dir, 'AGENTS.md'))).toBe('CLAUDE.md');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('tracked regular AGENTS.md: block is hidden from commit -a and add -A', async () => {
+    await writeFile(join(dir, 'AGENTS.md'), 'repo agents\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const result = await writeCodexAgentsMd(dir, 'ROLE BLOCK');
+    await writeFile(join(dir, 'feature.txt'), 'x\n');
+    expect(await committedText()).not.toContain('BEGIN buildd agent instructions');
+    await restoreCodexAgentsMd(dir, result);
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toBe('repo agents\n');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('no AGENTS.md in repo: new file is excluded, then removed with its exclude line', async () => {
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const result = await writeCodexAgentsMd(dir, 'ROLE BLOCK');
+    await writeFile(join(dir, 'feature.txt'), 'x\n');
+    expect(await committedText()).not.toContain('BEGIN buildd agent instructions');
+    await restoreCodexAgentsMd(dir, result);
+    expect(await pathExists(join(dir, 'AGENTS.md'))).toBe(false);
+    expect(await readFile(join(dir, '.git', 'info', 'exclude'), 'utf-8')).not.toContain('/AGENTS.md');
+  });
+});

@@ -20,6 +20,7 @@ import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/co
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { withSpecSourceBlock } from '@/lib/specs/provisional-text';
 import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
+import { findLeakedInstructionFiles } from '@/lib/agent-instruction-guard';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
@@ -1153,6 +1154,17 @@ export async function POST(req: NextRequest) {
       integrationBaseMissing,
       stackedBaseMissing,
     });
+
+    // A runner's injected instruction block must never ship: refuse a branch
+    // whose diff adds it (CI is the backstop if GitHub cannot answer).
+    const leaked = await findLeakedInstructionFiles(repo.installation.installationId, repo.fullName, prBase.base ?? 'main', head);
+    if (leaked.length > 0) {
+      return NextResponse.json({
+        error: `PR not opened: the diff adds the runner's auto-generated agent instructions block (${leaked.join(', ')}). Remove those lines from the branch (git checkout origin/<base> -- <file>), commit, push, and call create_pr again.`,
+        code: 'agent_instructions_leaked',
+        files: leaked,
+      }, { status: 400 });
+    }
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
