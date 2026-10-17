@@ -26,6 +26,9 @@
   "conditional-policy": {},
   "trailing-filler": {},
   "em-dash": {},
+  "failed-to": {
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 7
+  },
   "shouting-tag": {
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx": 2,

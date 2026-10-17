@@ -47,7 +47,7 @@ describe('classifyRespondReply', () => {
 
   it('keeps every other refusal an error', () => {
     expect(classifyRespondReply(400, { reasonCode: 'worker_ended', error: 'This agent has already stopped.' }, 'x').kind).toBe('error');
-    expect(classifyRespondReply(500, null, 'x')).toEqual({ kind: 'error', message: 'Failed to send answer', credentialRevoked: false });
+    expect(classifyRespondReply(500, null, 'x')).toEqual({ kind: 'error', message: 'Could not send the answer. Try again.', credentialRevoked: false });
   });
 });
 

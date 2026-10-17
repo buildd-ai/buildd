@@ -73,6 +73,11 @@ describe('copy rules', () => {
     expect(ids('Runners: tokens and cloud.')).not.toContain('em-dash');
   });
 
+  it('flags "Failed to" and a bare "Something went wrong"', () => {
+    for (const t of ['Failed to save', 'Failed to update mission', 'Something went wrong', 'Something went wrong.']) expect(ids(t)).toContain('failed-to');
+    for (const t of ['Could not save the mission. Try again.', 'Something went wrong loading this page.']) expect(ids(t)).not.toContain('failed-to');
+  });
+
   it('flags a shouting tag: two or more ALL-CAPS words in a row', () => {
     for (const t of ['PR #N: BASE REWRITTEN · cherry-pick?', 'BUILD FAILED on dev', 'Status: NOT SHIPPED', 'MISSION PR · NOT OPENED']) {
       expect(ids(t)).toContain('shouting-tag');
@@ -86,13 +91,13 @@ describe('copy rules', () => {
   });
 
   it('holds a Settings description to one short fact', () => {
-    expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
-    expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);
-    expect(settingsDescriptionProblems('Manage keys. They are used for chat.')).toContain('more-than-one-sentence');
-    expect(settingsDescriptionProblems('Manage keys')).toContain('missing-full-stop');
-    expect(settingsDescriptionProblems('Manage the plan, monitor spending, set daily limits, review invoices, export usage and update billing contacts.')).toContain('too-long');
-    expect(settingsDescriptionProblems('Your own model keys, used when the team lets personal keys pay.')).toEqual(expect.arrayContaining(['conditional-policy', 'object-pays']));
-  });
+  expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
+  expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);
+  expect(settingsDescriptionProblems('Manage keys. They are used for chat.')).toContain('more-than-one-sentence');
+  expect(settingsDescriptionProblems('Manage keys')).toContain('missing-full-stop');
+  expect(settingsDescriptionProblems('Manage the plan, monitor spending, set daily limits, review invoices, export usage and update billing contacts.')).toContain('too-long');
+  expect(settingsDescriptionProblems('Your own model keys, used when the team lets personal keys pay.')).toEqual(expect.arrayContaining(['conditional-policy', 'object-pays']));
+});
 
   it('counts an explanation rendered twice in one file', () => {
     const tsx = `export const A = () => <div><p>Uses your team key for every agent you start.</p><details><p>Uses your team key for every agent you start.</p></details></div>;`;

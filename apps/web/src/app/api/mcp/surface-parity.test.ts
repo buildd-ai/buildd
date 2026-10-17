@@ -112,6 +112,30 @@ describe('dispatchable => advertised, on every surface and session', () => {
     expect(r).toMatchObject({ kind: 'reply', isError: false });
     expect((r as { text: string }).text).not.toContain('not available');
   });
+
+  it('every session shown manage_specs gets action, specId and expectedVersion typed, and its calls route and gate as advertised', () => {
+    for (const s of SESSIONS) {
+      const tool = (listMcpTools({ accountLevel: s.accountLevel, scopes: s.scopes, isSensitive: false, surface: 'groups' }) as Tool[])
+        .find(t => t.name === 'buildd_artifacts');
+      if (!tool?.inputSchema?.properties?.action?.enum?.includes('manage_specs')) continue;
+      const p = tool.inputSchema!.properties!.params.properties;
+      expect(p.action?.type, s.label).toBe('string');
+      expect(p.specId?.type, s.label).toBe('string');
+      expect(p.expectedVersion?.type, s.label).toBe('number');
+
+      for (const sub of SUB_ACTIONS.manage_specs) {
+        const args = { action: 'manage_specs', params: { action: sub, specId: 'x' } };
+        expect(routeGroupToolCall('artifacts', args, s.accountLevel, s.scopes), `${s.label} ${sub}`).toEqual({ kind: 'dispatch', action: 'manage_specs', params: args.params });
+        if (s.scopes == null) continue;
+        // The transport's gate (requiredScopeForMcpTool) and the handler's (requiredScopeForAction) agree.
+        expect(requiredScopeForMcpTool('buildd_artifacts', args)).toBe(requiredScopeForAction('manage_specs', args.params));
+      }
+    }
+    const read = [...READ_GRANT_TOKEN_SCOPES];
+    expect(hasTokenScope(read, requiredScopeForMcpTool('buildd_artifacts', { action: 'manage_specs', params: { action: 'get' } })!)).toBe(true);
+    expect(hasTokenScope(read, requiredScopeForMcpTool('buildd_artifacts', { action: 'manage_specs', params: { action: 'list' } })!)).toBe(true);
+    expect(hasTokenScope(read, requiredScopeForMcpTool('buildd_artifacts', { action: 'manage_specs', params: { action: 'revise' } })!)).toBe(false);
+  });
 });
 
 describe('every registered sub-action appears on every surface', () => {

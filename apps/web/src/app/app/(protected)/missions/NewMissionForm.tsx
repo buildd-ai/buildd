@@ -441,7 +441,7 @@ export default function NewMissionForm({
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to create mission');
+        throw new Error(data.error || 'Could not create the mission. Try again.');
       }
 
       const created = await res.json();
@@ -454,7 +454,7 @@ export default function NewMissionForm({
       router.push(`/app/missions/${created.id}`);
       router.refresh();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Something went wrong';
+      const message = err instanceof Error ? err.message : 'Could not create the mission.';
       setError(message);
       setSubmitting(false);
     }
