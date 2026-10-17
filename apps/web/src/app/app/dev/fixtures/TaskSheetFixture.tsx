@@ -53,8 +53,8 @@ export const TASK_SHEET_FIXTURE_DATA: TaskPanelData = {
     commits: 3, added: 86, removed: 12, files: 4,
   },
   access: [
-    { at: new Date(Date.now() - 3 * 3600_000).toISOString(), lastAt: new Date(Date.now() - 3 * 3600_000).toISOString(), count: 1, capability: 'github.repo_grant', label: 'GitHub repo access', decision: 'allowed', reason: null, target: 'example/app', expiresAt: null, workerId: 'w-fixture' },
-    { at: new Date(Date.now() - 2 * 3600_000).toISOString(), lastAt: new Date(Date.now() - 2 * 3600_000).toISOString(), count: 1, capability: 'buildd.cross_task', label: 'Read another task', decision: 'refused', reason: 'Outside this task', target: null, expiresAt: null, workerId: 'w-fixture' },
+    { at: new Date(Date.now() - 3 * 3600_000).toISOString(), lastAt: new Date(Date.now() - 3 * 3600_000).toISOString(), count: 1, capability: 'github.repo_grant', label: 'GitHub repo access', decision: 'allowed', reason: null, target: 'example/app', expiresAt: null, workerId: 'w-fixture', source: 'grant', grantId: null, pending: false },
+    { at: new Date(Date.now() - 2 * 3600_000).toISOString(), lastAt: new Date(Date.now() - 2 * 3600_000).toISOString(), count: 1, capability: 'buildd.cross_task', label: 'Read another task', decision: 'refused', reason: 'Outside this task', target: null, expiresAt: null, workerId: 'w-fixture', source: 'grant', grantId: null, pending: false },
   ],
 };
 

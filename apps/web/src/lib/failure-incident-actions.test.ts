@@ -249,11 +249,11 @@ describe('planIncidentAlert — transitions, never occurrences', () => {
 });
 
 describe('formatIncidentAlert — compact, no raw text', () => {
-  it('names the pattern, impact, first/last seen, one example and a deep link; never the error text', async () => {
+  it('names the pattern, impact, first/last seen and one example; never the error text', async () => {
     const { port } = memoryPort();
     const secretish = 'Error: auth failed for token sk-live-SECRET123 body={"password":"hunter2"}';
     const inc = (await open(port, repeatedCandidate(10, secretish))).incident;
-    const { title, message } = formatIncidentAlert(inc, planIncidentAlert(inc, 'critical'), { baseUrl: 'https://example.test' });
+    const { title, message } = formatIncidentAlert(inc, planIncidentAlert(inc, 'critical'));
     const text = `${title}\n${message}`;
     expect(text).not.toContain('SECRET123');
     expect(text).not.toContain('hunter2');
@@ -263,7 +263,7 @@ describe('formatIncidentAlert — compact, no raw text', () => {
     expect(text).toContain('first 2026-10-04 12:00Z');
     expect(text).toContain('last 2026-10-04 12:09Z');
     expect(text).toMatch(/task t-9\b/);
-    expect(text).toContain(`https://example.test/app/incidents/${inc.id}`);
+    expect(text).not.toContain('/app/');
     expect(message.split('\n').length).toBeLessThanOrEqual(5);
     expect(message.length).toBeLessThan(400);
   });
@@ -271,7 +271,7 @@ describe('formatIncidentAlert — compact, no raw text', () => {
   it('includes a representative PR when the pattern has one', async () => {
     const { port } = memoryPort();
     const inc = (await open(port, forkCandidate(3))).incident;
-    const { message } = formatIncidentAlert(inc, planIncidentAlert(inc, 'critical'), { baseUrl: 'https://example.test' });
+    const { message } = formatIncidentAlert(inc, planIncidentAlert(inc, 'critical'));
     expect(message).toContain('PR #3412');
   });
 });
@@ -293,7 +293,7 @@ describe('formatIncidentAlert — the projection\'s words (failure-incident-reco
         verification: { predicate: 'p', params: {} }, budget: { spent: 0, limit: 3, deadlineAt: at, spentKeys: [] }, attempts: [],
       },
     };
-    const { message } = formatIncidentAlert(asks, planIncidentAlert(asks, 'high'), { baseUrl: 'https://example.test', verdict: { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'x', generation: 3 } });
+    const { message } = formatIncidentAlert(asks, planIncidentAlert(asks, 'high'), { verdict: { owner: 'person', by: 'rule', rail: 'no_next_step', reason: 'x', generation: 3 } });
     expect(message).toContain('Waiting on you: Task 1a2b3c4d and PR #77\'s fix are waiting on each other. Choose one to stop.');
     expect(message).not.toMatch(/Nothing is fixing|\bfixed\b|\bresolved\b/i);
     expect(message.split('\n').length).toBeLessThanOrEqual(5);
@@ -440,7 +440,7 @@ describe('actOnIncidentResults', () => {
       expect(task.draft.workspaceId).toBe(WS);
       expect(task.draft.category).toBe('bug');
       expect(task.draft.context.failureIncidentId).toBe(r.incident.id);
-      expect(task.draft.description).toContain(`/app/incidents/${r.incident.id}`);
+      expect(task.draft.description).not.toContain('/app/');
 
       const more = await upsertIncident(port, repeatedCandidate(7, 'q'));
       const out2 = await actOnIncidentResults([more], deps);
@@ -496,9 +496,13 @@ describe('actOnIncidentResults', () => {
 });
 
 describe('default incident sender', () => {
-  it('is the escalation gate, with no env switch', async () => {
+  it('delivers nothing: the open product pages nobody', async () => {
     const { defaultIncidentSender } = await import('./failure-incident-actions');
-    expect(defaultIncidentSender.length).toBe(0);
-    expect(typeof defaultIncidentSender()).toBe('function');
+    const { port } = memoryPort();
+    const inc = (await open(port, repeatedCandidate(10))).incident;
+    const sent = await defaultIncidentSender()({
+      incidentId: inc.id, severity: 'critical', priority: 1, reason: 'opened', title: 't', message: 'm', dedupeKey: 'k', incident: inc,
+    });
+    expect(sent).toBe(false);
   });
 });

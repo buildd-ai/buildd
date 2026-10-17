@@ -2,13 +2,13 @@
 title: Failure Incident Recovery
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-16
 summary: A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
 domain: tasks
-surfaces: [apps/web/src/lib/failure-incident-recovery.ts, apps/web/src/lib/failure-incident-recovery-path-overlap.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.ts, apps/web/src/lib/task-recovery-hold.ts, apps/web/src/lib/task-cancellation.ts, packages/core/failure-classification.ts, apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-escalation.ts]
+surfaces: [apps/web/src/lib/failure-incident-recovery.ts, apps/web/src/lib/failure-incident-recovery-path-overlap.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.ts, apps/web/src/lib/task-recovery-hold.ts, apps/web/src/lib/task-cancellation.ts, packages/core/failure-classification.ts, apps/web/src/lib/failure-incident-store.ts, apps/web/src/lib/failure-incident-actions.ts]
 related: [path-claim-ownership, task-dispatch-authority, claim-ordering, workflow-state-kernel, decision-kinds, surface-ia-home-missions-initiatives, execution-control-plane]
-keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, escalation gate, incident page, stale incident, reopen, dismiss, infrastructure failure, capability gap, needs_operator, auth_failure, credential hold, credentialHold, OAuth 401, session lost, interactive released, local session detached, cancelReason, supersededBy, classifyFailure, failure-rate baseline, How should I proceed, surface audit boot failure, artifact_revisions immutable]
-verified_by: [apps/web/src/lib/failure-incident-recovery.test.ts, apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts, packages/core/__tests__/gate-events.test.ts, apps/web/src/lib/pr-reconcile.test.ts, apps/web/src/lib/pr-merged-work.test.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.test.ts, apps/web/src/lib/task-recovery-hold.test.ts, packages/core/__tests__/failure-classification.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/admin/recovery/queue.test.ts]
+keywords: [failure_incidents, Failure Pattern Sentinel, incident, path_overlap_stall, path_overlap.no_progress, recovery assessment, Needs You, no_next_step, Nothing is fixing it, stale incident, reopen, dismiss, infrastructure failure, capability gap, needs_operator, auth_failure, credential hold, credentialHold, OAuth 401, session lost, interactive released, local session detached, cancelReason, supersededBy, classifyFailure, failure-rate baseline, How should I proceed, surface audit boot failure, artifact_revisions immutable]
+verified_by: [apps/web/src/lib/failure-incident-recovery.test.ts, apps/web/src/lib/failure-incident-store.test.ts, apps/web/src/lib/failure-incident-actions.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/lib/failure-pattern-sentinel.test.ts, apps/web/src/lib/failure-pattern-sweep.test.ts, packages/core/__tests__/gate-events.test.ts, apps/web/src/lib/pr-reconcile.test.ts, apps/web/src/lib/pr-merged-work.test.ts, apps/web/src/lib/failure-incident-recovery-worker-infra.test.ts, apps/web/src/lib/task-recovery-hold.test.ts, packages/core/__tests__/failure-classification.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/admin/recovery/queue.test.ts]
 supersedes: []
 assertions:
   - id: "plan-recovery"
@@ -27,10 +27,10 @@ assertions:
     type: "symbol"
     name: "reopenRecovery"
     path: "apps/web/src/lib/failure-incident-store.ts"
-  - id: "gate-follows-recovery"
+  - id: "sender-pages-nobody"
     type: "symbol"
-    name: "incidentSubjectRecovery"
-    path: "apps/web/src/lib/failure-incident-escalation.ts"
+    name: "defaultIncidentSender"
+    path: "apps/web/src/lib/failure-incident-actions.ts"
   - id: "merge-reassess"
     type: "symbol"
     name: "reassessIncidentsNamingPr"
@@ -45,9 +45,9 @@ assertions:
   - id: "sweep-tests"
     type: "test_file"
     path: "apps/web/src/lib/failure-pattern-sweep.test.ts"
-  - id: "gate-tests"
+  - id: "boundary-tests"
     type: "test_file"
-    path: "apps/web/src/lib/failure-incident-escalation.test.ts"
+    path: "apps/web/src/lib/team-incident-boundary.test.ts"
   - id: "failure-classifier"
     type: "symbol"
     name: "classifyFailure"
@@ -87,13 +87,26 @@ assessment. The assessment says what is wrong, what Buildd is doing about it and
 when it checks next. Buildd MUST re-observe the facts before every repair, MUST
 spend at most a fixed budget of repairs per cause, and MUST resolve the incident
 only when a stated check passes on fresh evidence. When Buildd cannot recover on
-its own, the person MUST be asked for one concrete, typed action. The incident
-page, Home's Needs You list, the nav badge and the push MUST all show that one
-assessment.
+its own, the next step MUST be one concrete, typed action. Every surface that
+shows an incident's recovery MUST show that one assessment.
+
+**Open-product boundary.** In the open product, recovery is detected, assessed
+and repaired here, and team surfaces show it only as service status
+(`apps/web/src/lib/service-status.ts`) and as the task and mission recovery
+notices. Paging the owner, owner verdicts, an incident page, its click-time
+action route, Home incident cards and incident MCP actions are not part of the
+open product: the sender (`defaultIncidentSender` in
+`apps/web/src/lib/failure-incident-actions.ts`) delivers nothing and no
+escalation verdict is stored for an incident. Operator tooling reads root
+causes through the platform-owner API
+(`apps/web/src/app/api/admin/root-causes/route.ts`) and keeps its own state.
+Sections below that state requirements for those surfaces (paging, verdicts,
+the incident page, its action route, Home cards and the badge) apply to
+operator tooling, not to this repo. `apps/web/src/lib/team-incident-boundary.test.ts`
+holds the boundary.
 
 This spec owns the Failure Pattern Sentinel's incident ledger and its recovery
-layer. There was no owning spec before: the ledger (#4066) and the escalation
-adapter (#4294) shipped against code comments and a private design. §1 records
+layer. §1 records
 the baseline the gaps in §2 were found against; §1.5 records what workstream
 (a) changed. §3–§10 are the contract. Path overlap (`path_overlap_stall`) is
 the first family. The contract is written so that every other
@@ -119,11 +132,9 @@ it matters.
 | Rule engine (pure) | `apps/web/src/lib/failure-pattern-sentinel.ts` | `detectFailurePatterns` turns `SentinelFacts` into candidates. `rulePathOverlapStall` groups stalled path-overlap deferrals by blocking PR. It uses reason code `path_overlap.no_progress` and the signature `path_overlap_stall\|ws=<id>\|blocker=pr:<n>`. The stall threshold is `pathOverlapStallMinutes` (120). Severity is high at `pathOverlapHighTasks` (3) tasks or at 4× the threshold. |
 | Collector + orchestration | `apps/web/src/lib/failure-pattern-sweep.ts` | `runFailurePatternSweep` runs from the debounced trigger (`apps/web/src/lib/failure-pattern-sentinel-trigger.ts`) and from the 30-minute cron backstop (`apps/web/src/app/api/cron/failure-pattern-sentinel/route.ts`). Path-overlap facts come from `gate_events` rows with gate `claim_loop_deferral` and reason `path_overlap` over a 1440-minute lookback, collapsed to one entry per task. |
 | Ledger | `apps/web/src/lib/failure-incident-store.ts` | There is one `failure_incidents` row per (signature, detectorVersion). `upsertIncident` folds candidates in, using a CAS on `version`. `mergeIncident` reopens a `resolved` row when a fresh occurrence arrives. `applyIncidentAction` and `updateIncidentState` support `acknowledge`, `resolve`, `alerted` and `link_fix_task`. |
-| Action layer | `apps/web/src/lib/failure-incident-actions.ts` | `actOnIncidentResults` runs only on transitions (opened, updated or reopened). It triages through the `buildd.failure_incident_triage` decision kind, files at most one fix task per incident (`createDbFixTaskPort`, claim key `failure-incident-fix:<id>` in `system_cache`), and claims a page on the row (`claimIncidentAlert`, `planIncidentAlert`). |
-| Escalation adapter | `apps/web/src/lib/failure-incident-escalation.ts` | `createGatedIncidentSender` checks the rules in `incidentEscalationRule` (resolved: hold; critical: person; fix task running: `wait_machine`; high: person with rail `no_next_step`; otherwise hold). It records the verdict in `decision_records` (capability `escalation_gate`, subject `incident:<id>`, fingerprint `incidentFingerprint`) and pages through `notifyTeam` (Pushover or webhook) only when the verdict is the person's. |
-| Home | `apps/web/src/lib/failure-incident-escalation.ts` | `loadIncidentNeedsYou` reads unresolved high and critical incidents together with the newest stored verdict (`loadIncidentVerdicts`). `incidentNeedsYouItems` lists only incidents whose verdict is the person's. `resolveQueueAttention` (`apps/web/src/lib/home-attention.ts`) turns each one into an `incident` card, and `publishHomeAttentionCount` counts it in the nav badge. |
-| Incident page | `apps/web/src/app/app/(protected)/incidents/[id]/page.tsx`, `apps/web/src/lib/incident-view.ts` | A read-only server page: `incidentStateLine`, then "Why it came to you" or "Who has it", then "Fix" (the linked task, or the literal text *Nothing is fixing it.*), then "Affected". It has no action buttons. |
-| Incident list | `apps/web/src/app/api/health/incidents/route.ts` | `GET` only. MCP `list_incidents` is a read proxy. |
+| Action layer | `apps/web/src/lib/failure-incident-actions.ts` | `actOnIncidentResults` runs only on transitions (opened, updated or reopened). It triages through the `buildd.failure_incident_triage` decision kind, files at most one fix task per incident (`createDbFixTaskPort`, claim key `failure-incident-fix:<id>` in `system_cache`), and claims a page on the row (`claimIncidentAlert`, `planIncidentAlert`). The claimed page goes to the sender, which in the open product is `defaultIncidentSender` and delivers nothing. |
+| Projection | `apps/web/src/lib/incident-view.ts` | `projectIncident` turns (incident, assessment) into owner, state word, sentence, next check and options. The task and mission recovery notices and the admin recovery pages read it. |
+| Root causes (platform owner) | `apps/web/src/lib/root-cause-record.ts`, `apps/web/src/app/api/admin/root-causes/route.ts` | The read operator tooling uses. Team surfaces never call it. |
 
 **A different family, kept separate.** `trunk_incidents`
 (`apps/web/src/lib/workflow/trunk.ts`, workflow-state-kernel §5.8) belong to the
@@ -144,7 +155,6 @@ lifecycle writer.
   - `linkedFixTaskId`
   - `acknowledgedAt` and `resolvedAt`
   - `version`, the CAS counter
-- `decision_records`: the stored escalation verdict per `incident:<id>`.
 - `gate_events` rows with gate `claim_loop_deferral`. Their `detail` holds `prNumber` or `blockingTaskId`, plus `consecutiveDeferrals` and `firstDeferredAt`, coalesced per (task, reason) by `recordOrCoalesceDeferral`.
 - `path_claims` and `path_claim_waiters`, owned by path-claim-ownership.
 - `task_dispatch_outbox` with its `dedupeKey` and `notBefore`, owned by task-dispatch-authority.
@@ -160,7 +170,7 @@ lifecycle writer.
 | Hourly stale-lease sweep | `sweepAbandonedPathClaims` in `apps/web/src/app/api/cron/maintenance/path-claims.ts` |
 | Stranded-deferral notes | `sweepStrandedTasks` in `apps/web/src/lib/stranded-tasks-sweep.ts` |
 | File or update the one fix task | the action layer's fix-task path (`createDbFixTaskPort`) |
-| Gate and page the owner | `createGatedIncidentSender` → `notifyTeam` |
+| Hand a claimed page to the sender | `defaultIncidentSender` (delivers nothing in the open product) |
 | Mark resolved or acknowledged | `updateIncidentState` with `resolve` or `acknowledge` (no caller today) |
 
 ### 1.4 Existing recovery states
@@ -168,9 +178,7 @@ lifecycle writer.
 There is no recovery state machine. These are the only states that exist:
 
 - the incident `status`;
-- the stored escalation verdict:
-  - `owner: 'buildd'`, with an `EscalationAction` (`wait_machine`, `hold`, …) and an optional `holdUntil`;
-  - `owner: 'person'`, with an `EscalationRail` (`critical_incident`, `no_next_step`);
+- the assessment's `owner` (`buildd`, `operator` or `person`), §3;
 - for the deferred task: pending, with `path_claim_waiters` rows that are notified or not notified.
 
 §4 maps the recovery states onto exactly these. No new status value is added.
@@ -180,7 +188,7 @@ There is no recovery state machine. These are the only states that exist:
 - **PR #4412** (merged to dev before this spec went active) added a sweep
   reconcile that resolved an open `path_overlap_stall` incident when its
   blocker PR merged or closed, or every named task left `pending`, and made a
-  path-overlap stall Buildd's in the gate. Its resolve check accepted "the
+  path-overlap stall Buildd's to handle. Its resolve check accepted "the
   blocker merged" on its own. §7 does not: a merged blocker is the start of
   recovery, not proof of it. Workstream (a) replaced that reconcile with the
   assessment (§3) and its per-subject check, and kept #4412's other two
@@ -190,12 +198,11 @@ There is no recovery state machine. These are the only states that exist:
   `recordOrCoalesceDeferral`, one collector entry per (task, blocker), only a
   task's newest episode can be a stall, `FAILURE_PATTERN_DETECTOR_VERSION`
   `fps-v2`), G2 (a delivered `path_claim.released` wake counts as progress),
-  G3 (the assessment resolves on a passing check), G4 (the fingerprint carries
-  generation and state; any assessment change re-gates; Home ignores a person
-  verdict the current assessment contradicts), G6 (`reconcileStalePrWorkers`
+  G3 (the assessment resolves on a passing check), G4 (any assessment change is
+  handed to the sender through `regateAlert`, keyed by generation and state), G6 (`reconcileStalePrWorkers`
   calls `releaseAndNotify(..., 'merged')`) and G7 (deferral `detail` carries
-  `blockingTaskId` and up to 20 overlapping `paths`). G5 and G9 belong to
-  workstream (b). G8 (`checkStarvation`) is untouched.
+  `blockingTaskId` and up to 20 overlapping `paths`). G5 belongs to
+  workstream (b); G9 is met by operator tooling, not by this repo. G8 (`checkStarvation`) is untouched.
 - **The merge hook is a subscriber.** Core (`pr-merged-work.ts`) may not
   import the sentinel module (`scripts/module-boundaries.test.ts`), so the
   re-assessment runs from a `pr.closed` subscriber in
@@ -329,10 +336,11 @@ recovery: {
     the same two-row problem.
   - `workflow_effects` needs a delivery (one PR's workflow) and a transition,
     and an incident has neither.
-- **The verdict stays where it is.** The escalation verdict stays in
-  `decision_records`. Its fingerprint (`incidentFingerprint`) MUST include
-  `recovery.generation` and `recovery.state`, so a new assessment is a new look
-  for the gate (fixes G4).
+- **No verdict is stored.** The open product stores no escalation verdict for
+  an incident. Every assessment change is handed to the sender (`regateAlert`
+  in `failure-pattern-sweep.ts`) with a `dedupeKey` that carries
+  `recovery.generation` and `recovery.state`, so a new assessment is a new
+  look (fixes G4).
 - **The cause becomes more precise.** `cause.reasonCode` refines the rule's
   `reasonCode`: `path_overlap.no_progress` becomes `path_overlap.blocker_open`,
   `.blocker_merged_unreleased`, `.blocker_stuck`, `.cycle`, `.subject_exempt_violated`
@@ -342,27 +350,28 @@ recovery: {
 
 ## 4. State mapping (no new status values)
 
-| `recovery.state` | `failure_incidents.status` | Stored escalation verdict | Needs You | Push |
-|---|---|---|---|---|
-| `observing` (no assessment yet) | `open` | none, or Buildd `hold` | no | no |
-| `inconclusive` | `open`, never `resolved` | Buildd `hold`, `holdUntil = nextCheckAt` | no, until the budget deadline | no |
-| `recovering` | `open` | Buildd `wait_machine`, with the repair named in `nextAction` | no | no |
-| `waiting` (on a live blocker) | `open` | Buildd `hold`, `holdUntil = nextCheckAt` | no | no |
-| `needs_decision` | `open` | person, rail `no_next_step` (or `critical_incident`) | yes, once | once per generation |
-| `needs_operator` (§16) | `open` | Buildd `hold`, reason names the capability gap | no | no; the gap goes to the operator through `reportOps` |
-| *(person dismissed it)* | `acknowledged` | whatever the verdict was; not re-paged unless severity rises | no | no |
-| `recovered` | `resolved` (`resolvedAt` set) | Buildd `hold` ("Resolved, nothing to do.") | no | no |
+| `recovery.state` | `failure_incidents.status` | Assessment owner | Reaches a person |
+|---|---|---|---|
+| `observing` (no assessment yet) | `open` | Buildd | no |
+| `inconclusive` | `open`, never `resolved` | Buildd, next look at `nextCheckAt` | no, until the budget deadline |
+| `recovering` | `open` | Buildd, with the repair named in `nextAction` | no |
+| `waiting` (on a live blocker) | `open` | Buildd, next look at `nextCheckAt` | no |
+| `needs_decision` | `open` | person | yes, once per generation |
+| `needs_operator` (§16) | `open` | operator, `capabilityGap` names the gap | no; the gap goes to the operator through `reportOps` |
+| *(dismissed)* | `acknowledged` | unchanged; not a page candidate again unless severity rises | no |
+| `recovered` | `resolved` (`resolvedAt` set) | Buildd ("Resolved, nothing to do.") | no |
 
 Rules:
 
-- `critical` keeps today's rule (`incidentEscalationRule`): the owner is told
-  once, whatever the recovery state is.
-- `needs_decision` is the **only** state that reaches a person.
+- "Reaches a person" means the change is handed to the sender. The open
+  product's sender delivers nothing; operator tooling decides whether to page.
+- `critical` is a page candidate once (`planIncidentAlert`), whatever the
+  recovery state is.
+- `needs_decision` is the **only** state whose owner is a person.
 - A high incident goes to a person when the budget is spent, the deadline has
-  passed, or the policy says only a person can decide (§5). It no longer goes
-  there just because there is no fix task.
-- Today's `no_next_step` rail stays the code, but its words come from the
-  assessment (§9).
+  passed, or the policy says only a person can decide (§5), never just because
+  there is no fix task.
+- The words come from the assessment (§9), never from a shared rail sentence.
 
 ---
 
@@ -494,28 +503,29 @@ offered.
 - **Auto-resolution.**
   - When the check passes, one CAS writes `status: 'resolved'`, `resolvedAt`,
     `recovery.state: 'recovered'` and the evidence revision that passed.
-  - The gate then re-runs, the fingerprint changes, and the verdict becomes
-    Buildd's `hold`.
+  - The change is handed to the sender (`regateAlert`) like any other
+    assessment change.
 - **Three different events, three different effects:**
   - **The incident is resolved:** the check passed.
   - **A subject task completed:** this satisfies the check *for that subject
     only*. It never resolves the incident by itself when other subjects remain.
-  - **The fix task completed:** Buildd re-assesses (the fingerprint already
-    changes when the fix task stops running). It does not resolve the incident.
+  - **The fix task completed:** Buildd re-assesses (the assessment changes
+    when the fix task stops running). It does not resolve the incident.
     A finished fix whose check still fails becomes `needs_decision`.
-- **Dismissal by a person.**
+- **Dismissal** (operator tooling, through `applyIncidentRecoveryAction`).
   - It sets `status: 'acknowledged'` (`acknowledgedAt`) and
     `recovery.decision.chosen = 'dismiss'`.
-  - The incident leaves Needs You and is not paged again unless its severity
-    rises. This matches today's `planIncidentAlert` for `acknowledged`.
+  - It is not a page candidate again unless its severity rises
+    (`planIncidentAlert` for `acknowledged`).
   - Dismissal is not resolution. The sweep keeps assessing the incident, and a
     passing check still resolves it.
 - **Reopen.**
   - A fresh occurrence on a `resolved` row reopens it, as `mergeIncident` does
     today, with `recurrenceCount + 1`.
   - Reopening MUST bump `recovery.generation` and reset `budget.spent`.
-  - A reopen re-gates. It pages only if the new generation reaches
-    `needs_decision`, or the incident is critical.
+  - A reopen is handed to the sender as a new generation. It is a page
+    candidate only if that generation reaches `needs_decision`, or the
+    incident is critical.
 
 ---
 
@@ -543,8 +553,8 @@ offered.
   `verify.passed` is null until the next assessment re-checks the repair, then
   set once, in place. These rows are pruned after 180 days by the full sweep,
   which also stores its last run in `system_cache` (`failure-sentinel-last-run`).
-- **Push.** The push `dedupeKey` keeps today's per-claim form, made unique by
-  the generation.
+- **Alert key.** The alert `dedupeKey` is the generation key plus the state
+  (`recovery:<incidentId>:g<generation>:<state>`, `regateAlert`).
 
 **Concurrency:**
 
@@ -587,18 +597,15 @@ offered.
 
 **One verdict.**
 
-- The incident page, the Home Needs You card, the nav badge count and the push
-  MUST all be drawn from the same two stored facts:
-  - `failure_incidents.recovery`;
-  - the newest escalation verdict whose fingerprint carries the current
-    `recovery.generation`.
+- Every surface that shows an incident's recovery (the task and mission
+  recovery notices, the admin recovery pages, the alert text) MUST draw it from
+  `failure_incidents.recovery`, through `projectIncident` in
+  `apps/web/src/lib/incident-view.ts`.
 - No surface re-derives ownership.
-- A stored verdict for an older generation is treated as absent. The incident
-  is not listed, and the next sweep re-gates it. Today's Home reads the newest
-  verdict with no check against current state (G4).
-- Push stays on the one existing path: `createGatedIncidentSender` →
-  `notifyTeam`. The outbox's `incident` intent stays unregistered. No second
-  notifier is added.
+- Alerts stay on the one existing path: the sender in
+  `failure-incident-actions.ts` (in the open product, `defaultIncidentSender`,
+  which delivers nothing). The outbox's `incident` intent stays unregistered.
+  No second notifier is added.
 
 **Copy rules.**
 
@@ -617,7 +624,7 @@ offered.
 - Ages come from the episode (§5 rule 3), never from the incident's first sighting.
 - Words like "fixed", "resolved" or "recovered" appear only for `recovered`.
   `inconclusive` never uses them.
-- The push text follows the same rules. It keeps today's
+- The alert text follows the same rules. It keeps today's
   structure-only constraint in `formatIncidentAlert`: no titles, signatures or
   log text.
 
@@ -631,16 +638,18 @@ offered.
   - `narrow_subject_manifest`
   - `narrow_blocker_manifest`
   - `open_blocker`
-- A click posts `{capability, generation, evidenceRevision}`. The server then:
+- An action request carries `{capability, generation, evidenceRevision}`. The
+  server then:
   - re-checks the team's permission;
   - re-observes the facts (§5 rule 1);
   - applies the action only if `generation` is unchanged and the capability's
     precondition still holds.
-- Otherwise it answers 409 with the fresh assessment, and the UI re-renders it
-  in place of the stale one. A click never acts on a stale screen.
-- The route is proposed as POST /api/health/incidents/[id]/actions (NOT
-  IMPLEMENTED). It is the incident page's only write path. Its writes go through
-  the writers in §1.3 and `updateIncidentState`.
+- Otherwise it refuses with the fresh assessment. An action never acts on a
+  stale screen.
+- The check is `validateRecoveryAction` and the write is
+  `applyIncidentRecoveryAction` (§19), reached by operator tooling through
+  `POST /api/admin/operator`. This repo has no team-facing incident action
+  route. Writes go through the writers in §1.3 and `updateIncidentState`.
 
 ---
 
@@ -651,23 +660,23 @@ offered.
 - I-3. No repair runs without a re-observation in the same call whose evidenceRevision matches the one the repair was planned on.
 - I-4. At most one repair per action key ever has an effect.
 - I-5. `budget.spent ≤ budget.limit`. A repair attempted at the limit is refused, and the state becomes `needs_decision`.
-- I-6. Home, the badge, the push and the page show the same owner and the same sentence for an incident at a given `version`.
+- I-6. Every surface that shows an incident's recovery shows the same owner and the same sentence for an incident at a given `version`.
 - I-7. Recovery never writes `tasks.status`, `path_claims`, `workflow_deliveries` or `task_dispatch_outbox` except through the writers named in §1.3.
 - I-8. A path-overlap episode's age never covers time before its blocker existed.
 
 ## 11. Acceptance criteria
 
 - AC-1: GIVEN a task deferred behind PR A for 3 h and then behind PR B for 10 min WHEN the sweep runs THEN no path-overlap candidate for PR B has an occurrence older than PR B's first deferral, and none is created for B at all under the 120-minute threshold.
-- AC-2: GIVEN an incident whose blocker PR merged and whose subject task then started a worker WHEN the merge hook or the backstop re-assesses it THEN the incident is `resolved` with `recovery.state = 'recovered'`, and it is absent from Needs You and the badge count.
+- AC-2: GIVEN an incident whose blocker PR merged and whose subject task then started a worker WHEN the merge hook or the backstop re-assesses it THEN the incident is `resolved` with `recovery.state = 'recovered'`.
 - AC-3: GIVEN an open incident whose last observation is more than 60 min old and the re-read fails WHEN it is assessed THEN `recovery.state = 'inconclusive'` and `status` stays `open`.
 - AC-4: GIVEN a blocker PR merged with its leases still held (missed webhook, healed by `reconcileStalePrWorkers`) WHEN recovery runs THEN `releaseAndNotify` is called once, and a second concurrent run with the same generation finds the action key already spent and calls nothing.
-- AC-5: GIVEN a stored person verdict from generation 1 and an assessment now at generation 2 with state `waiting` WHEN Home loads THEN the incident is not listed.
+- AC-5: Met by operator tooling, not by this repo: no incident verdict is stored and Home lists no incident.
 - AC-6: GIVEN `budget.spent = 3` for a (subject, cause) WHEN a fourth repair is planned THEN no repair runs, and the state is `needs_decision` with a non-empty `decision.options`.
-- AC-7: GIVEN a person clicks `cancel_attempt` on generation 2 WHEN the incident is already at generation 3 THEN the action route answers 409 with the generation-3 assessment and nothing is cancelled.
+- AC-7: Met by operator tooling, not by this repo's team surfaces. The shared validator (`validateRecoveryAction`) refuses a request for a generation the incident has moved past.
 - AC-8: GIVEN a cycle (the blocker's repair attempt depends on the subject) WHEN assessed THEN the state is `needs_decision` straight away, without waiting for the deadline.
-- AC-9: GIVEN a blocker whose kernel delivery is `ESCALATED` WHEN assessed THEN the incident stays Buildd-owned with `nextAction.kind = 'blocked_by_escalation'`, and Home shows exactly one card (the PR's).
+- AC-9: GIVEN a blocker whose kernel delivery is `ESCALATED` WHEN assessed THEN the incident stays Buildd-owned with `nextAction.kind = 'blocked_by_escalation'`, and the only card is the PR's own escalation.
 - AC-10: GIVEN a dismissed (`acknowledged`) incident whose check later passes WHEN assessed THEN it becomes `resolved`. GIVEN instead a new occurrence at the same severity THEN no page is sent.
-- AC-11: GIVEN any incident page, Home card or push for a non-`recovered` incident THEN the text contains none of "Nothing is fixing", "fixed" or "resolved".
+- AC-11: GIVEN any task or mission recovery notice or alert text for a non-`recovered` incident THEN the text contains none of "Nothing is fixing", "fixed" or "resolved".
 - AC-12: GIVEN a `resolved` incident that receives a fresh occurrence WHEN upserted THEN `recurrenceCount` increments, `recovery.generation` increments and `budget.spent` is 0.
 
 ---
@@ -700,10 +709,9 @@ repair records as `wait_machine` with the assessment's own sentence.
   - `apps/web/src/app/api/workers/claim/route.ts`: add bounded `paths` to the deferral detail in `deferTask` (G7).
   - `apps/web/src/lib/failure-pattern-sweep.ts`: one entry per (task, blocker), and `lastProgressAt` includes delivered wakes.
   - `apps/web/src/lib/failure-pattern-sentinel.ts`: `rulePathOverlapStall` reads the per-blocker episode. Bump `FAILURE_PATTERN_DETECTOR_VERSION`, because the signature semantics change.
-- **Gate.** `apps/web/src/lib/failure-incident-escalation.ts`:
-  - `incidentFingerprint` includes the generation and the state;
-  - `incidentEscalationRule` takes the recovery state into account (§4);
-  - the sweep re-gates on any assessment change, not only when a page is claimed (G4).
+- **Sender hand-off.** `apps/web/src/lib/failure-pattern-sweep.ts`: `regateAlert`
+  hands any assessment change to the sender, keyed by generation and state,
+  not only when a page is claimed (G4).
 - **Merge-triggered reconcile:**
   - `apps/web/src/lib/pr-merged-work.ts`: after `releaseAndNotify`, re-assess the open incidents that name the PR.
   - `apps/web/src/lib/pr-reconcile.ts`: `reconcileStalePrWorkers` calls `releaseAndNotify(..., 'merged')` when it heals a merge (G6).
@@ -713,26 +721,19 @@ repair records as `wait_machine` with the assessment's own sentence.
   - Optionally wire `checkStarvation` here or delete it (G8).
 - **Tests.**
   - `apps/web/src/lib/failure-incident-store.test.ts`
-  - `apps/web/src/lib/failure-incident-escalation.test.ts`
+  - `apps/web/src/lib/team-incident-boundary.test.ts`
   - `apps/web/src/lib/failure-pattern-sweep.test.ts`
   - `apps/web/src/lib/failure-pattern-sentinel.test.ts`
   - `packages/core/__tests__/` for gate-events
 - **Closing step.** Promote this spec to `active` and set `last_verified`.
 
-### (b) Shared UI projection: page, Home Needs You count, push
+### (b) Shared projection: recovery notices and alert text
 
-- **Projection.** `apps/web/src/lib/incident-view.ts` gets one projection function that turns (incident, recovery, verdict) into {owner, state word, sentence, next check, options}. Every surface below uses it.
-- **Page.** `apps/web/src/app/app/(protected)/incidents/[id]/page.tsx`:
-  - replace the Fix section's fallback with the projection;
-  - render typed options;
-  - fix the back link (G9).
-- **Action route.** Add `apps/web/src/app/api/health/incidents/[id]/actions/route.ts` (*new*) with a co-located `route.test.ts`. It is the click-time re-check of §9.
-- **Home and badge.**
-  - `apps/web/src/lib/failure-incident-escalation.ts`: `loadIncidentNeedsYou` and `incidentNeedsYouItems` filter by generation and take the sentence from the projection.
-  - `apps/web/src/lib/home-attention.ts`: the `incident` case.
-  - `apps/web/src/lib/action-queue.ts`: the INCIDENT chip text.
-- **Push.** `apps/web/src/lib/failure-incident-actions.ts`: `formatIncidentAlert` uses the projection sentence.
-- **Proof.** Screenshots at 390 px and at desktop width, in both themes, through `visual-qa.yml` (see `/visual-review`). Cover the page states `waiting`, `needs_decision`, `inconclusive` and `recovered`, plus the Home card.
+- **Projection.** `apps/web/src/lib/incident-view.ts`: `projectIncident` turns (incident, recovery) into {owner, state word, sentence, next check, options}. Every surface below uses it.
+- **Recovery notices.** The task page's recovery notice and `apps/web/src/components/recovery/MissionRecoveryNotice.tsx` show the projection's sentence. They link to no incident page.
+- **Alert text.** `apps/web/src/lib/failure-incident-actions.ts`: `formatIncidentAlert` uses the projection sentence.
+- **Not in this repo.** An incident page, its action route, Home incident cards and the badge count belong to operator tooling (see the boundary paragraph at the top); G9 is met there.
+- **Proof.** Screenshots at 390 px and at desktop width, in both themes, through `visual-qa.yml` (see `/visual-review`). Cover the notice states `waiting`, `needs_decision`, `inconclusive` and `recovered`.
 
 ### (c) End-to-end verification and regression
 
@@ -741,9 +742,9 @@ repair records as `wait_machine` with the assessment's own sentence.
   - Add `apps/web/tests/db/failure-incident-recovery.test.ts` (*new*, real Postgres).
 - **The scenario: a stale blocker like #4386.**
   1. Task T is deferred behind PR A, then behind PR B.
-  2. B merges. The run checks AC-1 (no inflated age), AC-4 (release once) and AC-2 (resolved; gone from Home).
+  2. B merges. The run checks AC-1 (no inflated age), AC-4 (release once) and AC-2 (resolved).
   3. It then replays a missed merge webhook through `reconcileStalePrWorkers` and asserts the same outcome.
-- **Also covered:** AC-3, AC-5, AC-7, AC-11 and AC-12, against the projection and the action route.
+- **Also covered:** AC-3, AC-11 and AC-12, against the projection.
 
 ### Dependency DAG
 
@@ -752,11 +753,8 @@ repair records as `wait_machine` with the assessment's own sentence.
      └────────────────────────────────►┘
 ```
 
-- (b) needs (a)'s stored `recovery` field and the fingerprint change. Its
-  projection and action route read them.
-- (c) needs both (a) and (b), because AC-5, AC-7 and AC-11 cover the projection.
-- (a) and (b) both edit `failure-incident-escalation.ts`, so they MUST NOT run
-  in parallel.
+- (b) needs (a)'s stored `recovery` field. Its projection reads it.
+- (c) needs both (a) and (b), because AC-11 covers the projection.
 - Inside (a), the migration and the type change come first.
 
 ## 13. Coordination
@@ -768,13 +766,13 @@ repair records as `wait_machine` with the assessment's own sentence.
 - **Execution control plane mission `27b1fe42`.** It owns which host drains
   effects and runs crons. Recovery adds no drain, no scheduler and no host of
   its own. It runs inside the existing sentinel sweep, the merge hook and the
-  action route, so it moves with them.
+  operator action route, so it moves with them.
 - **Things this mission must not create:**
   - a second incident service or table;
   - a second lifecycle writer for tasks, leases or deliveries;
   - a second scheduler, since the claim route stays the only one;
-  - a second notification path, since `notifyTeam` through the gate stays the
-    only one.
+  - a second notification path, since the sender in
+    `failure-incident-actions.ts` stays the only one.
 
 ## 14. Code surface
 
@@ -786,8 +784,9 @@ repair records as `wait_machine` with the assessment's own sentence.
 - `apps/web/src/lib/failure-pattern-sentinel.ts`: `detectFailurePatterns`, `rulePathOverlapStall`, `DEFAULT_SENTINEL_THRESHOLDS`, `FAILURE_PATTERN_DETECTOR_VERSION`
 - `apps/web/src/lib/failure-pattern-sweep.ts`: `runFailurePatternSweep`, `SWEEP_LOOKBACK_MINUTES`, `reassessIncidentsNamingPr`, `regateAlert`
 - `apps/web/src/lib/failure-incident-store.ts`: `upsertIncident`, `mergeIncident`, `updateIncidentState`, `applyIncidentAction`, `createDbIncidentPort`
-- `apps/web/src/lib/failure-incident-actions.ts`: `actOnIncidentResults`, `claimIncidentAlert`, `planIncidentAlert`, `formatIncidentAlert`, `incidentDeepLink`
-- `apps/web/src/lib/failure-incident-escalation.ts`: `incidentEscalationRule`, `incidentFingerprint`, `incidentSubjectRecovery`, `createGatedIncidentSender`, `loadIncidentNeedsYou`, `incidentNeedsYouItems`, `loadIncidentVerdicts`
+- `apps/web/src/lib/failure-incident-actions.ts`: `actOnIncidentResults`, `claimIncidentAlert`, `planIncidentAlert`, `formatIncidentAlert`, `defaultIncidentSender`
+- `apps/web/src/lib/failure-incident-recovery-actions.ts`: `validateRecoveryAction`, `applyIncidentRecoveryAction` (§19)
+- `apps/web/src/lib/root-cause-record.ts`, `apps/web/src/app/api/admin/root-causes/route.ts`: the platform-owner read of root causes
 - `packages/core/escalation-gate.ts`: `EscalationVerdict`, `verdictCode`, `verdictFromCode`
 - `packages/core/gate-events.ts`: `recordOrCoalesceDeferral`, `recordDeferralOnce`
 - `packages/core/path-claim.ts`: `releaseClaims`, `registerClaimDeferralWaiters`, `checkStarvation`
@@ -811,9 +810,9 @@ repair records as `wait_machine` with the assessment's own sentence.
 - `apps/web/src/lib/pr-merged-work.ts`: `runMergedPrWork`
 - `apps/web/src/lib/pr-reconcile.ts`: `reconcileStalePrWorkers`
 - `apps/web/src/lib/dispatch-authority.ts`: `wakeTask`
-- `apps/web/src/lib/home-attention.ts`: `resolveQueueAttention`
-- `apps/web/src/app/app/(protected)/incidents/[id]/page.tsx`, `apps/web/src/lib/incident-view.ts`: `incidentStateLine`
-- `packages/core/db/schema.ts`: `failureIncidents`, `decisionRecords`, `gateEvents`
+- `apps/web/src/lib/incident-view.ts`: `projectIncident`, `incidentStateLine`
+- `apps/web/src/components/recovery/MissionRecoveryNotice.tsx`: the mission recovery notice
+- `packages/core/db/schema.ts`: `failureIncidents`, `gateEvents`
 
 ## 15. Out of scope
 
@@ -1021,8 +1020,9 @@ the auditor role and capture) is coordinated through those path claims.
 Every surface reads ONE canonical assessment, through an adapter: the
 incident's `recovery`, or a task's or mission's `recoveryRef` to it. No
 surface derives state from question text, a string match on errors, or its own
-heuristics. Workstream (b) and the §16 tasks deliver this matrix. Today only
-the gate column is wired (§1.5).
+heuristics. In this repo the task and mission adapters are wired. The Needs
+You, badge, banner, incident detail and push columns and rows apply to
+operator tooling (see the boundary paragraph at the top).
 
 ### 17.1 What each state shows
 
@@ -1045,14 +1045,14 @@ expandable details on every surface.
 
 | Surface | Reads | Must not |
 |---|---|---|
-| Global attention banner | incident / `recoveryRef` → §17.1 | show a banner for any state but `needs_decision` |
-| Home Needs You | `incidentNeedsYouItems` (generation-checked) and task questions via `recoveryRef` | list a question superseded by recovery |
+| Global attention banner (operator tooling) | incident `recovery` → §17.1 | show a banner for any state but `needs_decision` |
+| Home Needs You | task questions via the task adapter; no incident rows | list an incident, or a question superseded by recovery |
 | Nav badge / count | same rows as Home Needs You | count anything Home does not list |
 | Mission list, detail, header, progress | mission adapter (§16.4) | show RUNNING or done for an audit blocked by a repair |
 | Task list, detail, mobile task sheet | task adapter (`recoveryRef`) | offer question controls for a superseded question |
 | Activity / chat cards and question forms | task adapter | render "How should I proceed?" for a system failure |
-| Incident detail | incident `recovery` + generation-matched verdict | say "Nothing is fixing it" |
-| Notifications / push | `createGatedIncidentSender` → `notifyTeam` only | send for any state but `needs_decision` or critical |
+| Incident detail (operator tooling) | incident `recovery` through `projectIncident` | say "Nothing is fixing it" |
+| Notifications / push (operator tooling) | the sender in `failure-incident-actions.ts` only; the open product's delivers nothing | send for any state but `needs_decision` or critical |
 
 ### 17.3 Verification matrix
 
@@ -1067,7 +1067,7 @@ owner. Screenshots at 390 px and desktop width, in both themes, through
 | retry exhausted | `needs_operator` | "Automatic recovery unavailable" with the gap; not in Needs You |
 | genuine decision | `needs_decision` (cycle, AC-8) | one card, typed options, push once |
 | inconclusive | failed read (AC-3) | "Couldn't confirm", next check, no green |
-| recovered | check passed (AC-2, AC-14) | gone from banner, Home and badge; incident page says recovered |
+| recovered | check passed (AC-2, AC-14) | gone from banner, Home and badge; the recovery notices say recovered |
 
 ---
 
@@ -1295,8 +1295,7 @@ writer and no notifier. The contract changes are additive (`v` stays 1).
 - **One validator, one service.** `validateRecoveryAction(principal, request,
   fresh)` and `applyIncidentRecoveryAction` in
   `apps/web/src/lib/failure-incident-recovery-actions.ts`. The owner route
-  (`POST /api/admin/operator`), the incident page route (§9) and a future model
-  suggestion share them. Each route authorizes its own principal first.
+  (`POST /api/admin/operator`) and a future model suggestion share them. Each route authorizes its own principal first.
 - **The gate before an automatic repair** (`assessIncident`). It reads
   `system_cache` `operator-recovery:*` through
   `failure-incident-recovery-automation.ts`:

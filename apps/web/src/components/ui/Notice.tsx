@@ -47,8 +47,8 @@ export default function Notice({ tone = 'info', title, children, action, classNa
           {children && <div className={title ? 'mt-0.5' : undefined}>{children}</div>}
         </div>
         {action && (action.href !== undefined
-          ? <Link className="btn btn-sm" href={action.href} data-testid="notice-action">{action.label}</Link>
-          : <button type="button" className="btn btn-sm" onClick={action.onClick} data-testid="notice-action">{action.label}</button>)}
+          ? <Link className="btn btn-sm h-11 min-w-11 md:h-6 md:min-w-0" href={action.href} data-testid="notice-action">{action.label}</Link>
+          : <button type="button" className="btn btn-sm h-11 min-w-11 md:h-6 md:min-w-0" onClick={action.onClick} data-testid="notice-action">{action.label}</button>)}
       </div>
     </div>
   );

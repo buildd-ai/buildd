@@ -410,6 +410,8 @@ describe('buildOrchestrationReadout', () => {
       claim: { rows: [], hold, links: new Map(), softStarts: { starts: [], outcome: { tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] }, probes: [] } },
     });
     expect(withStarts.softOverlapStarts?.map(c => c.decidedBy)).toEqual(['rule', 'jev']);
+    expect(without.overlapStartConflicts).toBeUndefined();
+    expect(withStarts.overlapStartConflicts?.total).toMatchObject({ starts: 0, conflictShare: null });
   });
 
   it('with no deployed evidence: both decisions insufficient, no threshold anywhere, promotion blocked', async () => {

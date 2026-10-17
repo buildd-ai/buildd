@@ -20,10 +20,7 @@ import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/plat
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
-import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
-import { loadDecisionCollectionNeedsYou } from '@/lib/decision-collection-needs-you';
 import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
-import { loadDecisionHealthNeedsYou } from '@/lib/decision-health-needs-you';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -240,33 +237,11 @@ export const ESCALATION_GATE_DEPS = escalationGateDeps;
 export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
 
 /**
- * The Failure Pattern Sentinel's slots for core pages (lib/failure-incident-escalation.ts):
- * Home's Needs You rows for incidents the escalation gate gave to the owner, and the
- * stored verdict the incident page shows. Both read the ledger; neither calls a model.
- */
-export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
-export const INCIDENT_VERDICTS = loadIncidentVerdicts;
-
-/**
- * The decision ledger's slot for Home (lib/decision-collection-needs-you.ts):
- * decision features asked all day that never got a model answer, for the
- * platform operator. Reads the ledger; no model call.
- */
-export const DECISION_COLLECTION_NEEDS_YOU = loadDecisionCollectionNeedsYou;
-
-/**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
  * pending capability requests the escalation gate gives to a person, for the
  * teams where the viewer can decide them. A fixed rule; no model call.
  */
 export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
-
-/**
- * The decisions module's slot for Home (lib/decision-health-needs-you.ts): one
- * card per team whose decision calls nearly all fail at the provider, for the
- * people who can change the decision model. Reads the ledgers; no model call.
- */
-export const DECISION_HEALTH_NEEDS_YOU = loadDecisionHealthNeedsYou;
 
 /**
  * The decisions module's slot for the team settings route
