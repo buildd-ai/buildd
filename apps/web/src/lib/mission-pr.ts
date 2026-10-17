@@ -724,11 +724,19 @@ export async function openMissionIntegrationPr(
   });
   // The open delivery's PR, recorded by the kernel (§6).
   const ownerRow = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, ownerWorker.id)), columns: { taskId: true } });
-  const { bindMissionDeliveryPr } = await import('@/lib/mission-epoch-door');
+  const { bindMissionDeliveryPr, openMissionPrDelivery } = await import('@/lib/mission-epoch-door');
   await bindMissionDeliveryPr({
     missionId, workspaceId: workspace.id, prNumber, repoFullName: repo.fullName,
     ownerTaskId: ownerRow?.taskId ?? null, headRef: branch,
   });
+  // The PR's kernel delivery, owned by the same bookkeeping task (§6). Not left to the
+  // opened webhook: that reaches the kernel only for a review-tier policy (#4686).
+  if (ownerRow?.taskId) {
+    await openMissionPrDelivery({
+      workspaceId: workspace.id, ownerTaskId: ownerRow.taskId, repoFullName: repo.fullName,
+      prNumber, installationId,
+    });
+  }
 
   await db.insert(missionNotes).values({
     missionId,

@@ -51,7 +51,7 @@ export async function getMissionVisualReviewState(
 ): Promise<MissionVisualReviewState | null> {
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
-    columns: { id: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
+    columns: { id: true, status: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
   });
   if (!mission) return null;
 
@@ -122,6 +122,7 @@ export async function getMissionVisualReviewState(
       : null,
     waiver,
     auditedSha: latestAudit ? latestAudit.headSha : null,
+    missionClosed: mission.status === 'completed' || mission.status === 'archived',
     autoRetriesLeft: autoRetriesLeft(failedOnHead),
     captureConfigError: latestAudit?.captureConfigError ?? null,
     branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },

@@ -41,6 +41,7 @@ import type { DeliveryView } from '@/lib/workflow/projections';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { deriveLandingBlocker, type LandingBlocker } from '@/lib/landing-blocker';
 import { canCompleteMission } from '@/lib/mission-completion';
+import { evaluateMissionGate } from '@/lib/mission-dependency';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
@@ -721,13 +722,21 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
   if (!loadedMission) return null;
   const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
-  // Name the upstream mission rather than pointing at a UUID.
+  // Name the upstream mission, and the exact condition its gate still lacks,
+  // rather than pointing at a UUID. A read: the gate is not stamped from here.
   if (view.waitingOn?.kind === 'dependency') {
-    const upstream = await db.query.missions.findFirst({
-      where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
-      columns: { title: true },
-    });
-    answerExtras.dependencyTitle = upstream?.title ?? null;
+    const gate = (mission as { gateCondition?: string | null }).gateCondition === 'completed' ? 'completed' : 'merged';
+    const verdict = await evaluateMissionGate(view.waitingOn.missionId, gate).catch(() => null);
+    if (verdict) {
+      answerExtras.dependencyTitle = verdict.title;
+      answerExtras.dependencyGate = { gate, met: verdict.met, unmet: verdict.unmet };
+    } else {
+      const upstream = await db.query.missions.findFirst({
+        where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
+        columns: { title: true },
+      });
+      answerExtras.dependencyTitle = upstream?.title ?? null;
+    }
   }
 
   const subject: ExplainAnswer['subject'] = {

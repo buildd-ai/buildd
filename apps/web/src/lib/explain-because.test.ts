@@ -11,6 +11,31 @@ const base: MissionStateInput = {
 };
 
 describe('buildStateBecause', () => {
+  describe('a mission blocked on an upstream gate', () => {
+    const view = deriveMissionStateView({ ...base, health: 'BLOCKED', dependsOnMissionId: 'up-1' });
+    const subject = { missionId: 'm', workspaceId: 'ws' };
+
+    it('names each unmet condition with its task and PR', () => {
+      const chain = buildStateBecause(view, subject, {
+        dependencyTitle: 'Upstream',
+        dependencyGate: { gate: 'merged', met: false, unmet: [{ kind: 'pr_closed_unmerged', taskId: 't-1', title: 'feat: build', prNumber: 12 }] },
+      });
+      expect(chain[0].claim).toBe('Upstream mission "Upstream" has not met this mission\'s "merged" gate.');
+      expect(chain[1].claim).toBe('Still needed: PR #12 for "feat: build" closed without merging, and no replacement PR or abandonment is recorded.');
+      expect(chain[1].refs).toMatchObject({ taskId: 't-1', prNumber: 12, missionId: 'up-1' });
+    });
+
+    it('says the gate is met when the live state meets it before the stamp', () => {
+      const chain = buildStateBecause(view, subject, { dependencyTitle: 'Upstream', dependencyGate: { gate: 'merged', met: true, unmet: [] } });
+      expect(chain[0].claim).toContain('has met this mission\'s "merged" gate');
+    });
+
+    it('keeps the generic line when the gate was not read', () => {
+      const chain = buildStateBecause(view, subject, { dependencyTitle: 'Upstream' });
+      expect(chain[0].claim).toBe('Upstream mission "Upstream" has not met this mission\'s gate condition.');
+    });
+  });
+
   // A reviewer task is runner-claimable in a local-executor mission (claim gate
   // exempts context.reviewerFor), so explain must not say runners never pick it up.
   it('does not call a runner-claimable reviewer task local-session work', () => {

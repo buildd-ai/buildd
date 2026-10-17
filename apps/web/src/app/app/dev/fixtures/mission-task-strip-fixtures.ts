@@ -382,7 +382,7 @@ export const isHandoffVariant = (v: string): v is HandoffVariant => v.startsWith
 
 function visualState(over: Partial<MissionVisualReviewState>): MissionVisualReviewState {
   return {
-    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, nextActor: 'system',
+    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, passedOnEarlierCommit: false, evidenceSha: null, nextActor: 'system',
     policy: { mode: 'automatic', origin: 'workspace', waiverAllowed: true, locked: false },
     scope: { screens: 8, uiFiles: 4, source: 'diff', workLanded: true },
     progress: { captured: 6, expected: 8 },
