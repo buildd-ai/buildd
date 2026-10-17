@@ -297,6 +297,17 @@ describe('mergePolicy.dataMigrations: the reviewer decides data migrations', () 
   });
 });
 
+describe('escalationFingerprint: review history', () => {
+  it('an unset or empty history keeps the old fingerprint; a set or changed one is a new look', () => {
+    const a = base({ why: 'review_exhausted' });
+    expect(escalationFingerprint({ ...a, reviewHistory: null })).toBe(escalationFingerprint(a));
+    expect(escalationFingerprint({ ...a, reviewHistory: '' })).toBe(escalationFingerprint(a));
+    const x = escalationFingerprint({ ...a, reviewHistory: 'Approved twice' });
+    expect(x).not.toBe(escalationFingerprint(a));
+    expect(x).not.toBe(escalationFingerprint({ ...a, reviewHistory: 'Never approved' }));
+  });
+});
+
 describe('buildEscalationGateState: review_exhausted tells what the rounds did', () => {
   const why = (s: EscalationSubject) => ((buildEscalationGateState(s).pr as { why: string }).why);
 
@@ -309,6 +320,12 @@ describe('buildEscalationGateState: review_exhausted tells what the rounds did',
     const w = why(base({ why: 'review_exhausted', reviewHistory: 'Approved twice, then a later change was refused' }));
     expect(w).toContain('approved twice, then a later change was refused');
     expect(w).not.toContain('without an approval');
+  });
+
+  it('does not say the rounds ran out twice', () => {
+    const w = why(base({ why: 'review_exhausted', reviewHistory: 'Approved, but findings it left unverified ran out of review rounds' }));
+    expect(w).toBe('review rounds ran out (approved, but findings it left unverified)');
+    expect(w.match(/ran out/g)).toHaveLength(1);
   });
 
   it('with no history, keeps the generic wording', () => {

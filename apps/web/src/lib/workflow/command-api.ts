@@ -385,9 +385,13 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
       return refuse(503, 'installation_unavailable', 'The GitHub installation could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
     }
     if ('refused' in installation) {
-      return installation.refused === 'repo_out_of_scope'
-        ? refuse(403, 'repo_out_of_scope', 'The repo is not in this workspace\'s or its missions\' repo scope.', { applied: false })
-        : refuse(403, 'no_installation', 'No GitHub App installation covers this repo for this workspace.', { applied: false });
+      if (installation.refused === 'repo_out_of_scope') {
+        return refuse(403, 'repo_out_of_scope', 'The repo is not in this workspace\'s or its missions\' repo scope.', { applied: false });
+      }
+      if (installation.refused === 'installation_not_team_owned') {
+        return refuse(403, 'installation_not_team_owned', 'The GitHub App installation that covers this repo is not one of this workspace\'s team\'s installations.', { applied: false });
+      }
+      return refuse(403, 'no_installation', 'No GitHub App installation covers this repo for this workspace.', { applied: false });
     }
     const sent = (cmd.input as { installationId?: number }).installationId;
     if (sent !== undefined && sent !== installation.installationId) {

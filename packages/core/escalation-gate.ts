@@ -240,6 +240,8 @@ export function escalationFingerprint(s: EscalationSubject): string {
     classes: [...(s.riskClasses ?? [])].sort(), policy: !!s.policyOnly, current: s.headIsCurrent ?? null, draft: !!s.draft, xl: !!s.sizeXl,
     // Only when on, so a workspace without the setting keeps its stored verdicts.
     ...(s.agentReviewsDataMigrations ? { dataByAgent: true } : {}),
+    // Likewise: a changed review history is a new look, an unset one keeps stored fingerprints.
+    ...(s.reviewHistory ? { history: s.reviewHistory } : {}),
   };
   return createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
 }
@@ -309,13 +311,21 @@ const WHY_WORDS: Record<EscalationSubject['why'], string> = {
   kernel_needs_you: 'the delivery workflow says a person owns the next move',
 };
 
+const RAN_OUT_CLAUSE = /\s+ran out of review rounds$/;
+
+/** The history may already say the rounds ran out; say it once. */
+function reviewExhaustedWhy(history: string): string {
+  const lower = `${history.charAt(0).toLowerCase()}${history.slice(1)}`;
+  return RAN_OUT_CLAUSE.test(lower) ? `review rounds ran out (${lower.replace(RAN_OUT_CLAUSE, '')})` : `review rounds ran out (${lower})`;
+}
+
 /** The record Jev reads: the PR as the owner's card would describe it. */
 export function buildEscalationGateState(s: EscalationSubject): Record<string, unknown> {
   return {
     pr: {
       title: s.title,
       why: s.why === 'review_exhausted' && s.reviewHistory
-        ? `review rounds ran out (${s.reviewHistory.charAt(0).toLowerCase()}${s.reviewHistory.slice(1)})`
+        ? reviewExhaustedWhy(s.reviewHistory)
         : WHY_WORDS[s.why],
       detail: s.detail ?? null,
       landingStopped: s.handoffReason ?? null,

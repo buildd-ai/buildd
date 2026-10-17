@@ -11,7 +11,7 @@
 
 import { db } from '@buildd/core/db';
 import { githubInstallations, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { teamIdsWhere } from '@/lib/permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -72,4 +72,38 @@ export async function getInstallationAccessForUser(
     canManage: isInstaller || ownerTeamIds.some(t => managerTeamIds.includes(t)),
     otherTeamsUsingIt: [...new Set(direct.map(w => w.teamId))].filter(t => !managerTeamIds.includes(t)),
   };
+}
+
+/**
+ * Whether the installation with GitHub's numeric id `installationId` belongs to
+ * `teamId`, by the ownership rule above, in one read: an installation on a GitHub
+ * account the team already has a workspace linked to (through the workspace's repo,
+ * which follows a reinstall, or its direct installation pointer), or one a member
+ * of the team installed.
+ *
+ * Every command acts only through its own team's installation: the control plane
+ * (lib/workflow/command-installation.ts) and the doors that pick an installation
+ * for a PR in a repo other than the workspace's own (pr-supersession.ts,
+ * ci-red-sweep-deps.ts) refuse any other.
+ */
+export async function installationBelongsToTeam(installationId: number, teamId: string): Promise<boolean> {
+  const r = await db.execute(sql`
+    SELECT 1 FROM github_installations gi
+    WHERE gi.installation_id = ${installationId}
+      AND (
+        EXISTS (
+          SELECT 1 FROM github_installations s
+          WHERE s.account_id = gi.account_id
+            AND (
+              EXISTS (SELECT 1 FROM workspaces w WHERE w.team_id = ${teamId}::uuid AND w.github_installation_id = s.id)
+              OR EXISTS (
+                SELECT 1 FROM workspaces w JOIN github_repos r ON r.id = w.github_repo_id
+                WHERE w.team_id = ${teamId}::uuid AND r.installation_id = s.id
+              )
+            )
+        )
+        OR EXISTS (SELECT 1 FROM team_members m WHERE m.team_id = ${teamId}::uuid AND m.user_id = gi.installed_by_user_id)
+      )
+    LIMIT 1`);
+  return (((r as { rows?: unknown[] }).rows ?? []) as unknown[]).length > 0;
 }
