@@ -11,7 +11,7 @@ import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
 import type { FleetRunner, FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
-import { fleetLabel, type HeadlinePart } from '@/lib/fleet-view';
+import { fleetLabel, runnerBusyLine, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 import { ZonedTime } from '@/components/DisplayTimezone';
@@ -38,6 +38,7 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
     : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
+  if (busy > fleet.capacity) return [{ text: `${agents(busy)} running, over the ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} online.` }, ...held, ...tail];
   if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...held, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...held, ...tail];
 }
@@ -79,7 +80,10 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
       ) : (
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span data-testid="fleet-runner-busy" className="font-mono text-[12px] tabular-nums text-text-secondary">
-            <b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy
+            {busy > runner.maxSlots
+              // Slots lowered while agents ran: say it, never "6/5 busy" (lib/fleet-view.ts runnerBusyLine).
+              ? <b className="text-accent-text">{runnerBusyLine({ ...runner, online: true })}</b>
+              : <><b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy</>}
           </span>
           <SlotMeter live={busy} max={runner.maxSlots} />
         </div>
@@ -114,6 +118,12 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
             {fleet.runners.map(r => <RunnerRow key={r.id} runner={r} />)}
             {cloud}
           </ul>
+        )}
+        {/* A runner's slots are its own setting, changed on that machine; the claim limit follows them. */}
+        {fleet.runners.some(r => !r.elastic) && (
+          <p data-testid="fleet-slots-hint" className="text-meta text-text-muted">
+            Change a runner&apos;s slots on that machine: <code className="font-mono">buildd slots &lt;n&gt;</code>, or + and − in buildd top.
+          </p>
         )}
       </div>
     </SettingsSection>
