@@ -121,4 +121,45 @@ describe('resolveRunnerSeatWallKey', () => {
     expect((await resolveRunnerSeatWallKey(input(), deps({ teamClaudeCredentialVisible: boom }))).seatKey).toBeNull();
     expect((await resolveRunnerSeatWallKey(input(), deps({ teamEndpointWins: boom }))).seatKey).toBeNull();
   });
+
+  // Spec "A runner" (34a48877) R-9, R-10, AC-1, AC-2, AC-3. The run itself says
+  // which login it used. A runner on its own machine login
+  // walls only itself, even when the team also stores a Claude credential that
+  // this run did not use: one machine's session limit held every runner of the
+  // team for hours because a stored token existed somewhere.
+  describe('the login the run reports it used', () => {
+    it("scopes a machine-login run's wall to its runner even though the team stores a Claude credential", async () => {
+      for (const loginUsed of ['machine_login', 'machine_token'] as const) {
+        const out = await resolveRunnerSeatWallKey(
+          input({ loginUsed }),
+          deps({ teamClaudeCredentialVisible: async () => true, teamEndpointWins: async () => true, heartbeatModelAuthSource: async () => null }),
+        );
+        expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
+      }
+    });
+
+    it('keeps the wall shared when the run used the stored team credential', async () => {
+      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'stored' }), deps());
+      expect(out.seatKey).toBeNull();
+      expect(out.reason).toContain('stored');
+    });
+
+    it('still keeps tenant, Codex, cloud, unnamed-runner and API rate-limit walls shared', async () => {
+      const m = { loginUsed: 'machine_login' as const };
+      expect((await resolveRunnerSeatWallKey(input({ ...m, tenantId: 'tenant-1' }), deps())).seatKey).toBeNull();
+      expect((await resolveRunnerSeatWallKey(input({ ...m, backend: 'codex' }), deps())).seatKey).toBeNull();
+      expect((await resolveRunnerSeatWallKey(input({ ...m, claimedByCloud: true }), deps())).seatKey).toBeNull();
+      expect((await resolveRunnerSeatWallKey(input({ ...m, runner: 'runner' }), deps())).seatKey).toBeNull();
+      expect((await resolveRunnerSeatWallKey(input({ ...m, error: '429 rate_limit_error' }), deps())).seatKey).toBeNull();
+    });
+
+    it('needs no lookup when the run named its machine login', async () => {
+      const boom = async () => { throw new Error('db down'); };
+      const out = await resolveRunnerSeatWallKey(
+        input({ loginUsed: 'machine_login' }),
+        deps({ heartbeatModelAuthSource: boom, teamClaudeCredentialVisible: boom, teamEndpointWins: boom }),
+      );
+      expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
+    });
+  });
 });

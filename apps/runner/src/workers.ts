@@ -155,7 +155,7 @@ import {
 } from './claim-budget-signals';
 import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
-import { buildTerminalAttributionPayload } from './terminal-attribution';
+import { buildTerminalAttributionPayload, claudeLoginUsed } from './terminal-attribution';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailures, type RouteProblem, type RunRoute } from './run-route';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
@@ -4326,6 +4326,14 @@ export class WorkerManager {
       // classified below, once its CODEX_HOME auth is in place.
       worker.costBasis = cloudCostBasis(process.env)
         ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
+      worker.claudeLoginUsed = claudeLoginUsed({
+        isCodexTask,
+        cloud: !!cloudCostBasis(process.env),
+        machineLoginUsed: modelEnv.machineLoginUsed,
+        machineLogin,
+        injected: modelEnv.injected,
+        claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+      });
       sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
       // The route behind that basis (run-route.ts), from the same inputs.
       // Codex is classified below with its basis. A new session starts with
