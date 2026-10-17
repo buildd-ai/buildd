@@ -10,6 +10,8 @@ let floorLimit: number | null;
 let floorWhere: any;
 let reviewState: string;
 let repoInstallation: number | null;
+/** Whether the installation covering a repo belongs to the workspace's team. */
+let repoTeamOwned = true;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -76,7 +78,15 @@ mock.module('@/lib/workspace-installation', () => ({
     fullName: ws?.repo ?? null,
     installationId: ws?.installationId ?? null,
   }),
-  installationIdForRepo: async () => repoInstallation,
+  // The real rule (tests/db/team-installation-ownership.test.ts), over the fixtures above.
+  createTeamInstallationResolver: () => ({
+    resolve: async (repo: string, ws: any, opts: any = {}) => {
+      if (ws.fullName && ws.installationId && ws.fullName.toLowerCase() === repo.toLowerCase()) return { installationId: ws.installationId };
+      if (repoInstallation && !repoTeamOwned) return { installationId: null, reason: 'installation_not_team_owned' };
+      const id = repoInstallation ?? (opts.fallbackToWorkspace ? ws.installationId : null);
+      return id ? { installationId: id } : { installationId: null, reason: 'no_installation' };
+    },
+  }),
 }));
 const redis = {
   listDue: mock(async (..._a: any[]): Promise<string[]> => []),
@@ -99,6 +109,7 @@ beforeEach(() => {
   floorLimit = null;
   reviewState = 'approved';
   repoInstallation = null;
+  repoTeamOwned = true;
   kernelView = null;
   kernelFloor = [];
   for (const m of [githubApi, landPr, readLandingMarker, readPrReviewStatus, kernelLandingView, ...Object.values(redis)]) m.mockClear();
@@ -203,6 +214,13 @@ describe('resolveTarget', () => {
     repoInstallation = 99;
     const res = await createLandingSweepDeps().resolveTarget(REF);
     expect(res.ok && res.target).toMatchObject({ repoFullName: 'buildd-ai/sibling', installationId: 99 });
+  });
+
+  it("skips a PR whose repo's installation is not the workspace's team's, rather than falling back", async () => {
+    workerRow.prUrl = 'https://github.com/elsewhere/app/pull/42';
+    repoInstallation = 99;
+    repoTeamOwned = false;
+    expect(await createLandingSweepDeps().resolveTarget(REF)).toEqual({ ok: false, skip: 'installation_not_team_owned' });
   });
 
   it('hands the mission integration fields through to landPr', async () => {

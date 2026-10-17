@@ -20,7 +20,7 @@
  * namespace gets a `full` backfill job enqueued after its first diff run.
  */
 import { db } from '@buildd/core/db';
-import { knowledgeIngestJobs, githubRepos, githubInstallations, workspaces, workers, tasks } from '@buildd/core/db/schema';
+import { knowledgeIngestJobs, githubRepos, workspaces, workers, tasks } from '@buildd/core/db/schema';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { admitDocsWithinCap } from '@buildd/core/billing-limits';
@@ -388,17 +388,19 @@ interface DiffExecution {
   changedFiles: string[];
 }
 
-/** Resolve the numeric GitHub installation id for token minting. */
-async function installationIdForRepo(repo: string): Promise<number> {
-  const installRows = await db
-    .select({ installationId: githubInstallations.installationId })
-    .from(githubRepos)
-    .innerJoin(githubInstallations, eq(githubRepos.installationId, githubInstallations.id))
-    .where(eq(githubRepos.fullName, repo));
-  if (installRows.length === 0) {
-    throw new Error(`no GitHub installation bound for repo ${repo}`);
+/**
+ * The GitHub installation id a job's repo is read through, for token minting: only the
+ * job's workspace's own team's installation (`createTeamInstallationResolver`).
+ */
+async function installationIdForJob(job: { repo: string; workspaceId: string }): Promise<number> {
+  const { createTeamInstallationResolver } = await import('@/lib/workspace-installation');
+  const picked = await createTeamInstallationResolver().forWorkspace(job.repo, job.workspaceId);
+  if (!picked.installationId) {
+    throw new Error(picked.reason === 'installation_not_team_owned'
+      ? `the GitHub installation covering ${job.repo} is not this workspace's team's`
+      : `no GitHub installation bound for repo ${job.repo}`);
   }
-  return installRows[0].installationId;
+  return picked.installationId;
 }
 
 /**
@@ -409,7 +411,7 @@ async function installationIdForRepo(repo: string): Promise<number> {
  */
 async function executePushJob(job: IngestJob): Promise<DiffExecution> {
   if (!job.sha) throw new Error(`push job ${job.id} is missing sha`);
-  const installationId = await installationIdForRepo(job.repo);
+  const installationId = await installationIdForJob(job);
 
   const candidates = (job.changedFiles ?? []).filter(p => classifyIngestCorpus(p) === 'docs');
   if (candidates.length > MAX_DIFF_FILES) {
@@ -494,7 +496,7 @@ async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
     throw new Error(`diff job ${job.id} is missing prNumber/sha`);
   }
 
-  const installationId = await installationIdForRepo(job.repo);
+  const installationId = await installationIdForJob(job);
 
   // List the PR's changed files (paginated). Stop as soon as the cap is blown.
   const prFiles: Array<{ filename: string; status: string; previous_filename?: string; patch?: string }> = [];
