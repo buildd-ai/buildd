@@ -3407,6 +3407,9 @@ export const evidenceObjects = pgTable('evidence_objects', {
   // Task lineage: find all evidence for a task and its retry chain
   taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
   scoutRunIdx: index('evidence_objects_scout_run_idx').on(t.scoutRunId),
+  // One row per (object, task). A retried CI job log capture writes the same
+  // object and upserts on this; Scout rows (task_id NULL) never collide.
+  objectTaskUnique: uniqueIndex('evidence_objects_object_task_unique').on(t.objectKey, t.taskId),
   oneOwner: check(
     'evidence_objects_one_owner',
     sql`(${t.scoutRunId} IS NULL AND ${t.taskId} IS NOT NULL AND ${t.rootTaskId} IS NOT NULL AND ${t.workerId} IS NOT NULL)
