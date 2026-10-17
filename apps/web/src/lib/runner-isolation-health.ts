@@ -48,9 +48,9 @@ export function isSharedRunner(
 
 const FIXER = "The runner's operator fixes this on its host; buildd never changes host security settings.";
 
-/** The cause without the setting name in brackets, for the overview line. */
+/** The cause without the setting or command names in brackets, for the overview line. */
 function plainCause(reason: NonNullable<BackendConfinement['reason']>, platform: RunnerHostPlatform): string {
-  return isolationReasonText(reason, platform).replace(/\s*\([^)]*\)\s*$/, '');
+  return isolationReasonText(reason, platform).replace(/\s*\([^)]*\)/g, '');
 }
 
 function sentence(s: string): string {
@@ -209,7 +209,8 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     allowed,
     probeAt: rec.probeAt,
     probeCurrent: true,
-    fixer: steps.length > 0 || cause ? FIXER : null,
+    // An allowed opt-out needs no fix; its steps say how to turn the sandbox back on.
+    fixer: allowed ? null : steps.length > 0 || cause ? FIXER : null,
     steps,
   };
 }

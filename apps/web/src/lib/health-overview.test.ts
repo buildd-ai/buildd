@@ -65,3 +65,9 @@ describe('overviewStatusRows', () => {
       .toMatchObject({ value: 'Paused until a usage limit resets', tone: 'warning' });
   });
 });
+
+describe('overviewHeadline sandbox count', () => {
+  it('counts sandbox problems without calling an unconfirmed probe unsandboxed', () => {
+    expect(overviewHeadline({ ...CALM, unsandboxedRunners: 2 }).text).toBe('2 sandbox problems.');
+  });
+});

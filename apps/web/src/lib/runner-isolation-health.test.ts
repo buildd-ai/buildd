@@ -44,12 +44,15 @@ const PENDING = { protectedWorkPending: true };
 const IDLE = { protectedWorkPending: false };
 
 /** Codes and setting names belong in runner detail, never the overview line. */
-const INTERNAL = /_|=|BUILDD|kernel\.|isolation record|probe_|opt_out/;
+const INTERNAL = /_|=|\(|BUILDD|kernel\.|sandbox-exec|isolation record|probe_|opt_out/;
 
 describe('isolationProblem: Problems only for an actionable policy deviation (R-9, AC-10)', () => {
   it('lists a runner that is meant to be protected and lost confinement', () => {
-    for (const reason of ['userns_sysctl_denied', 'bwrap_missing', 'probe_exec_failed', 'backend_probe_failed'] as const) {
-      const p = isolationProblem(runner({ isolation: record('linux', none(reason)) }), IDLE);
+    for (const [platform, reason] of [
+      ['linux', 'userns_sysctl_denied'], ['linux', 'bwrap_missing'], ['linux-container', 'probe_exec_failed'],
+      ['linux', 'backend_probe_failed'], ['darwin', 'backend_probe_failed'],
+    ] as const) {
+      const p = isolationProblem(runner({ isolation: record(platform, none(reason)) }), IDLE);
       expect(p).not.toBeNull();
       expect(p!.title).toBe('laptop: not sandboxed');
       expect(`${p!.title} ${p!.detail}`).not.toMatch(INTERNAL);
@@ -138,6 +141,7 @@ describe('runnerIsolationDetail: plain-word runner detail (R-10)', () => {
   it('says why policy allows an opt-out on a runner only its operator uses', () => {
     const d = runnerIsolationDetail(runner({ shared: false, isolation: record('linux', none('opt_out')) }));
     expect(d.allowed).toMatch(/only its operator/);
+    expect(d.fixer).toBeNull();
     expect(d.steps).toEqual(['Unset BUILDD_DISABLE_SANDBOX and restart the runner.']);
     expect(runnerIsolationDetail(runner({ shared: true, isolation: record('linux', none('opt_out')) })).allowed).toBeNull();
   });
