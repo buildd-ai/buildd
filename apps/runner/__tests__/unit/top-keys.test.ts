@@ -50,7 +50,8 @@ describe('moving', () => {
     expect(selectedRow(s, NOW)?.title).toBe('single instance');
     ({ s } = press(s, '\x1b[D', '\x1b[B'));
     expect(s.focus).toBe('missions');
-    expect(s.selectedMission).toBe('m-spec-0000-0000');
+    // The local session's mission is listed now, after Runner TUI.
+    expect(s.selectedMission).toBe('m-local-000-0000');
     expect(s.rowCursor).toBe(0);
     ({ s } = press(s, '\r'));
     expect(s.focus).toBe('tasks');
@@ -156,7 +157,7 @@ describe('status line from the server answer', () => {
   test('a refusal shows the server reason verbatim', () => {
     expect(actionResultText(answer, { status: 409, body: { error: 'Worker is not waiting for input' } }))
       .toEqual({ text: 'Answer refused: Worker is not waiting for input (HTTP 409)', tone: 'error' });
-    expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Claim refused: nope (HTTP 400)');
+    expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Not claimed: nope.');
     expect(actionResultText(answer, { status: 502, body: {} }).text).toBe('Answer refused: HTTP 502');
   });
 });
