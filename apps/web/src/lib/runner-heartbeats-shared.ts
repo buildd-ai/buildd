@@ -42,6 +42,12 @@ export interface RunnerHeartbeat {
    * it: then only `sandboxEnabled` is known, and its cause is not.
    */
   isolation: RunnerIsolationRecord | null;
+  /**
+   * Other people's tasks can run here: the runner's team or the team viewing
+   * it has more than one member. An operator's opt-out is allowed only when
+   * this is false (runner-isolation-health.ts).
+   */
+  shared: boolean;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */

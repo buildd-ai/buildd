@@ -154,6 +154,11 @@ const MECHANISM_TEXT: Record<Exclude<IsolationMechanism, 'none'>, string> = {
   landlock: 'Landlock',
 };
 
+/** A mechanism's name in plain words; `none` reads as `none`. */
+export function isolationMechanismText(mechanism: IsolationMechanism): string {
+  return mechanism === 'none' ? 'none' : MECHANISM_TEXT[mechanism];
+}
+
 /**
  * The one verdict `install.sh`, `buildd doctor` and Health give for a host
  * (R-8, AC-8). Health, doctor and the installer differ in layout only: the

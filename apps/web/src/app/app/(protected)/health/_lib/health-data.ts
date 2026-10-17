@@ -236,6 +236,8 @@ export interface HealthData {
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
+  /** A task waits in the scoped workspaces; every task needs protection by default. */
+  protectedWorkPending: boolean;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
   now: number;
@@ -312,6 +314,7 @@ export async function loadHealth({
     dispatchHealth,
     failureGroups,
     agentAccess,
+    protectedWorkPending,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
@@ -609,6 +612,16 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     // Agent runs' access: grant failures with their fix, refusals by reason.
     // A read failure hides the section, never the page.
     need('agentAccess') ? loadAgentAccessReport(scopedWsIds).catch(() => null) : null,
+    // Any pending task: every task needs protection until per-task isolation
+    // requirements exist, so an unconfirmed sandbox is a Problem only while
+    // one waits (runner-isolation-health.ts).
+    need('runners')
+      ? db.select({ id: tasks.id }).from(tasks)
+        .where(and(inArray(tasks.workspaceId, scopedWsIds), eq(tasks.status, 'pending')))
+        .limit(1)
+        .then(rows => rows.length > 0)
+        .catch(() => false)
+      : false,
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -713,6 +726,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
       runnerLanes,
+      protectedWorkPending,
       now,
     },
   };
