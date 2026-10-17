@@ -10,6 +10,7 @@ import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from '.
 import { resolveClaudeCliVersion } from './sdk-binary-path';
 import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { localCodexAuthPath } from './host-seat';
+import { CLAUDE_INNER_SANDBOX_UNSHARE, probeBwrapNamespacesDetailed } from './isolation-probe';
 
 export interface ScanConfig {
   extraEnvKeys?: string[];
@@ -50,46 +51,13 @@ const DEFAULT_ENV_KEYS = [
 ];
 
 /**
- * Self-check: does bwrap (bubblewrap) support unprivileged user namespaces on this runner?
+ * Self-check: does bwrap (bubblewrap) support the given namespaces on this runner?
  *
- * Returns true if bwrap is installed and can create a user namespace. Returns false
- * if bwrap is missing or if the kernel has unprivileged_userns_clone=0. The result
- * is used by the runner to force-disable Claude Code sandboxing when namespaces are
- * unavailable — preventing every Bash tool call from failing with a bwrap error.
+ * The cause, when it doesn't, is kept by probeBwrapNamespacesDetailed
+ * (./isolation-probe); consumers that only gate on it read the boolean.
  */
 function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = false): boolean {
-  // Operator escape hatch — set when the kernel/container config is known-bad
-  // and the proc-file approach below is insufficient (e.g. inside a user namespace
-  // where the sysctl is not propagated correctly).
-  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
-
-  // Fast-path: read the kernel sysctl directly. If it's "0", user namespace
-  // creation is disabled and every --unshare-user bwrap invocation will fail.
-  if (process.platform === 'linux') {
-    try {
-      const val = readFileSync('/proc/sys/kernel/unprivileged_userns_clone', 'utf8').trim();
-      if (val === '0') return false;
-    } catch { /* sysctl not present on all kernel configs — fall through */ }
-  }
-
-  try {
-    execSync('which bwrap', { timeout: 2000, stdio: 'pipe' });
-  } catch {
-    return false; // not installed — sandbox won't be attempted
-  }
-  // loaderBinds: on merged-usr hosts /lib and /lib64 are symlinks into /usr and
-  // a binary's ELF interpreter is named by that path, so with /usr alone the
-  // exec fails ENOENT and the probe misreads it as "no namespaces".
-  const binds = loaderBinds ? ' --ro-bind-try /bin /bin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64' : '';
-  try {
-    execSync(
-      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr${binds} --proc /proc --dev /dev -- echo ok`,
-      { timeout: 5000, stdio: 'pipe' },
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return probeBwrapNamespacesDetailed(unshareFlags, loaderBinds).ok;
 }
 
 /**
@@ -111,7 +79,7 @@ function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = fal
  * consumer that unshares less — see checkBwrapMountIsolationSupport.
  */
 export function checkBwrapSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net'], true);
+  return probeBwrapNamespaces(CLAUDE_INNER_SANDBOX_UNSHARE, true);
 }
 
 /**
