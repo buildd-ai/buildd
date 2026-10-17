@@ -16,8 +16,15 @@ const { RELEASE_CANDIDATE_FIX_KEY } = await import('@/lib/release-candidate-ci')
 
 const fixCtx = { prNumber: 90, headSha: 'cand-sha', version: '1.2.3', branch: 'release/v1.2.3', sourceBranch: 'dev' };
 
+// The stub db below does not evaluate WHERE, so the compare-and-set predicate
+// is asserted on the rendered SQL instead (PgDialect), not trusted to the stub.
+import { PgDialect } from 'drizzle-orm/pg-core';
+const dialect = new PgDialect();
+const render = (q: unknown) => dialect.sqlToQuery(q as any);
+
 function stubDb(opts: { taskContext?: Record<string, unknown> | null; claim?: boolean; worker?: boolean }) {
   const updates: any[] = [];
+  const wheres: any[] = [];
   const db: any = {
     query: {
       workers: { findFirst: async () => (opts.worker === false ? undefined : { taskId: 't1' }) },
@@ -25,23 +32,26 @@ function stubDb(opts: { taskContext?: Record<string, unknown> | null; claim?: bo
     },
     update: () => ({
       set: (v: any) => ({
-        where: () => {
+        where: (w: unknown) => {
           updates.push(v);
+          wheres.push(w);
           return { returning: async () => (opts.claim === false ? [] : [{ id: 't1' }]) , then: (r: any) => r(undefined) };
         },
       }),
     }),
   };
-  return { db, updates };
+  return { db, updates, wheres };
 }
 
 const input = { repoFullName: 'o/r', prNumber: 101, baseRef: 'dev', installationId: 7 };
 
-function gh(candidate: { state: string; sha: string }) {
-  const calls: Array<{ path: string; opts?: any }> = [];
-  const fn: any = async (_i: number, path: string, opts?: any) => {
-    calls.push({ path, opts });
-    return path.endsWith('/comments') ? {} : { state: candidate.state, head: { sha: candidate.sha } };
+function gh(candidate: { state: string; sha: string }, fixPr: { merged: boolean; base: string } = { merged: true, base: 'dev' }) {
+  const calls: Array<{ installationId: number; path: string; opts?: any }> = [];
+  const fn: any = async (installationId: number, path: string, opts?: any) => {
+    calls.push({ installationId, path, opts });
+    if (path.endsWith('/comments')) return {};
+    if (path.endsWith(`/pulls/${input.prNumber}`)) return { merged: fixPr.merged, base: { ref: fixPr.base } };
+    return { state: candidate.state, head: { sha: candidate.sha } };
   };
   return { fn, calls };
 }
@@ -87,6 +97,46 @@ describe('amendCandidateOnFixMerge', () => {
       .toEqual({ kind: 'skipped', reason: 'candidate_not_open' });
     expect(await amendCandidateOnFixMerge(input, { db: stubDb({}).db, githubApi: gh({ state: 'open', sha: 'newer' }).fn, dispatch: dispatch as any }))
       .toEqual({ kind: 'skipped', reason: 'candidate_moved' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('claims the marker with a compare-and-set on this task and an unset marker, and hands it back by key', async () => {
+    const { db, updates, wheres } = stubDb({});
+    const dispatch = mock(async () => ({ ok: false as const, status: 500, error: 'boom' }));
+    await amendCandidateOnFixMerge(input, { db, githubApi: gh({ state: 'open', sha: 'cand-sha' }).fn, dispatch: dispatch as any });
+    expect(wheres.length).toBe(2);
+
+    const claimWhere = render(wheres[0]);
+    expect(claimWhere.sql).toBe('(("tasks"."id" = $1) and ("tasks"."context"->>$2 is null))');
+    expect(claimWhere.params).toEqual(['t1', RELEASE_CANDIDATE_AMEND_PR_KEY]);
+    const claimSet = render(updates[0].context);
+    expect(claimSet.sql).toBe(`jsonb_set(coalesce("tasks"."context", '{}'::jsonb), $1::text[], to_jsonb($2::int))`);
+    expect(claimSet.params).toEqual([`{${RELEASE_CANDIDATE_AMEND_PR_KEY}}`, input.prNumber]);
+
+    const releaseWhere = render(wheres[1]);
+    expect(releaseWhere.sql).toBe('"tasks"."id" = $1');
+    expect(releaseWhere.params).toEqual(['t1']);
+    const releaseSet = render(updates[1].context);
+    expect(releaseSet.sql).toBe('"tasks"."context" - $1');
+    expect(releaseSet.params).toEqual([RELEASE_CANDIDATE_AMEND_PR_KEY]);
+  });
+
+  it('a merge found by reconciliation (no delivery) reads the base from GitHub on the release target installation', async () => {
+    const { db } = stubDb({});
+    const g = gh({ state: 'open', sha: 'cand-sha' });
+    const dispatch = mock(async (_p: any) => ({ ok: true as const, releaseId: 'r1', deduped: false, headSha: 'x' }));
+    const out = await amendCandidateOnFixMerge({ repoFullName: 'o/r', prNumber: 101 }, { db, githubApi: g.fn, dispatch: dispatch as any });
+    expect(out).toEqual({ kind: 'amended', version: '1.2.3', candidatePr: 90 });
+    expect(g.calls[0]).toMatchObject({ installationId: 7, path: '/repos/o/r/pulls/101' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reconciled merge into another base, or a PR GitHub says is not merged, is skipped with a reason', async () => {
+    const dispatch = mock(async () => ({ ok: true as const }));
+    expect(await amendCandidateOnFixMerge({ repoFullName: 'o/r', prNumber: 101 }, { db: stubDb({}).db, githubApi: gh({ state: 'open', sha: 'cand-sha' }, { merged: true, base: 'main' }).fn, dispatch: dispatch as any }))
+      .toEqual({ kind: 'skipped', reason: 'wrong_base' });
+    expect(await amendCandidateOnFixMerge({ repoFullName: 'o/r', prNumber: 101 }, { db: stubDb({}).db, githubApi: gh({ state: 'open', sha: 'cand-sha' }, { merged: false, base: 'dev' }).fn, dispatch: dispatch as any }))
+      .toEqual({ kind: 'skipped', reason: 'not_merged' });
     expect(dispatch).not.toHaveBeenCalled();
   });
 

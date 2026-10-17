@@ -30,7 +30,7 @@ export const RELEASE_CANDIDATE_AMEND_PR_KEY = 'releaseCandidateAmendPr';
 
 export type CandidateAmendOutcome =
   | { kind: 'amended'; version: string; candidatePr: number }
-  | { kind: 'skipped'; reason: 'not_a_candidate_fix' | 'wrong_base' | 'already_amended' | 'candidate_not_open' | 'candidate_moved' | 'not_configured' }
+  | { kind: 'skipped'; reason: 'not_a_candidate_fix' | 'wrong_base' | 'not_merged' | 'already_amended' | 'candidate_not_open' | 'candidate_moved' | 'not_configured' }
   | { kind: 'dispatch_failed'; error: string };
 
 export interface CandidateAmendDeps {
@@ -41,8 +41,14 @@ export interface CandidateAmendDeps {
 
 interface FixContext { prNumber: number; headSha: string; version: string; branch: string; sourceBranch: string }
 
+/**
+ * `baseRef` and `installationId` come from the webhook delivery when there is
+ * one. A merge found by reconciliation (pr-reconcile, pr-state-refresh) emits
+ * `pr.merged` without a delivery; then the installation is the release
+ * target's and the base is read from the fix PR itself on GitHub.
+ */
 export async function amendCandidateOnFixMerge(
-  input: { repoFullName: string; prNumber: number; baseRef: string | null; installationId: number },
+  input: { repoFullName: string; prNumber: number; baseRef?: string | null; installationId?: number | null },
   deps: CandidateAmendDeps = {},
 ): Promise<CandidateAmendOutcome> {
   const db = deps.db ?? defaultDb;
@@ -60,7 +66,22 @@ export async function amendCandidateOnFixMerge(
   });
   const fix = (fixTask?.context as Record<string, unknown> | null)?.[RELEASE_CANDIDATE_FIX_KEY] as FixContext | undefined;
   if (!fixTask || !fix?.version || !fix.sourceBranch) return { kind: 'skipped', reason: 'not_a_candidate_fix' };
-  if (input.baseRef !== fix.sourceBranch) return { kind: 'skipped', reason: 'wrong_base' };
+
+  const target = await resolveReleaseTarget({ workspaceId: fixTask.workspaceId, scope: { internal: true } });
+  const resolution = target.ok ? resolveReleaseStrategy(target.target.releaseConfig) : null;
+  if (!target.ok || !resolution?.ok || resolution.strategy.kind !== 'workflow_dispatch') {
+    return { kind: 'skipped', reason: 'not_configured' };
+  }
+  const t = target.target;
+  const installationId = input.installationId ?? t.installationId;
+
+  let baseRef = input.baseRef;
+  if (baseRef === undefined) {
+    const fixPr = await githubApi(installationId, `/repos/${input.repoFullName}/pulls/${input.prNumber}`);
+    if (!fixPr?.merged) return { kind: 'skipped', reason: 'not_merged' };
+    baseRef = (fixPr.base?.ref as string | undefined) ?? null;
+  }
+  if (baseRef !== fix.sourceBranch) return { kind: 'skipped', reason: 'wrong_base' };
 
   const claimed = await db
     .update(tasks)
@@ -80,16 +101,10 @@ export async function amendCandidateOnFixMerge(
   };
 
   try {
-    const candidate = await githubApi(input.installationId, `/repos/${input.repoFullName}/pulls/${fix.prNumber}`);
+    const candidate = await githubApi(installationId, `/repos/${input.repoFullName}/pulls/${fix.prNumber}`);
     if (candidate?.state !== 'open') return { kind: 'skipped', reason: 'candidate_not_open' };
     if (candidate?.head?.sha !== fix.headSha) return { kind: 'skipped', reason: 'candidate_moved' };
 
-    const target = await resolveReleaseTarget({ workspaceId: fixTask.workspaceId, scope: { internal: true } });
-    const resolution = target.ok ? resolveReleaseStrategy(target.target.releaseConfig) : null;
-    if (!target.ok || !resolution?.ok || resolution.strategy.kind !== 'workflow_dispatch') {
-      return { kind: 'skipped', reason: 'not_configured' };
-    }
-    const t = target.target;
     const v = fix.version;
     const recorded = await dispatch({
       workspaceId: t.workspaceId,
@@ -109,7 +124,7 @@ export async function amendCandidateOnFixMerge(
       return { kind: 'dispatch_failed', error: recorded.error };
     }
 
-    await githubApi(input.installationId, `/repos/${input.repoFullName}/issues/${fix.prNumber}/comments`, {
+    await githubApi(installationId, `/repos/${input.repoFullName}/issues/${fix.prNumber}/comments`, {
       method: 'POST',
       body: JSON.stringify({
         body: `The fix for this candidate merged (#${input.prNumber}). Amending release candidate v${v} from \`${fix.sourceBranch}\`: the Release workflow was dispatched with \`amend: ${v}\`. Its checks and approvals restart on the new head.`,

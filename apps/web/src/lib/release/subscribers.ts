@@ -78,14 +78,24 @@ function recordProdMerge(e: EventOf<'pr.merged'>): void {
   );
 }
 
-/** The dev-side fix for a red frozen candidate merged: amend the candidate (lib/release/candidate-amend.ts). */
+/**
+ * The dev-side fix for a red frozen candidate merged: amend the candidate
+ * (lib/release/candidate-amend.ts). A merge found by reconciliation carries no
+ * delivery; the amendment then looks up the installation and the base itself.
+ */
 async function amendCandidateOnFix(e: EventOf<'pr.merged'>): Promise<void> {
   const d = e.delivery;
-  if (!d || d.installationId == null) return;
   const out = await amendCandidateOnFixMerge({
-    repoFullName: e.repoFullName, prNumber: e.prNumber, baseRef: d.baseRef, installationId: d.installationId,
+    repoFullName: e.repoFullName,
+    prNumber: e.prNumber,
+    ...(d ? { baseRef: d.baseRef, installationId: d.installationId } : {}),
   });
-  if (out.kind === 'dispatch_failed') console.error(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: ${out.error}`);
+  if (out.kind === 'dispatch_failed') {
+    console.error(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: ${out.error}`);
+  } else if (out.kind === 'skipped' && out.reason !== 'not_a_candidate_fix') {
+    // A candidate fix that did not amend: say why, so a missing amendment can be traced.
+    console.log(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: skipped (${out.reason})${d ? '' : ' [reconciled merge]'}`);
+  }
 }
 
 async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void> {

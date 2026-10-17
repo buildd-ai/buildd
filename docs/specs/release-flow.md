@@ -199,7 +199,11 @@ path escalation or the migration inspector.
   `amend_confirm` set to the candidate's version, and a comment on the
   candidate. Once per fix PR (a marker on the fix task, handed back if the
   dispatch fails). A candidate that is closed, or whose head is no longer the
-  one the fix was filed for, is left alone.
+  one the fix was filed for, is left alone. A merge found by reconciliation
+  rather than the webhook amends the same way: the base is read from the fix
+  PR on GitHub. Both context keys (`releaseCandidateFix` on the fix task and
+  the amendment marker) are server-owned: a caller's copy is dropped on every
+  task-create path.
 - A release candidate has **no kernel delivery, by design**. The kernel's
   deliveries exist to drive a PR's own head forward: repair pushes, CI retries
   on its branch, review-fix rounds. A candidate's head is frozen to the SHA its
@@ -235,6 +239,8 @@ path escalation or the migration inspector.
   `amend = amend_confirm = <version>` and the candidate is commented; a
   redelivery, a closed candidate, or a candidate already amended dispatches
   nothing, and a failed dispatch hands the marker back so a retry can amend.
+  A merge reported without a webhook delivery reads the fix PR's base from
+  GitHub and amends the same way.
 
 **Code surface**:
 - Policy and classifier: `packages/core/release-candidate.ts`:

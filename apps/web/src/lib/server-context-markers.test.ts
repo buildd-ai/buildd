@@ -1,10 +1,21 @@
 import { describe, it, expect } from 'bun:test';
-import { specRepairStamp, withoutMissionVerificationMarkers } from './server-context-markers';
+import { RELEASE_CANDIDATE_CONTEXT_KEYS, specRepairStamp, withoutMissionVerificationMarkers } from './server-context-markers';
+import { RELEASE_CANDIDATE_FIX_KEY } from './release-candidate-ci';
+import { RELEASE_CANDIDATE_AMEND_PR_KEY } from './release/candidate-amend';
 
 describe('outcome-spec markers are the server\'s to write', () => {
   it('drops a caller\'s finalVerification and specRepair, keeping everything else', () => {
     const ctx = { finalVerification: { missionId: 'm' }, specRepair: { missionId: 'm' }, baseBranch: 'mission/x' };
     expect(withoutMissionVerificationMarkers(ctx)).toEqual({ baseBranch: 'mission/x' });
+  });
+
+  it('drops a caller\'s release-candidate keys too', () => {
+    const ctx = { releaseCandidateFix: { prNumber: 1, version: '1.0.0', sourceBranch: 'dev' }, releaseCandidateAmendPr: 2, baseBranch: 'dev' };
+    expect(withoutMissionVerificationMarkers(ctx)).toEqual({ baseBranch: 'dev' });
+  });
+
+  it('lists the same key names the release flow writes', () => {
+    expect([...RELEASE_CANDIDATE_CONTEXT_KEYS].sort()).toEqual([RELEASE_CANDIDATE_AMEND_PR_KEY, RELEASE_CANDIDATE_FIX_KEY].sort());
   });
 
   it('passes a context without markers through unchanged', () => {
