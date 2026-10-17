@@ -78,8 +78,10 @@ async function readPaged<T>(
  * Each run that belongs to a GitHub Actions workflow run is annotated with the
  * `workflow_id` of that workflow (read from the commit's workflow runs, matched on
  * check suite), because a job name alone does not identify a check: `integration`
- * exists in several workflows. A failed or incomplete workflow-run read throws, so
- * callers treat the runs as unreadable instead of guessing which run replaced which.
+ * exists in several workflows. When the workflow-run read fails or is incomplete
+ * (5xx, no actions:read, too many pages) the check runs are still returned, each given
+ * its own workflow id, so nothing collapses and every failing run keeps counting: the
+ * degraded read errs red, never green.
  */
 export async function listAllCheckRuns<T = Record<string, unknown>>(
   api: Api, installationId: number, repoFullName: string, sha: string,
@@ -89,15 +91,22 @@ export async function listAllCheckRuns<T = Record<string, unknown>>(
   const read = await readPaged<T>(api, installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?filter=latest`, 'check_runs');
   const inSuite = (r: T) => (r as { check_suite?: { id?: number | null } | null }).check_suite?.id;
   if (!read.items.some((r) => typeof inSuite(r) === 'number')) return read;
-  const wf = await readPaged<{ workflow_id?: number; check_suite_id?: number }>(
-    api, installationId, `/repos/${repoFullName}/actions/runs?head_sha=${encodeURIComponent(sha)}`, 'workflow_runs',
-  );
-  if (!wf.complete) throw new Error('incomplete GitHub workflow-run read');
   const bySuite = new Map<number, number>();
-  for (const w of wf.items) {
-    if (typeof w.check_suite_id === 'number' && typeof w.workflow_id === 'number') bySuite.set(w.check_suite_id, w.workflow_id);
+  let wfRead = true;
+  try {
+    const wf = await readPaged<{ workflow_id?: number; check_suite_id?: number }>(
+      api, installationId, `/repos/${repoFullName}/actions/runs?head_sha=${encodeURIComponent(sha)}`, 'workflow_runs',
+    );
+    if (!wf.complete) wfRead = false;
+    for (const w of wf.items) {
+      if (typeof w.check_suite_id === 'number' && typeof w.workflow_id === 'number') bySuite.set(w.check_suite_id, w.workflow_id);
+    }
+  } catch {
+    wfRead = false;
   }
-  const items = read.items.map((r) => {
+  const items = read.items.map((r, i) => {
+    // Unknown workflows: a distinct negative id per run, so no run supersedes another.
+    if (!wfRead) return { ...r, workflow_id: -(i + 1) };
     const suite = inSuite(r);
     const workflow_id = typeof suite === 'number' ? bySuite.get(suite) : undefined;
     return workflow_id === undefined ? r : { ...r, workflow_id };

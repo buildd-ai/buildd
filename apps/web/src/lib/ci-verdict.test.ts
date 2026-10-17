@@ -135,8 +135,21 @@ describe('listAllCheckRuns annotates each run with its workflow', () => {
     expect(r.items.map((x) => x.workflow_id)).toEqual([5, 6, undefined]);
   });
 
-  it('an unreadable workflow-run read throws, so callers fail closed', async () => {
-    await expect(listAllCheckRuns(mk(null, true), 1, 'o/r', 'sha')).rejects.toThrow();
-    await expect(listAllCheckRuns(mk({ nope: [] }), 1, 'o/r', 'sha')).rejects.toThrow();
+  it('an unreadable workflow-run read degrades to no collapsing, so every failing run still counts', async () => {
+    for (const api of [mk(null, true), mk({ nope: [] })]) {
+      const r = await listAllCheckRuns<{ id: number; name: string; status: string; conclusion: string }>(api, 1, 'o/r', 'sha');
+      expect(r.items).toHaveLength(3);
+      const failing = [
+        { id: 1, name: 'integration', status: 'completed', conclusion: 'failure', check_suite: { id: 10 } },
+        { id: 2, name: 'integration', status: 'completed', conclusion: 'success', check_suite: { id: 20 } },
+      ];
+      const kept = latestRunPerName(
+        (await listAllCheckRuns<(typeof failing)[number]>(
+          async (_i, path) => (path.includes('/actions/runs') ? Promise.reject(new Error('502')) : { total_count: 2, check_runs: failing }),
+          1, 'o/r', 'sha',
+        )).items,
+      );
+      expect(kept).toHaveLength(2);
+    }
   });
 });
