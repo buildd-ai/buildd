@@ -389,6 +389,24 @@ export function currentOf(view: KernelView): CurrentView {
 const OPEN_ROUND = new Set(['queued', 'reviewing']);
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
 
+/** The task role each repair family files under (the host's `Work` roles). */
+const REPAIR_ROLE: Partial<Record<AttemptFamily, string>> = { review_fix: 'fix', ci: 'ci_fix', conflict: 'conflict_fix', migration: 'conflict_fix' };
+const RESOLUTION_FAMILIES: AttemptFamily[] = ['review_fix', 'ci', 'conflict', 'migration'];
+
+/**
+ * What a close (T18) or a merge (T17) makes moot, for its `cancel_open_attempts` (b6cfdbb9): the
+ * tasks of every open repair and of every open round's reviewer, by id. A repair row not yet
+ * linked to its task names its role instead, so the host can cancel that role's unstarted tasks.
+ * The ledger rows are cancelled by the transition itself; the tasks are the host's, and without
+ * this a queued repair stayed pending on a PR that no longer existed.
+ */
+function mootOnResolution(view: KernelView): { taskIds: string[]; unlinkedRoles?: string[] } {
+  const open = view.attempts.filter((a) => RESOLUTION_FAMILIES.includes(a.family) && OPEN_ATTEMPT.has(a.status));
+  const taskIds = [...open.flatMap((a) => (a.taskId ? [a.taskId] : [])), ...view.rounds.flatMap((r) => (OPEN_ROUND.has(r.status) && r.reviewerTaskId ? [r.reviewerTaskId] : []))];
+  const unlinkedRoles = [...new Set(open.filter((a) => !a.taskId).map((a) => REPAIR_ROLE[a.family]!))];
+  return { taskIds: [...new Set(taskIds)], ...(unlinkedRoles.length ? { unlinkedRoles } : {}) };
+}
+
 class Ctx {
   readonly d: DeliverySnapshot | null;
   readonly did: string;
@@ -1204,7 +1222,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
         // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
+        effects: [fx('stamp_pr_rows'), { ...fx('cancel_open_attempts'), payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null, reason: 'merged', ...mootOnResolution(c.view) } }, fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
         evidence: {
           live: cmd.live, reviewClass,
           ...(external ? { external: true, mergedBy: cmd.live.mergedBy ?? null, mergedHead, fromState: dd.state, merged_over_open_findings: mergedOverOpenFindings } : {}),
@@ -1228,7 +1246,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { stateReason: cmd.closeCause, boundAttemptId: null, resumeState: reviewBudgetHeld(dd) ? 'ESCALATED' : null },
         rounds: c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } })),
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
-        effects: [fx('cancel_open_attempts'), fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
+        effects: [{ ...fx('cancel_open_attempts'), payload: { closeCause: cmd.closeCause, reason: 'closed', ...mootOnResolution(c.view) } }, fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
         evidence: { live: cmd.live },
       });
     }

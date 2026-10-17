@@ -237,7 +237,10 @@ GitHub or Next.js.
   §14 legacy hand-off (`handOffToLegacyOn`, which `seam.ts`
   `handOffToLegacy` calls). A kind several families share
   (`escalate_exhaustion`, `cancel_open_attempts`) is answered per family; a
-  family the kernel does not know is `skipped:legacy_owns`.
+  family the kernel does not know is `skipped:legacy_owns`. A close's or a
+  merge's `cancel_open_attempts` (reasons `closed`, `merged`) is the kernel's:
+  it cancels the unstarted tasks the transition named (b6cfdbb9); the legacy
+  reconciler skips a kernel-owned PR, so nothing else would.
 - Conformance suite: `CONFORMANCE_SCENARIOS`
   (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
   scenarios over a `ConformanceHost`, run on the in-memory store by
@@ -343,7 +346,14 @@ the control plane, authenticated as the caller).
     `drain` (one delivery's due effects, `system` principals only), and
     `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
     its PR, reconcile what is owed; re-checked against the mission's repo
-    workspace). The same
+    workspace), and `attempt_ended` (T4: an attempt's end as the worker
+    PATCH, the reaper, a cancel or a reviewer takeover reports it; the
+    task's workspace rides on the input for the reach check, and the host
+    refuses an end whose task is in another workspace; during a release, a
+    control plane that predates the op refuses it as an unknown op and
+    applies nothing, and only then the web host applies the end itself and
+    logs it loudly, so a repair's or review's end is never lost; any other
+    refusal stays a refusal). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -1170,6 +1180,10 @@ column outside the kernel; S3 and S4 remove or route each one.
   only for the PR its delivery is bound to: another PR of the same task (a
   stacked series, a follow-up after the delivery's PR was abandoned) still
   completes it.
+  The attempt writers are ratcheted: the guard pins each ATTEMPT file's
+  count of `tasks.status` / `tasks.result` write statements
+  (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
+  one, fails CI, and a family moved behind the projection lowers its count.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
