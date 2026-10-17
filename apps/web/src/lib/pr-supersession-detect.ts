@@ -43,7 +43,7 @@ import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersessi
 import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -220,14 +220,13 @@ const SURFACE: Record<DetectVia, string> = {
 
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 
-/** Installation per repo, cached for one detection run. */
-function installationResolver() {
-  const cache = new Map<string, Promise<number | null>>();
-  return (repo: string) => {
-    const k = repo.toLowerCase();
-    if (!cache.has(k)) cache.set(k, installationIdForRepo(repo).catch(() => null));
-    return cache.get(k)!;
-  };
+/**
+ * Installation per repo, cached for one detection run: only the workspace's own team's
+ * installation, so a candidate in a repo another team's installation covers is never read.
+ */
+function installationResolver(workspaceId: string | null) {
+  const { forWorkspace } = createTeamInstallationResolver();
+  return async (repo: string): Promise<number | null> => (await forWorkspace(repo, workspaceId)).installationId;
 }
 
 async function listFiles(gh: GhReader, inst: number, repo: string, n: number): Promise<DiffFile[]> {
@@ -379,7 +378,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   const prNumber = worker.prNumber;
   if (!closedRepo || !prNumber) return { outcome: 'skipped', reason: 'no parsable PR url' };
 
-  const installationFor = installationResolver();
+  const installationFor = installationResolver(worker.workspaceId);
   const closedInst = await installationFor(closedRepo);
   if (!closedInst) return { outcome: 'skipped', reason: `no installation for ${closedRepo}` };
 
@@ -883,7 +882,7 @@ export async function rescanOnMerge(p: {
   const selfUrl = prUrlFor(repo, p.prNumber);
   const results: Array<{ prUrl: string; outcome: DetectResult['outcome'] | 'error' }> = [];
   try {
-    const inst = await installationIdForRepo(repo).catch(() => null);
+    const inst = (await createTeamInstallationResolver().forWorkspace(repo, p.workspaceId)).installationId;
     const merged: GhPr | null = inst
       ? await githubApi(inst, `/repos/${repo}/pulls/${p.prNumber}`, { signal: AbortSignal.timeout(SWEEP_LIMITS.requestTimeoutMs) }).catch(() => null)
       : null;
