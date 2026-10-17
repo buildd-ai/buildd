@@ -28,7 +28,7 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
 import { classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { detectPrSupersession } from '@/lib/pr-supersession-detect';
+import { detectPrSupersession, rescanOnMerge } from '@/lib/pr-supersession-detect';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { reviewRowFromEvent, commentRowFromEvent, withOwner, type ReviewFeedbackRow } from '@/lib/review-feedback';
@@ -150,8 +150,7 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
   // through recordPrSupersession either way.
   subscriber('reviews', 'pr.closed', 'supersession-rescan-on-merge', async e => {
     if (!e.merged || !e.mergeIsNew) return;
-    const rescan = () => import('@/lib/pr-supersession-detect')
-      .then(m => m.rescanOnMerge({ workspaceId: e.workspaceId, repoFullName: e.repoFullName, prNumber: e.prNumber, taskId: e.taskId }))
+    const rescan = () => rescanOnMerge({ workspaceId: e.workspaceId, repoFullName: e.repoFullName, prNumber: e.prNumber, taskId: e.taskId })
       .then(
         r => { if (r.nominated) console.log(`[webhook] supersession re-check after PR #${e.prNumber} merged: ${r.results.map(x => `${x.prUrl} ${x.outcome}`).join(', ')}`); },
         err => console.error(`[webhook] supersession re-check after PR #${e.prNumber} merged failed:`, err),
