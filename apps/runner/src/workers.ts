@@ -24,7 +24,7 @@ import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth, worktreeGitWritableRoots } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
@@ -4523,6 +4523,7 @@ export class WorkerManager {
           workspaceId: task.workspaceId,
           workerId: worker.id,
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+          writableRoots: worktreeGitWritableRoots(cwd),
           ...(codexEffort ? { effort: codexEffort } : {}),
           ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
         });
