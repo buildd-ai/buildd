@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   buildWorkflowRunOutcome,
   isConfiguredReleaseRun,
+  hasOpenReleasePr,
+  attributionRange,
   mapWorkflowConclusionToReleaseState,
   type WorkflowRunPayload,
 } from './workflow-run';
@@ -167,5 +169,27 @@ describe('isConfiguredReleaseRun', () => {
     expect(isConfiguredReleaseRun(run(), { workflowFile: undefined, repoFullName: 'org/repo' })).toBe(false);
     expect(isConfiguredReleaseRun(run(), { workflowFile: 'release.yml', repoFullName: null })).toBe(false);
     expect(isConfiguredReleaseRun(run({ path: undefined }), expected)).toBe(false);
+  });
+});
+
+describe('hasOpenReleasePr', () => {
+  const pr = (ref: string, base = 'main') => ({ base: { ref: base }, head: { ref } });
+  it('is true for an open frozen candidate or dev PR into prod', () => {
+    expect(hasOpenReleasePr([pr('release/v0.360.0')], 'main')).toBe(true);
+    expect(hasOpenReleasePr([pr('dev')], 'main')).toBe(true);
+  });
+  it('is false when nothing release-shaped is open, so a succeeded run that opened no PR can be cleared', () => {
+    expect(hasOpenReleasePr([], 'main')).toBe(false);
+    expect(hasOpenReleasePr([pr('feature/x'), pr('release/v1.0.0', 'dev')], 'main')).toBe(false);
+  });
+});
+
+describe('attributionRange', () => {
+  it('uses the merged PR range (base before merge .. merge commit), not the dispatch-time dev head', () => {
+    expect(attributionRange({ baseSha: 'b1', mergeCommitSha: 'm1' })).toEqual({ previousSha: 'b1', headSha: 'm1' });
+  });
+  it('is null when either end is unknown', () => {
+    expect(attributionRange({ baseSha: null, mergeCommitSha: 'm1' })).toBeNull();
+    expect(attributionRange({ baseSha: 'b1', mergeCommitSha: null })).toBeNull();
   });
 });

@@ -30,7 +30,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { notifyTeamOf } from '@/lib/notify';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
+import { buildWorkflowRunOutcome, hasOpenReleasePr, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { subscriber, type AnySubscriber, type EventOf, type WorkflowRunFact } from '@/lib/core-events';
@@ -451,10 +451,37 @@ async function advanceReleaseStateFromWorkflowRun(
     }
   }
 
-  const resolvedState = isGatedDispatchSuccess ? 'pending_external' : newState;
+  // A run that succeeded without opening a release PR (nothing to release, or
+  // the cut refused) has nothing to wait on. Left in `pending_external` it
+  // holds the in-flight guard and makes trigger_release refuse a new dispatch
+  // until forced. Only an answered "no open release PR" clears it; an
+  // unanswered lookup stays pending, as before.
+  let openedNoPr = false;
+  if (isGatedDispatchSuccess && installationId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: sqlWhere(eq(workspaces.id, matchingRelease.workspaceId)),
+      columns: { releaseConfig: true },
+    });
+    const prodBranch = ws?.releaseConfig?.prodBranch;
+    if (prodBranch) {
+      try {
+        const pulls = await githubApi(
+          installationId,
+          `/repos/${run.repository.full_name}/pulls?state=open&base=${encodeURIComponent(prodBranch)}&per_page=100`,
+        );
+        openedNoPr = Array.isArray(pulls) && !hasOpenReleasePr(pulls, prodBranch);
+      } catch (err) {
+        console.error(`[webhook:workflow_run] open-PR lookup failed for run ${run.id}:`, err);
+      }
+    }
+  }
+
+  const resolvedState = openedNoPr ? 'failed' : isGatedDispatchSuccess ? 'pending_external' : newState;
   const updateFields: Record<string, unknown> = { state: resolvedState };
   if (!matchingRelease.runUrl) updateFields.runUrl = run.html_url;
-  if (resolvedState === 'deploying') {
+  if (openedNoPr) {
+    updateFields.failureReason = 'release workflow succeeded but opened no release pull request';
+  } else if (resolvedState === 'deploying') {
     updateFields.deployedAt = new Date();
   } else if (resolvedState === 'failed') {
     updateFields.failureReason = `workflow conclusion: ${run.conclusion}`;
