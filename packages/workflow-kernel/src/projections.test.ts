@@ -338,3 +338,35 @@ describe('landing_needs_human says which refusal it was (88318f31)', () => {
     expect(landingEscalationCopy(null).headline).toBe('Merge refused; a person has to land it');
   });
 });
+
+// c1d66a6a: "Review budget spent without an approval" was shown for a PR approved twice, and a fix
+// pushed after the escalation was invisible: the person saw only "open" findings.
+describe('c1d66a6a: the review-exhausted copy says what happened', () => {
+  const dec = (round: number, verdict: 'approve' | 'request_changes') => R({ id: `r${round}`, round, headSha: `H${round}`, status: 'decided', verdict, effectiveVerdict: verdict });
+  const esc = (rounds: RoundSnapshot[], findings: KernelView['findings'] = []) =>
+    view({ view: { ...V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: rounds.length }), rounds), findings } });
+  const finding = (id: string, status: 'open' | 'addressed') => ({
+    id, originRoundId: 'r6', originRound: 6, originHeadSha: 'H6', ordinal: 0, path: `${id}.ts`, line: null, title: 'x', required: true,
+    status, lastRound: 6, addressedBySha: status === 'addressed' ? 'H7' : null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+  });
+
+  test('never approved: the budget ran out without an approval', () => {
+    expect(esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'request_changes')]).headline).toBe('Review budget spent without an approval');
+  });
+
+  test('approved, then later changes refused: it says so, in words', () => {
+    const v = esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'approve'), dec(4, 'approve'), dec(5, 'request_changes'), dec(6, 'request_changes')]);
+    expect(v.headline).toBe('Approved twice, then a later change was refused twice');
+    expect(esc([dec(1, 'approve'), dec(2, 'request_changes')]).headline).toBe('Approved, then a later change was refused');
+  });
+
+  test('the last verdict an approval that left findings unverified: it says so, not "without an approval"', () => {
+    expect(esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'approve')]).headline).toBe('Approved, but findings it left unverified ran out of review rounds');
+  });
+
+  test('a fix pushed after the escalation shows as waiting for a re-review', () => {
+    const v = esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'request_changes')], [finding('a', 'addressed'), finding('b', 'open')]);
+    expect(v.detail).toContain('one of two findings has a fix waiting for a re-review');
+    expect(v.addressedFindings).toBe(1);
+  });
+});

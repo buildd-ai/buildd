@@ -4,6 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { readPinnedSpecRevision } from './pin';
 import { specCriteria } from '@buildd/spec-contract/requirements';
+import { pinCriterionHashes } from './criteria';
 import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
@@ -78,7 +79,8 @@ export async function repinSpecAtClaim(task: {
       return { specSource: null, reason: `approved revision ${row.revision} ${read.ok ? `no longer has ${missing.join(', ')}` : 'could not be read'}; the task keeps revision ${String(src.revision)}` };
     }
   }
-  const { provisional: _provisional, ...settled } = src;
+  const { provisional: _provisional, criterionHashes: _hashes, ...settled } = src;
+  const hashes = await pinCriterionHashes(specId, row.revision!, scope);
   return {
     specSource: {
       ...settled,
@@ -86,6 +88,7 @@ export async function repinSpecAtClaim(task: {
       revision: row.revision,
       contentHash: row.contentHash,
       pinnedAt: 'claim',
+      ...(hashes ? { criterionHashes: hashes } : {}),
       ...(typeof src.revision === 'number' ? { repinnedFrom: src.revision } : {}),
     },
     reason: `re-pinned to approved revision ${row.revision}`,

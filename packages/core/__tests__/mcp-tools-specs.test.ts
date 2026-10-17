@@ -472,4 +472,49 @@ describe('manage_specs', () => {
     const miss = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'diff', specId: SPEC, to: 9 }, ctx());
     expect([miss.isError, out(miss)]).toEqual([true, 'Spec has no revision 9']);
   });
+  it('diff leads with the summary and the per-criterion change list when the route sends one', async () => {
+    api.mockResolvedValueOnce({
+      specId: SPEC, identical: false, omittedLines: 0,
+      from: { revision: 6, contentHash: 'a', approved: true }, to: { revision: 12, contentHash: 'b', approved: false },
+      sections: [{ kind: 'changed', path: 'Slots', level: 2, linesAdded: 2, linesRemoved: 1 }],
+      diff: '@@ Slots (changed) @@',
+      changes: {
+        summary: 'Tighten R-26.',
+        mismatch: 'The summary does not mention R-25, which changed.',
+        lines: [
+          { kind: 'changed', id: 'R-25', text: 'b', section: 'Slots', words: [{ op: '=', text: 'a ' }, { op: '-', text: 'old' }, { op: '+', text: 'new' }] },
+          { kind: 'added-range', label: 'R-44 – R-46', items: [] },
+          { kind: 'replacing', id: 'R-50', text: 'n', section: 'Slots', replaces: [{ id: 'R-26', oldText: 'o' }] },
+          { kind: 'moved', id: 'R-24', text: 'm', section: 'B', movedFrom: 'A' },
+        ],
+        otherText: [{ kind: 'changed', section: 'Queue view' }],
+      },
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'diff', specId: SPEC }, ctx()));
+    const lines = r.split('\n');
+    expect(lines.slice(0, 4)).toEqual(['revision 6 (approved) → revision 12: 1 section(s) changed.', 'Summary: Tighten R-26.', 'The summary does not mention R-25, which changed.', 'Requirements and acceptance:']);
+    expect(r).toContain('Changed   R-25: a [-old-]{+new+}');
+    expect(r).toContain('Added     R-44 – R-46');
+    expect(r).toContain('Replacing R-50 replaces R-26: n');
+    expect(r).toContain('Moved     R-24: from "A" to "B", words unchanged');
+    expect(r).toContain('Changed "Queue view"');
+  });
+  it('history lists a criterion\'s wordings, with a read scope', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'history' })).toBe('tasks:read');
+    api.mockResolvedValueOnce({ history: {
+      criterionId: 'R-50', head: 12, retiredIn: null, replacedBy: null, replaces: ['R-26'],
+      entries: [
+        { criterionId: 'R-26', revision: 6, kind: 'added', text: 'old words', changeSummary: 'Adds R-26', author: 'agent', approved: true },
+        { criterionId: 'R-50', revision: 12, kind: 'added', text: 'new words', changeSummary: null, author: 'person', approved: false },
+      ],
+    } });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'history', specId: SPEC, criterionId: 'R-50' }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/${SPEC}/criteria/R-50`);
+    expect(r).toContain('History of R-50 (continues R-26): 2 wording(s).');
+    expect(r).toContain('r6 R-26 added by agent, approved (summary: Adds R-26)');
+    expect(r).toContain('In force through revision 12.');
+    api.mockRejectedValueOnce(new Error('API error: 404 - {"error":"This spec has never had R-9"}'));
+    const miss = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'history', specId: SPEC, criterionId: 'R-9' }, ctx());
+    expect([miss.isError, out(miss)]).toEqual([true, 'This spec has never had R-9']);
+  });
 });

@@ -157,4 +157,40 @@ describe('held releases', () => {
     expect(s.status).toBe('failed');
     expect(String(s.release_result?.error)).toContain('after 3 hourly retries');
   });
+  test('the sweep stops starting new tasks once its time budget is spent, and the next one starts with the tasks it did not reach', async () => {
+    const a = await held();
+    const b = await held();
+    const c = await held();
+    await q(sql`UPDATE tasks SET updated_at = now() - interval '3 hours' WHERE id = ${a.taskId}::uuid`);
+    await q(sql`UPDATE tasks SET updated_at = now() - interval '2 hours' WHERE id = ${b.taskId}::uuid`);
+    await q(sql`UPDATE tasks SET updated_at = now() - interval '1 hours' WHERE id = ${c.taskId}::uuid`);
+    const seen: number[] = [];
+    let clock = 0;
+    const deps = {
+      repoFor,
+      api: async (_i: number, path: string) => { seen.push(Number(/pulls\/(\d+)$/.exec(path)![1])); clock += 10_000; return { state: 'open', merged: false, head: { sha: 'X' } }; },
+      ciGreen: async () => false,
+      now: () => clock,
+    };
+    // 10s per task against a 15s budget: the first two start, the third is left for the next hour.
+    const first = await sweepHeldReleases({ workspaceId, budgetMs: 15_000 }, deps);
+    expect(first.scanned).toBe(2);
+    expect(seen).toEqual([a.prNumber, b.prNumber]);
+    // The two it scanned went to the back (updated_at touched), so the third is first in line now.
+    seen.length = 0; clock = 0;
+    await sweepHeldReleases({ workspaceId, budgetMs: 15_000 }, deps);
+    expect(seen[0]).toBe(c.prNumber);
+    for (const h of [a, b, c]) await q(sql`UPDATE tasks SET context = context - 'releasePrPending' WHERE id = ${h.taskId}::uuid`);
+  });
+
+  test('a task the sweep cannot read (no linked repo) is rotated to the back too, not rescanned first every hour', async () => {
+    const stuck = await held();
+    await q(sql`UPDATE tasks SET updated_at = now() - interval '5 hours' WHERE id = ${stuck.taskId}::uuid`);
+    const before = (await q<{ u: string }>(sql`SELECT updated_at::text AS u FROM tasks WHERE id = ${stuck.taskId}::uuid`))[0]!.u;
+    const res = await sweepHeldReleases({ workspaceId }, { repoFor: async () => null as never, api: async () => null });
+    expect(res.errors).toBeGreaterThanOrEqual(1);
+    const after = (await q<{ u: string }>(sql`SELECT updated_at::text AS u FROM tasks WHERE id = ${stuck.taskId}::uuid`))[0]!.u;
+    expect(after).not.toBe(before);
+    await q(sql`UPDATE tasks SET context = context - 'releasePrPending' WHERE id = ${stuck.taskId}::uuid`);
+  });
 });
