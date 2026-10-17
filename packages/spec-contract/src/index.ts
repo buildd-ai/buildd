@@ -7,6 +7,8 @@
  */
 export * from './requirements';
 export * from './check-lines';
+export * from './criterion-records';
+export * from './criterion-review';
 export * from './scope';
 export * from './outcome';
 export * from './hash';

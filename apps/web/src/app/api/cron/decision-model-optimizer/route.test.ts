@@ -3,6 +3,14 @@ import { NextRequest } from 'next/server';
 
 // The real sweep (lib/decision-model-optimizer/optimizer.ts) over a fake store:
 // the route must hand it the due teams, as a scheduled run, and report counts.
+// Record what the route reports as its run result (the real wrapper stores it in cron_runs).
+const reports: Array<Record<string, any>> = [];
+mock.module('@/lib/cron-run', () => ({
+  withCronRun: async (_job: string, r: NextRequest, handler: (report: (o: unknown) => void) => Promise<Response>) => {
+    if (r.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) return new Response('{}', { status: 401 });
+    return handler(o => { reports.push(o as Record<string, any>); });
+  },
+}));
 const compared: Array<{ teamId: string; trigger?: string; callCap?: number }> = [];
 let due: string[] = [];
 let opted = new Set<string>();
@@ -38,7 +46,7 @@ const { GET } = await import('./route');
 const req = (auth?: string) => new NextRequest('http://localhost/api/cron/decision-model-optimizer', { headers: auth ? { authorization: auth } : {} });
 
 const saved = { ...process.env };
-beforeEach(() => { compared.length = 0; due = []; opted = new Set(); });
+beforeEach(() => { reports.length = 0; compared.length = 0; due = []; opted = new Set(); });
 afterEach(() => { process.env = { ...saved }; });
 
 describe('GET /api/cron/decision-model-optimizer', () => {
@@ -69,5 +77,16 @@ describe('GET /api/cron/decision-model-optimizer', () => {
     expect(res.status).toBe(200);
     expect(compared).toEqual([]);
     expect((await res.json()).teams).toEqual([{ teamId: 't1', status: 'not_opted_in' }]);
+  });
+
+  it('records each team\'s outcome in the run result, by position, with no team id', async () => {
+    process.env.CRON_SECRET = 's';
+    due = ['team-aaaa1111', 'team-bbbb2222'];
+    opted = new Set(due);
+    await GET(req('Bearer s'));
+    const result = reports[0].result;
+    expect(result.outcomes).toEqual([{ team: 1, status: 'skipped', reason: 'no cases' }, { team: 2, status: 'skipped', reason: 'no cases' }]);
+    expect(result.outcomesOmitted).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('team-');
   });
 });

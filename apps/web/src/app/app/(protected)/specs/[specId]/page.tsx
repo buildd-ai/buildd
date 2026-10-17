@@ -16,7 +16,8 @@ const positive = (raw: string | undefined) => {
 /**
  * One Living Spec (living-specs.md §9): the revision in force, its history,
  * the changes between two revisions (?from=&to=), one revision (?revision=N),
- * and for an approver the waiting revision (?review=1). Read-only but for the
+ * one criterion's history (?history=R-3), and for an approver the waiting
+ * revision (?review=1). Read-only but for the
  * Approve action, which posts to the approve route.
  */
 export default async function SpecDetailPage({
@@ -24,7 +25,7 @@ export default async function SpecDetailPage({
   searchParams,
 }: {
   params: Promise<{ specId: string }>;
-  searchParams: Promise<{ revision?: string; from?: string; to?: string; review?: string; delivery?: string }>;
+  searchParams: Promise<{ revision?: string; from?: string; to?: string; review?: string; delivery?: string; history?: string }>;
 }) {
   const { specId } = await params;
   const sp = await searchParams;
@@ -57,6 +58,7 @@ export default async function SpecDetailPage({
     ...(from !== undefined && to !== undefined ? { from, to } : {}),
     review: sp.review === '1',
     ...(sp.delivery ? { deliveryCursor: sp.delivery } : {}),
+    ...(sp.history && /^(R|AC)-\d+$/i.test(sp.history) ? { history: sp.history.toUpperCase() } : {}),
   });
   if (view.state !== 'ok') notFound();
   return (
