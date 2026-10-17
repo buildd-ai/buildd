@@ -30,6 +30,58 @@ changes to the repo root (`/opt/buildd`) and runs
 Smoke test: `bash apps/runner/scripts/once-smoke.sh` builds the image and
 checks the exit codes with `--network none`.
 
+## Prebuilt image
+
+Every release publishes the image to GHCR, so you do not need the repo or an
+amd64 build to run it:
+
+```bash
+docker pull ghcr.io/buildd-ai/runner-once:v0.360.0   # one per release, never moved
+docker pull ghcr.io/buildd-ai/runner-once:latest     # the newest release
+```
+
+Use it in place of `buildd-runner-once` in the commands above. For a
+deployment, pin the digest rather than a tag: each publish run records it in
+its job summary (`docker pull ghcr.io/buildd-ai/runner-once@sha256:…`). The
+image carries the OCI labels `org.opencontainers.image.source`, `.revision`
+(the commit it was built from) and `.version` (the release tag):
+
+```bash
+docker image inspect ghcr.io/buildd-ai/runner-once:latest \
+  --format '{{json .Config.Labels}}'
+```
+
+It is linux/amd64 only, like the Dockerfile. It is the same image as a local
+build of the release tag; the runner inside it never updates itself, so a new
+runner version means pulling a new tag. The Cloudflare runner
+(`apps/cloud-runner/wrangler.jsonc`) still builds from the Dockerfile.
+
+**How it is published.** `.github/workflows/publish-runner-image.yml`. Tag
+Release (`release-tag.yml`) tags each merge to main and then dispatches it with
+`tag=v<version>`; a dispatch is needed because a tag pushed with
+`GITHUB_TOKEN` starts no workflow. A `v*` tag pushed by a person
+(`scripts/release.sh --tag`) triggers it directly. Before pushing, it checks
+the tag is `vX.Y.Z` and that `apps/runner/package.json` at the tag says that
+version, builds, and runs `once-smoke.sh` against the image; any failure pushes
+nothing. `:latest` moves only when the tag is the highest `v*` tag, so
+republishing an old release never rolls it back.
+
+To publish a release the automatic path missed, dispatch it on main:
+
+```bash
+gh workflow run publish-runner-image.yml --ref main -f tag=v0.360.0
+```
+
+Without `tag` (on any branch) the workflow builds and smokes that ref and
+pushes nothing. Pull requests that change `Dockerfile.once`, `buildd-once.sh`,
+`once-smoke.sh` or the workflow get the same dry run.
+
+**Visibility.** GHCR creates a package private and has no API to change that.
+One-time owner step after the first publish: on
+`github.com/orgs/buildd-ai/packages/container/runner-once/settings`, "Change
+visibility" → Public. Until then every publish run warns that the image is not
+anonymously pullable.
+
 ## What is in the image
 
 | Component | Version source |
