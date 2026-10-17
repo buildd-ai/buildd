@@ -11,7 +11,7 @@ import { commentsOnRevision, type CommentView } from './comments';
 import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
 import { outlineOf } from '@buildd/core/artifact-read';
 import { specApprover } from './approval';
-import { diffSpecHunks, diffSpecRowRevisions, type DiffHunk } from './diff';
+import { diffSpecRowRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
 import { attachmentSources, attachmentViews, sourcesOf, type AttachmentSource, type AttachmentView } from './attachments';
@@ -21,6 +21,8 @@ import type { RepoRef } from './repo-refs';
 import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
 import { readSpecDelivery, type SpecDelivery } from './delivery';
 import { specRetirement, type RetirementView } from './retire';
+import { revisionReview, type RevisionReview } from './review';
+import { readCriterionHistory, type CriterionHistory } from './criteria';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -231,6 +233,8 @@ export interface SpecPanes {
   body: string;
   /** What `attachment:<name>` resolves to on `revision` (§21); a name absent here renders as missing. */
   attachmentSources?: Record<string, AttachmentSource>;
+  /** Review only: the change summary, the per-criterion change list, the other text and the summary check ("Reviewing a spec revision" R-1 to R-5). */
+  changes?: Pick<RevisionReview, 'summary' | 'lines' | 'otherText' | 'mismatch'>;
 }
 
 export type SpecPageView =
@@ -289,6 +293,8 @@ export type SpecPageView =
     /** The reader may retire or restore it (a person with approval rights, §22 R-51), and the live specs that could replace it. */
     canRetire?: boolean;
     retireTargets?: Array<{ id: string; title: string }>;
+    /** With `history`: that criterion's wordings ("Reviewing a spec revision" R-12); null when the spec never had it. */
+    criterionHistory?: { criterionId: string; history: CriterionHistory | null } | null;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -316,23 +322,20 @@ async function readRevision(spec: SpecRow, n: number): Promise<Reading | null> {
 
 /**
  * What approving the head would put in force: the approved revision against
- * the head, or with nothing approved the whole head. The caller has read the
- * spec row, checked reach and checked that the reader may approve.
+ * the head, or with nothing approved the whole head, from the kept review of
+ * that pair (R-8). The caller has read the spec row, checked reach and
+ * checked that the reader may approve.
  */
-async function reviewPanes(caller: SpecCaller, spec: SpecRow, reading: Reading | null): Promise<SpecPanes | null> {
+async function reviewPanes(spec: SpecRow, reading: Reading | null): Promise<SpecPanes | null> {
   const sources = attachmentSources(spec.id, spec.headRevision).catch(() => ({}));
-  let review: SpecPanes | null = null;
-  if (spec.approvedRevision != null) {
-    const d = await diffSpecRowRevisions(caller, spec, { from: spec.approvedRevision, to: spec.headRevision, rows: true });
-    if (d.ok) review = panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', spec.headRevision, spec.approvedRevision);
-  } else {
-    const head = reading?.revision.revision === spec.headRevision ? reading : await readRevision(spec, spec.headRevision);
-    if (head) {
-      const h = diffSpecHunks('', head.body);
-      review = panes(h.hunks, h.omittedLines, head.body, spec.headRevision, null);
-    }
-  }
-  if (review) review.attachmentSources = await sources;
+  const headP = reading?.revision.revision === spec.headRevision ? Promise.resolve(reading) : readRevision(spec, spec.headRevision);
+  const head = await headP;
+  if (!head) return null;
+  const r = await revisionReview(spec, spec.approvedRevision ?? 0, spec.headRevision, new Map([[spec.headRevision, head.body]]));
+  if (!r) return null;
+  const review = panes(r.hunks, r.omittedLines, head.body, spec.headRevision, spec.approvedRevision);
+  review.changes = { summary: r.summary, lines: r.lines, otherText: r.otherText, mismatch: r.mismatch };
+  review.attachmentSources = await sources;
   return review;
 }
 
@@ -352,7 +355,7 @@ export async function specReviewView(caller: SpecCaller, specId: string): Promis
   if (!approver) return fail(403, 'Only someone who may approve specs here can review a revision for approval.');
   const pending = row.approvedRevision == null || row.headRevision > row.approvedRevision;
   if (!pending || row.status === 'retired' || row.status === 'superseded') return fail(409, 'No revision of this spec waits for approval.');
-  const review = await reviewPanes(caller, row, null);
+  const review = await reviewPanes(row, null);
   if (!review) return fail(409, `The body of revision ${row.headRevision} could not be read`);
   return { ok: true, review: { ...review, version: row.version } };
 }
@@ -381,7 +384,7 @@ export async function specRepoChecks(caller: SpecCaller, specId: string): Promis
  * wait for that read alone. neon-http pays a round trip per statement, so the
  * page costs the longest chain of reads, not their sum.
  */
-export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean; deliveryCursor?: string } = {}): Promise<SpecPageView> {
+export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean; deliveryCursor?: string; history?: string } = {}): Promise<SpecPageView> {
   if (!isUuid(specId)) return { state: 'not_found' };
   const caller: SpecCaller = { kind: 'user', userId };
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
@@ -473,7 +476,10 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : []));
   // The repo checks (R-34) are not read here: they ask GitHub, so the panel fetches them on its own (/api/specs/[id]/preflight).
   const reviewP = opts.review && pending && open
-    ? Promise.all([approverP, readP]).then(([approver, read]) => (approver ? reviewPanes(caller, spec, read) : null))
+    ? Promise.all([approverP, readP]).then(([approver, read]) => (approver ? reviewPanes(spec, read) : null))
+    : Promise.resolve(null);
+  const historyP = opts.history
+    ? readCriterionHistory(spec, opts.history).then((history) => ({ criterionId: opts.history!, history })).catch(() => null)
     : Promise.resolve(null);
   // Fail-open (R-65): the page renders without the section when it cannot be read.
   const deliveryP = readSpecDelivery(caller, spec.id, { cursor: opts.deliveryCursor ?? null, checkedSpec: spec }).catch((err) => {
@@ -481,8 +487,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     return null;
   });
 
-  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery] = await Promise.all([
-    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP,
+  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery, criterionHistory] = await Promise.all([
+    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP, historyP,
   ]);
   if (!read) return { state: 'not_found' };
 
@@ -526,5 +532,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     canComment: true,
     compare, canApprove: pending && open && approver, review,
     retirement, canRetire: approver, retireTargets,
+    criterionHistory,
   };
 }

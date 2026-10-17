@@ -469,4 +469,75 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     act(() => (rows[0].querySelector('button') as HTMLButtonElement).click());
     expect(rows[0].querySelector('[data-testid="spec-delivery-criterion"]')?.textContent).toContain('Waived');
   });
+
+  it('Review leads with the summary and the change list; the full diff is closed until asked (R-1 to R-5, AC-1)', async () => {
+    const changes = {
+      summary: 'R-26 names the slot; adds R-44 to R-46.',
+      mismatch: 'The summary does not mention R-25, which changed.',
+      lines: [
+        { kind: 'changed' as const, id: 'R-26', text: 'reads now at once', oldText: 'reads now', section: 'Slots', words: [{ op: '=' as const, text: 'reads now' }, { op: '+' as const, text: ' at once' }] },
+        { kind: 'added-range' as const, label: 'R-44 – R-46', items: ['R-44', 'R-45', 'R-46'].map((id) => ({ kind: 'added' as const, id, text: `text of ${id}`, section: 'Slots' })) },
+        { kind: 'removed' as const, id: 'R-3', oldText: 'gone', section: 'Slots' },
+        { kind: 'moved' as const, id: 'R-24', text: 'same', section: 'Slots > Runner', movedFrom: 'Slots > Queue' },
+        { kind: 'replacing' as const, id: 'R-50', text: 'next', section: 'Slots', replaces: [{ id: 'R-27', oldText: 'old' }] },
+      ],
+      otherText: [{ kind: 'changed' as const, section: 'Slots > Queue view' }],
+    };
+    const review = {
+      replaces: 1, revision: 2, omittedLines: 0, sectionCount: 1, linesAdded: 1, linesRemoved: 1, body: base.body, changes,
+      hunks: [{ kind: 'changed' as const, path: 'Checkout', linesAdded: 1, linesRemoved: 1, rows: [{ op: '+' as const, oldLine: null, newLine: 3, text: 'new' }] }],
+    };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    const panel = q('spec-page-review-panel')!;
+    // The summary comes first under the heading, then the mismatch line, then the list.
+    const order = ['spec-review-summary', 'spec-review-mismatch', 'spec-review-criteria', 'spec-review-other', 'spec-page-approve', 'spec-page-full-diff']
+      .map((id) => panel.innerHTML.indexOf(`data-testid="${id}"`));
+    expect(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1]))).toBe(true);
+    expect(q('spec-review-summary')!.textContent).toBe(changes.summary);
+    expect(q('spec-review-mismatch')!.textContent).toContain('R-25');
+    const rows = [...container.querySelectorAll('[data-testid="spec-review-change"]')];
+    expect(rows.map((r) => r.getAttribute('data-kind'))).toEqual(['changed', 'added-range', 'removed', 'moved', 'replacing']);
+    expect(q('spec-review-word-added')!.textContent).toBe(' at once');
+    expect(rows[3].textContent).toContain('Slots › Queue');
+    expect(rows[4].textContent).toContain('Replaces R-27.');
+    // The range expands on click.
+    expect(container.querySelectorAll('[data-testid="spec-review-range-item"]')).toHaveLength(0);
+    act(() => { q('spec-review-range')!.click(); });
+    expect(container.querySelectorAll('[data-testid="spec-review-range-item"]')).toHaveLength(3);
+    expect(q('spec-review-other-row')!.textContent).toContain('Queue view');
+    // The line diff is never the default view.
+    expect(q('spec-approval-diff')).toBeNull();
+    act(() => { (q('spec-page-full-diff')!.closest('button') as HTMLButtonElement).click(); });
+    expect(q('spec-approval-diff')).not.toBeNull();
+  });
+
+  it('each criterion links to its history, and the history shows on the page (R-12)', () => {
+    const criterionHistory = {
+      criterionId: 'R-1',
+      history: {
+        criterionId: 'R-1', head: 2, retiredIn: null, replacedBy: null, replaces: [],
+        entries: [
+          { criterionId: 'R-1', revision: 1, kind: 'added' as const, text: 'Totals in the shopper currency.', textHash: 'a', section: 'Checkout', changeSummary: null, author: 'person' as const, approved: true },
+          { criterionId: 'R-1', revision: 2, kind: 'changed' as const, text: 'Totals in the cart currency.', textHash: 'b', section: 'Checkout', changeSummary: 'Pick the currency', author: 'agent' as const, approved: false },
+        ],
+      },
+    };
+    act(() => root.render(<SpecPage view={{ ...base, criterionHistory }} />));
+    expect(q('spec-criterion-history-link')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?history=R-1#criterion-history`);
+    const entries = [...container.querySelectorAll('[data-testid="spec-criterion-history-entry"]')];
+    // Newest first, the changed words marked against the wording before.
+    expect(entries.map((e) => e.getAttribute('data-revision'))).toEqual(['2', '1']);
+    expect(entries[0].querySelector('[data-testid="spec-review-word-added"]')!.textContent).toBe('cart');
+    expect(entries[0].textContent).toContain('not approved');
+    expect(entries[1].textContent).toContain('approved');
+  });
+
+  it('on the revision in force, work built to an older wording reads "Passed an earlier wording" under the criterion (R-13)', () => {
+    const delivery = { next: null, entries: [{
+      kind: 'task' as const, id: 't1', title: 'Build totals', href: '/app/tasks/t1', builtTo: 0, provisional: false, delivered: true, deliveredText: '', standing: { tone: 'muted' as const, text: '' },
+      criteria: [{ criterionId: 'R-1', text: '', mark: 'earlier-pass' as const, evidence: [] }], links: [], at: iso,
+    }] };
+    act(() => root.render(<SpecPage view={{ ...base, delivery }} />));
+    expect(q('spec-criterion-verdict')!.textContent).toBe('Passed an earlier wording');
+  });
 });

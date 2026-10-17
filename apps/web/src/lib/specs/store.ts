@@ -13,6 +13,7 @@ import { parseDuplicateOverride, type DuplicateCandidate, type DuplicateCheck } 
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import { sameDesign } from '@buildd/spec-contract/design';
 import { recordManualPlacement } from './filings';
+import { retiredIdRefusal, writeCriterionRecords } from './criteria';
 
 /**
  * Living Specs store (G1): create a draft, revise it under a version check,
@@ -97,6 +98,21 @@ export const importedRefusal = (spec: Pick<SpecRow, 'repoSource'>): SpecError | 
   : null);
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
+/**
+ * After a revision is written: its criterion records and its kept reviews
+ * ("Reviewing a spec revision" R-8, R-11). Fail-open: the revision stands
+ * either way, and a later read derives whatever is missing from the body.
+ */
+async function afterRevisionWritten(spec: SpecRow, revision: SpecRevisionRow, body: string): Promise<void> {
+  try {
+    await writeCriterionRecords(spec.id, revision, body);
+    const { keepRevisionReviews } = await import('./review');
+    await keepRevisionReviews(spec, revision.revision, body);
+  } catch (err) {
+    console.error(`[specs] keeping the criteria of ${spec.id} revision ${revision.revision} failed:`, err);
+  }
+}
+
 export async function createSpecDraft(caller: SpecCaller, input: {
   workspaceId: unknown; title: unknown; scope?: unknown; parentSpecId?: unknown; body: unknown; changeSummary?: unknown; repoRefs?: unknown; design?: unknown;
   /** Override a duplicate refusal (§13): the spec this one replaces, or why it is distinct. */
@@ -170,6 +186,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
     design: design ?? null,
     imported: opts.imported ? importOf(opts.imported) : null,
   }).returning();
+  await afterRevisionWritten(spec, revision, body);
   return { ok: true, spec, revision, duplicateCheck };
 }
 
@@ -209,6 +226,12 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   if (repoRefs && refsChanged) {
     const bad = await checkRepoRefs(spec.workspaceId, newRepoRefs(repoRefs, head.repoRefs));
     if (bad) return bad;
+  }
+  // R-14: an id a revision retired is never given new words. A re-import is
+  // exempt: until confirmed the repo file is the source, as written.
+  if (hash !== head.contentHash && !opts.imported) {
+    const reused = await retiredIdRefusal(spec, head.revision, body);
+    if (reused) return fail(409, reused, { code: 'criterion_id_retired' });
   }
   const refsJson = repoRefs ? JSON.stringify(repoRefs) : null;
   const designJson = design ? JSON.stringify(design) : null;
@@ -260,6 +283,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   }
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, after.headRevision))).limit(1);
+  await afterRevisionWritten(after, revision, body);
   return { ok: true, spec: after, revision, unchanged: false };
 }
 
