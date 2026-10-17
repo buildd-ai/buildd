@@ -777,3 +777,45 @@ describe('manage_missions — executor', () => {
     expect((await run({ action: 'list' })).content[0].text).toContain('**Local** [active] [LOCAL]');
   });
 });
+
+describe('manage_missions get — deliveries and scope updates text', () => {
+  const MISSION_ID = '00000000-0000-0000-0000-0000000000bb';
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+  const get = async (extra: Record<string, unknown>) => {
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'M', status: 'active', progress: 0, completedTasks: 0, totalTasks: 0, isHeld: false, tasks: [], ...extra });
+    return (await handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', { action: 'get', missionId: MISSION_ID }, createMockContext())).content[0].text;
+  };
+
+  it('lists open and merged deliveries, held PRs and the scope version', async () => {
+    const out = await get({
+      scopeVersion: 3,
+      deliveries: [
+        { delivery: 1, state: 'merged', prNumber: 12, branch: 'mission/a', held: [] },
+        { delivery: 2, state: 'open', prNumber: 15, branch: 'mission/b', held: [20, 21] },
+      ],
+    });
+    expect(out).toContain('Deliveries: 1 merged (#12); 2 open on mission/b, PR #15, branch kept for #20, #21 · scope version 3');
+  });
+
+  it('shows held and applied scope updates, last three only', async () => {
+    const out = await get({
+      scopeUpdates: [
+        { taskId: 'aaaaaaaa-0', status: 'applied', scopeVersion: 2 },
+        { taskId: 'bbbbbbbb-1', status: 'applied', scopeVersion: 3 },
+        { taskId: 'cccccccc-2', status: 'held', reason: 'needs a decision' },
+        { taskId: 'dddddddd-3', status: 'applied', scopeVersion: 4 },
+      ],
+    });
+    expect(out).toContain('Scope updates: version 3 from task bbbbbbbb; task cccccccc on hold for a decision (needs a decision); version 4 from task dddddddd');
+    expect(out).not.toContain('aaaaaaaa');
+  });
+
+  it('prints neither line for empty arrays or a legacy response without the fields', async () => {
+    for (const extra of [{ deliveries: [], scopeUpdates: [] }, {}]) {
+      const out = await get(extra);
+      expect(out).not.toContain('Deliveries:');
+      expect(out).not.toContain('Scope updates:');
+    }
+  });
+});

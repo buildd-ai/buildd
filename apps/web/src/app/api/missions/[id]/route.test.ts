@@ -2556,4 +2556,29 @@ describe('GET /api/missions/[id] — response includes deliveries and scopeUpdat
     expect(delivery.ownerTaskId).toBe('owner-task-id');
     expect(delivery.prLifecycleStatus).toBe('open');
   });
+
+  it('maps scope updates and omits recorded rows', async () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: 'a', missionId: MISSION, sourceTaskId: 'task-1', decision: 'narrow', status: 'applied',
+      scopeVersionBefore: 1, scopeVersionAfter: 2, reason: null, weakens: [], createdAt: '2026-01-01T00:00:00.000Z', ...over,
+    });
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [],
+      scopeAmendmentsOf: async () => [
+        row({ id: 'r', status: 'recorded', decision: 'note' }),
+        row({ id: 'h', status: 'held', decision: 'widen', sourceTaskId: 'task-2', scopeVersionAfter: null, reason: 'needs a decision' }),
+        row({ id: 'p' }),
+      ],
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    const data = await res.json();
+    expect(data.scopeUpdates).toEqual([
+      { taskId: 'task-2', decision: 'widen', status: 'held', scopeVersion: null, reason: 'needs a decision', at: '2026-01-01T00:00:00.000Z' },
+      { taskId: 'task-1', decision: 'narrow', status: 'applied', scopeVersion: 2, reason: null, at: '2026-01-01T00:00:00.000Z' },
+    ]);
+  });
 });
