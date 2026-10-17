@@ -95,6 +95,11 @@ describe('a re-run supersedes the run it replaced (6900a317)', () => {
   const api = (runs: unknown[], suites: unknown[]) => (async (_i: number, path: string) => {
     if (path.includes('/check-runs')) return { total_count: runs.length, check_runs: runs };
     if (path.includes('/check-suites')) return { total_count: suites.length, check_suites: suites };
+    // Every suite here is the one workflow, triggered more than once.
+    if (path.includes('/actions/runs')) {
+      const wr = (runs as Array<{ check_suite?: { id: number } }>).map((r) => ({ check_suite_id: r.check_suite?.id, workflow_id: 1 }));
+      return { total_count: wr.length, workflow_runs: wr };
+    }
     throw new Error(`unexpected ${path}`);
   }) as never;
 
