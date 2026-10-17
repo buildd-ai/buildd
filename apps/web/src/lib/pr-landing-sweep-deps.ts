@@ -194,7 +194,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
         { teamId: workspace.teamId, fullName: identity.fullName, installationId: identity.installationId },
         { fallbackToWorkspace: true },
       );
-      if (!picked.installationId) return { ok: false, skip: picked.reason };
+      if (picked.installationId === null) return { ok: false, skip: picked.reason };
       const installationId = picked.installationId;
 
       const target: LandingTarget = {

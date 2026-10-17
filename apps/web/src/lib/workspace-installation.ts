@@ -157,7 +157,7 @@ export async function teamInstallationIdForOwner(owner: string, teamId: string |
 }
 
 export type PrInstallation =
-  | { installationId: number }
+  | { installationId: number; reason?: undefined }
   | { installationId: null; reason: 'no_installation' | 'installation_not_team_owned' };
 
 export interface TeamWorkspaceIdentity {

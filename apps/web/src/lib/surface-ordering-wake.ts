@@ -50,7 +50,7 @@ export async function resolveOpenWorkerPr(workspaceId: string, prNumber: number)
     { teamId: workspace.teamId, fullName: identity.fullName, installationId: identity.installationId },
     { fallbackToWorkspace: true },
   );
-  if (!picked.installationId) return { skip: picked.reason };
+  if (picked.installationId === null) return { skip: picked.reason };
   const installationId = picked.installationId;
   return { skip: null, worker, workspace, repo, installationId };
 }

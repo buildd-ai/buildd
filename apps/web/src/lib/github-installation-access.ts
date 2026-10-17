@@ -41,7 +41,7 @@ export async function getInstallationOwnerTeamIds(installationDbId: string): Pro
       SELECT p.id FROM teams p WHERE p.slug = 'personal-' || gi.installed_by_user_id::text
     ) t
     WHERE gi.id = ${installationDbId}::uuid AND t.team_id IS NOT NULL`);
-  return (((r as { rows?: Array<{ team_id: string }> }).rows ?? [])).map((row) => row.team_id);
+  return (((r as unknown as { rows?: Array<{ team_id: string }> }).rows ?? [])).map((row) => row.team_id);
 }
 
 export interface InstallationAccess {
