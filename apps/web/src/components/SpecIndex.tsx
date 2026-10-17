@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useMemo, useState, type ReactNode } from 'react';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
+import SpecClusterMap, { MIN_AREAS_FOR_MAP, UNFILED } from '@/components/SpecClusterMap';
 import {
   MIX_STATES, importedByArea, specIndexView,
   type ImportedGroup, type IndexArea, type IndexRow, type Mix, type PossibleArea, type PossibleGroup,
@@ -332,6 +333,7 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
   const imported = useMemo(() => importedByArea(specs), [specs]);
   const actions = useMemo(() => ({ ...apiActions(workspaceId), ...given }), [workspaceId, given]);
   const ctx: RowCtx = { actions, canAct };
+  const [focus, setFocus] = useState<string | null>(null);
 
   if (specs.length === 0) {
     return (
@@ -355,6 +357,9 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
           {view.line.href ? <> · <Link href={view.line.href} className="underline hover:text-text-primary">See the proposed areas</Link></> : null}
           .{proposes}
         </p>
+        {view.areaCount >= MIN_AREAS_FOR_MAP ? (
+          <SpecClusterMap areas={view.areas} unfiledCount={view.unfiled.length} selected={focus} onSelect={setFocus} />
+        ) : null}
         <Legend states={states} />
       </div>
 
@@ -371,7 +376,7 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
       ) : null}
 
       <div className="flex flex-col gap-6" data-testid="spec-index-outline">
-        {view.products.map((p) => p.areas.length ? (
+        {view.products.map((p) => p.areas.some((a) => !focus || a.id === focus) ? (
           <section key={p.head?.id ?? 'no-product'} className="flex flex-col gap-3" data-testid="spec-index-product" data-product-id={p.head?.id ?? ''}>
             {view.manyProducts && p.head ? (
               <h2 className="text-title font-semibold text-text-primary">
@@ -379,11 +384,11 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
               </h2>
             ) : null}
             <div className="columns-1 gap-3 md:columns-2 xl:columns-3">
-              {p.areas.map((a) => <AreaCard key={a.id} area={a} ctx={ctx} level={view.manyProducts && p.head ? 'h3' : 'h2'} />)}
+              {p.areas.filter((a) => !focus || a.id === focus).map((a) => <AreaCard key={a.id} area={a} ctx={ctx} level={view.manyProducts && p.head ? 'h3' : 'h2'} />)}
             </div>
           </section>
         ) : null)}
-        {view.possible.length || view.loose.length ? (
+        {(!focus || focus === UNFILED) && (view.possible.length || view.loose.length) ? (
           <div className="columns-1 gap-3 md:columns-2 xl:columns-3">
             {view.possible.map((g) => <PossibleCard key={g.key} group={g} ctx={ctx} level="h2" />)}
             {view.loose.length ? (
