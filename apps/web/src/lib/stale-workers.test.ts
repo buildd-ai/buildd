@@ -1765,6 +1765,36 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-2-slug');
   });
 
+  it('#4909: an infra reset of a mission refresh resumes its branch but keeps the mission branch it was filed for', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w3', taskId: 'task-3', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/task-3-refresh', error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1', exitCause: 'infra_failure' }])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-3', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-3', workspaceId: 'ws-1', status: 'assigned', category: 'chore',
+      context: { requireMergeCommit: true, baseBranch: 'mission/m-1', refreshTrunk: 'dev' },
+      loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.context?.baseBranch).toBe('mission/m-1');
+    expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-3-refresh');
+  });
+
   it('uses 15-minute backoff on second infra failure (infraRetryCount=1)', async () => {
     const before = Date.now();
     mockWorkersFindMany

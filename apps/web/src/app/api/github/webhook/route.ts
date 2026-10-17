@@ -49,6 +49,7 @@ import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
 import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { invalidateGithubApproval } from '@/lib/github-approval';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -683,6 +684,9 @@ async function handlePullRequestEvent(event: {
   changes?: { base?: { ref?: { from?: string } } };
 }) {
   const { action, pull_request: pr, repository } = event;
+  // Home caches GitHub's approval state per PR (lib/github-approval.ts); any
+  // PR action may move its head or base, so the cached answer goes first.
+  if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
@@ -1669,6 +1673,8 @@ async function handlePullRequestReviewEvent(event: any): Promise<void> {
   const review = event?.review;
   const pr = event?.pull_request;
   const repository = event?.repository;
+  // Every review action (a dismissal included) changes the approval Home caches.
+  if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
   if (event?.action !== 'submitted') return;
   if (!review || !pr?.number || !repository?.full_name) return;
 
