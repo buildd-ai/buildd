@@ -1,10 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "d737bd1b-ce3f-4d99-951e-d03f99eb8aa2",
+  "id": "fd69b00e-d354-4073-bf11-bcd7eaa375fa",
   "prevIds": [
-    "5a565f66-b990-4ca9-9df3-bacd9201118e",
-    "bfdcdc51-a8a5-4061-826f-f147260110ab"
+    "62ceee38-66a1-4432-97f9-eb47e3a7d849"
   ],
   "ddl": [
     {
@@ -237,6 +236,12 @@
     {
       "isRlsEnabled": false,
       "name": "decision_model_measurements",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "decision_model_switches",
       "entityType": "tables",
       "schema": "public"
     },
@@ -650,6 +655,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "spec_attachments",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "spec_comments",
       "entityType": "tables",
       "schema": "public"
@@ -657,6 +668,18 @@
     {
       "isRlsEnabled": false,
       "name": "spec_discrepancies",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "spec_filings",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "spec_metadata_changes",
       "entityType": "tables",
       "schema": "public"
     },
@@ -890,6 +913,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "workflow_commands",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "workflow_deliveries",
       "entityType": "tables",
       "schema": "public"
@@ -908,7 +937,25 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "workflow_findings",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_mission_epochs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "workflow_review_rounds",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_scope_amendments",
       "entityType": "tables",
       "schema": "public"
     },
@@ -978,6 +1025,58 @@
       "generated": null,
       "identity": null,
       "name": "can_create",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "granted_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_at",
       "entityType": "columns",
       "schema": "public",
       "table": "account_workspaces"
@@ -2863,6 +2962,19 @@
       "generated": null,
       "identity": null,
       "name": "source_worker_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "backend_pauses"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "seat_key",
       "entityType": "columns",
       "schema": "public",
       "table": "backend_pauses"
@@ -6233,6 +6345,227 @@
       "entityType": "columns",
       "schema": "public",
       "table": "decision_model_measurements"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'collected'",
+      "generated": null,
+      "identity": null,
+      "name": "case_source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_measurements"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cause",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "from_route",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "to_route",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "eval_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "before_score",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "after_score",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "bar",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "n",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'active'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pinned_until",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ended_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_model_switches"
     },
     {
       "type": "uuid",
@@ -13011,6 +13344,19 @@
       "table": "missions"
     },
     {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "scope_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
       "type": "jsonb",
       "typeSchema": null,
       "notNull": false,
@@ -19729,6 +20075,175 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workspace_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "artifact_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "caption",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "added_in_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_from_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "added_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "spec_comments"
     },
     {
@@ -20132,6 +20647,331 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workspace_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "previous_parent_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "parent_spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "proposal",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision_record_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "batch_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workspace_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "field",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "previous_value",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "new_value",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by_kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "spec_neighbors"
     },
     {
@@ -20267,12 +21107,25 @@
     {
       "type": "uuid",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
       "name": "task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
       "entityType": "columns",
       "schema": "public",
       "table": "spec_outcome_verdicts"
@@ -20486,6 +21339,32 @@
       "table": "spec_revisions"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "imported",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "approved_attachments",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_revisions"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -20650,6 +21529,45 @@
       "generated": null,
       "identity": null,
       "name": "approved_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repo_copy",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repo_source",
       "entityType": "columns",
       "schema": "public",
       "table": "specs"
@@ -24315,6 +25233,19 @@
       "default": "false",
       "generated": null,
       "identity": null,
+      "name": "decision_model_optimizer",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "teams"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
       "name": "chat_disabled",
       "entityType": "columns",
       "schema": "public",
@@ -26583,6 +27514,19 @@
       "table": "worker_heartbeats"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "update_drain",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -26591,6 +27535,45 @@
       "generated": null,
       "identity": null,
       "name": "tracked_branch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_auth_source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "model_auth_mode",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "codex_auth_source",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"
@@ -28247,6 +29230,175 @@
       "table": "workflow_attempts"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "op",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "request_hash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'running'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "response",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "host",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claim_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "claimed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "completed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -28689,6 +29841,19 @@
       "table": "workflow_deliveries"
     },
     {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "floor_checked_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_deliveries"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -29027,6 +30192,578 @@
       "table": "workflow_facts"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_round_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_round",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_head_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ordinal",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "path",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "line",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "title",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "required",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'open'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_round",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "addressed_by_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_by_round_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deferred_to_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cut_from_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch_ready_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "predecessor_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "scope_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repo_full_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pr_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "owner_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merged_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merge_commit_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merged_head_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settlement",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settled_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "retired_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "moved_prs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_until",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -29245,6 +30982,253 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "scope_version_before",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "scope_version_after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "before",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "weakens",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision_fact_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fallback",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "actor",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "workflow_transitions"
     },
     {
@@ -29373,6 +31357,19 @@
       "generated": null,
       "identity": null,
       "name": "bypass",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_transitions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "host",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_transitions"
@@ -31628,6 +33625,69 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "decision_model_measurements"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "decision_model_switches_team_kind_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "decision_model_switches"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "decision_model_switches_status_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "decision_model_switches"
     },
     {
       "nameExplicit": true,
@@ -36258,6 +38318,62 @@
       "with": "",
       "method": "btree",
       "concurrently": false,
+      "name": "spec_attachments_spec_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "name",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "removed_from_revision IS NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_attachments_live_name_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
       "name": "spec_comments_spec_idx",
       "entityType": "indexes",
       "schema": "public",
@@ -36346,6 +38462,90 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "spec_discrepancies"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_filings_spec_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "workspace_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_filings_workspace_status_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_metadata_changes_spec_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_metadata_changes"
     },
     {
       "nameExplicit": true,
@@ -36449,6 +38649,48 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "mission_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_outcome_verdicts_mission_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "spec_id",
           "isExpression": false,
           "asc": true,
@@ -36511,6 +38753,34 @@
       "method": "btree",
       "concurrently": false,
       "name": "specs_parent_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "workspace_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "(\"repo_source\"->>'path')",
+          "isExpression": true,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "specs_repo_source_path_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "specs"
@@ -39242,6 +41512,27 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_commands_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "workspace_id",
           "isExpression": false,
           "asc": true,
@@ -39501,6 +41792,111 @@
           "opclass": null
         },
         {
+          "value": "origin_round",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "ordinal",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_findings_delivery_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "epoch",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_epoch_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "predecessor_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"predecessor_id\" IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_successor_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"state\" = 'open'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_open_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "delivery_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
           "value": "round",
           "isExpression": false,
           "asc": true,
@@ -39552,6 +41948,62 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "workflow_review_rounds"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "source_task_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_scope_amendments_task_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_scope_amendments_mission_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
     },
     {
       "nameExplicit": true,
@@ -39877,6 +42329,40 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "name": "account_workspaces_workspace_id_workspaces_id_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "granted_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "account_workspaces_granted_by_user_id_users_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "removed_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "account_workspaces_removed_by_user_id_users_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "account_workspaces"
@@ -41036,6 +43522,23 @@
       "entityType": "fks",
       "schema": "public",
       "table": "decision_challenger_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "team_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "teams",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "decision_model_switches_team_id_teams_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "decision_model_switches"
     },
     {
       "nameExplicit": false,
@@ -43480,6 +45983,57 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "spec_attachments_workspace_id_workspaces_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "specs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_attachments_spec_id_specs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "artifact_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "artifacts",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_attachments_artifact_id_artifacts_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workspace_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "spec_comments_workspace_id_workspaces_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -43616,6 +46170,74 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "spec_filings_workspace_id_workspaces_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "specs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_filings_spec_id_specs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_filings"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workspace_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_metadata_changes_workspace_id_workspaces_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "specs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_metadata_changes_spec_id_specs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workspace_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "spec_neighbors_workspace_id_workspaces_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -43685,6 +46307,23 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "name": "spec_outcome_verdicts_task_id_tasks_id_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_outcome_verdicts_mission_id_missions_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "spec_outcome_verdicts"
@@ -45129,6 +47768,57 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "workflow_findings_delivery_id_workflow_deliveries_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_mission_epochs_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "owner_task_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "tasks",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "workflow_mission_epochs_owner_task_id_tasks_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "delivery_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflow_deliveries",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "workflow_review_rounds_delivery_id_workflow_deliveries_id_fk",
       "entityType": "fks",
       "schema": "public",
@@ -45150,6 +47840,40 @@
       "entityType": "fks",
       "schema": "public",
       "table": "workflow_review_rounds"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_scope_amendments_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "source_task_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "tasks",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "workflow_scope_amendments_source_task_id_tasks_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
     },
     {
       "nameExplicit": false,
@@ -45675,6 +48399,16 @@
       "name": "decision_model_measurements_pkey",
       "schema": "public",
       "table": "decision_model_measurements",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "decision_model_switches_pkey",
+      "schema": "public",
+      "table": "decision_model_switches",
       "entityType": "pks"
     },
     {
@@ -46312,6 +49046,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "spec_attachments_pkey",
+      "schema": "public",
+      "table": "spec_attachments",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "spec_comments_pkey",
       "schema": "public",
       "table": "spec_comments",
@@ -46325,6 +49069,26 @@
       "name": "spec_discrepancies_pkey",
       "schema": "public",
       "table": "spec_discrepancies",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "spec_filings_pkey",
+      "schema": "public",
+      "table": "spec_filings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "spec_metadata_changes_pkey",
+      "schema": "public",
+      "table": "spec_metadata_changes",
       "entityType": "pks"
     },
     {
@@ -46689,6 +49453,16 @@
     },
     {
       "columns": [
+        "idempotency_key"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_commands_pkey",
+      "schema": "public",
+      "table": "workflow_commands",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -46722,9 +49496,39 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "workflow_findings_pkey",
+      "schema": "public",
+      "table": "workflow_findings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_mission_epochs_pkey",
+      "schema": "public",
+      "table": "workflow_mission_epochs",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "workflow_review_rounds_pkey",
       "schema": "public",
       "table": "workflow_review_rounds",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_scope_amendments_pkey",
+      "schema": "public",
+      "table": "workflow_scope_amendments",
       "entityType": "pks"
     },
     {
@@ -46938,6 +49742,20 @@
       "entityType": "checks",
       "schema": "public",
       "table": "oauth_refresh_tokens"
+    },
+    {
+      "value": "\"kind\" IN ('binding', 'reference')",
+      "name": "spec_attachments_kind",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "spec_attachments"
+    },
+    {
+      "value": "(\"task_id\" IS NULL) <> (\"mission_id\" IS NULL)",
+      "name": "spec_outcome_verdicts_one_subject",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
     },
     {
       "value": "num_nonnulls(\"owner_user_id\", \"owner_task_id\", \"owner_account_id\") = 1",
