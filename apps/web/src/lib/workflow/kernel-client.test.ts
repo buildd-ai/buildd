@@ -298,7 +298,7 @@ describe('the client and the endpoint agree', () => {
     };
     let runs = 0;
     const endpoint = (url: string, init: RequestInit) => handleCommandRequest(new Request(url, init), {
-      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true,
+      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => 1,
       run: (async () => { runs++; return { merged: true }; }) as never, deliveryAfter: async () => ({ id: DELIVERY, version: 6 }),
     });
     const l = local();
@@ -832,7 +832,7 @@ describe('time spent before the ledger claim', () => {
       requests++;
       clock.t += 300;
       try {
-        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, sleep: async () => {} });
+        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => 1, sleep: async () => {} });
       } catch {
         return new Response('error code: 1101', { status: 500 });
       }
@@ -889,7 +889,7 @@ describe('a reach check the control plane could not make', () => {
     const fetchImpl = (async (url: string, init: RequestInit) => {
       requests++;
       clock.t += 300;
-      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, sleep: async () => {} });
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, installationOf: async () => 1, sleep: async () => {} });
     }) as unknown as typeof fetch;
     const err = await landThroughKernel(input, {
       principal,

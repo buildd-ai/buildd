@@ -21,6 +21,10 @@
  *   workspace it acts on (team membership for a person, workspace reach for an
  *   API account). The door already authorised the action; this re-checks who it
  *   is for, so a signed request can act only for someone who could have.
+ * - Its own installation: an op that acts on GitHub runs with the installation
+ *   of the workspace it names, read here (in parallel with the reach check). A
+ *   request carrying a different `installationId` is refused; one without it
+ *   gets the workspace's.
  * - Idempotent: the key is claimed in Postgres (`workflow_commands`,
  *   command-ledger.ts) before anything runs. A second request with the key
  *   waits for the first and gets its stored answer (`replayed: true`); the
@@ -111,6 +115,24 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
 
+/** The ops whose input names a GitHub App installation (`installationId`). */
+type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOps[K]['input'] ? K : never }[KernelOp];
+// A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
+const INSTALLATION_OP: Record<InstallationOp, true> = {
+  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true,
+};
+/**
+ * The control plane acts through the installation of the workspace a command names, read here, not
+ * the one the request carries: a request whose installation differs is refused, and one without it
+ * gets the workspace's.
+ */
+export const INSTALLATION_OPS: ReadonlySet<KernelOp> = new Set(Object.keys(INSTALLATION_OP) as KernelOp[]);
+
+/** The workspace's own installation (the repo-linked one every kernel read uses, github-facts.ts). */
+async function defaultInstallationOf(workspaceId: string): Promise<number | null> {
+  return (await (await import('./github-facts')).workspaceRepo(workspaceId))?.installationId ?? null;
+}
+
 /** Run one operation on this host: the code both the endpoint and a shadow-mode door run. */
 export async function runKernelOp<K extends KernelOp>(op: K, input: KernelOps[K]['input']): Promise<KernelOps[K]['result']> {
   const seam = await import('./seam');
@@ -198,6 +220,7 @@ export function commandProblem(body: unknown): string | null {
   if (b.op === 'drain') return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : 'drain needs input.deliveryId (uuid)';
   if (typeof input.workspaceId !== 'string' || !UUID.test(input.workspaceId)) return 'input.workspaceId must be a uuid';
   if ('prNumber' in input && !(Number.isInteger(input.prNumber) && (input.prNumber as number) > 0)) return 'input.prNumber must be a positive integer';
+  if (input.installationId !== undefined && !(Number.isInteger(input.installationId) && (input.installationId as number) > 0)) return 'input.installationId must be a positive integer';
   return null;
 }
 
@@ -231,6 +254,8 @@ export interface CommandServerDeps {
   deliveryAfter?: typeof deliveryAfter;
   /** Whether the principal still reaches the workspace. */
   reaches?: (principal: KernelPrincipal, workspaceId: string | null) => Promise<boolean>;
+  /** The workspace's own GitHub App installation, or null when it has none. */
+  installationOf?: (workspaceId: string) => Promise<number | null>;
   env?: Record<string, string | undefined>;
   host?: () => 'control-plane' | 'web';
   newToken?: () => string;
@@ -325,16 +350,41 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
-  // retry. Only an answered "no" is a 403.
-  const reaches = await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
-    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
-    return null;
-  });
+  // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
+  // adds no round trip of its own.
+  const UNREAD = Symbol('unread');
+  const [reaches, installation] = await Promise.all([
+    (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
+      console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
+      return null;
+    }),
+    workspaceId && INSTALLATION_OPS.has(cmd.op)
+      ? (deps.installationOf ?? defaultInstallationOf)(workspaceId).catch((err: unknown) => {
+        console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the workspace's installation could not be read:`, err);
+        return UNREAD;
+      })
+      : Promise.resolve(undefined),
+  ]);
   if (reaches === null) {
     return refuse(503, 'reach_unavailable', 'Whether the principal reaches the workspace could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
   }
   if (!reaches) {
     return refuse(403, 'forbidden', `${principalKey(cmd.principal)} does not reach this workspace`);
+  }
+  // The command runs with the workspace's installation; the request's may only agree with it.
+  let run = cmd;
+  if (installation !== undefined) {
+    if (installation === UNREAD) {
+      return refuse(503, 'installation_unavailable', 'The workspace\'s GitHub installation could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+    }
+    if (installation === null) {
+      return refuse(403, 'no_installation', 'The workspace has no GitHub App installation for this command to act through.', { applied: false });
+    }
+    const sent = (cmd.input as { installationId?: number }).installationId;
+    if (sent !== undefined && sent !== installation) {
+      return refuse(403, 'installation_mismatch', 'The request\'s installationId is not the workspace\'s installation.', { applied: false });
+    }
+    run = { ...cmd, input: { ...(cmd.input as object), installationId: installation } as never };
   }
 
   const ledger = deps.ledger ?? postgresCommandLedger();
@@ -357,11 +407,11 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
     let claimed: boolean;
     try { claimed = await ledger.claim({ ...claim, token }); } catch (err) { return ledgerDown(err); }
     if (claimed) {
-      const run = execute(cmd, token, ledger, deps, host);
+      const running = execute(run, token, ledger, deps, host);
       // A caller that times out disconnects, and a Worker cancels a request whose client is gone:
       // without this the command stops mid-way and its claim stays `running` until the lease runs out.
-      deps.waitUntil?.(run);
-      return run;
+      deps.waitUntil?.(running);
+      return running;
     }
     let row: Awaited<ReturnType<CommandLedger['read']>>;
     try { row = await ledger.read(cmd.idempotencyKey); } catch (err) { return ledgerDown(err); }

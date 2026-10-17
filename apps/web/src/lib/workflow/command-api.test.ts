@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { signRequest } from '@buildd/dispatch-contract';
-import { COMMAND_PATH, commandKeyRing, commandProblem, handleCommandRequest, principalKey, principalReaches, requestHash, sessionOfPrincipal, type CommandServerDeps, type KernelPrincipal, type ReachDeps } from './command-api';
+import { COMMAND_PATH, INSTALLATION_OPS, commandKeyRing, commandProblem, handleCommandRequest, principalKey, principalReaches, requestHash, sessionOfPrincipal, type CommandServerDeps, type KernelPrincipal, type ReachDeps } from './command-api';
 import { assertGrantedWorkspace } from '../grant-scope';
 import { COMMAND_HEARTBEAT_MS, COMMAND_LEASE_MS, type CommandLedger, type LedgerRow, type StoredAnswer } from './command-ledger';
 
@@ -84,6 +84,7 @@ function server(o: Partial<CommandServerDeps> = {}, ledgerNow?: () => number) {
     host: () => 'control-plane',
     ledger,
     reaches: async () => true,
+    installationOf: async () => 1,
     run: (async (op: string, input: unknown) => { ran.push({ op, input }); return { merged: true, outcome: 'merged' }; }) as CommandServerDeps['run'],
     deliveryAfter: async () => ({ id: DELIVERY, version: 9 }),
     sleep: async () => {},
@@ -476,5 +477,73 @@ describe('a reach check that cannot be made', () => {
     expect(down.ran).toEqual([]);
     const no = server({ reaches: async () => false });
     expect((await no.call(await signed(body()))).status).toBe(403);
+  });
+});
+
+describe('the installation a command acts through is its workspace\'s own', () => {
+  it('every op whose input carries an installationId is resolved, and no other', () => {
+    expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
+  });
+
+  it('a matching installation runs as sent', async () => {
+    const s = server({ installationOf: async () => 1 });
+    const res = await s.call(await signed(body()));
+    expect(res.status).toBe(200);
+    expect(s.ran).toEqual([{ op: 'land', input: landInput }]);
+  });
+
+  it('a mismatched installation is refused 403 and nothing runs', async () => {
+    const s = server({ installationOf: async () => 1 });
+    const res = await s.call(await signed(body({ input: { ...landInput, installationId: 2 } })));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'installation_mismatch', applied: false });
+    expect(s.ran).toEqual([]);
+    expect(s.ledger.rows.size).toBe(0);
+  });
+
+  it('a missing installation is resolved from the workspace', async () => {
+    const s = server({ installationOf: async () => 42 });
+    const { installationId: _, ...withoutInstallation } = landInput;
+    const res = await s.call(await signed(body({ input: withoutInstallation })));
+    expect(res.status).toBe(200);
+    expect(s.ran).toEqual([{ op: 'land', input: { ...withoutInstallation, installationId: 42 } }]);
+  });
+
+  it('a workspace with no installation refuses an op that needs one; a lookup that does not answer is 503, nothing run', async () => {
+    const none = server({ installationOf: async () => null });
+    const res = await none.call(await signed(body()));
+    expect([res.status, (await res.json()).code]).toEqual([403, 'no_installation']);
+    const down = server({ installationOf: async () => { throw new Error('db down'); } });
+    const res2 = await down.call(await signed(body()));
+    expect(res2.status).toBe(503);
+    expect(await res2.json()).toMatchObject({ code: 'installation_unavailable', retryable: true, applied: false });
+    expect([...none.ran, ...down.ran]).toEqual([]);
+  });
+
+  it('an op without an installation never looks one up', async () => {
+    let looked = 0;
+    const s = server({ installationOf: async () => { looked++; return 1; } });
+    const res = await s.call(await signed(body({ op: 'mission_scope', input: { workspaceId: WS, taskId: DELIVERY, actor: 'system:task_filed' }, principal: { kind: 'system', id: 'x' } })));
+    expect(res.status).toBe(200);
+    expect(looked).toBe(0);
+  });
+
+  it('the lookup runs alongside the reach check, not after it', async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const s = server({
+      reaches: async () => { started.push('reach'); await gate; return true; },
+      installationOf: async () => { started.push('installation'); await gate; return 1; },
+    });
+    const pending = s.call(await signed(body()));
+    await until(() => started.length === 2);
+    release();
+    expect((await pending).status).toBe(200);
+  });
+
+  it('an installationId that is not a positive integer is malformed', () => {
+    expect(commandProblem(body({ input: { ...landInput, installationId: '1' } }))).toContain('installationId');
+    expect(commandProblem(body({ input: { ...landInput, installationId: 0 } }))).toContain('installationId');
   });
 });
