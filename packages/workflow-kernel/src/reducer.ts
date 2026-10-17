@@ -146,6 +146,15 @@ export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>,
   return n - rechecks.size;
 }
 
+/**
+ * A re-check's one repair cycle is used once a fix was dispatched for it, or a later counted round
+ * was decided (the delivery moved past it): re-entering its verdict then owes no second cycle.
+ */
+function recheckCycleUsed(view: Pick<KernelView, 'rounds' | 'attempts'>, round: Pick<RoundSnapshot, 'id' | 'round'>): boolean {
+  if (view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id)) return true;
+  return view.rounds.some((r) => r.round > round.round && r.status === 'decided' && !isRecheckAfterApproval(r));
+}
+
 /** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
 function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
   if (isRecheckAfterApproval(round)) return false;
@@ -2335,7 +2344,9 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
     return c.apply(key, 'APPROVED', { patch: { ...base, approvedHeads: heads, approvalBasis: 'verdict', stateReason: null }, evidence: ev });
   }
   if (round.effectiveVerdict === 'request_changes') {
-    if (budgetSpentAt(c.view, round, d.maxRounds)) {
+    // Review of #5017: a held budget is final whichever round the head re-enters, and a re-check's
+    // free cycle is owed once, at its verdict, never again on a re-entry after it was used.
+    if (reviewBudgetHeld(d) || budgetSpentAt(c.view, round, d.maxRounds) || (isRecheckAfterApproval(round) && recheckCycleUsed(c.view, round))) {
       return c.apply(key, 'ESCALATED', {
         patch: { ...base, stateReason: 'review_exhausted' }, evidence: ev,
         effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}@v${d.version}`, payload: { family: 'review_fix', rounds: round.round } }],

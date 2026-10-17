@@ -2401,6 +2401,16 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.push('H7', { changedPaths: ['scope.ts'] }), 'ESCALATED', 'a push after it');
       eq(await s.findingStates(), { 'scope.ts': 'addressed', 'other.ts': 'open', 'the review asked for changes': 'open' }, 'the touched finding is addressed; the others (one with no path) stay open');
       eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 6, dispatched: 6 }, 'no new round: the hold is final');
+      // Review of #5017: the head is put back to round 5's (a re-check whose free cycle was used), CI
+      // goes red there and its repair turns out not needed. Re-entering round 5's request for changes
+      // is the person's again, never a second free fix and through it a reviewer.
+      applied(await s.push('H5'), 'ESCALATED', 'a force-push back to the re-check\'s head');
+      applied(await s.ciRed('H5'), 'REPAIRING', 'CI red there');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the repair carries the hold');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.submit({ type: 'RepairNotNeeded', actor: 'kernel', attemptId: ci.id, reason: 'ci_green' }), 'ESCALATED', 'the repair was not needed');
+      eq(pick(await s.d(), ['stateReason', 'resumeState']), { stateReason: 'review_exhausted', resumeState: null }, 'a person\'s, the budget still spent');
+      eq({ fixes: await s.count('dispatch_fix'), reviews: await s.count('dispatch_review') }, { fixes: 3, reviews: 6 }, 'no second free fix, no reviewer');
 
       // Without an approval nothing changes: the third request for changes escalates.
       const n = await new Delivery(host, 120).open({ maxRounds: 3 });

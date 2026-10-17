@@ -360,6 +360,10 @@ describe('c1d66a6a: the review-exhausted copy says what happened', () => {
     expect(esc([dec(1, 'approve'), dec(2, 'request_changes')]).headline).toBe('Approved, then a later change was refused');
   });
 
+  test('the last verdict an approval that left findings unverified: it says so, not "without an approval"', () => {
+    expect(esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'approve')]).headline).toBe('Approved, but findings it left unverified ran out of review rounds');
+  });
+
   test('a fix pushed after the escalation shows as waiting for a re-review', () => {
     const v = esc([dec(1, 'request_changes'), dec(2, 'request_changes'), dec(3, 'request_changes')], [finding('a', 'addressed'), finding('b', 'open')]);
     expect(v.detail).toContain('one of two findings has a fix waiting for a re-review');

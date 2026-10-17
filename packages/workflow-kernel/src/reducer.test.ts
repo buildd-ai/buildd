@@ -2467,6 +2467,28 @@ describe('c1d66a6a: a re-check after an approval does not spend the review budge
     expect(spentReviewRounds({ delivery: D({ currentRound: 5 }), rounds, attempts: [] })).toBe(2);
   });
 
+  // Review of #5017: re-entering a decided re-check's request for changes must not hand a held,
+  // spent delivery back to a fix (and through it to a reviewer). The re-check's one free cycle is
+  // spent once it had a fix or a later round was decided, and a held budget is final regardless.
+  test('re-entering a re-check\'s request for changes after its free cycle, or under the hold, escalates', () => {
+    const r4 = rc(4, 'Hd', { scope: { deltaApproval: { eligible: false, fromHeadSha: 'Hc' } } });
+    const rounds = [rc(1, 'H1'), rc(2, 'H2'), ap(3, 'Hc'), r4, rc(5, 'He')];
+    const fixed = [A({ id: 'f4', attemptNo: 3, status: 'ended', outcome: 'delivered', triggerReason: 'r4' })];
+    const ci = A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'queued', boundHeadSha: 'Hd' });
+    const held = V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 5, currentHeadSha: 'Hd', boundAttemptId: 'c1', resumeState: 'ESCALATED', approvedHeads: ['Hc'], approvalBasis: 'verdict' }), rounds, [...fixed, ci]);
+    const notNeeded = (v: KernelView) => applied(run(v, { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }));
+    const dec = notNeeded(held);
+    expect({ to: dec.toState, why: dec.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    expect(effectKinds(dec)).not.toContain('dispatch_fix');
+    // Not held, but the re-check's cycle is used (it had a fix, and round 5 was decided since): escalates too.
+    const used = V({ ...held.delivery!, resumeState: null }, rounds, [...fixed, ci]);
+    expect(notNeeded(used).toState).toBe('ESCALATED');
+    // Not held and never fixed, with no later round: the re-check is still owed its one cycle.
+    const owed = V({ ...held.delivery!, resumeState: null }, [rc(1, 'H1'), rc(2, 'H2'), ap(3, 'Hc'), r4], [ci]);
+    const back = V({ ...owed.delivery!, currentRound: 4 }, owed.rounds, owed.attempts);
+    expect(notNeeded(back).toState).toBe('CHANGES_REQUESTED');
+  });
+
   test('the free cycle\'s fix is dispatched even when the fix ledger is spent, and recorded as such', () => {
     const r5 = rc(5, 'Hd', { scope: { deltaApproval: { eligible: false, fromHeadSha: 'Hc' } } });
     const spentFixes = [1, 2, 3].map((n) => A({ id: `f${n}`, attemptNo: n, status: 'ended', outcome: 'delivered', triggerReason: n < 3 ? `r${n}` : 'r2' }));

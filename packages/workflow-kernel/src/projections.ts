@@ -244,7 +244,8 @@ const timesWord = (n: number): string => (n === 1 ? 'once' : n === 2 ? 'twice' :
 /**
  * c1d66a6a: `review_exhausted` names what happened. A delivery that never had an approval spent
  * its budget without one; one that was approved and then had a later change refused says so,
- * rather than "without an approval" for a PR approved twice.
+ * rather than "without an approval" for a PR approved twice; one whose last verdict approved but
+ * left findings unverified says that the verification ran out of rounds.
  */
 export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
   const decided = rounds.filter((r) => r.effectiveVerdict === 'approve' || r.effectiveVerdict === 'request_changes').sort((a, b) => a.round - b.round);
@@ -252,7 +253,8 @@ export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
   const last = approvals.at(-1);
   if (!last) return ESCALATION_COPY.review_exhausted!;
   const refused = decided.filter((r) => r.round > last.round && r.effectiveVerdict === 'request_changes').length;
-  if (refused === 0) return ESCALATION_COPY.review_exhausted!;
+  // The last verdict approved, but left findings unverified, and the verification round did not fit.
+  if (refused === 0) return 'Approved, but findings it left unverified ran out of review rounds';
   return `Approved${approvals.length > 1 ? ` ${timesWord(approvals.length)}` : ''}, then a later change was refused${refused > 1 ? ` ${timesWord(refused)}` : ''}`;
 }
 
