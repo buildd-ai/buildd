@@ -61,7 +61,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { callerSeatKeys } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -313,7 +313,9 @@ export async function POST(req: NextRequest) {
   // hit is recorded under that runner's key and holds only its claims. Null —
   // a session on its own seat (exempt from walls anyway), a cloud run, or a
   // caller that names no runner — reads every wall, seat-scoped ones included.
-  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
+  // A runner that reports its login's identity (`claudeLoginId`, a one-way
+  // hash) is also held by a wall another runner on the same login recorded.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : callerSeatKeys(runner, body.claudeLoginId);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
