@@ -77,7 +77,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+// T4 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { attemptEnded as workflowAttemptEnded, kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -4578,7 +4580,7 @@ export async function PATCH(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
-        });
+        }, { principal: kernelPrincipalOf({ account }) });
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.

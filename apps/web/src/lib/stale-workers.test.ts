@@ -109,8 +109,11 @@ mock.module('@/lib/worker-deliverables', () => ({
 // Workflow kernel (lib/workflow/*; real-SQL suite in apps/web/tests/db/workflow-seam.test.ts).
 let kernelOwned: string | null = null;
 mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async () => kernelOwned }));
-const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: true }));
+const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: true }));
 mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockWorkflowAttemptEnded }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded }));
 
 // Every requeue and continuation here wakes through the dispatch authority.
 // Full export surface: mock.module is process-global.
@@ -406,6 +409,8 @@ describe('cleanupStuckWaitingInput', () => {
         workerId: 'w1',
         status: 'lost',
       });
+      // Through the kernel client as buildd's own sweep (AC-9).
+      expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:sweep:waiting-input' } });
     } finally {
       kernelOwned = null;
     }

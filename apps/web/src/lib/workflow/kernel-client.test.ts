@@ -418,6 +418,37 @@ describe('the doors\' functions', () => {
   });
 });
 
+describe('T4 is a door too (AC-9): an attempt\'s end from the web host', () => {
+  const end = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
+  };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input for the reach check, and nothing runs here', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_ended', result: { handled: true } }); }) as unknown as typeof fetch;
+    const r = await attemptEnded(end, { principal: { kind: 'account', id: USER, grant: null }, idempotencyKey: 'attempt_ended:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_ended', input: { ...end, workspaceId: WS }, principal: { kind: 'account', id: USER, grant: null }, idempotencyKey: 'attempt_ended:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { attemptEnded, systemPrincipal } = await import('./kernel-client');
+    const l = local();
+    await attemptEnded(end, { principal: systemPrincipal('system:sweep:stale-workers'), deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_ended']);
+  });
+
+  it('the host applies an end only for a task of the workspace the reach check judged', async () => {
+    const { runKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_ended', { ...end, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+  });
+});
+
 describe('a door after an unknown outcome', () => {
   it('submits again with the same key and returns the control plane\'s answer; a not_applied failure is not retried', async () => {
     const { landThroughKernel, DOOR_UNKNOWN_RETRIES } = await import('./kernel-client');

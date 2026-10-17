@@ -525,6 +525,9 @@ export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: Doo
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
+/** T4 from the web host: the attempt's end, applied where the kernel is hosted (AC-9). */
+export const attemptEnded = (p: Omit<KernelOps['attempt_ended']['input'], 'workspaceId'>, c: DoorCall) =>
+  door('attempt_ended', { ...p, workspaceId: p.task.workspaceId }, c);
 
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {

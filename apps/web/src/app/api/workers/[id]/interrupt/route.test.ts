@@ -91,11 +91,14 @@ mock.module('drizzle-orm', () => ({
 
 // The workflow kernel's seam (lazily imported by the route). Null round = legacy reviewer.
 const mockIsKernelReviewRound = mock(async (_task: unknown): Promise<boolean> => false);
-const mockAttemptEnded = mock(async (_p: any): Promise<any> => ({ handled: true }));
+const mockAttemptEnded = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: true }));
 mock.module('@/lib/workflow/seam', () => ({
   isKernelReviewRound: mockIsKernelReviewRound,
   attemptEnded: mockAttemptEnded,
 }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockAttemptEnded }));
 
 import { POST } from './route';
 
@@ -382,6 +385,8 @@ describe('POST /api/workers/[id]/interrupt', () => {
         reviewFailure: 'human_takeover',
         source: 'human:interrupt',
       });
+      // Through the kernel client, for the person who took over (AC-9).
+      expect(mockAttemptEnded.mock.calls[0]![1]).toMatchObject({ principal: { kind: 'user' } });
       expect(insertValues).not.toHaveBeenCalled();
       // The execution-state writes (worker + task terminal, claims released) still happen.
       expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-rev-1', 'abandoned');

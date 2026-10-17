@@ -109,8 +109,8 @@ async function resolveStaleTask(
     if (!kernelDeliveryId || !currentTask) return;
     const after = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     if (after?.status !== 'failed') return;
-    // Lazy: the seam loads the effect handlers, which load half the app.
-    const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+    // Through the client: the control plane applies it in own mode (AC-9). Lazy, like the seam was.
+    const { attemptEnded: workflowAttemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
     await workflowAttemptEnded({
       task: { id: taskId, workspaceId, deliveryId: currentTask.deliveryId ?? null, deliveryRole: currentTask.deliveryRole ?? null, context: currentTask.context },
       workerId: staleWorker?.id ?? `reaper:${taskId}`,
@@ -118,7 +118,7 @@ async function resolveStaleTask(
       localHeadSha: null,
       commitCount: staleWorker?.commitCount ?? 0,
       source: 'sweep:stale-workers',
-    }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
+    }, { principal: systemPrincipal('system:sweep:stale-workers') }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
   // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
@@ -1233,7 +1233,7 @@ export async function cleanupStuckWaitingInput(
       ? await kernelDeliveryById(originalTask.deliveryId).catch(() => null)
       : null;
     if (kernelDeliveryId) {
-      const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+      const { attemptEnded: workflowAttemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
       await workflowAttemptEnded({
         task: { id: originalTask.id, workspaceId: originalTask.workspaceId, deliveryId: originalTask.deliveryId ?? null, deliveryRole: originalTask.deliveryRole ?? null, context: originalTask.context },
         workerId: worker.id,
@@ -1243,7 +1243,7 @@ export async function cleanupStuckWaitingInput(
         localHeadSha: worker.lastCommitSha ?? null,
         commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
-      }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      }, { principal: systemPrincipal('system:sweep:waiting-input') }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
       continue;
     }
 
