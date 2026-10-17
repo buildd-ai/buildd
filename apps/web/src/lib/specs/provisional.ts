@@ -12,6 +12,7 @@ import { diffSpecBodies } from './diff';
 import { currentPrHeadSha } from './outcome';
 import { dispatchCriterionChecks, type CheckDeps } from './criterion-checks';
 import { criterionTexts, withSpecSourceBlock } from './provisional-text';
+import { criterionHashes, pinCriterionHashes } from './criteria';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -117,7 +118,7 @@ export async function regradeProvisionalPins(
 
   for (const task of candidates) {
     try {
-      const r = await regradeOne(task, { specId, title: spec.title, revM, bodyM: readM.body, idsM, textsM, checkedM }, deps);
+      const r = await regradeOne(task, { specId, title: spec.title, revM, bodyM: readM.body, idsM, textsM, checkedM, hashesM: criterionHashes(readM.body) }, deps);
       if (r) out.push(r);
     } catch (err) {
       console.error(`[spec-provisional] re-grade of task ${task.id} failed:`, err);
@@ -129,6 +130,8 @@ export async function regradeProvisionalPins(
 type Target = {
   specId: string; title: string; revM: typeof specRevisions.$inferSelect; bodyM: string;
   idsM: string[]; textsM: Map<string, string>; checkedM: Set<string>;
+  /** Each criterion's text hash on M: carried verdicts and the moved pin record it (R-13). */
+  hashesM: Map<string, string>;
 };
 
 async function regradeOne(task: { id: string; missionId: string | null; context: unknown }, m: Target, deps: ProvisionalDeps): Promise<Regraded | null> {
@@ -143,13 +146,15 @@ async function regradeOne(task: { id: string; missionId: string | null; context:
   const scope = scopeOf(src);
   const kept = scope ? scope.filter((id) => m.idsM.includes(id)) : null;
   const scopeDropped = !!scope && kept!.length === 0;
-  const { provisional: _p, criteria: _c, explicit: _e, ...rest } = src;
+  const { provisional: _p, criteria: _c, explicit: _e, criterionHashes: _h, ...rest } = src;
+  const hashes = Object.fromEntries([...m.hashesM].filter(([id]) => !kept || kept.length === 0 || kept.includes(id)));
   const pin: Record<string, unknown> = {
     ...rest,
     specRevisionId: m.revM.id,
     revision: m.revM.revision,
     contentHash: m.revM.contentHash,
     ...(kept && kept.length > 0 ? { criteria: kept } : {}),
+    ...(Object.keys(hashes).length ? { criterionHashes: hashes } : {}),
     regradedFrom: { specRevisionId: src.specRevisionId, revision: from, contentHash: src.contentHash },
     regradedAt: new Date().toISOString(),
   };
@@ -181,7 +186,7 @@ async function regradeOne(task: { id: string; missionId: string | null; context:
       const byCheck = typeof evidence.recordedBy === 'string' && evidence.recordedBy.startsWith('check:');
       if (textsN.get(id) !== m.textsM.get(id) || (byCheck && m.checkedM.has(id))) { notCarried.push(id); continue; }
       await db.insert(specOutcomeVerdicts).values({
-        workspaceId: v.workspaceId, taskId: task.id, specRevisionId: m.revM.id, criterionId: id, verdict: v.verdict, headSha: v.headSha,
+        workspaceId: v.workspaceId, taskId: task.id, specRevisionId: m.revM.id, criterionId: id, criterionTextHash: m.hashesM.get(id) ?? null, verdict: v.verdict, headSha: v.headSha,
         evidence: { ...evidence, carriedFrom: { verdictId: v.id, specRevisionId: src.specRevisionId, revision: from } },
       });
       carried.push(id);
@@ -267,8 +272,10 @@ export async function attachProvisional(caller: SpecCaller, specId: unknown, inp
   if (!rev) return fail(409, `This spec has no revision ${input.revision as number} (it has revisions 1 to ${spec.headRevision})`);
 
   const provisional = rev.approvedAt === null;
+  const hashes = await pinCriterionHashes(specId, rev.revision);
   const pin = {
     specId, specRevisionId: rev.id, revision: rev.revision, contentHash: rev.contentHash,
+    ...(hashes ? { criterionHashes: hashes } : {}),
     ...(provisional ? { provisional: true } : { explicit: true }),
     attachedBy: label, attachedAt: new Date().toISOString(),
   };

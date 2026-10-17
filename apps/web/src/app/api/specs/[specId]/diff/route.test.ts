@@ -6,12 +6,15 @@ const seen: unknown[] = [];
 // The diff and the review gate are real-Postgres tested (tests/db/spec-diff.test.ts, spec-review-speed.test.ts); here the route's mapping.
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
 mock.module('@/lib/specs/diff', () => ({
-  diffSpecRevisions: async (_c: unknown, _id: string, opts: unknown) => { seen.push(opts); return { ok: true, diff: { specId: 's1', identical: true } }; },
+  diffSpecRevisions: async (_c: unknown, _id: string, opts: unknown) => { seen.push(opts); return { ok: true, diff: { specId: 's1', identical: (opts as { from?: number }).from === 1, from: { revision: 2 }, to: { revision: 3 } } }; },
 }));
 mock.module('@/lib/specs/page-view', () => ({
   specReviewView: async (c: { userId?: string }) => (c.userId === 'approver'
     ? { ok: true, review: { revision: 2, replaces: 1, hunks: [], omittedLines: 0, linesAdded: 0, linesRemoved: 0, sectionCount: 0, body: 'B', version: 4 } }
     : { ok: false, status: 403, error: 'Only someone who may approve specs here can review a revision for approval.' }),
+}));
+mock.module('@/lib/specs/revision-changes', () => ({
+  pairChanges: async () => ({ summary: 's', lines: [{ kind: 'changed', id: 'R-1' }], otherText: [], mismatch: null }),
 }));
 const { GET } = await import('./route');
 const params = Promise.resolve({ specId: 's1' });
@@ -24,6 +27,12 @@ describe('GET /api/specs/[specId]/diff', () => {
     expect([res.status, (await res.json()).identical]).toEqual([200, true]);
     expect(seen.at(-1)).toEqual({ from: 1, to: 2 });
     expect((await GET(req('?from=0'), { params })).status).toBe(400);
+  });
+  it('carries the criterion change list when the revisions differ', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    const body = await (await GET(req('?from=2&to=3'), { params })).json();
+    expect(body.changes.lines).toEqual([{ kind: 'changed', id: 'R-1' }]);
+    expect((await (await GET(req('?from=1&to=2'), { params })).json()).changes).toBeNull();
   });
   it('with review=1, the review panel for an approver, and the refusal for anyone else', async () => {
     caller = { kind: 'user', userId: 'approver' };
