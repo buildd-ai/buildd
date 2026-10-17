@@ -47,6 +47,17 @@ describe('evaluateSoftOverlaps', () => {
     expect(v).toEqual([{ kind: 'advisory', holderTaskId: 'h1', paths: ['scripts', 'scripts/run-unit-tests.ts'], overlapKind: 'prefix', workerStatus: 'running', holderTitle: 'Other' }]);
   });
 
+  it('a pending holder that cannot start (future startAt, held mission) does not hold others', () => {
+    const t = task([{ taskId: 'h1' }]);
+    const pending = { status: 'pending', workerStatus: null };
+    const future = new Date(Date.now() + 7 * 864e5);
+    expect(evaluateSoftOverlaps(t, new Map([['h1', holder({ ...pending, startAt: future })]]), { isHardSurface: none })).toEqual([]);
+    expect(evaluateSoftOverlaps(t, new Map([['h1', holder({ ...pending, missionHeld: true })]]), { isHardSurface: none })).toEqual([]);
+    expect(evaluateSoftOverlaps(t, new Map([['h1', holder({ ...pending, startAt: new Date(Date.now() - 1000) })]]), { isHardSurface: none })).toHaveLength(1);
+    // an in-flight holder is never released by these fields
+    expect(evaluateSoftOverlaps(t, new Map([['h1', holder({ startAt: future, missionHeld: true })]]), { isHardSurface: none })).toHaveLength(1);
+  });
+
   it('a terminal holder, a missing holder, or an overlap that no longer exists releases', () => {
     expect(evaluateSoftOverlaps(task([{ taskId: 'h1' }]), new Map([['h1', holder({ status: 'completed' })]]), { isHardSurface: none })).toEqual([]);
     expect(evaluateSoftOverlaps(task([{ taskId: 'h1' }]), new Map(), { isHardSurface: none })).toEqual([]);
