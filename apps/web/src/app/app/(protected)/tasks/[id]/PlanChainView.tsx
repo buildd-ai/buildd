@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { displayTaskTitle } from '@/lib/task-title';
 import { deriveTaskEyebrow, taskEyebrowText, type TaskEyebrow } from '@/lib/task-eyebrow';
+import { statusPill } from '@/components/ui/states';
 
 interface ChainTask {
   id: string;
@@ -131,7 +132,7 @@ function ChainNode({
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className={`inline-flex items-center gap-1 font-mono text-[11px] md:text-[10px] ${style.text}`}>
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${style.dot}`} />
-          {task.status === 'waiting_input' ? 'waiting' : task.status}
+          {statusPill(task.status).label}
         </span>
 
         {/* PR chip — a live task's PR; a terminal one says it in the eyebrow */}
