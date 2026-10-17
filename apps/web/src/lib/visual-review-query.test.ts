@@ -31,6 +31,8 @@ describe('workspaceAwaitingMissionsQuery', () => {
     expect(sql).toContain(`"a"."type" = 'screenshot'`);
     expect(sql).toContain(`"a"."metadata" -> 'qa' ->> 'verdict' = 'unsure'`);
     expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and \("t"\.role_slug = \$\d+ or "t"\.title like \$\d+\)\)/);
+    expect(params).toContain(VISUAL_AUDITOR_ROLE_SLUG);
+    expect(params).toContain(`${SURFACE_AUDIT_TITLE_PREFIX}%`);
     expect(sql).toContain('not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)');
   });
 
