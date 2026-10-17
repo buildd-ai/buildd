@@ -6258,7 +6258,7 @@ describe('GET /api/github/pr', () => {
     expect(data.delivery).toMatchObject({
       state: 'AWAITING_REVIEW', headline: 'Review queued',
       review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
-      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+      repairs: [{ label: 'Review fix 1 of up to 3', phase: 'pushed', taskId: 'fx' }],
     });
   });
 
