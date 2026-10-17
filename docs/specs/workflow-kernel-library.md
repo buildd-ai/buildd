@@ -1187,16 +1187,32 @@ column outside the kernel; S3 and S4 remove or route each one.
   count of `tasks.status` / `tasks.result` write statements
   (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
   one, fails CI, and a family moved behind the projection lowers its count.
+  The kernel reads an owner attempt's end from its latest worker row, not
+  from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
+  floor): a finished worker is an end even while the task is still
+  `assigned` (the status a running owner task holds for its whole attempt),
+  so an end that never arrived is re-sent. `pending` (its retry is queued)
+  and `cancelled` (the cancel sent its own end) are never an end. On an
+  `assigned` task the end counts only for a worker row created at or after
+  `claimed_at` (the claim stamps it, then inserts the new worker row, so an
+  older row is the previous attempt's while a claim is in flight), and only
+  once that row has gone unchanged for `OWNER_END_SETTLE_MS`: the worker
+  PATCH writes the worker's terminal status before it decides on a retry
+  requeue, so an end read in between is not sent. A terminal task's end
+  counts at once.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
   conflict and CI retries, loop exits) still set the owner task's status
-  directly, because the kernel reads that status as the attempt's end
-  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
-  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  directly, because there is no attempt-to-task projection to replace them
+  yet (an AttemptEnded that sets the owner task in its own statement);
+  person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row).
+  worker PATCH still copies them from the worker row). Also not implemented
+  (AC-9): the worker PATCH and the claim route still apply the review verdict
+  (record and adopt) and FixClaimed on the web host through the seam, with no
+  door op of their own like `attempt_ended`.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

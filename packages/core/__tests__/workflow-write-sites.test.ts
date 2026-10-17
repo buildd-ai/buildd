@@ -326,11 +326,11 @@ const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope
  *    stale-failure archive, a dependency failure cascading). It skips a delivery-owned task in its
  *    own WHERE (`deliveryOwnedTaskSql`, pr-fact-scope.ts) and keeps today's write for every other
  *    task. The test below pins that each still carries the predicate.
- *  - ATTEMPT: the end or requeue of a worker's own attempt. For an owner task `tasks.status` is the
- *    attempt's lifecycle, which the kernel READS (`forwardOwnerEnd` acts only once it is completed
- *    or failed, and a requeue is deliberately not an attempt end). Skipping these for a
- *    delivery-owned task would strand it in progress and the delivery would never hear the
- *    attempt ended.
+ *  - ATTEMPT: the end or requeue of a worker's own attempt. The kernel reads the end from the
+ *    worker row (`ownerAttemptEndOf`: `forwardOwnerEnd` re-sends a finished worker's end even while
+ *    the task is still assigned; a requeue is deliberately not an attempt end), but nothing projects
+ *    the end back onto the task yet. Skipping these for a delivery-owned task would leave it in
+ *    progress after its delivery moved on.
  *  - PERSON: a person's explicit act on the task (or an external tracker acting for one). Not a
  *    delivery fact; the delivery is settled by its own transitions.
  *  - NON_DELIVERY: provably never a delivery-owned task (a task that never started, a release
@@ -338,7 +338,7 @@ const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope
  *  - NOT_LIFECYCLE: writes `result` keys that are not delivery fields (evidence, shipped record).
  */
 const GUARDED = (why: string) => `GUARDED: ${why}; skips a delivery-owned task (deliveryOwnedTaskSql)`;
-const ATTEMPT = (why: string) => `ATTEMPT: ${why}; the attempt's own lifecycle, which the kernel reads (forwardOwnerEnd, T4)`;
+const ATTEMPT = (why: string) => `ATTEMPT: ${why}; the attempt's own lifecycle, which the kernel reads from the worker row (forwardOwnerEnd, T4)`;
 const PERSON = (why: string) => `PERSON: ${why}`;
 const NON_DELIVERY = (why: string) => `NON_DELIVERY: ${why}`;
 const TASK_STATUS_WRITERS: Record<string, string> = {
