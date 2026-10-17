@@ -405,8 +405,7 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
   if (cmd.kind === 'resume') {
     // R-36: resume also continues agents paused by `buildd stop` (R-35). Report any paused from before.
     const stoppedAgentIds = new Set(readStoppedAgentIdsFromConfig(deps.configFile));
-    const pausedByStop = stoppedAgentIds.size > 0 ? stoppedAgentIds : undefined;
-    const continued = await continuePausedAgents(deps, post, pausedByStop);
+    const continued = await continuePausedAgents(deps, post, stoppedAgentIds);
     // Clear the stopped agents list from config now that we've resumed.
     if (stoppedAgentIds.size > 0) {
       try {
@@ -466,13 +465,13 @@ async function listAgents(deps: HoldCommandDeps): Promise<LiveAgent[] | { error:
 async function continuePausedAgents(
   deps: HoldCommandDeps,
   post: (path: string, body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>,
-  stopPausedAgentIds?: Set<string>,
+  stopPausedAgentIds: Set<string>,
 ): Promise<{ lines: string[]; failed: boolean; stillPaused?: number }> {
   const agents = await listAgents(deps);
   if ('error' in agents) return { lines: [`${agents.error} Paused agents were not continued; resume each with a in buildd top.`], failed: true };
   const paused = agents.filter(x => x.paused);
-  const toContinue = stopPausedAgentIds ? paused.filter(x => stopPausedAgentIds.has(x.id)) : paused;
-  const stillPaused = stopPausedAgentIds ? paused.filter(x => !stopPausedAgentIds.has(x.id)).length : 0;
+  const toContinue = paused.filter(x => stopPausedAgentIds.has(x.id));
+  const stillPaused = paused.filter(x => !stopPausedAgentIds.has(x.id)).length;
   const lines: string[] = [];
   let failed = false;
   for (const a of toContinue) {
@@ -485,7 +484,7 @@ async function continuePausedAgents(
       lines.push(`Could not continue "${a.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
     }
   }
-  return { lines, failed, stillPaused: stopPausedAgentIds && stillPaused > 0 ? stillPaused : undefined };
+  return { lines, failed, stillPaused: stillPaused > 0 ? stillPaused : undefined };
 }
 
 // ── buildd stop (R-36) ──────────────────────────────────────────────────────
