@@ -1,6 +1,6 @@
-import { readFile, writeFile, rm, access, lstat, readlink, symlink, appendFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, rm, lstat, realpath, symlink, appendFile, mkdir } from 'fs/promises';
 import { execFileSync } from 'child_process';
-import { dirname, isAbsolute, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 
 /**
  * Codex role / skills / context delivery (Phase 2A).
@@ -86,68 +86,43 @@ export function buildCodexInstructionDoc(input: BuildCodexInstructionDocInput): 
 export interface AgentsMdWriteResult {
   /** Absolute path to the AGENTS.md that was written. */
   path: string;
+  /** Checkout the file lives in. */
+  cwd: string;
   /** Whether an AGENTS.md already existed before we wrote (drives cleanup mode). */
   existed: boolean;
-  /** The original file content when it pre-existed (restored verbatim on cleanup). */
+  /** Content the repo owns, with any buildd block stripped (never the raw file,
+   *  which after a crash still holds the block). Used only when untracked. */
   originalContent?: string;
-  /** Set when AGENTS.md was a symlink (this repo links it to CLAUDE.md). Writing
-   *  through it edits the link's target, a tracked file, so we replace the link
-   *  with a regular file for the run and put the link back on cleanup. */
-  symlinkTarget?: string;
-  /** Tracked path hidden from `git add`/`commit -a` for the run (skip-worktree). */
-  skipWorktree?: boolean;
-  /** Untracked path added to the checkout's info/exclude for the run. */
-  excludeLine?: string;
+  /** Tracked path: what the index holds (git mode and blob), the source of truth
+   *  for restore. Mode 120000 is a symlink whose blob is its target. */
+  indexMode?: string;
+  indexBlob?: string;
+  /** Untracked path: the exclude line this run appended (never one already there). */
   excludeFile?: string;
+  excludeLine?: string;
+  /** Nested writes on the same path share one handle; only the last restore acts. */
+  holders: number;
 }
+
+/** Live handles by path. The closing turn re-enters startSession on the same
+ *  cwd while the outer run still owns the swapped file; the nested write must
+ *  not record that swapped file as the "original". */
+const active = new Map<string, AgentsMdWriteResult>();
+/** Exclude lines added by live runs, by exclude file (linked worktrees share one). */
+const excludeHolders = new Map<string, number>();
 
 function git(cwd: string, args: string[]): string | null {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).replace(/\n$/, '');
   } catch {
     return null;
   }
 }
 
-/**
- * Keep the instruction file out of every commit. The block is for the agent to
- * read, never to ship (a headless run once committed the whole role block into
- * CLAUDE.md through the AGENTS.md symlink). A tracked path is hidden with
- * skip-worktree; an untracked one is excluded via the checkout's info/exclude.
- * Best-effort: not a git checkout means nothing to protect.
- */
-function hideFromGit(cwd: string, result: AgentsMdWriteResult): void {
-  if (git(cwd, ['rev-parse', '--is-inside-work-tree']) !== 'true') return;
-  const tracked = git(cwd, ['ls-files', '--', AGENTS_FILENAME]);
-  if (tracked) {
-    if (git(cwd, ['update-index', '--skip-worktree', '--', AGENTS_FILENAME]) !== null) result.skipWorktree = true;
-    return;
-  }
-  const rel = git(cwd, ['rev-parse', '--git-path', 'info/exclude']);
-  if (!rel) return;
-  result.excludeFile = isAbsolute(rel) ? rel : resolve(cwd, rel);
-  result.excludeLine = `/${AGENTS_FILENAME}`;
-}
-
-async function applyExclude(result: AgentsMdWriteResult): Promise<void> {
-  if (!result.excludeFile || !result.excludeLine) return;
-  try {
-    await mkdir(dirname(result.excludeFile), { recursive: true });
-    await appendFile(result.excludeFile, `\n${result.excludeLine}\n`);
-  } catch {
-    result.excludeFile = undefined;
-  }
-}
-
-async function removeExclude(result: AgentsMdWriteResult): Promise<void> {
-  if (!result.excludeFile || !result.excludeLine) return;
-  try {
-    const cur = await readFile(result.excludeFile, 'utf-8');
-    const next = cur.split('\n').filter((l) => l !== result.excludeLine).join('\n').replace(/\n{3,}/g, '\n\n');
-    await writeFile(result.excludeFile, next);
-  } catch {
-    // best-effort
-  }
+function indexEntry(cwd: string): { mode: string; blob: string } | null {
+  const out = git(cwd, ['ls-files', '-s', '--', AGENTS_FILENAME]);
+  const m = out?.match(/^(\d+) ([0-9a-f]+) \d\t/);
+  return m ? { mode: m[1], blob: m[2] } : null;
 }
 
 /**
@@ -168,7 +143,7 @@ function stripBuilddSection(content: string): string {
 
 async function pathExists(path: string): Promise<boolean> {
   try {
-    await access(path);
+    await lstat(path);
     return true;
   } catch {
     return false;
@@ -177,59 +152,110 @@ async function pathExists(path: string): Promise<boolean> {
 
 /**
  * Write the instruction `body` into the repo's AGENTS.md as a delimited buildd
- * section. If an AGENTS.md already exists, the buildd section is appended (and
- * any stale buildd section from a prior run is replaced) without clobbering the
- * repo's own content. Returns enough state for `restoreCodexAgentsMd` to undo it
- * so we never leave the repo dirty.
+ * section, keeping it out of every commit (a headless run once shipped the block
+ * into CLAUDE.md through the AGENTS.md symlink).
+ *
+ * - Never writes through a symlink: the link is replaced by a regular file for
+ *   the run (its target, CLAUDE.md, is tracked).
+ * - A tracked path is hidden with skip-worktree; an untracked one is added to the
+ *   checkout's info/exclude. Restore is driven by the git index, not lstat, so a
+ *   crashed earlier run (regular file holding the block, stale flag) heals.
+ * - Re-entrant: a nested write on a path with a live handle reuses it.
  */
 export async function writeCodexAgentsMd(cwd: string, body: string): Promise<AgentsMdWriteResult> {
   const path = join(cwd, AGENTS_FILENAME);
-  let symlinkTarget: string | undefined;
-  try {
-    const st = await lstat(path);
-    if (st.isSymbolicLink()) symlinkTarget = await readlink(path);
-  } catch {
-    // does not exist
-  }
-  const existed = await pathExists(path);
-  let originalContent: string | undefined;
-
   const section = `${BUILDD_AGENTS_BEGIN}\n${body}\n${BUILDD_AGENTS_END}\n`;
-  const result: AgentsMdWriteResult = { path, existed, symlinkTarget };
 
-  // Decide protection before touching the file, so a crash mid-write cannot
-  // leave a tracked change that a commit would pick up.
-  hideFromGit(cwd, result);
-  await applyExclude(result);
-
-  if (existed) {
-    originalContent = await readFile(path, 'utf-8');
-    result.originalContent = originalContent;
-    // Never write through a symlink: its target (CLAUDE.md) is a tracked file.
-    if (symlinkTarget !== undefined) await rm(path, { force: true });
-    // Replace any prior buildd section (avoid stacking duplicates across restarts),
-    // then append the fresh one to whatever the repo owns.
-    const base = stripBuilddSection(originalContent).replace(/\s+$/, '');
-    const next = base.length > 0 ? `${base}\n\n${section}` : section;
-    await writeFile(path, next);
-  } else {
-    await writeFile(path, section);
+  const live = active.get(path);
+  if (live) {
+    live.holders++;
+    const cur = await readFile(path, 'utf-8').catch(() => '');
+    const base = stripBuilddSection(cur).replace(/\s+$/, '');
+    await writeFile(path, base.length > 0 ? `${base}\n\n${section}` : section);
+    return live;
   }
 
+  const existed = await pathExists(path);
+  const result: AgentsMdWriteResult = { path, cwd, existed, holders: 1 };
+  const inRepo = git(cwd, ['rev-parse', '--is-inside-work-tree']) === 'true';
+
+  let raw = '';
+  if (existed) raw = await readFile(path, 'utf-8').catch(() => '');
+  result.originalContent = existed ? stripBuilddSection(raw) : undefined;
+
+  if (inRepo) {
+    const entry = indexEntry(cwd);
+    if (entry) {
+      result.indexMode = entry.mode;
+      result.indexBlob = entry.blob;
+      git(cwd, ['update-index', '--skip-worktree', '--', AGENTS_FILENAME]);
+    } else {
+      const rel = git(cwd, ['rev-parse', '--git-path', 'info/exclude']);
+      if (rel) {
+        const abs = isAbsolute(rel) ? rel : resolve(cwd, rel);
+        // Canonical, so two linked worktrees reaching it by different spellings share one key.
+        const file = join(await realpath(dirname(abs)).catch(() => dirname(abs)), basename(abs));
+        const line = `/${AGENTS_FILENAME}`;
+        const cur = await readFile(file, 'utf-8').catch(() => '');
+        const held = excludeHolders.get(file) ?? 0;
+        if (held > 0) {
+          excludeHolders.set(file, held + 1);
+          result.excludeFile = file;
+          result.excludeLine = line;
+        } else if (!cur.split('\n').includes(line)) {
+          try {
+            await mkdir(dirname(file), { recursive: true });
+            await appendFile(file, `${cur === '' || cur.endsWith('\n') ? '' : '\n'}${line}\n`);
+            excludeHolders.set(file, 1);
+            result.excludeFile = file;
+            result.excludeLine = line;
+          } catch {
+            // best-effort
+          }
+        }
+      }
+    }
+  }
+
+  // Never write through a symlink: its target is a tracked file.
+  const st = await lstat(path).catch(() => null);
+  if (st?.isSymbolicLink()) {
+    // The linked file's own text is the repo content to build on.
+    result.originalContent = stripBuilddSection(await readFile(path, 'utf-8').catch(() => ''));
+    await rm(path, { force: true });
+  }
+  const base = (result.originalContent ?? '').replace(/\s+$/, '');
+  await writeFile(path, base.length > 0 ? `${base}\n\n${section}` : section);
+
+  active.set(path, result);
   return result;
 }
 
 /**
- * Undo `writeCodexAgentsMd`: if buildd created the file, delete it; if it
- * pre-existed, restore the original content verbatim. Safe to call even if the
- * file was removed in the meantime (e.g. worktree torn down).
+ * Undo `writeCodexAgentsMd`. Safe to call unconditionally and more than once.
+ * Tracked: put back exactly what the index holds (link or file) and clear the
+ * flag. Untracked: delete what we created, or restore the repo's own content
+ * with any buildd block stripped. The exclude line is removed only if this run
+ * added it and no other run still needs it.
  */
-export async function restoreCodexAgentsMd(cwd: string, result: AgentsMdWriteResult): Promise<void> {
-  const { path, existed, originalContent, symlinkTarget } = result;
+export async function restoreCodexAgentsMd(_cwd: string, result: AgentsMdWriteResult): Promise<void> {
+  if (active.get(result.path) === result) {
+    result.holders--;
+    if (result.holders > 0) return;
+    active.delete(result.path);
+  } else if (result.holders <= 0) {
+    return; // already restored
+  } else {
+    result.holders = 0;
+  }
+  const { path, cwd, existed, originalContent, indexMode, indexBlob } = result;
   try {
-    if (symlinkTarget !== undefined) {
+    if (indexMode !== undefined && indexBlob !== undefined) {
       await rm(path, { force: true });
-      await symlink(symlinkTarget, path);
+      const content = git(cwd, ['cat-file', 'blob', indexBlob]);
+      if (indexMode === '120000' && content !== null) await symlink(content, path);
+      else if (content !== null) await writeFile(path, content === '' ? '' : `${content}\n`);
+      git(cwd, ['update-index', '--no-skip-worktree', '--', AGENTS_FILENAME]);
     } else if (!existed) {
       await rm(path, { force: true });
     } else if (originalContent !== undefined) {
@@ -239,6 +265,24 @@ export async function restoreCodexAgentsMd(cwd: string, result: AgentsMdWriteRes
     // Best-effort cleanup — never let restore failures break the run's finally.
     console.error(`[codex-instructions] Failed to restore ${path}:`, err);
   }
-  if (result.skipWorktree) git(cwd, ['update-index', '--no-skip-worktree', '--', AGENTS_FILENAME]);
-  await removeExclude(result);
+  await releaseExclude(result);
+}
+
+async function releaseExclude(result: AgentsMdWriteResult): Promise<void> {
+  const { excludeFile: file, excludeLine: line } = result;
+  if (!file || !line) return;
+  const held = (excludeHolders.get(file) ?? 1) - 1;
+  if (held > 0) {
+    excludeHolders.set(file, held);
+    return;
+  }
+  excludeHolders.delete(file);
+  try {
+    const cur = await readFile(file, 'utf-8');
+    const i = cur.lastIndexOf(`\n${line}\n`);
+    const next = i >= 0 ? cur.slice(0, i + 1) + cur.slice(i + line.length + 2) : cur.startsWith(`${line}\n`) ? cur.slice(line.length + 1) : cur;
+    await writeFile(file, next);
+  } catch {
+    // best-effort
+  }
 }

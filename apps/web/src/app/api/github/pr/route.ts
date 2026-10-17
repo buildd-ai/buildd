@@ -1156,7 +1156,7 @@ export async function POST(req: NextRequest) {
     });
 
     // A runner's injected instruction block must never ship: refuse a branch
-    // whose diff adds it (CI is the backstop if GitHub cannot answer).
+    // whose diff adds it (CI's check-no-agent-instructions step is the backstop if GitHub cannot answer, and covers later pushes).
     const leaked = await findLeakedInstructionFiles(repo.installation.installationId, repo.fullName, prBase.base ?? 'main', head);
     if (leaked.length > 0) {
       return NextResponse.json({

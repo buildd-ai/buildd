@@ -228,3 +228,129 @@ describe('Codex instruction block never reaches a commit', () => {
     expect(await readFile(join(dir, '.git', 'info', 'exclude'), 'utf-8')).not.toContain('/AGENTS.md');
   });
 });
+
+describe('Codex instruction block: review findings on restore', () => {
+  const { execFileSync } = require('child_process') as typeof import('child_process');
+  const { symlink, lstat, readlink, mkdir } = require('fs/promises') as typeof import('fs/promises');
+  let dir: string;
+  const gi = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf-8' });
+  const g = (...a: string[]) => gi(dir, ...a);
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codex-restore-'));
+    g('init', '-q');
+    g('config', 'user.email', 't@example.com');
+    g('config', 'user.name', 't');
+    g('config', 'commit.gpgsign', 'false');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function linkedRepo() {
+    await writeFile(join(dir, 'CLAUDE.md'), 'repo rules\n');
+    await symlink('CLAUDE.md', join(dir, 'AGENTS.md'));
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+  }
+  const flag = () => g('ls-files', '-v', '--', 'AGENTS.md').trim().charAt(0);
+
+  test('closing turn: nested write then inner and outer restore ends with the symlink and no flag', async () => {
+    await linkedRepo();
+    const outer = await writeCodexAgentsMd(dir, 'OUTER');
+    const inner = await writeCodexAgentsMd(dir, 'INNER');
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toContain('INNER');
+    await restoreCodexAgentsMd(dir, inner);
+    // Inner restore must not give the file back while the outer run owns it.
+    expect(flag()).toBe('S');
+    await restoreCodexAgentsMd(dir, outer);
+    expect((await lstat(join(dir, 'AGENTS.md'))).isSymbolicLink()).toBe(true);
+    expect(await readlink(join(dir, 'AGENTS.md'))).toBe('CLAUDE.md');
+    expect(flag()).toBe('H');
+    expect(g('status', '--porcelain')).toBe('');
+    g('add', '-A');
+    expect(g('diff', '--cached', '--name-only')).toBe('');
+  });
+
+  test('restore is safe to call twice', async () => {
+    await linkedRepo();
+    const r = await writeCodexAgentsMd(dir, 'B');
+    await restoreCodexAgentsMd(dir, r);
+    await restoreCodexAgentsMd(dir, r);
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('crashed first run (regular file with the block, stale flag) is healed by a full second run', async () => {
+    await linkedRepo();
+    // State a killed runner leaves behind.
+    await rm(join(dir, 'AGENTS.md'));
+    await writeFile(join(dir, 'AGENTS.md'), `repo rules\n\n${BUILDD_AGENTS_BEGIN}\nOLD\n${BUILDD_AGENTS_END}\n`);
+    g('update-index', '--skip-worktree', 'AGENTS.md');
+
+    const r = await writeCodexAgentsMd(dir, 'NEW');
+    const during = await readFile(join(dir, 'AGENTS.md'), 'utf-8');
+    expect(during.split(BUILDD_AGENTS_BEGIN).length - 1).toBe(1);
+    expect(during).toContain('NEW');
+    await restoreCodexAgentsMd(dir, r);
+
+    expect((await lstat(join(dir, 'AGENTS.md'))).isSymbolicLink()).toBe(true);
+    expect(flag()).toBe('H');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('crashed run on a tracked regular AGENTS.md restores the repo content, not the block', async () => {
+    await writeFile(join(dir, 'AGENTS.md'), 'repo agents\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    await writeFile(join(dir, 'AGENTS.md'), `repo agents\n\n${BUILDD_AGENTS_BEGIN}\nOLD\n${BUILDD_AGENTS_END}\n`);
+    g('update-index', '--skip-worktree', 'AGENTS.md');
+    const r = await writeCodexAgentsMd(dir, 'NEW');
+    await restoreCodexAgentsMd(dir, r);
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toBe('repo agents\n');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('untracked: only this run\'s exclude line goes, other lines and blank lines stay, shared by linked worktrees', async () => {
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const excl = join(dir, '.git', 'info', 'exclude');
+    await mkdir(join(dir, '.git', 'info'), { recursive: true });
+    const user = '# mine\n*.log\n\n\n\nscratch/\n';
+    await writeFile(excl, user);
+    const wt2 = join(dir, '..', `${dir.split('/').pop()}-wt2`);
+    g('worktree', 'add', '-q', '-b', 'other', wt2);
+    try {
+      const r1 = await writeCodexAgentsMd(dir, 'ONE');
+      const r2 = await writeCodexAgentsMd(wt2, 'TWO');
+      expect((await readFile(excl, 'utf-8')).split('\n').filter((l) => l === '/AGENTS.md').length).toBe(1);
+      await restoreCodexAgentsMd(dir, r1);
+      // The other run is still live: its exclude line must survive.
+      expect(await readFile(excl, 'utf-8')).toContain('/AGENTS.md');
+      expect(gi(wt2, 'status', '--porcelain')).toBe('');
+      await restoreCodexAgentsMd(wt2, r2);
+      expect(await readFile(excl, 'utf-8')).toBe(user);
+    } finally {
+      g('worktree', 'remove', '--force', wt2);
+    }
+  });
+
+  test('untracked: an exclude line the user already had is never removed', async () => {
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const excl = join(dir, '.git', 'info', 'exclude');
+    await mkdir(join(dir, '.git', 'info'), { recursive: true });
+    await writeFile(excl, '/AGENTS.md\n');
+    const r = await writeCodexAgentsMd(dir, 'X');
+    await restoreCodexAgentsMd(dir, r);
+    expect(await readFile(excl, 'utf-8')).toBe('/AGENTS.md\n');
+  });
+
+  test('workers.ts restores before the closing-turn return and outside `if (session)`', async () => {
+    const src = await readFile(join(__dirname, '../../src/workers.ts'), 'utf-8');
+    const restore = src.indexOf('await restoreCodexAgentsMd(');
+    expect(restore).toBeGreaterThan(0);
+    expect(src.indexOf('await restoreCodexAgentsMd(', restore + 1)).toBe(-1);
+    const early = src.indexOf('if (delegatedToClosingTurn) {\n        // The nested closing-turn call');
+    expect(restore).toBeLessThan(early);
+    const sessionIf = src.lastIndexOf('const session = this.sessions.get(worker.id);', restore);
+    expect(sessionIf === -1 || sessionIf < src.lastIndexOf('cleanupSessionPromptFiles(worker.id);', restore)).toBe(true);
+  });
+});
