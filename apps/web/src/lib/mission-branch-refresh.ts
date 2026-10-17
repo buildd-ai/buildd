@@ -641,6 +641,8 @@ async function dispatchBranchRefreshConflictTask(args: {
         pathManifest: ['**'],
         context: {
           baseBranch: branch,
+          // The branch this refresh is for, written once: a requeue may move baseBranch (integration-refresh.ts refreshFiledFor).
+          refreshBranch: branch,
           requireMergeCommit: true,
           // Read by integration-refresh.ts: what this refresh must prove landed.
           refreshTrunk: trunk,
