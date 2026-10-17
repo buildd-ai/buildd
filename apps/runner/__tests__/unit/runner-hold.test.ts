@@ -242,7 +242,9 @@ describe('runHoldCommand', () => {
     expect(existsSync(configFile)).toBe(false);
   });
 
-  test('resume over the socket lifts the hold and continues each paused agent in its own session (R-36)', async () => {
+  test('resume over the socket lifts the hold and continues only agents paused by stop (R-36)', async () => {
+    // Set up config with w1 recorded as paused by `buildd stop`
+    writeFileSync(configFile, JSON.stringify({ stoppedAgentIds: ['w1'] }));
     const posts: Array<{ path: string; body: unknown }> = [];
     const r = await runHoldCommand({ kind: 'resume' }, {
       configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
@@ -255,11 +257,33 @@ describe('runHoldCommand', () => {
     });
     expect(posts).toEqual([
       { path: '/api/resume', body: {} },
-      // The answer to its pause: the same path as Resume on the dashboard.
+      // The answer to the agent paused by `buildd stop`: continue it
       { path: '/api/workers/w1/answer', body: { message: 'Resume' } },
     ]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('Resumed: looking for work now. 1 agent running.\nContinued "name override" in its own session.');
+    // w2 stays paused because it wasn't paused by `buildd stop`, only w1 is continued
+    expect(r.stdout).toBe('Resumed: looking for work now. 1 agent running. 1 agent stays paused.\nContinued "name override" in its own session.');
+  });
+
+  test('resume does not continue agents when no agents were paused by stop (R-36)', async () => {
+    // No stoppedAgentIds in config, so no agents should be continued
+    const posts: Array<{ path: string; body: unknown }> = [];
+    const r = await runHoldCommand({ kind: 'resume' }, {
+      configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
+      get: async () => ({ status: 200, body: { workers: [
+        { id: 'w1', taskTitle: 'manually paused 1', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+        { id: 'w2', taskTitle: 'manually paused 2', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+        { id: 'w3', taskTitle: 'working', status: 'working' },
+      ] } }),
+      post: async (path, body) => { posts.push({ path, body }); return { status: 200, body: { hold: null, wasHeld: true, running: 1 } }; },
+    });
+    expect(posts).toEqual([
+      { path: '/api/resume', body: {} },
+      // No agents are continued because stoppedAgentIds is empty
+    ]);
+    expect(r.code).toBe(0);
+    // Both w1 and w2 stay paused because they weren't paused by `buildd stop`
+    expect(r.stdout).toBe('Resumed: looking for work now. 1 agent running. 2 agents stay paused.');
   });
 
   test('with no runner running, it writes the config and says the next start is held', async () => {
