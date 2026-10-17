@@ -2482,3 +2482,103 @@ describe('PATCH /api/missions/[id] — goalCriteria cannot drop or change the ou
     expect(res.status).toBe(200);
   });
 });
+
+describe('GET /api/missions/[id] — response includes deliveries and scopeUpdates', () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION, teamId: 'team-1', title: 'Test Mission', workspaceId: 'ws-1', tasks: [],
+    });
+  });
+
+  it('returns empty deliveries and scopeUpdates arrays when none exist', async () => {
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [],
+      scopeAmendmentsOf: async () => [],
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.deliveries)).toBe(true);
+    expect(data.deliveries.length).toBe(0);
+    expect(Array.isArray(data.scopeUpdates)).toBe(true);
+    expect(data.scopeUpdates.length).toBe(0);
+  });
+
+  it('includes delivery fields including prLifecycleStatus from owner worker', async () => {
+    const mockEpoch = {
+      epoch: 1,
+      branch: 'mission/test-123456789',
+      state: 'open',
+      prNumber: 42,
+      repoFullName: 'org/repo',
+      ownerTaskId: 'owner-task-id',
+      mergedAt: null,
+      scopeVersion: 1,
+      retiredAt: null,
+      settlement: null,
+    };
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [mockEpoch],
+      scopeAmendmentsOf: async () => [],
+    }));
+    // Mock the mission with a task that has the matching ID and a worker with prLifecycleStatus
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION,
+      teamId: 'team-1',
+      title: 'Test Mission',
+      workspaceId: 'ws-1',
+      tasks: [{
+        id: 'owner-task-id',
+        workers: [{ prLifecycleStatus: 'open' }],
+      }],
+    });
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.deliveries).toHaveLength(1);
+    const delivery = data.deliveries[0];
+    expect(delivery.delivery).toBe(1);
+    expect(delivery.prNumber).toBe(42);
+    expect(delivery.repoFullName).toBe('org/repo');
+    expect(delivery.ownerTaskId).toBe('owner-task-id');
+    expect(delivery.prLifecycleStatus).toBe('open');
+  });
+
+  it('maps scope updates and omits recorded rows', async () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: 'a', missionId: MISSION, sourceTaskId: 'task-1', decision: 'narrow', status: 'applied',
+      scopeVersionBefore: 1, scopeVersionAfter: 2, reason: null, weakens: [], createdAt: '2026-01-01T00:00:00.000Z', ...over,
+    });
+    mock.module('@/lib/workflow/delivery-ship', () => ({
+      missionEpochsOf: async () => [],
+      scopeAmendmentsOf: async () => [
+        row({ id: 'r', status: 'recorded', decision: 'note' }),
+        row({ id: 'h', status: 'held', decision: 'widen', sourceTaskId: 'task-2', scopeVersionAfter: null, reason: 'needs a decision' }),
+        row({ id: 'p' }),
+      ],
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(
+      new NextRequest(`http://localhost/api/missions/${MISSION}`),
+      { params: Promise.resolve({ id: MISSION }) }
+    );
+    const data = await res.json();
+    expect(data.scopeUpdates).toEqual([
+      { taskId: 'task-2', decision: 'widen', status: 'held', scopeVersion: null, reason: 'needs a decision', at: '2026-01-01T00:00:00.000Z' },
+      { taskId: 'task-1', decision: 'narrow', status: 'applied', scopeVersion: 2, reason: null, at: '2026-01-01T00:00:00.000Z' },
+    ]);
+  });
+});
