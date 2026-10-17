@@ -142,6 +142,9 @@ mock.module('@/lib/subject-sweep', () => ({
 const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false, merged_at: null }));
 
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+// Whether a repo's covering installation is the workspace's team's (tests/db pins the real rule).
+let installationIsTeams = true;
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: async () => installationIsTeams }));
 
 // Sibling-row merge stamp; its predicate is covered in pr-merge-stamp.test.ts.
 // By default the stamp wrote one row (the sweep counts only real writes, S4a); a test that needs
@@ -1479,6 +1482,7 @@ describe('reconcileStalePrWorkers repo resolution', () => {
       },
     ]);
     mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -1488,6 +1492,25 @@ describe('reconcileStalePrWorkers repo resolution', () => {
 
     // The PR's own repo, with the installation that actually covers it.
     expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/sibling-ios/pulls/25');
+  });
+
+  it('does not read a PR through an installation that is not the workspace\'s team\'s', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 25, workspaceId: 'ws1', prUrl: 'https://github.com/other/app/pull/25', prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      teamId: 'team-1',
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 456 } });
+    installationIsTeams = false;
+    try {
+      await reconcileStalePrWorkers();
+    } finally {
+      installationIsTeams = true;
+    }
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('reconciles a worker whose workspace has no repo, using its prUrl', async () => {
@@ -1502,7 +1525,7 @@ describe('reconcileStalePrWorkers repo resolution', () => {
       },
     ]);
     // A coordination workspace: no repo, no installation pointer of its own.
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: '', githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: '', githubInstallation: null });
     mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z' });
 

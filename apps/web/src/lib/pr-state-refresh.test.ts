@@ -64,6 +64,8 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   fetchCiLifecycleStatus: mockFetchCiLifecycleStatus,
 }));
+// The repo's covering installation is the workspace's team's (tests/db pins the real rule).
+mock.module('@/lib/github-installation-access', () => ({ installationBelongsToTeam: async () => true }));
 
 // ─── Pusher mock ──────────────────────────────────────────────────────────────
 
@@ -302,7 +304,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 1, workspaceId: 'ws-no-gh', taskId: 't1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: null,
       githubRepo: null,
       githubInstallation: null,
@@ -321,7 +323,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'owner/repo',
       githubRepo: { installation: { installationId: 90000002 } },
       githubInstallation: { installationId: 90000001 },
@@ -338,7 +340,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task1' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'owner/repo',
       githubRepo: null,
       githubInstallation: { installationId: 90000001 },
@@ -671,7 +673,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -693,7 +695,7 @@ describe('pr-state-refresh repo resolution', () => {
         prLifecycleStatus: 'pr_open',
       },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/repo',
       githubRepo: { installation: { installationId: 123 } },
     });
@@ -716,7 +718,7 @@ describe('pr-state-refresh repo resolution', () => {
         prLifecycleStatus: null,
       },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: null, githubInstallation: null });
     mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z', head: { sha: 'abc' } });
     const setMock = makeSetMock();
@@ -738,7 +740,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1',
       repo: 'https://github.com/owner/old-name',
       githubRepo: { fullName: 'owner/new-name', repoId: 12345, installation: { installationId: 123 } },
     });
@@ -762,7 +764,7 @@ describe('pr-state-refresh repo resolution', () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 1, workspaceId: 'ws-coord', taskId: 't1', prUrl: null, prLifecycleStatus: null },
     ]);
-    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', repo: null, githubInstallation: null });
     makeSetMock();
 
     await refreshStaleWorkersForWorkspaces(['ws-coord']);

@@ -139,6 +139,13 @@ class FakePgVectorStore {
   }
 }
 
+// The job's team's installation (tests/db/team-installation-ownership.test.ts pins the rule).
+let jobInstallation: number | null = 9001;
+mock.module('@/lib/workspace-installation', () => ({
+  createTeamInstallationResolver: () => ({
+    forWorkspace: async () => (jobInstallation ? { installationId: jobInstallation } : { installationId: null, reason: 'installation_not_team_owned' }),
+  }),
+}));
 mock.module('@buildd/core/knowledge-store', () => ({
   PgVectorStore: FakePgVectorStore,
   getVoyageEmbedder: () => null,
@@ -207,6 +214,7 @@ function resetAll() {
   deleteBySourceCalls = [];
   upsertCalls = [];
   refuseDocs = new Set();
+  jobInstallation = 9001;
 }
 
 function finalUpdate(): Row | undefined {
@@ -546,8 +554,8 @@ describe('runDiffIngestJob', () => {
     expect(done?.finishedAt).toBeInstanceOf(Date);
   });
 
-  it('marks the job as error when no installation is bound to the repo', async () => {
-    joinResults = () => [];
+  it('marks the job as error when no installation of the job\'s team covers the repo', async () => {
+    jobInstallation = null;
     const result = await runDiffIngestJob('job-1');
     expect((result as any).status).toBe('error');
     expect(finalUpdate()?.error).toContain('installation');

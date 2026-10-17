@@ -45,7 +45,7 @@ import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
@@ -381,16 +381,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
    * batch (a workspace's PRs, an org's sibling repos), and this is a DB round
    * trip per miss.
    */
-  const installationByRepo = new Map<string, number | null>();
-  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(
-        repo,
-        await installationIdForRepo(repo).catch(() => null),
-      );
-    }
-    return installationByRepo.get(repo) ?? null;
-  };
+  const installations = createTeamInstallationResolver();
 
   // Group by workspace so we share one installation token per workspace
   const byWorkspace = new Map<string, Candidate[]>();
@@ -413,7 +404,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { repo: true },
+      columns: { repo: true, teamId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -442,10 +433,13 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 
       // The workspace pointer only answers for the workspace's own repo; for
       // anything else the covering installation has to be looked up by repo.
-      const installationId =
-        (repo === workspaceRepo ? workspaceInstallationId : null)
-        ?? await resolveInstallationCached(repo)
-        ?? workspaceInstallationId;
+      // Only the team's own installation: one covering the repo for another team is refused.
+      const picked = await installations.resolve(
+        repo,
+        { teamId: workspace?.teamId, fullName: workspaceRepo, installationId: workspaceInstallationId },
+        { fallbackToWorkspace: true },
+      );
+      const installationId = picked.installationId;
 
       if (!installationId) {
         // Unreconcilable, and NOT transient. The old code recorded a bare
@@ -453,7 +447,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         // forever. Count it as a failure so the row eventually retires to
         // `unresolvable` and shows up on Health.
         result.skipped++;
-        await recordFailure(worker, `No usable GitHub App installation for ${repo}`);
+        await recordFailure(worker, picked.reason === 'installation_not_team_owned'
+          ? `The GitHub App installation covering ${repo} is not this workspace's team's`
+          : `No usable GitHub App installation for ${repo}`);
         continue;
       }
 
