@@ -403,6 +403,8 @@ export function getTestTimeoutMs(configured: string | undefined): number {
  * silently. Generous by default: it is a backstop, not a performance budget.
  */
 const DEFAULT_FILE_WALL_TIMEOUT_MS = 600_000;
+/** How long to keep reading output after the kill before abandoning the pipes. */
+const KILL_GRACE_MS = 1_000;
 
 export function getFileWallTimeoutMs(configured: string | undefined): number {
   const n = Number(configured);
@@ -551,20 +553,37 @@ export async function runTestFile(
       env: { ...process.env, BUILDD_HOME: buildHome, TMPDIR: testHome },
     });
     const wallMs = getFileWallTimeoutMs(process.env.BUILDD_TEST_FILE_TIMEOUT_MS);
+    let wallTimer: ReturnType<typeof setTimeout> | undefined;
     let wallTimedOut = false;
-    const wallTimer = setTimeout(() => {
-      wallTimedOut = true;
-      child.kill?.('SIGKILL');
-    }, wallMs);
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    // Killing the bun process does not close the pipes while an orphaned
+    // grandchild (git, warm-repo) still holds them, so after the kill stop
+    // waiting for EOF once a short grace period has passed.
+    const gaveUp = new Promise<'gaveUp'>(resolve => {
+      wallTimer = setTimeout(() => {
+        wallTimedOut = true;
+        child.kill?.('SIGKILL');
+        graceTimer = setTimeout(() => resolve('gaveUp'), KILL_GRACE_MS);
+      }, wallMs);
+    });
     let exitCode: number, stdout: string, stderr: string;
     try {
-      [exitCode, stdout, stderr] = await Promise.all([
-        child.exited,
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
+      const settled = await Promise.race([
+        Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]),
+        gaveUp,
       ]);
+      if (settled === 'gaveUp') {
+        [exitCode, stdout, stderr] = [1, '', ''];
+      } else {
+        [exitCode, stdout, stderr] = settled;
+      }
     } finally {
       clearTimeout(wallTimer);
+      clearTimeout(graceTimer);
     }
     if (wallTimedOut) {
       return {

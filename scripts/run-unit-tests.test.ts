@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   attributeStoreReaches,
   storeGuardPath,
+  getFileWallTimeoutMs,
   getTestTimeoutMs,
   STORE_REACH_MARKER,
   diffStoreSnapshots,
@@ -182,15 +183,6 @@ describe('runTestFile', () => {
   });
 });
 
-/**
- * Seven runner modules resolve BUILDD_HOME when they are first imported
- * (worker-store, history-store, session-logger, outbox, doctor, updater,
- * index), so a test that sets it in a `beforeAll` is already too late. Injecting it here --
- * the single place that spawns every test process -- is the only point that
- * covers all of them regardless of when they read it. Without it the suite
- * wrote fixture records into the operator's real ~/.buildd/workers, where they
- * were counted as fleet data.
- */
 describe('runTestFile wall-clock cap', () => {
   it('kills a hung file and says why', async () => {
     process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
@@ -212,8 +204,44 @@ describe('runTestFile wall-clock cap', () => {
       delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
     }
   });
+
+  it('resolves even when an orphan keeps stdout open after the kill', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      const result = await runTestFile('orphan.test.ts', () => ({
+        exited: new Promise<number>(() => {}),
+        kill: () => {},
+        stdout: new ReadableStream<Uint8Array>({ start: () => {} }),
+        stderr: new ReadableStream<Uint8Array>({ start: () => {} }),
+      }));
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
 });
 
+describe('getFileWallTimeoutMs', () => {
+  it('falls back to the default for unset, blank, invalid and <1 values', () => {
+    const def = getFileWallTimeoutMs(undefined);
+    expect(def).toBeGreaterThan(0);
+    for (const v of ['', '   ', 'abc', '0', '-5', '0.5']) expect(getFileWallTimeoutMs(v)).toBe(def);
+  });
+  it('uses a valid value', () => {
+    expect(getFileWallTimeoutMs('1234')).toBe(1234);
+  });
+});
+
+/**
+ * Seven runner modules resolve BUILDD_HOME when they are first imported
+ * (worker-store, history-store, session-logger, outbox, doctor, updater,
+ * index), so a test that sets it in a `beforeAll` is already too late. Injecting it here --
+ * the single place that spawns every test process -- is the only point that
+ * covers all of them regardless of when they read it. Without it the suite
+ * wrote fixture records into the operator's real ~/.buildd/workers, where they
+ * were counted as fleet data.
+ */
 describe('runTestFile BUILDD_HOME isolation', () => {
   function capturedEnv(file: string): Record<string, string | undefined> {
     let env: Record<string, string | undefined> = {};
