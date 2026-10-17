@@ -2009,6 +2009,29 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
     }
 
+    // `buildd top`'s talk session (talk.ts): where the workspace's checkout is,
+    // what to connect to, and what the server says about the mission or task.
+    // Owner-only socket, so the key may travel to the `buildd top` process; it
+    // goes into a 0600 file there, never onto a command line.
+    if (path === '/api/talk-context' && req.method === 'POST') {
+      try {
+        const body = await req.json().catch(() => ({})) as { kind?: string; id?: string; workspaceId?: string };
+        if ((body.kind !== 'mission' && body.kind !== 'task') || !body.id) {
+          return Response.json({ error: 'kind (mission or task) and id are required' }, { status: 400, headers: corsHeaders });
+        }
+        const [workspaces, explain, mission] = await Promise.all([
+          buildd!.listWorkspaces(),
+          buildd!.getExplain(body.kind, body.id),
+          body.kind === 'mission' ? buildd!.getMission(body.id) : Promise.resolve(null),
+        ]);
+        const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
+        const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
+        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     // The missions `buildd top` lists (R-24): open, and delivered in the last 7 days.
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
