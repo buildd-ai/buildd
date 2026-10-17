@@ -48,6 +48,8 @@ const trigger = mock(async () => {});
 mock.module('@/lib/pusher', () => ({ triggerEvent: trigger, channels: { mission: (id: string) => id, workspace: (id: string) => id }, events: { MISSION_NOTE_POSTED: 'note' } }));
 const strandGrades = mock(async (_opts: any) => ({ scanned: 2, labelled: 1, duplicates: 0, conflicts: 0, unknown: { window_open: 1 }, errors: 0 }));
 mock.module('@/lib/strand-choice-grading', () => ({ gradeStrandChoiceDecisions: strandGrades }));
+const specGrades = mock(async (_opts: any) => ({ duplicate: { scanned: 3, labelled: 2, duplicates: 0, conflicts: 0, unknown: {}, errors: 0 }, area: { scanned: 1, labelled: 1, duplicates: 0, conflicts: 0, unknown: {}, errors: 0 } }));
+mock.module('@/lib/spec-decision-grading', () => ({ gradeSpecDecisions: specGrades }));
 const { GET } = await import('./route');
 const req = (token = 'test-secret') => new NextRequest('http://localhost/api/cron/orchestration-readout', { headers: { authorization: `Bearer ${token}` } });
 
@@ -56,7 +58,7 @@ beforeEach(() => {
   process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '0';
   workspaces = []; writes = [];
   insertedNotes.clear();
-  for (const fn of [select, claim, manifest, scheduling, build, target, trigger, strandGrades]) fn.mockClear();
+  for (const fn of [select, claim, manifest, scheduling, build, target, trigger, strandGrades, specGrades]) fn.mockClear();
 });
 
 it('refuses unauthorized requests before querying', async () => {
@@ -80,7 +82,10 @@ it('grades the strand choice decisions once per run and reports the counts', asy
   const res = await GET(req());
   expect(strandGrades).toHaveBeenCalledTimes(1);
   expect(strandGrades.mock.calls[0][0].now).toBeInstanceOf(Date);
-  expect((await res.json()).strandGrades).toMatchObject({ scanned: 2, labelled: 1 });
+  const body = await res.json();
+  expect(body.strandGrades).toMatchObject({ scanned: 2, labelled: 1 });
+  expect(specGrades).toHaveBeenCalledTimes(1);
+  expect(body.specGrades).toMatchObject({ duplicate: { labelled: 2 }, area: { labelled: 1 } });
 });
 
 it('writes a private workspace aggregate and one eligible note without promotion', async () => {

@@ -9,7 +9,13 @@ A Living Spec is governed intent stored in buildd: a body with immutable
 revisions, requirement ids (`R-n`, `AC-n`, `D-n`, `I-n`) parsed from it, and
 one revision a person approved. Work pins an approved revision and is judged
 against its criteria. Every call below is `buildd action=manage_specs` with
-the sub-action in `params.action`.
+the sub-action in `params.action`. On the group tools it is
+`buildd_artifacts` action `manage_specs`, listed on that tool's `More:` line.
+
+A read-only session (a `tasks:read` grant) can call the reads: `list`, `get`,
+`diff`, `read_ref`, `outcome`, `comments`, `attachments`, and `metadata`
+without `changes`. Every other sub-action needs write access and is refused
+with `requiredScope`.
 
 This is not the `spec-sync` skill. `spec-sync` keeps a repo's own spec files
 (`docs/SPEC.md`, `docs/specs/`) in step with the code. A Living Spec lives in
@@ -329,6 +335,28 @@ the person do it on the spec page or from their own session.
 - Restore: `buildd action=manage_specs params={ action: "restore", specId }`
   puts back the status it had.
 
+## Another workspace's spec
+
+Workspaces never read each other's specs. If `get` returns 404 for a spec you
+were told about, it is not yours to read, and asking the owner again does not
+change that. Another workspace's spec reaches this one only as a copy:
+
+- `buildd action=manage_specs params={ action: "copy", specId, targetWorkspaceId, revision }`
+  copies one revision as a draft in `targetWorkspaceId`, byte for byte. It
+  needs one caller who reads the source and writes specs in the destination;
+  a task token reaches only its own workspace, so a worker usually cannot,
+  and should ask a person to run it (or to use an API key that reaches both).
+- The reply is the handoff: the destination spec id, revision and sha256,
+  re-read and checked against the source. Anything else, such as an owner's
+  "yes, copy it" with no reply, is not a copy. A stale revision, an
+  unreachable destination or an unverified write are refused by name.
+- Copying never approves. A person in the destination approves the copy;
+  until then pin it provisionally (`context.specSource { specId, revision }`).
+- Once a copy exists, a `get` of the source id from the destination names
+  it. Use that id. A retry of `copy` returns the same copy.
+- Until a copy reply exists, hold the work that needs the spec blocked and
+  ask once, naming the copy call above as the recovery.
+
 ## Never
 
 - Never approve, or say a spec is approved, unless `get` shows that revision
@@ -345,4 +373,6 @@ the person do it on the spec page or from their own session.
 - Never write a spec body through `update_artifact`; it is refused. Use
   `revise`.
 - Never build against the head revision when the task is pinned to another.
+- Never treat another workspace's spec as readable, or a copy as approved;
+  build against the copy's id only once a `copy` reply names it.
 - Never override a duplicate refusal without reading the spec it names.

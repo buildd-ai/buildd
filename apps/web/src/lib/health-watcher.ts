@@ -506,11 +506,11 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
   }
 
   void notifyTeamOf({ workspaceId: project.workspaceId }, 'needsAttention', {
-    title: `CI failing on ${project.repo} #${pr.number}`,
+    title: `CI is failing on a PR in ${project.repo}`,
     message: `${failing.length} check(s) red\n${pr.title}`,
     priority: 0,
     url: pr.htmlUrl,
-    urlTitle: 'Open PR',
+    urlTitle: `PR #${pr.number}`,
   });
 
   return true;

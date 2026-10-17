@@ -26,14 +26,37 @@
   "conditional-policy": {},
   "trailing-filler": {},
   "em-dash": {},
+  "failed-to": {
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 7
+  },
+  "shouting-tag": {
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx": 2,
+    "apps/web/src/components/FlightDetailSheet.tsx": 1,
+    "apps/web/src/components/LoopStatus.tsx": 2,
+    "apps/web/src/components/chat/canvas-empty.ts": 1,
+    "apps/web/src/lib/mission-state-view.ts": 7
+  },
+  "state-jargon": {
+    "apps/web/src/app/app/(protected)/home/NeedsYouCards.tsx": 2,
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 3,
+    "apps/web/src/app/app/(protected)/settings/NotificationsSection.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx": 2,
+    "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": 3,
+    "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": 2,
+    "apps/web/src/components/chat/approval-draft.ts": 1,
+    "apps/web/src/components/fleet/RunningNow.tsx": 1,
+    "apps/web/src/components/fleet/SlotLanes.tsx": 1,
+    "apps/web/src/components/missions/MissionListCards.tsx": 3,
+    "apps/web/src/components/recovery/MissionRecoveryNotice.tsx": 2,
+    "apps/web/src/lib/incident-view.ts": 1,
+    "apps/web/src/lib/mission-state-view.ts": 4
+  },
   "duplicate-explanation": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx": 1,
     "apps/web/src/components/chat/DirectiveCard.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
-  },
-  "conditional-policy": {},
-  "trailing-filler": {},
-  "em-dash": {}
+  }
 }

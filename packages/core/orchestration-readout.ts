@@ -59,7 +59,7 @@ import {
   type ClaimHoldGroupSummary,
   type ClaimHoldReadoutInput,
 } from './orchestration-claim-readout';
-import { summarizeSoftStartReadout, type SoftStartCohortSummary, type SoftStartReadoutInput } from './orchestration-soft-start-readout';
+import { summarizeOverlapStartConflicts, summarizeSoftStartReadout, type OverlapStartConflictReadout, type SoftStartCohortSummary, type SoftStartReadoutInput } from './orchestration-soft-start-readout';
 import {
   buildPickDecision,
   candidateLabel,
@@ -762,6 +762,8 @@ export interface OrchestrationReadout {
   capabilities: CapabilityReadout[];
   /** Soft-overlap STARTs by who decided (rule or Jev), same labeller; present when the loader supplied them. */
   softOverlapStarts?: SoftStartCohortSummary[];
+  /** Of every overlap START (soft, open PR, lease), the share whose PR later hit a merge conflict, by area class and gate. */
+  overlapStartConflicts?: OverlapStartConflictReadout;
   /** `blocked` unless some group is eligible; even then a reviewer commits the evidence. */
   promotion: { status: 'blocked' | 'reviewable'; eligible: PromotionEvidence[] };
 }
@@ -796,7 +798,7 @@ export async function buildOrchestrationReadout(input: {
     capabilities,
     // Rule STARTs and Jev STARTs past a soft overlap, graded by one labeller:
     // the same unsafe-start measure for both cohorts.
-    ...(softStarts ? { softOverlapStarts: summarizeSoftStartReadout(softStarts) } : {}),
+    ...(softStarts ? { softOverlapStarts: summarizeSoftStartReadout(softStarts), overlapStartConflicts: summarizeOverlapStartConflicts(softStarts) } : {}),
     promotion: { status: eligible.length > 0 ? 'reviewable' : 'blocked', eligible },
   };
 }

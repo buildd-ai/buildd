@@ -12,7 +12,8 @@ import { and, desc, eq, isNotNull, like } from 'drizzle-orm';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import type { PrObjectView } from '@/components/chat/objects/object-views';
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
-import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -89,7 +90,10 @@ async function prViewFromWorker(id: string, w: PrWorkerRow, userId: string): Pro
   });
   if (!task) return null;
   if (!(await verifyWorkspaceAccess(userId, task.workspaceId))) return null;
-  const delivery = (await getOwnerDeliveryDisplays([task.id])).get(task.id) ?? null;
+  const [displays, views] = await Promise.all([getOwnerDeliveryDisplays([task.id]), getDeliveryViewsForTasks([task.id]).catch(() => new Map())]);
+  const delivery = displays.get(task.id) ?? null;
+  // The delivery's merged/closed reading replaces the worker's columns for the PR it owns.
+  const life = prLifecycleFor(w, views.get(task.id), task.id);
 
   return {
     kind: 'pr',
@@ -98,10 +102,10 @@ async function prViewFromWorker(id: string, w: PrWorkerRow, userId: string): Pro
     number: w.prNumber,
     url: w.prUrl ?? null,
     title: task.title,
-    state: prStateOf(w.prLifecycleStatus, w.mergedAt, delivery),
+    state: prStateOf(life.prLifecycleStatus, life.mergedAt as Date | string | null, delivery),
     linesAdded: w.linesAdded ?? null,
     linesRemoved: w.linesRemoved ?? null,
-    mergedAt: epoch(w.mergedAt),
+    mergedAt: epoch(life.mergedAt as Date | string | null),
     taskId: task.id,
     missionId: task.missionId ?? null,
     renderedAt: Date.now(),

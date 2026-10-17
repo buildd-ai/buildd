@@ -3,7 +3,7 @@
  * before → after, built from the target's current state through the chat's
  * reach-guarded reads (knowledge-base: buildd/design/agent-chat.md → Approval cards).
  *
- *   "Hold task: checkout · Stripe in currency (running on dune)"
+ *   "Pause task: checkout · Stripe in currency (running on dune)"
  *     Claims: open → held
  *     The agent running on dune is told to stop at a safe point and wait.
  *
@@ -16,6 +16,7 @@
  * "checkout") yields a question instead of a preview, and no card.
  */
 
+import { MISSION_START_COPY, missionStartCopy } from '@/lib/mission-start-state';
 import { isLiveWorkerStatus, isSystemRoleSlug, isTerminalTaskStatus } from '@buildd/shared';
 import { systemRoleIntent, VISUAL_REVIEW_IS_MISSION_SCOPED } from '@/lib/system-role-intent';
 import type { ApiFn } from '@buildd/core/mcp-tools';
@@ -25,6 +26,11 @@ import { opSpec } from './registry';
 import { isUuid, resolveTaskRef, type TaskScope } from './targets';
 import { watchEventTypes, watchWhenPhrase } from '@/lib/watch-notice';
 import { findWatch, ONE_SHOT_ENDS, parsePrNumber } from './watch-tools';
+
+/** A held mission's start state in words; never "held" or "armed". */
+const startCopyOf = (m: { isHeld?: unknown; armedAt?: unknown }) =>
+  missionStartCopy({ isHeld: true, armedAt: typeof m.armedAt === 'string' || m.armedAt instanceof Date ? m.armedAt : null }) ?? MISSION_START_COPY.not_started;
+const startWord = (m: { isHeld?: unknown; armedAt?: unknown }) => (m.isHeld ? startCopyOf(m).label.toLowerCase() : 'started');
 
 export interface PreviewEnv {
   /** Reach-guarded, GET-only API. */
@@ -157,7 +163,7 @@ const holdTask: Builder = async (input, env) => {
   const isHeld = !!task.context?.heldBy;
   if (hold === isHeld) return question(`That task is already ${isHeld ? 'held' : 'not held'}. Tell the user; nothing to change.`);
   if (hold && ['completed', 'failed', 'cancelled'].includes(task.status)) return question(`That task is ${task.status}; there's nothing to hold.`);
-  const changes: Change[] = [{ label: 'Claims', before: isHeld ? 'held' : 'open', after: hold ? 'held' : 'open' }];
+  const changes: Change[] = [{ label: 'Claims', before: isHeld ? 'paused' : 'open', after: hold ? 'paused' : 'open' }];
   const reason = str(input.reason);
   if (hold && reason) changes.push({ label: 'Until', before: null, after: clip(reason)! });
   const where = live?.runner ? ` on ${runnerName(live.runner)}` : '';
@@ -168,7 +174,7 @@ const holdTask: Builder = async (input, env) => {
     ok: true,
     input: { ...input, taskId: task.id, hold },
     preview: {
-      v: 1, verb: hold ? 'Hold task' : 'Resume task',
+      v: 1, verb: hold ? 'Pause task' : 'Resume task',
       target: { kind: 'task', id: task.id, label: taskLabel(task), detail: workerDetail(task, live), workspaceId: task.workspaceId ?? null },
       changes, note, fingerprint: fingerprint(task.id, changes, { live: live?.id ?? null }),
     },
@@ -314,7 +320,7 @@ const updateMission: Builder = async (input, env) => {
     if (input[k] === undefined) continue;
     changes.push({ label, before: clip(m[k]), after: clip(input[k]) });
   }
-  if (input.startMode !== undefined) changes.push({ label: 'Start', before: m.isHeld ? 'held' : 'armed', after: String(input.startMode) });
+  if (input.startMode !== undefined) changes.push({ label: 'Start', before: startWord(m), after: input.startMode === 'held' ? (m.isHeld ? startWord(m) : 'paused') : 'started' });
   if (input.autoSurfaceAudit !== undefined) {
     // The column defaults to on: a mission row without it has the audit on.
     const on = asBool(input.autoSurfaceAudit, true);
@@ -341,13 +347,13 @@ const updateMission: Builder = async (input, env) => {
   }
   if (changes.length === 0) return question('Nothing to change on that mission: say what should change.');
   const verb = input.status === 'paused' ? 'Pause mission' : input.status === 'active' && m.status === 'paused' ? 'Resume mission'
-    : input.startMode === 'held' ? 'Hold mission' : 'Edit mission';
+    : input.startMode === 'held' ? 'Pause mission' : 'Edit mission';
   return {
     ok: true,
     input: { ...input, missionId: m.id },
     preview: {
       v: 1, verb,
-      target: { kind: 'mission', id: m.id, label: String(m.title), detail: m.isHeld ? 'held' : m.executor === 'local' ? 'local' : m.status, workspaceId: m.workspaceId ?? null },
+      target: { kind: 'mission', id: m.id, label: String(m.title), detail: m.isHeld ? startWord(m) : m.executor === 'local' ? 'local' : m.status, workspaceId: m.workspaceId ?? null },
       changes,
       ...(input.startMode === 'held' || input.status === 'paused' ? { note: 'No new tasks are claimed until it\'s resumed; running agents finish their current step.' } : {}),
       fingerprint: fingerprint(m.id, changes, { status: m.status, held: m.isHeld }),
@@ -359,11 +365,11 @@ const armMission: Builder = async (input, env) => {
   const m = await missionOf(env, input.missionId);
   if (!m) return question('Which mission should be armed?');
   if (!m.isHeld) return question(`"${m.title}" isn't held, so there's nothing to arm.`);
-  const changes: Change[] = [{ label: 'Start', before: 'held', after: 'armed' }];
+  const changes: Change[] = [{ label: 'Start', before: startWord(m), after: 'started' }];
   return {
     ok: true, input: { ...input, missionId: m.id },
     preview: {
-      v: 1, verb: 'Arm mission', target: { kind: 'mission', id: m.id, label: String(m.title), detail: 'held', workspaceId: m.workspaceId ?? null },
+      v: 1, verb: startCopyOf(m).action, target: { kind: 'mission', id: m.id, label: String(m.title), detail: startWord(m), workspaceId: m.workspaceId ?? null },
       changes, note: 'Its tasks become claimable by agents now.', fingerprint: fingerprint(m.id, changes),
     },
   };

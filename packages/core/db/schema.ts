@@ -555,6 +555,13 @@ export interface WorkspaceGitConfig {
     };
   };
 
+  // The isolation every task in this workspace requires of the runner that
+  // claims it (Living Spec "Runner isolation", R-4; resolveIsolationRequirement
+  // in @buildd/shared). 'protected': the backend's confinement must be enforced.
+  // 'trusted_local': may run reduced on a runner whose operator opted in.
+  // Absent: trusted_local for a single-owner team, protected otherwise.
+  isolationPolicy?: 'protected' | 'trusted_local';
+
   // SDK debug logging (SDK v0.2.44+)
   debug?: boolean;               // Enable verbose SDK debug output to stderr
   debugFile?: string;             // File path to write SDK debug logs to
@@ -1359,6 +1366,11 @@ export const missions = pgTable('missions', {
   // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
   // (which controls organizer initiative) — held is purely about worker claim eligibility.
   isHeld: boolean('is_held').default(false).notNull(),
+  // When the start gate was first released (created armed, or armed later).
+  // Null on a held mission means it never started; set on a held one means a
+  // person held it again after it ran, so it reads as Paused, not Not started
+  // (lib/mission-start-state.ts). Never read by a claim gate.
+  armedAt: timestamp('armed_at', { withTimezone: true }),
   // Who executes the mission's tasks. 'runner' (default): background runners
   // auto-claim them. 'local': a person runs them from their own interactive
   // session — runners never auto-claim, but a verified interactive session may
@@ -2836,6 +2848,12 @@ export interface SpecMetadataBlock {
    * Cleared by a re-import that finds none.
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+  /**
+   * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
+   * source revision this spec's head is byte for byte, by hash. Server-written
+   * only (not a metadata field a change can set). It never carries approval.
+   */
+  copied_from?: { workspaceId: string; specId: string; revision: number; contentHash: string; copiedAt: string; copiedBy: string };
 }
 
 /**
@@ -2848,8 +2866,13 @@ export interface SpecPublicationDecision {
   publish: boolean;
   source: 'rule' | 'model' | 'fallback' | 'person';
   reasonCode: string;
+  /** The sentence as worded when decided; the page words it afresh (publicationSentence). */
   reason: string;
   line?: string;
+  /** rule_prod_data: the hit it named. */
+  hit?: string;
+  /** rule_marked_private: whose mark it was. */
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence?: number | null;
   model?: string | null;

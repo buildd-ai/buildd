@@ -187,13 +187,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
-const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
+const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['s talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -639,7 +639,11 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });
-    for (const r of section.rows) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+    for (const r of section.rows) {
+      lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+      // Under the selected row: the work it starts alongside (I-38).
+      if (sel?.taskId === r.taskId && r.alongside) lines.push({ text: p.fg('muted', fit(' '.repeat(POS_W + 1) + r.alongside, cols)) });
+    }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Held, each on its own', cols)) });

@@ -2,12 +2,12 @@
 title: Mission State and Completion
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: Missions MUST derive health from live work and refuse completion without passing goal criteria and required reviews.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts, apps/web/src/lib/mission-dependency-gate.ts]
 related: [task-state-machine, claim-gate-legibility, organizer-context, mission-surface-audit]
-verified_by: [apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/review-verdict-gate.test.ts, apps/web/src/lib/pr-supersession.test.ts]
+verified_by: [apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/review-verdict-gate.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/lib/mission-dependency-gate.test.ts, apps/web/src/lib/mission-dependency.test.ts]
 assertions:
   - id: "completion-gate"
     type: "symbol"
@@ -41,6 +41,13 @@ assertions:
   - id: "pr-shipped-tests"
     type: "test_file"
     path: "packages/core/__tests__/pr-shipped.test.ts"
+  - id: "dependency-gate"
+    type: "symbol"
+    name: "evaluateUpstreamGate"
+    path: "apps/web/src/lib/mission-dependency-gate.ts"
+  - id: "dependency-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-dependency-gate.test.ts"
   - id: guard-1
     type: test_file
     path: apps/web/src/lib/mission-completion.test.ts
@@ -961,6 +968,69 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
 **Out of scope**: The `metric` criterion evaluator (no metric-query registry
 exists yet, so `metric` criteria stay `UNVERIFIED` and block completion by
 design) and initiative KPI evaluation, which has no evaluator at all.
+
+---
+
+
+## Mission Dependency Gates
+
+**Capability statement**: A mission that depends on another (`missions.dependsOnMissionId`)
+MUST be released exactly when its upstream meets the declared `gateCondition`, read from the
+upstream's live state, and a blocked mission MUST name the condition still unmet.
+
+`gateCondition` is one of:
+
+| Gate | Met when | Never reads |
+|------|----------|-------------|
+| `completed` | the upstream's `status` is `completed` (written only by the completion gate above, or a person's override) | anything else: the status is that predicate's answer |
+| `merged` | the upstream is `completed`, or its work has shipped (below) | goal criteria, the visual review, any verification |
+
+The `merged` gate's predicate is `evaluateUpstreamGate` (`apps/web/src/lib/mission-dependency-gate.ts`, pure).
+It is shut by:
+
+1. an unfinished build or repair task (its PR is still to come);
+2. a build or repair task whose latest PR has not shipped (`prShipState`, the same predicate the
+   completion gate uses, with lineage-derived supersession and the kernel delivery as authority):
+   open, or closed without merging and with no supersession or abandonment recorded;
+3. any other row still holding an open PR (a retry attempt's own PR);
+4. on a mission branch that carried work, the mission PR not merged;
+5. nothing shipped yet: an active upstream with no merged work (no tasks filed yet, or all of it
+   cancelled) releases a dependent only by completing.
+
+Verification tasks (`[surface audit]`, final verification) and maintenance (a trunk refresh of the
+integration branch, and its attempts) never hold it. One PR has one answer: a merge recorded on any
+row naming the PR settles it for every row naming it.
+
+**Invariants**:
+- `isMissionBlocked` decides from the upstream's live state whenever `dependencyMetAt` is null, and
+  stamps `dependencyMetAt` (guarded on `IS NULL`) when the gate is met. The events that also stamp it
+  (`checkAndUnblockDependentMissions` from a PR merge, the reconcile sweep, the merge route, and
+  mission completion) are lossy and are not the only path.
+- Mission completion releases dependents of both gates: completion already required everything the
+  `merged` gate asks.
+- A met `merged` gate never waits on a fresh verification. Verification still gates the upstream's
+  own completion exactly as above; it is not bypassed, only not re-asked by its dependents.
+- The blocked reason names the gate and the first unmet condition with its task and PR, then how many
+  more (`gateBlockedReason`); `explain` lists each one as a causal link with `taskId`/`prNumber` refs.
+
+**Acceptance criteria**:
+- AC-106: GIVEN a `merged`-gate mission whose upstream is `completed` and `dependencyMetAt` is null
+  WHEN `isMissionBlocked` runs THEN it is not blocked and `dependencyMetAt` is stamped.
+- AC-107: GIVEN an upstream whose build PRs and mission PR merged, with a trunk-refresh PR closed
+  unmerged and a `[surface audit]` still pending WHEN the `merged` gate is evaluated THEN it is met.
+- AC-108: GIVEN an upstream build PR that is open, or closed with no supersession or abandonment,
+  WHEN the `merged` gate is evaluated THEN it is shut and the reason names that PR and its task.
+- AC-109: GIVEN a mission-branch upstream whose task PRs merged into the integration branch and whose
+  mission PR is open or not yet opened WHEN the `merged` gate is evaluated THEN it is shut, naming
+  the mission PR.
+- AC-110: GIVEN an upstream mission completes WHEN its dependents are released THEN `merged`-gate
+  dependents are released with the `completed`-gate ones.
+
+**Code surface**:
+- `apps/web/src/lib/mission-dependency-gate.ts` — `evaluateUpstreamGate`, `gateBlockedReason`
+- `apps/web/src/lib/mission-dependency.ts` — `isMissionBlocked`, `evaluateMissionGate`, `checkAndUnblockDependentMissions`
+
+**Verified by**: `apps/web/src/lib/mission-dependency-gate.test.ts`, `apps/web/src/lib/mission-dependency.test.ts`
 
 ---
 

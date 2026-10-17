@@ -2,12 +2,12 @@
 title: Worker Reclamation
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: Silent workers MUST be reclaimed with the correct timeout, exit cause and retry treatment.
 domain: runners
-surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/lost-claim.ts]
+surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/lost-claim.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [runner-heartbeat, runner-failure-alerts]
-verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
+verified_by: [apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/lost-claim.test.ts, apps/runner/__tests__/unit/claim-handoff.test.ts]
 assertions:
   - id: extra-guard-1
     type: test_file
@@ -283,7 +283,15 @@ reaper".
 - A worker stuck in `waiting_input` for **24 hours** (standalone task) or
   **4 hours** (mission task) is timed out.
 - Timeout creates a retry task with the original context plus a directive not to
-  ask for user input, then fails the original task and worker.
+  ask for user input, then fails the original task and worker. A task that
+  already ended (a person cancelled it) is neither failed nor retried: only the
+  worker is closed.
+- Before the timeout, `/api/cron/waiting-input-sweep` settles every live runner
+  worker with no session (a session-ended question, a pause, a parked run)
+  whose task is deleted or terminal, whatever its age
+  (`settleOrphanedSessionlessWorkers`, `apps/web/src/lib/sessionless-worker-settle.ts`).
+  Cancel and delete settle their own task's rows in the request; this repairs
+  any left behind. See agent-question-protocol AC-53.
 
 **Acceptance criteria**:
 - AC-12: GIVEN a `waiting_input` worker on a mission task older than 4 hours
@@ -291,9 +299,17 @@ reaper".
   is created containing "Do NOT ask for user input" in the description.
 - AC-13: GIVEN a standalone `waiting_input` worker older than 24 hours WHEN
   `cleanupStuckWaitingInput` runs THEN the same outcome occurs.
+- AC-37: GIVEN a `waiting_input` worker past its timeout whose task is
+  `cancelled` WHEN `cleanupStuckWaitingInput` runs THEN the worker is failed and
+  the task keeps `cancelled`, with no retry task.
+- AC-38: GIVEN a session-ended question worker whose task was deleted
+  (`task_id` NULL) or is terminal WHEN the waiting-input sweep runs THEN it is
+  settled first, at any age; an interactive (`mcp`) worker is left to
+  interactive detach.
 
 **Code surface**:
 - `cleanupStuckWaitingInput()` in `apps/web/src/lib/stale-workers.ts`
+- `settleOrphanedSessionlessWorkers()` in `apps/web/src/lib/sessionless-worker-settle.ts`
 - Constants: `WAITING_INPUT_STALE_MS`, `WAITING_INPUT_MISSION_STALE_MS`
 
 ---

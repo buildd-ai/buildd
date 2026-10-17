@@ -6,8 +6,9 @@
  *   bun run copy:check --update                   # lower the baseline to today's counts
  *   bun run copy:check --update --allow-increase  # deliberately raise it
  *
- * Scans apps/web/src/app and components, and the lib/ modules tagged
- * `@ui-copy` (see UI_COPY_MARKER). Extracts rendered strings with the
+ * Scans apps/web/src/app and components, the lib/ modules tagged
+ * `@ui-copy` (see UI_COPY_MARKER), and the title/message/urlTitle of every
+ * notifyTeamOf payload anywhere in apps/web/src (see NOTIFY_CALL). Extracts rendered strings with the
  * TypeScript AST (JSX text, string and template literals; comments, imports and class lists never count) and runs
  * them through the rules in packages/core/copy-rules.ts. Same ratchet shape as
  * scripts/design-check.ts: per-file counts per rule, the gate compares totals,
@@ -49,6 +50,22 @@ export function inScope(path: string, content?: string): boolean {
   return !path.startsWith('apps/web/src/app/app/dev/');
 }
 
+/**
+ * Team notifications (Pushover, the inbox) are UI too, but they are sent from
+ * lib/ modules and API routes that also hold agent prompts. So for those files
+ * only the payload fields of this call are read, never the rest of the file.
+ */
+export const NOTIFY_CALL = 'notifyTeamOf';
+export type NotifyField = 'title' | 'message' | 'urlTitle';
+const NOTIFY_FIELDS: NotifyField[] = ['title', 'message', 'urlTitle'];
+
+/** A non-test source file under apps/web/src whose notify payloads are copy. */
+export function notifyInScope(path: string, content: string): boolean {
+  if (!/^apps\/web\/src\/.*\.tsx?$/.test(path)) return false;
+  if (/\.(test|stories|fixtures?)\.tsx?$/.test(path) || path.includes('/__tests__/')) return false;
+  return content.includes(`${NOTIFY_CALL}(`);
+}
+
 /** Attribute values that are never rendered text. */
 const NON_COPY_ATTR = /^(className|class|style|href|src|id|key|type|htmlFor|name|role|rel|target|method|action|autoComplete|inputMode|pattern|data-[\w-]+|testId|variant|tone|size|as|viewBox|d|fill|stroke|xmlns)$/;
 /** Calls whose string arguments are code, not copy. */
@@ -73,6 +90,8 @@ function calleeName(node: ts.Node): string | null {
 function isNonCopyContext(node: ts.Node): boolean {
   for (let p: ts.Node | undefined = node.parent; p; p = p.parent) {
     if (ts.isImportDeclaration(p) || ts.isExportDeclaration(p) || ts.isExternalModuleReference(p)) return true;
+    // sql`…` and other tagged templates are code.
+    if (ts.isTaggedTemplateExpression(p)) return true;
     if (ts.isJsxAttribute(p)) return NON_COPY_ATTR.test(p.name.getText());
     if (ts.isPropertyAssignment(p) && NON_COPY_ATTR.test(p.name.getText().replace(/['"]/g, ''))) return true;
     const callee = calleeName(p);
@@ -127,17 +146,48 @@ export function extractCopy(path: string, content: string): CopyString[] {
   return out;
 }
 
+/** The copy strings of each notifyTeamOf payload's fields: literals in the field's initializer, ternaries included. */
+export function extractNotifyCopy(path: string, content: string, fields: NotifyField[] = NOTIFY_FIELDS): CopyString[] {
+  const sf = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true, path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const out: CopyString[] = [];
+  const visit = (n: ts.Node) => {
+    const payload = ts.isCallExpression(n) && n.expression.getText(sf) === NOTIFY_CALL ? n.arguments[2] : undefined;
+    if (payload && ts.isObjectLiteralExpression(payload)) {
+      for (const prop of payload.properties) {
+        if (!ts.isPropertyAssignment(prop) || !fields.includes(prop.name.getText(sf) as NotifyField)) continue;
+        const start = prop.initializer.getStart(sf);
+        // Reuse extractCopy on just the initializer, then map lines back to this file.
+        const line0 = sf.getLineAndCharacterOfPosition(start).line;
+        const snippet = `(${prop.initializer.getText(sf)});`;
+        for (const s of extractCopy(path, snippet)) out.push({ line: s.line + line0, text: s.text });
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/** The strings copy:check reads from one file: all of it when in scope, else its notify payloads. */
+export function copyOf(path: string, content: string): CopyString[] {
+  if (inScope(path, content)) return extractCopy(path, content);
+  return notifyInScope(path, content) ? extractNotifyCopy(path, content) : [];
+}
+
 export interface Violation { file: string; line: number; rule: CopyRuleId; text: string }
 export type Counts = Record<CopyRuleId, Record<string, number>>;
+
+/** Operator screens speak the system's vocabulary on purpose; state-jargon does not apply there. */
+export const OPERATOR_PATH = /\/\(protected\)\/health\//;
 
 export function scanSources(sources: { path: string; content: string }[]): { counts: Counts; violations: Violation[] } {
   const counts = Object.fromEntries(COPY_RULES.map((r) => [r.id, {}])) as Counts;
   const violations: Violation[] = [];
   for (const { path, content } of sources) {
-    if (!inScope(path, content)) continue;
     const seen = new Set<string>();
-    for (const s of extractCopy(path, content)) {
+    for (const s of copyOf(path, content)) {
       for (const rule of copyViolations(s.text)) {
+        if (rule.id === 'state-jargon' && OPERATOR_PATH.test(path)) continue;
         violations.push({ file: path, line: s.line, rule: rule.id, text: s.text });
         counts[rule.id][path] = (counts[rule.id][path] ?? 0) + 1;
       }
@@ -159,10 +209,10 @@ export function readSources(): { path: string; content: string }[] {
   const ls = spawnSync('git', ['ls-files', '-z', 'apps/web/src'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (ls.status !== 0) throw new Error(`git ls-files failed: ${ls.stderr}`);
   return ls.stdout.split('\0')
-    .filter((path) => inScope(path) || (path.startsWith(LIB_ROOT) && /\.tsx?$/.test(path)))
+    .filter((path) => /\.tsx?$/.test(path))
     .sort()
     .map((path) => ({ path, content: readFileSync(path, 'utf8') }))
-    .filter(({ path, content }) => inScope(path, content));
+    .filter(({ path, content }) => inScope(path, content) || notifyInScope(path, content));
 }
 
 const total = (perFile: Record<string, number> = {}) => Object.values(perFile).reduce((a, b) => a + b, 0);

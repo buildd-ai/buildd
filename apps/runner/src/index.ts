@@ -8,7 +8,7 @@ import { resolveBuilddHome } from './buildd-home';
 import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
-import { WorkerManager } from './workers';
+import { WorkerManager, getIsolationRecord } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
@@ -36,7 +36,7 @@ import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
-import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
+import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
@@ -133,7 +133,10 @@ if (process.argv.includes('--doctor')) {
   const doctor = await import('./doctor');
   const doFix = process.argv.includes('--fix');
 
-  const report = doctor.runDiagnostics();
+  // Find the runner the way `buildd top` does: through its socket.
+  const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
+  const socketPath = socketPathFor(BUILDD_DIR);
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -148,6 +151,10 @@ if (process.argv.includes('--doctor')) {
   for (const c of report.checks) {
     const fixTag = c.fixable ? ` ${DIM}[fixable]${RESET}` : '';
     console.log(`  ${icon(c.status)} ${c.name}  ${DIM}${c.message}${RESET}${fixTag}`);
+    // The steps for what is wrong, e.g. the sandbox check's platform remediation.
+    if (c.status !== 'ok' && c.detail) {
+      for (const line of c.detail.split('\n')) console.log(`      ${DIM}${line}${RESET}`);
+    }
   }
   console.log(`\n  ${GREEN}${report.summary.ok} ok${RESET}  ${YELLOW}${report.summary.warn} warn${RESET}  ${RED}${report.summary.error} error${RESET}\n`);
 
@@ -1074,13 +1081,10 @@ const sseClients = new Set<ReadableStreamDefaultController>();
 // Broadcast to all SSE clients
 function broadcast(event: any) {
   // Never serialise credential material — see public-worker.ts.
-  const data = `data: ${JSON.stringify(toPublicEvent(event))}\n\n`;
+  const data = new TextEncoder().encode(`data: ${JSON.stringify(toPublicEvent(event))}\n\n`);
   for (const controller of sseClients) {
-    try {
-      controller.enqueue(new TextEncoder().encode(data));
-    } catch {
-      sseClients.delete(controller);
-    }
+    // A reader that stopped reading is closed, not queued for forever (runner-socket.ts).
+    if (!enqueueEvent(controller, data)) sseClients.delete(controller);
   }
 }
 
@@ -2005,6 +2009,29 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
     }
 
+    // `buildd top`'s talk session (talk.ts): where the workspace's checkout is,
+    // what to connect to, and what the server says about the mission or task.
+    // Owner-only socket, so the key may travel to the `buildd top` process; it
+    // goes into a 0600 file there, never onto a command line.
+    if (path === '/api/talk-context' && req.method === 'POST') {
+      try {
+        const body = await req.json().catch(() => ({})) as { kind?: string; id?: string; workspaceId?: string };
+        if ((body.kind !== 'mission' && body.kind !== 'task') || !body.id) {
+          return Response.json({ error: 'kind (mission or task) and id are required' }, { status: 400, headers: corsHeaders });
+        }
+        const [workspaces, explain, mission] = await Promise.all([
+          buildd!.listWorkspaces(),
+          buildd!.getExplain(body.kind, body.id),
+          body.kind === 'mission' ? buildd!.getMission(body.id) : Promise.resolve(null),
+        ]);
+        const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
+        const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
+        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+      } catch (err: any) {
+        return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     // The missions `buildd top` lists (R-24): open, and delivered in the last 7 days.
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
@@ -2914,16 +2941,17 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Doctor — self-diagnostics and auto-fix
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
-      const report = withClaimHealthCheck(runDiagnostics());
+      // This process's own isolation record, the one its heartbeat carries.
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json(report, { headers: corsHeaders });
     }
 
     if (path === '/api/doctor/fix' && req.method === 'POST') {
       const { runDiagnostics, autoFix } = await import('./doctor');
-      const report = runDiagnostics();
+      const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = withClaimHealthCheck(runDiagnostics());
+      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
@@ -2971,6 +2999,19 @@ const server = DEBUG_MODE ? Bun.serve({
 // The runner socket (bound at startup, above) now answers everything the
 // --debug server does, in headless mode too.
 socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: true });
+
+// Socket watchdog: the runner asks its own socket for /health every minute. A
+// socket that accepts and never answers cuts `buildd top`, `hold` and `stop`
+// off from a runner that is otherwise working, so a miss is logged with the
+// requests still open, and two in a row rebind the socket.
+const socketWatchdog = runnerSocket ? createSocketWatchdog({
+  server: runnerSocket,
+  log: (m) => console.log(m),
+  warn: (m) => console.error(m),
+}) : null;
+if (socketWatchdog) setInterval(() => { void socketWatchdog.tick(); }, SOCKET_WATCHDOG_INTERVAL_MS);
+/** The doctor's runner-process line, run by this runner on itself. */
+const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ?? null);
 
 const localUrl = `http://localhost:${PORT}`;
 
@@ -3379,7 +3420,8 @@ setInterval(async () => {
 
   try {
     const { runDiagnostics, autoFix } = await import('./doctor');
-    const report = runDiagnostics();
+    // This process is the runner: its line is whether its socket answers, not a ps match.
+    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
     const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
     if (fixable.length > 0) {
       console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);

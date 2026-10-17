@@ -53,6 +53,7 @@ const EXPECTED: Record<Permission, Row> = {
   delegate_schedule_access: { roles: OA, keys: ADMIN_KEY },
   steer_workers: { roles: OA, keys: ADMIN_KEY },
   force_reassign_task: { roles: OA, keys: ANY_KEY },
+  view_work_diagnostics: { roles: OA, keys: NONE },
   manage_releases: { roles: OA, keys: ADMIN_KEY },
   approve_specs: { roles: OA, keys: NONE },
   manage_connectors: { roles: OA, keys: ADMIN_KEY },

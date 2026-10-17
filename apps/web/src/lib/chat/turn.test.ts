@@ -897,7 +897,7 @@ describe('steering a docked mission (fictional Harborline data)', () => {
     await turn(userMsg('Hold the Stripe checkout until the rounding decision is in.'), about);
     const card = lastAssistant().parts.find(p => p.type === 'tool-hold_task');
     expect(card.state).toBe('approval-requested');
-    expect(card.approval.requestReason).toContain('Hold task');
+    expect(card.approval.requestReason).toContain('Pause task');
     expect(writesIn(apiCalls)).toEqual([]);
 
     const approve = answer(true);

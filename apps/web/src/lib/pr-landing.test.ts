@@ -366,6 +366,38 @@ describe('resolveLandingMode', () => {
 
 // ── Kernel-owned PR (workflow-state-kernel.md §14 Slice C) ────────────────────
 
+describe('landPr — a lasting delivery-target hold (#4909, task 0427d13b)', () => {
+  const reason = 'This refresh PR now targets `dev`, not the mission branch it was filed for (`mission/x`).';
+  const lasting = async () => ({ blocks: true as const, reason, codes: ['refresh_target_mismatch'], lasting: true });
+  const k = (o: Record<string, unknown>) => ({ merged: false, reason: 'x', message: 'm', mergeCommitSha: null, current: { state: 'LANDING', version: 4, head: 'head1', round: 1 }, result: null, ...o });
+
+  it('a kernel-owned PR goes to the kernel, whose merge-time rails escalate it once; nothing merges here', async () => {
+    const calls: any[] = [];
+    const d = { ...deps(), guardMissionPrMerge: lasting as never, landThroughKernel: async (i: any) => { calls.push(i); return k({ outcome: 'pending' }) as any; } };
+    const out = await land({ door: 'sweep', actor: { kind: 'system' } }, d);
+    expect(calls).toHaveLength(1);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(out.kind).toBe('waiting_ci');
+  });
+
+  it('a PR the kernel does not own is never merged past it: a person is asked', async () => {
+    const d = { ...deps(), guardMissionPrMerge: lasting as never, landThroughKernel: async () => null };
+    const out = await land({ door: 'sweep', actor: { kind: 'system' } }, d);
+    expect(out).toEqual({ kind: 'needs_human', cause: 'unsafe_other', reason });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a hold that clears by waiting still waits, and never reaches the kernel', async () => {
+    const calls: any[] = [];
+    const waitingHold = async () => ({ blocks: true as const, reason: 'two task PRs still open on the integration branch' });
+    const d = { ...deps(), guardMissionPrMerge: waitingHold as never, landThroughKernel: async (i: any) => { calls.push(i); return null; } };
+    const out = await land({ door: 'sweep', actor: { kind: 'system' } }, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci', reason: 'two task PRs still open on the integration branch' });
+    expect(calls).toHaveLength(0);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe('landPr — kernel-owned PR (T15/T16)', () => {
   const k = (o: Record<string, unknown>) => ({ merged: false, reason: 'x', message: 'm', mergeCommitSha: null, current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null, ...o });
   const kernelDeps = (answer: Record<string, unknown>) => {

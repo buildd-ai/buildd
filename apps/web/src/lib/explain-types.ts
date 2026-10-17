@@ -59,6 +59,9 @@ export type ExplainSource = MissionStateSource | (string & {});
  */
 export type CausalLinkSource =
   | 'missions.dependsOnMissionId'
+  /** mission-dependency-gate.ts: the upstream's live state against this mission's gate. */
+  | 'evaluateUpstreamGate'
+  | 'missions.dependsOnMissionId + evaluateUpstreamGate'
   | 'tasks.status + workers.status'
   | 'tasks.dependsOn'
   | 'tasks.status + tasks.result.errorType'

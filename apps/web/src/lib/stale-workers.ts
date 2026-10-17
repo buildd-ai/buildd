@@ -12,6 +12,7 @@ import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-w
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { withoutForceClaim } from '@/lib/force-claim';
+import { requeueBranchContext } from '@/lib/integration-refresh';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
@@ -109,8 +110,8 @@ async function resolveStaleTask(
     if (!kernelDeliveryId || !currentTask) return;
     const after = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     if (after?.status !== 'failed') return;
-    // Lazy: the seam loads the effect handlers, which load half the app.
-    const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+    // Through the client: the control plane applies it in own mode (AC-9). Lazy, like the seam was.
+    const { attemptEnded: workflowAttemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
     await workflowAttemptEnded({
       task: { id: taskId, workspaceId, deliveryId: currentTask.deliveryId ?? null, deliveryRole: currentTask.deliveryRole ?? null, context: currentTask.context },
       workerId: staleWorker?.id ?? `reaper:${taskId}`,
@@ -118,7 +119,7 @@ async function resolveStaleTask(
       localHeadSha: null,
       commitCount: staleWorker?.commitCount ?? 0,
       source: 'sweep:stale-workers',
-    }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
+    }, { principal: systemPrincipal('system:sweep:stale-workers') }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
   // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
@@ -213,9 +214,7 @@ async function resolveStaleTask(
             context: {
               // A requeue ends the claim, so its force audit goes with it.
               ...withoutForceClaim(ctx),
-              ...(staleWorker?.branch
-                ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
-                : {}),
+              ...requeueBranchContext(ctx, staleWorker?.branch),
               failureContext: staleWorker?.error || `Agent review failed (${exitCause})`,
               infraRetryCount: infraRetryCount + 1,
             },
@@ -381,9 +380,7 @@ async function resolveStaleTask(
             startAt,
             context: {
               ...withoutForceClaim(existingCtx),
-              ...(staleWorker?.branch
-                ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
-                : {}),
+              ...requeueBranchContext(existingCtx, staleWorker?.branch),
               failureContext: staleWorker?.error || 'Previous worker expired (infra failure)',
               infraRetryCount: infraRetryCount + 1,
             },
@@ -438,7 +435,7 @@ async function resolveAbandonedInteractiveTask(
         startAt: null,
         context: {
           ...withoutForceClaim(existingCtx),
-          ...(staleWorker?.branch ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch } : {}),
+          ...requeueBranchContext(existingCtx, staleWorker?.branch),
           failureContext: staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
           // Carried as it was: an interactive release is never charged.
           infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
@@ -1198,6 +1195,9 @@ export async function cleanupStuckWaitingInput(
     });
 
     if (!originalTask) continue;
+    // Already ended (a person cancelled it, say): the question closes with the
+    // worker above. Failing the task or filing a retry would undo the cancel.
+    if (isTerminalTaskStatus(originalTask.status)) continue;
 
     // Build retry description with context about what was asked
     const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
@@ -1230,7 +1230,7 @@ export async function cleanupStuckWaitingInput(
       ? await kernelDeliveryById(originalTask.deliveryId).catch(() => null)
       : null;
     if (kernelDeliveryId) {
-      const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
+      const { attemptEnded: workflowAttemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
       await workflowAttemptEnded({
         task: { id: originalTask.id, workspaceId: originalTask.workspaceId, deliveryId: originalTask.deliveryId ?? null, deliveryRole: originalTask.deliveryRole ?? null, context: originalTask.context },
         workerId: worker.id,
@@ -1240,7 +1240,7 @@ export async function cleanupStuckWaitingInput(
         localHeadSha: worker.lastCommitSha ?? null,
         commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
-      }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      }, { principal: systemPrincipal('system:sweep:waiting-input') }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
       continue;
     }
 
@@ -1253,7 +1253,7 @@ export async function cleanupStuckWaitingInput(
     const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
     const retryContext = {
       ...existingCtx,
-      ...(worker.branch ? { baseBranch: worker.branch, resumeBranch: worker.branch } : {}),
+      ...requeueBranchContext(existingCtx, worker.branch),
       failureContext: worker.error || 'Worker stalled in waiting_input',
       iteration: ((existingCtx.iteration as number) || 0) + 1,
     };

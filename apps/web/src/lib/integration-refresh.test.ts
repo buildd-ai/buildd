@@ -13,9 +13,46 @@ import {
   effectiveDeltaFiles,
   verifyRefreshLanded,
   COMPARE_FILES_CAP,
+  refreshFiledFor,
+  requeueBranchContext,
 } from './integration-refresh';
 
 const REFRESH_CTX = { requireMergeCommit: true, refreshTrunk: 'dev', refreshTrunkSha: 'dev-2', refreshMissionHeadSha: 'm-1' };
+
+describe('refreshFiledFor: the branch a refresh was filed for survives a requeue (task 0427d13b, #4909)', () => {
+  it('reads the explicit refreshBranch first', () => {
+    expect(refreshFiledFor({ ...REFRESH_CTX, refreshBranch: 'mission/a', baseBranch: 'buildd/x', resumeBranch: 'buildd/x' })).toBe('mission/a');
+  });
+
+  it('reads baseBranch on a refresh filed before refreshBranch existed', () => {
+    expect(refreshFiledFor({ ...REFRESH_CTX, baseBranch: 'mission/a' })).toBe('mission/a');
+    expect(refreshFiledFor({ ...REFRESH_CTX, baseBranch: 'mission/a', resumeBranch: 'buildd/x' })).toBe('mission/a');
+  });
+
+  it('a baseBranch a requeue overwrote with the task\'s own head is not a filed-for branch', () => {
+    // The #4909 shape: an infra requeue set baseBranch = resumeBranch = the refresh's own head.
+    expect(refreshFiledFor({ ...REFRESH_CTX, baseBranch: 'buildd/7f-chore', resumeBranch: 'buildd/7f-chore' })).toBeNull();
+  });
+
+  it('is null for anything that is not a refresh', () => {
+    expect(refreshFiledFor({ baseBranch: 'mission/a', refreshBranch: 'mission/a' })).toBeNull();
+    expect(refreshFiledFor(null)).toBeNull();
+  });
+});
+
+describe('requeueBranchContext', () => {
+  it('an ordinary task resumes on its branch and builds on it', () => {
+    expect(requeueBranchContext({ baseBranch: 'mission/a' }, 'buildd/t')).toEqual({ baseBranch: 'buildd/t', resumeBranch: 'buildd/t' });
+  });
+
+  it('a refresh resumes on its branch but keeps the branch it was filed for', () => {
+    expect(requeueBranchContext({ ...REFRESH_CTX, baseBranch: 'mission/a' }, 'buildd/r')).toEqual({ resumeBranch: 'buildd/r' });
+  });
+
+  it('adds nothing without a branch', () => {
+    expect(requeueBranchContext({ baseBranch: 'mission/a' }, null)).toEqual({});
+  });
+});
 
 describe('resolveMergeMethod', () => {
   it('lands a refresh PR as a merge commit even when the caller asked for squash or rebase', () => {

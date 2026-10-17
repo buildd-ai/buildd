@@ -1,17 +1,18 @@
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, accounts, workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { accountWorkspaces, accounts, teamMembers, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach';
 import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
+  isSharedRunner,
   mountAllowlistEnforcedFrom,
   selectRelevantRunnerAccounts,
   RUNNER_ONLINE_WINDOW_MS,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
-import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveLinkCondition } from './granted-links';
 
@@ -85,8 +86,13 @@ export async function getRunnerHeartbeats(
     },
   );
 
-  return (hbs as any[])
-    .filter((hb: any) => relevant.has(hb.accountId))
+  const kept = (hbs as any[]).filter((hb: any) => relevant.has(hb.accountId));
+  const membersByTeam = await teamMemberIds([
+    teamId,
+    ...kept.map((hb: any) => hb.account?.teamId as string | undefined).filter(Boolean) as string[],
+  ]);
+
+  return kept
     .map((hb: any) => ({
       id: hb.id,
       accountId: hb.accountId,
@@ -101,7 +107,28 @@ export async function getRunnerHeartbeats(
       // actually enforced; without this the dashboard could report kernel
       // capability only. See deriveSandboxPosture.
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
+      isolation: readIsolationRecord(hb.environment),
+      shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
     }));
+}
+
+/** Members of each team, for isSharedRunner. On failure every runner reads as shared. */
+async function teamMemberIds(teamIds: string[]): Promise<Map<string, Set<string>> | null> {
+  const ids = [...new Set(teamIds)];
+  try {
+    const rows = await db
+      .select({ teamId: teamMembers.teamId, userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(inArray(teamMembers.teamId, ids));
+    const byTeam = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!byTeam.has(r.teamId)) byTeam.set(r.teamId, new Set());
+      byTeam.get(r.teamId)!.add(r.userId);
+    }
+    return byTeam;
+  } catch {
+    return null;
+  }
 }
 
 /**

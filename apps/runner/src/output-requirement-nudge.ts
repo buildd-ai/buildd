@@ -25,6 +25,14 @@ export function outputRequirementNudge(opts: {
   const hasArtifact = (opts.toolCalls ?? []).some((tc) =>
     isBuilddActionTool(tc.name)
       && (tc.input?.action === 'create_artifact' || tc.input?.action === 'upload_artifact'));
+  // complete_task with alreadyShippedIn records that a merged PR this task does
+  // not own already delivered the work; the server accepts that as the PR. Nudging
+  // after it only pushes the agent toward a filler PR on a zero-diff branch.
+  const alreadyShipped = (opts.toolCalls ?? []).some((tc) =>
+    isBuilddActionTool(tc.name)
+      && tc.input?.action === 'complete_task'
+      && (tc.input?.params?.alreadyShippedIn ?? tc.input?.alreadyShippedIn) != null);
+  if (alreadyShipped) return null;
   const unmet = outputReq === 'pr_required' ? !opts.hasPR : !opts.hasPR && !hasArtifact;
   if (!unmet) return null;
   return outputReq === 'pr_required'

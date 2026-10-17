@@ -9,7 +9,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
-import { applyTaskCancelSideEffects } from '@/lib/task-cancel';
+import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects } from '@/lib/task-cancel';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // TERMINAL_TASK_STATUSES: @buildd/shared.
@@ -177,6 +177,12 @@ export async function POST(req: NextRequest) {
       taskIds: cancelled.map((r) => r.id),
       dryRun: false,
     });
+  }
+
+  // Before the rows go: the delete orphans their workers (task_id → NULL), so
+  // a question parked on one would otherwise stay live with no task to end it.
+  for (let i = 0; i < taskIds.length; i += SIDE_EFFECT_BATCH) {
+    await Promise.all(taskIds.slice(i, i + SIDE_EFFECT_BATCH).map((id) => applyTaskDeleteSideEffects(id)));
   }
 
   await db

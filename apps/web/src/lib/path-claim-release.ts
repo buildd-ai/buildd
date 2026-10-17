@@ -130,16 +130,21 @@ export async function deliverPathReleased(
       }
     }));
 
-    await triggerEvent(
-      channels.workspace(workspaceId),
-      'path_claim_released',
-      {
-        taskId,
-        paths: releasedPaths,
-        waitingTaskIds: notifiedWaiters,
-        reason,
-      },
-    );
+    // Dashboard invalidation, not the agent's delivery (already enqueued
+    // above). Large refresh diffs must not exceed Pusher's 10 KB event limit.
+    // Bound serialized bytes, since path lengths and Unicode vary.
+    const payload = {
+      taskId, paths: [...releasedPaths], waitingTaskIds: [...notifiedWaiters], reason,
+      pathCount: releasedPaths.length, waitingTaskCount: notifiedWaiters.length,
+      truncated: false,
+    };
+    while (Buffer.byteLength(JSON.stringify(payload), 'utf8') > 9_000
+      && (payload.paths.length > 0 || payload.waitingTaskIds.length > 0)) {
+      payload.truncated = true;
+      if (payload.paths.length > 0) payload.paths.length = Math.floor(payload.paths.length / 2);
+      else payload.waitingTaskIds.length = Math.floor(payload.waitingTaskIds.length / 2);
+    }
+    await triggerEvent(channels.workspace(workspaceId), 'path_claim_released', payload);
   } catch (err) {
     console.error(`[path-claim] path_released delivery failed for task ${taskId}:`, err);
   }

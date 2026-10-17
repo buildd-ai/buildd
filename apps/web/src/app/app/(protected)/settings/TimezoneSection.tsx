@@ -56,7 +56,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
     setMsg(null);
     try {
       const res = await fetch(`/api/teams/${teamId}`);
-      if (!res.ok) throw new Error('Failed to load team');
+      if (!res.ok) throw new Error('Could not load the team.');
       const data = await res.json();
       setStored(data.team?.timezone ?? null);
       setDraft(data.team?.timezone ?? detected);

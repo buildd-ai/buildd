@@ -65,8 +65,48 @@ export function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+/**
+ * Claims are gated on the claiming runner's isolation probe (Living Spec
+ * "Runner isolation"). These tests stand in for a runner, so a claim that
+ * names none sends a current, enforcing probe, as a real runner's heartbeat does.
+ */
+function withIsolationProbe(endpoint: string, options: RequestInit): RequestInit {
+  if (!endpoint.startsWith('/api/workers/claim') || options.method !== 'POST' || typeof options.body !== 'string') {
+    return options;
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(options.body);
+  } catch {
+    return options;
+  }
+  if (!body || typeof body !== 'object' || body.environment) return options;
+  const now = new Date().toISOString();
+  const enforced = { mechanism: 'bwrap', scope: ['read', 'write', 'network', 'env'] };
+  // A complete WorkerEnvironment, as the runner's scan sends: empty tools/envKeys/mcp keep the
+  // derived capabilities empty, so tests behave as they did before the probe was added.
+  const environment = {
+    tools: [],
+    envKeys: [],
+    mcp: [],
+    labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'integration-test' },
+    scannedAt: now,
+    isolation: {
+      platform: 'linux',
+      evidence: ['process.platform=linux'],
+      claude: enforced,
+      codex: { 'read-only': enforced, 'workspace-write': enforced },
+      probeAt: now,
+      processStartedAt: now,
+      runnerVersion: 'integration-test',
+    },
+  };
+  return { ...options, body: JSON.stringify({ ...body, environment }) };
+}
+
 export function createTestApi(server: string, apiKey: string) {
-  async function api(endpoint: string, options: RequestInit & { retries?: number } = {}) {
+  async function api(endpoint: string, rawOptions: RequestInit & { retries?: number } = {}) {
+    const options = { ...withIsolationProbe(endpoint, rawOptions), retries: rawOptions.retries };
     const maxRetries = options.retries ?? 2;
     let lastError: Error | null = null;
 
@@ -102,7 +142,8 @@ export function createTestApi(server: string, apiKey: string) {
     throw lastError || new Error(`API ${endpoint} failed after ${maxRetries} retries`);
   }
 
-  async function apiRaw(endpoint: string, options: RequestInit = {}): Promise<{ status: number; body: any }> {
+  async function apiRaw(endpoint: string, rawOptions: RequestInit = {}): Promise<{ status: number; body: any }> {
+    const options = withIsolationProbe(endpoint, rawOptions);
     const res = await fetch(`${server}${endpoint}`, {
       ...options,
       headers: {

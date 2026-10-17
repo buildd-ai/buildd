@@ -1,3 +1,4 @@
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
@@ -77,7 +78,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+// T4 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { attemptEnded as workflowAttemptEnded, kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -3289,10 +3292,10 @@ export async function PATCH(
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: `⏳ ${walledLabel} budget/rate-limit hit`,
       message: failoverBackend
-        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
+        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
         : runnerSeatWall
-          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
-          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
+          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
+          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',
       priority: 0,
@@ -3441,7 +3444,7 @@ export async function PATCH(
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
               console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
               void notifyTeamOf({ workspaceId: worker.workspaceId }, 'credentialExpired', {
-                title: `🔑 Auth failure — failing over to ${backendLabel(authFailoverBackend)}`,
+                title: `🔑 Sign-in failed. Moved to ${backendLabel(authFailoverBackend)}`,
                 message: `Task re-queued on ${backendLabel(authFailoverBackend)} after ${backendLabel(currentBackend)} auth failure.\n${(error || '').slice(0, 150)}`,
                 url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/tasks/${worker.taskId}`,
                 urlTitle: 'View task',
@@ -4578,7 +4581,7 @@ export async function PATCH(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
-        });
+        }, { principal: kernelPrincipalOf({ account }) });
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -5670,7 +5673,8 @@ async function handleReviewerOutcomeIfNeeded(
   let serverOverrideReason: string | null = null;
   let serverOverrideSource: 'files' | 'confidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
-    let currentFiles: Array<{ filename: string }> = [];
+    // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
+    let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
     try {
       const { githubApi } = await import('@/lib/github');
@@ -5691,11 +5695,11 @@ async function handleReviewerOutcomeIfNeeded(
         repoFullName,
         prNumber,
         headSha,
-        files: currentFiles as never,
+        files: (currentFiles ?? []) as never,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
-      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // Leave currentFiles null: the helper treats an unreadable file list as
       // grounds to escalate, so a transient GitHub failure cannot grant a merge.
       console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
     }
@@ -6228,6 +6232,8 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
       // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
       // partial unique index so a second reviewer completion on the same headSha is a
       // no-op. A new headSha after the fix push starts a fresh cycle (new row).
@@ -6272,7 +6278,7 @@ async function handleReviewerOutcomeIfNeeded(
             workerBranch,
             ...lineageStamp(originalTask, [prNumber]),
           },
-          pathManifest: originalTask.pathManifest,
+          pathManifest: repairPathManifest(originalTask.pathManifest as string[] | null, repairFiles),
           release: 'false',
           priority: 8,
           status: 'pending',
@@ -6332,10 +6338,10 @@ async function handleReviewerOutcomeIfNeeded(
     case 'escalate': {
       // BT-9: Escalate path — notify human, no retry
       void notifyTeamOf({ workspaceId }, 'needsAttention', {
-        title: `PR #${prNumber} escalated by reviewer`,
+        title: 'The reviewer escalated a PR',
         message: serverOverrideReason ?? output.escalationReason ?? output.summary,
         url: prUrl,
-        urlTitle: 'View PR',
+        urlTitle: `PR #${prNumber}`,
       });
       await appendPrActivity({
         installationId,

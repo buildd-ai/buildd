@@ -505,7 +505,7 @@ describe('refreshMissionIntegrationBranch', () => {
 
     expect(outcome).toEqual({ kind: 'conflict', conflictTaskId: 'reserved-by-dead-caller', dispatched: true });
     expect(insertedTasks).toHaveLength(1);
-    expect(insertedTasks[0].context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: 'dev-new' });
+    expect(insertedTasks[0].context).toMatchObject({ requireMergeCommit: true, refreshTrunkSha: 'dev-new', refreshBranch: 'mission/example-slug-0a1b2c3d' });
     // The reservation is evidence of the 409: finishing it makes no second merge attempt.
     expect(merges).toBe(0);
     expect(missionRow.branchRefreshLeaseUntil).toBeNull();

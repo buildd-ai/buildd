@@ -47,7 +47,7 @@ const iso = (v: When): string | null => (v == null ? null : new Date(v).toISOStr
 const time = (v: When) => (v == null ? 0 : new Date(v).getTime());
 
 export function missionTaskDeliveries(input: {
-  mission: { id: string; title: string; status: string; isHeld?: boolean | null; integrationBranch?: boolean | null };
+  mission: { id: string; title: string; status: string; isHeld?: boolean | null; armedAt?: Date | string | null; integrationBranch?: boolean | null };
   tasks: readonly MissionDeliveryTaskRow[];
   /** The page's result/context digest for a task (mission-page-query.ts). */
   digestOf: (taskId: string) => { result: unknown; context: unknown };
@@ -58,7 +58,7 @@ export function missionTaskDeliveries(input: {
   const workersOf = (t: MissionDeliveryTaskRow) => [...(t.workers ?? [])].sort((a, b) => time(b.startedAt) - time(a.startedAt));
   const mission = projectMissionDelivery({
     id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
-    isHeld: m.isHeld ?? false, integrationBranch: m.integrationBranch === true,
+    isHeld: m.isHeld ?? false, armedAt: m.armedAt ?? null, integrationBranch: m.integrationBranch === true,
     tasks: input.tasks.map(t => ({ ...t, isIntegrationRefresh: t.isIntegrationRefresh ?? (input.digestOf(t.id).context as { requireMergeCommit?: unknown } | null | undefined)?.requireMergeCommit === true, workers: workersOf(t).map(w => ({ ...w, mergedAt: iso(w.mergedAt), abandonedAt: iso(w.abandonedAt) })) })),
   }, rules);
   const tasks: ActivityTaskInput[] = input.tasks.map(t => {

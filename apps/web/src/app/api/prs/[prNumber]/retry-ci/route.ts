@@ -38,6 +38,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { classifyCiRedReleasePr, releaseCandidateBranchPushRefusal } from '@/lib/release-candidate-ci';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
@@ -134,6 +135,25 @@ export async function POST(
       detail: { prNumber, repo: repoFullName, author: pr.user?.login ?? null, stage: 'ci_fix' },
     });
     return bad(`${reason}. Ask the bot to rebase/retry from the PR instead.`, 409);
+  }
+
+  // A frozen release candidate is never fixed on its branch, by a click either:
+  // a push there un-candidates it. The fix goes to its source branch, then the
+  // candidate is amended through the Release workflow.
+  const releaseClass = classifyCiRedReleasePr(workspace.releaseConfig ?? null, {
+    headRef: pr.head?.ref ?? null,
+    baseRef: pr.base?.ref ?? null,
+    headSha: pr.head?.sha ?? null,
+    author: pr.user?.login ?? null,
+    headRepoFullName: pr.head?.repo?.full_name ?? null,
+    baseRepoFullName: pr.base?.repo?.full_name ?? null,
+    body: typeof pr.body === 'string' ? pr.body : null,
+  });
+  if (releaseClass.kind !== 'ordinary') {
+    const sourceBranch = releaseClass.kind === 'candidate'
+      ? releaseClass.sourceBranch
+      : workspace.releaseConfig?.candidate?.sourceBranch?.trim() || null;
+    return bad(releaseCandidateBranchPushRefusal(prNumber, sourceBranch), 409);
   }
 
   const isDraft = await checkPrIsDraft(installationId, repoFullName, prNumber);

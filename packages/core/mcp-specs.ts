@@ -37,6 +37,12 @@
  * force, retired or superseded by another, and put it back: a person's act,
  * an agent run or API key gets the route's 403, passed through.
  *
+ * copy (POST /api/specs/[id]/copy) is the cross-workspace handoff: one
+ * revision copied into another workspace as a draft, never approved by
+ * copying. The reply is the verified destination spec id, revision and hash,
+ * or the refusal; a get that 404s says the route's text (the copy to use, or
+ * how to make one) instead of throwing.
+ *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
  * unified line diff of them.
@@ -256,6 +262,27 @@ export function confirmImportText(r: ConfirmReply): string {
     ...no.map((x) => `  not confirmed: ${x.path ?? x.specId}: ${x.reason}, ${x.message}`)].join('\n');
 }
 
+type CopyReply = {
+  reused: boolean;
+  source: { specId: string; revision: number; contentHash: string; approved: boolean };
+  destination: { workspaceId: string; specId: string; revision: number; contentHash: string; version: number; approved: boolean };
+  notCarried?: string[];
+};
+
+/** The acknowledgement a destination runner waits on: the verified spec id, revision and hash, nothing vaguer. */
+export function copyText(r: CopyReply, specUrl: (id: string) => string): string {
+  const d = r.destination;
+  return [
+    `${r.reused ? 'Already copied (nothing new written)' : 'Copied'} and verified: spec ${r.source.specId} revision ${r.source.revision} is spec ${d.specId} revision ${d.revision} in workspace ${d.workspaceId}.`,
+    `sha256 ${d.contentHash} (matches the source). Version ${d.version}.`,
+    `Spec URL: ${specUrl(d.specId)}`,
+    d.approved
+      ? `Approved in the destination at revision ${d.revision}.`
+      : `Not approved in the destination: copying never approves. A person there approves it; until then work can pin revision ${d.revision} only provisionally (context.specSource { specId: "${d.specId}", revision: ${d.revision} }).`,
+    ...(r.notCarried?.length ? [`Not carried: ${r.notCarried.join('; ')}.`] : []),
+  ].join('\n');
+}
+
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
   const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
@@ -290,7 +317,15 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'get': {
       const specId = need(params.specId, 'specId');
       const rev = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
-      const view = await api(`/api/specs/${encodeURIComponent(specId)}${rev}`);
+      let view;
+      try {
+        view = await api(`/api/specs/${encodeURIComponent(specId)}${rev}`);
+      } catch (err) {
+        // Not readable here: the route names a copy this caller can read, or how one is made.
+        const e = apiError(err);
+        if (e?.status === 404) return errorResult(String(e.body?.error ?? 'Spec not found.'));
+        throw err;
+      }
       const s = view.spec as SpecRow;
       const body: string = view.body ?? '';
       const reqs = (view.requirements ?? []).map((r: { id: string }) => r.id);
@@ -607,6 +642,20 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'copy': {
+      const specId = need(params.specId, 'specId');
+      const payload: Record<string, unknown> = { targetWorkspaceId: need(params.targetWorkspaceId, 'targetWorkspaceId (the workspace to copy into)') };
+      for (const k of ['revision', 'expectedContentHash'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/copy`, { method: 'POST', body: JSON.stringify(payload) });
+        return text(copyText(r, specUrl));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409, 502].includes(e.status)) return errorResult(`Not copied${e.body?.code ? ` (${String(e.body.code)})` : ''}: ${String(e.body?.error ?? `refused (${e.status})`)}`);
         throw err;
       }
     }

@@ -133,6 +133,8 @@ export interface MissionCardRow {
   title: string;
   status: string;
   isHeld?: boolean | null;
+  /** `missions.armedAt`: a held mission that ran before reads Paused. */
+  armedAt?: Date | string | null;
   /** `missions.executor`: 'local' runs in a person's own session (never HELD). */
   executor?: string | null;
   /**
@@ -515,6 +517,7 @@ function deriveCardState(
   return deriveMissionStateView({
     status: row.status,
     isHeld: row.isHeld ?? false,
+    armedAt: row.armedAt ?? null,
     executor: row.executor ?? null,
     orchestrationMode: row.orchestrationMode ?? null,
     activeAgents: s.liveWorkers,

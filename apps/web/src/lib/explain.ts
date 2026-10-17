@@ -41,6 +41,7 @@ import type { DeliveryView } from '@/lib/workflow/projections';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
 import { deriveLandingBlocker, type LandingBlocker } from '@/lib/landing-blocker';
 import { canCompleteMission } from '@/lib/mission-completion';
+import { evaluateMissionGate } from '@/lib/mission-dependency';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
@@ -55,7 +56,7 @@ import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-ch
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
-import { coordinationGateDetail, coordinationLink, type CoordinationHold } from '@/lib/explain-coordination';
+import { coordinationGateDetail, coordinationLink, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
 import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
@@ -584,6 +585,7 @@ async function viewForMission(missionId: string): Promise<{
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
+    armedAt: m.armedAt ?? null,
     executor: m.executor ?? null,
     orchestrationMode: m.orchestrationMode ?? null,
     activeAgents,
@@ -712,13 +714,21 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
   if (!loadedMission) return null;
   const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
-  // Name the upstream mission rather than pointing at a UUID.
+  // Name the upstream mission, and the exact condition its gate still lacks,
+  // rather than pointing at a UUID. A read: the gate is not stamped from here.
   if (view.waitingOn?.kind === 'dependency') {
-    const upstream = await db.query.missions.findFirst({
-      where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
-      columns: { title: true },
-    });
-    answerExtras.dependencyTitle = upstream?.title ?? null;
+    const gate = (mission as { gateCondition?: string | null }).gateCondition === 'completed' ? 'completed' : 'merged';
+    const verdict = await evaluateMissionGate(view.waitingOn.missionId, gate).catch(() => null);
+    if (verdict) {
+      answerExtras.dependencyTitle = verdict.title;
+      answerExtras.dependencyGate = { gate, met: verdict.met, unmet: verdict.unmet };
+    } else {
+      const upstream = await db.query.missions.findFirst({
+        where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
+        columns: { title: true },
+      });
+      answerExtras.dependencyTitle = upstream?.title ?? null;
+    }
   }
 
   const subject: ExplainAnswer['subject'] = {
@@ -1082,10 +1092,14 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const gateHistory = gateRows.map(r => r.entry);
   const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
+  // A task that started past an overlap on mergeable files says so (I-38).
+  const alongside = task.status !== 'pending'
+    ? overlapStartLink(latestOverlapStarts(gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }))), { taskId, workspaceId })
+    : null;
   const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
   const because = withDisagreements(withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), roundWhy), wake), hold),
-    coordLink as Parameters<typeof withDispatchLink>[1],
+    (coordLink ?? alongside) as Parameters<typeof withDispatchLink>[1],
   ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })

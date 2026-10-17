@@ -20,7 +20,7 @@ export default function ProtectedError({
         </div>
         <h2 className="text-lg font-semibold text-text-primary mb-2">This page failed to render</h2>
         <ErrorState
-          message="Something went wrong loading this page. Try again, or head back home."
+          message="Could not load this page. Try again, or head back home."
           detail={`${error.name}${error.name && error.message ? ': ' : ''}${error.message}`}
           digest={error.digest}
           onRetry={reset}

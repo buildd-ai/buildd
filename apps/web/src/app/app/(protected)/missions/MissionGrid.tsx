@@ -16,7 +16,7 @@ import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
 import MissionRow from '@/components/ui/MissionRow';
 import Segmented from '@/components/ui/Segmented';
-import { DELIVERY_KIND, type MissionRemaining } from '@/lib/delivery-projection';
+import { DELIVERY_KIND, deliveryKindLabel, type MissionRemaining } from '@/lib/delivery-projection';
 import { stateOfDelivery, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
@@ -294,7 +294,7 @@ function nextLine(r: PortfolioRow): string {
 
 function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
   const d = row.delivery;
-  const k = DELIVERY_KIND[d.kind];
+  const k = { ...DELIVERY_KIND[d.kind], label: deliveryKindLabel(d) };
   const state = stateOfDelivery(d) ?? undefined;
   const age = ago(row.lastAdvancedAt, now);
   const aside = [
