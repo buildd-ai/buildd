@@ -7,10 +7,11 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedMission, seedWorkspace } from './harness';
+import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
 
 const { loadRecentMissions } = await import('../../src/lib/missions-recent');
-const { missionStatusNoteBody } = await import('../../src/lib/mission-status-note');
+const { missionStatusNoteBody, MISSION_COMPLETED_MARKER } = await import('../../src/lib/mission-status-note');
+const { claimMissionCompletion } = await import('../../src/lib/workflow/mission-completion-write');
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -26,6 +27,13 @@ async function statusNote(missionId: string, from: string, to: string, at: Date)
   await q(sql`
     INSERT INTO mission_notes (mission_id, author_type, type, title, body, created_at)
     VALUES (${missionId}::uuid, 'system', 'update', 'Mission status changed', ${missionStatusNoteBody(from, to)}, ${at.toISOString()}::timestamptz)`);
+}
+
+/** A status PATCH's note: authored by a person/MCP, tagged with the server's marker only when it completes. */
+async function patchNote(missionId: string, from: string, to: string, at: Date, authorType = 'user', marker: string | null = null): Promise<void> {
+  await q(sql`
+    INSERT INTO mission_notes (mission_id, author_type, type, title, body, collapse_key, created_at)
+    VALUES (${missionId}::uuid, ${authorType}, 'update', 'Mission status changed', ${missionStatusNoteBody(from, to)}, ${marker}, ${at.toISOString()}::timestamptz)`);
 }
 
 let ids: Record<string, string>;
@@ -55,6 +63,11 @@ beforeAll(async () => {
   await statusNote(ids.reopened, 'completed', 'active', ago(1));
   // A recent "→ active" note must not make an old completion read as recent.
   await statusNote(ids.doneOld, 'paused', 'active', ago(1));
+  ids.patchReCompleted = await mission(a.teamId, a.workspaceId, 'completed', ago(20));
+  await patchNote(ids.patchReCompleted, 'active', 'completed', ago(1), 'user', MISSION_COMPLETED_MARKER);
+  // A posted note can carry the right words under a user/mcp author, but never the marker.
+  ids.forged = await mission(a.teamId, a.workspaceId, 'completed', ago(20));
+  await patchNote(ids.forged, 'active', 'completed', ago(1), 'mcp');
   otherTeamMission = await mission(b.teamId, b.workspaceId, 'active', null);
   rows = await loadRecentMissions([a.workspaceId], NOW);
 });
@@ -86,5 +99,45 @@ describe('loadRecentMissions on real Postgres', () => {
     expect(byId(ids.doneOld)).toBeUndefined();
     expect(byId(ids.archived)).toBeUndefined();
     expect(byId(ids.noStamp)).toBeUndefined();
+  });
+
+  test('re-completed by a person\'s PATCH: dated by the marked note (gap: stamp keeps the first date)', () => {
+    expect(byId(ids.patchReCompleted)!.completedAt).toBe(ago(1).toISOString());
+  });
+
+  test('a user/mcp note with the status words but no marker does not move the date', () => {
+    expect(byId(ids.forged)).toBeUndefined();
+  });
+});
+
+describe('automated re-completion after a reopen', () => {
+  async function reopenedMission(): Promise<{ id: string; workspaceId: string }> {
+    const w = await seedWorkspace();
+    const id = await mission(w.teamId, w.workspaceId, 'active', ago(20));
+    return { id, workspaceId: w.workspaceId };
+  }
+  const completedAt = async (id: string) =>
+    new Date((await q<{ c: string }>(sql`SELECT completed_at AS c FROM missions WHERE id = ${id}::uuid`))[0].c).toISOString();
+
+  test('no task finished since the first completion: the delivered date does not move', async () => {
+    const m = await reopenedMission();
+    await seedTask(m.workspaceId, { status: 'cancelled', missionId: m.id });
+    expect(await claimMissionCompletion(m.id, null, new Date(NOW))).toMatchObject({ id: m.id });
+    expect(await completedAt(m.id)).toBe(ago(20).toISOString());
+    expect((await loadRecentMissions([m.workspaceId], NOW)).find(r => r.id === m.id)).toBeUndefined();
+  });
+
+  test('a task finished since: the completion date moves', async () => {
+    const m = await reopenedMission();
+    await seedTask(m.workspaceId, { status: 'completed', missionId: m.id });
+    expect(await claimMissionCompletion(m.id, null, new Date(NOW))).toMatchObject({ id: m.id });
+    expect(await completedAt(m.id)).toBe(new Date(NOW).toISOString());
+  });
+
+  test('a first completion is stamped', async () => {
+    const w = await seedWorkspace();
+    const id = await mission(w.teamId, w.workspaceId, 'active', null);
+    await claimMissionCompletion(id, null, new Date(NOW));
+    expect(await completedAt(id)).toBe(new Date(NOW).toISOString());
   });
 });

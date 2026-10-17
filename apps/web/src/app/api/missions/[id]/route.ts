@@ -48,7 +48,7 @@ import {
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
 import type { SpecCaller } from '@/lib/specs/store';
-import { missionStatusNoteBody, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
+import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 
 const resolveTeamIds = resolveAccountTeamIds;
@@ -968,6 +968,7 @@ export async function PATCH(
         title: isReopen ? MISSION_STATUS_CHANGE_TITLES[1] : MISSION_STATUS_CHANGE_TITLES[0],
         body: missionStatusNoteBody(existing.status, status),
         actor,
+        ...(status === 'completed' ? { marker: MISSION_COMPLETED_MARKER } : {}),
       }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
 
       // A completed/archived mission cannot owe anyone a live decision — an
