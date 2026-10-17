@@ -132,6 +132,12 @@ export type Command =
       taskId?: string;
       attemptId?: string;
       outcome: 'success' | 'failed' | 'lost' | 'unproven';
+      /**
+       * 295486ba: the end is the attempt's task being cancelled (a person, or the platform),
+       * not a run that stopped. A CI repair cancelled while still queued (never claimed) with
+       * nothing local did no work, so it spends nothing (skipped). Absent = a run's end.
+       */
+      cancelled?: boolean;
       localHeadSha: string | null;
       commitCount: number;
       live: LivePr | null;
@@ -275,6 +281,24 @@ export type Command =
        * conclusions), not merely "nothing failed": a cancelled, stale or action-required
        * run is not green. Absent or false is refused.
        */
+      allPassing?: boolean;
+    })
+  | (Base & {
+      /**
+       * 6900a317: the CI reading on the current head, recorded as a fact without moving
+       * the delivery. T10 and the repair-ending green act on a reading; this only keeps
+       * `ci`/`ciHeadSha` true when they did not (no repair to end, a fix still in flight,
+       * a state CI does not move), so a head with a failed check never reads "Checking"
+       * and a green head never stays "Checking" either. Read live by the host, with
+       * superseded re-runs dropped: `red` needs a failing run, `green` needs every run
+       * complete, none failing, and every suite passed (`allPassing`). `running` (nothing
+       * failing, not every run finished) withdraws an earlier red on the same head: the run
+       * that failed was re-run and the head is being checked again.
+       */
+      type: 'CiObserved';
+      headSha: string;
+      verdict: 'red' | 'green' | 'running';
+      liveChecks: { complete: boolean; failing: string[] };
       allPassing?: boolean;
     })
   | (Base & {

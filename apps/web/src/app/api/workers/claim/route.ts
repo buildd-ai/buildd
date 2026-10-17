@@ -61,7 +61,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { callerSeatKeys } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -95,7 +95,17 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
+// T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+
+/**
+ * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
+ * A door alone may take DOOR_BUDGET_MS (20 s); summed over several fix candidates that outlasts the
+ * runner's claim deadline. Once it is spent the next fix candidate defers at once (nothing is sent)
+ * and the rest of the batch is claimed as usual.
+ */
+export const CLAIM_FIX_CONTROL_PLANE_BUDGET_MS = 5_000;
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -313,7 +323,9 @@ export async function POST(req: NextRequest) {
   // hit is recorded under that runner's key and holds only its claims. Null —
   // a session on its own seat (exempt from walls anyway), a cloud run, or a
   // caller that names no runner — reads every wall, seat-scoped ones included.
-  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
+  // A runner that reports its login's identity (`claudeLoginId`, a one-way
+  // hash) is also held by a wall another runner on the same login recorded.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : callerSeatKeys(runner, body.claudeLoginId);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
@@ -395,9 +407,10 @@ export async function POST(req: NextRequest) {
   if (capabilities.length === 0 && body.environment) {
     const env = body.environment;
     capabilities = [
-      ...env.tools.map(t => t.name),
-      ...env.envKeys,
-      ...env.mcp.map(m => `mcp:${m}`),
+      // A partial environment (e.g. only an isolation probe) derives nothing rather than throwing.
+      ...(env.tools ?? []).map(t => t.name),
+      ...(env.envKeys ?? []),
+      ...(env.mcp ?? []).map(m => `mcp:${m}`),
     ];
   }
 
@@ -1121,6 +1134,8 @@ export async function POST(req: NextRequest) {
     duplicate_worker: 0,
     sibling_retry_open: 0,
     fix_not_needed: 0,
+    kernel_unavailable: 0,
+    kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -1547,6 +1562,8 @@ export async function POST(req: NextRequest) {
   }
   const claimOrder: Iterable<(typeof filteredTasks)[number]> = applyTasks.length > 0 ? plannedClaimOrder() : filteredTasks;
 
+  // Started by the first fix candidate, shared by every one after it (CLAIM_FIX_CONTROL_PLANE_BUDGET_MS).
+  let fixClaimDeadline: number | null = null;
   for (const task of claimOrder) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
@@ -2818,12 +2835,18 @@ export async function POST(req: NextRequest) {
     // resolved while it queued (approved, merged, head moved, round superseded)
     // is cancelled as skipped — never started, and not a worker failure.
     if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
-      const fixDecision = await claimKernelFix({
+      fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
+      const { value: fixDecision } = await withControlPlaneBudget('claim', Math.max(0, fixClaimDeadline - Date.now()), () => claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
-      }).catch((err): { action: 'defer'; reason: string } => {
+      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string; code: 'kernel_unavailable' | 'kernel_refused' } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
-        return { action: 'defer', reason: 'kernel_error' };
-      });
+        // A refusal (auth, the principal's reach, a malformed input) is not an outage: asking again on
+        // the next poll gets the same answer, so it reads as its own code in claim diagnostics.
+        if (err instanceof KernelCommandRefusedError) {
+          return { action: 'defer', reason: `refused ${err.status}${err.body.code ? ` ${String(err.body.code)}` : ''}`, code: 'kernel_refused' };
+        }
+        return { action: 'defer', reason: 'kernel_error', code: 'kernel_unavailable' };
+      }));
       if (fixDecision.action !== 'proceed') {
         if (gatedStartLeaseIds.length > 0) {
           await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
@@ -2837,7 +2860,9 @@ export async function POST(req: NextRequest) {
             .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
             .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
         }
-        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        // The kernel could not answer (the control plane down or slow, or the claim budget spent), or it
+        // refused the claim: each its own code, so neither reads as fixes nobody needs.
+        deferTask(task, 'code' in fixDecision ? fixDecision.code : 'fix_not_needed', { reason: fixDecision.reason });
         continue;
       }
     }

@@ -81,8 +81,8 @@ const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:(?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow|@buildd\/workflow-kernel)\/([a-z][a-z/-]*)|@buildd\/workflow-kernel()(?=['"]))['"]/g;
 
-const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_findings|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|workflow_commands|workflow_mission_epochs|workflow_scope_amendments|trunk_incidents';
-const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFindings|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|workflowCommands|workflowMissionEpochs|workflowScopeAmendments|trunkIncidents';
+const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_findings|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|workflow_commands|workflow_command_outbox|workflow_mission_epochs|workflow_scope_amendments|trunk_incidents';
+const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFindings|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|workflowCommands|workflowCommandOutbox|workflowMissionEpochs|workflowScopeAmendments|trunkIncidents';
 /** Raw SQL that reads or writes a kernel table: FROM, JOIN, INSERT INTO, UPDATE, DELETE FROM, TRUNCATE, ALTER/DROP TABLE. */
 const SQL_ACCESS = new RegExp(`\\b(?:FROM|JOIN|INTO|UPDATE|TRUNCATE|TABLE)\\s+(?:ONLY\\s+)?(?:(?:"?public"?)\\.)?"?(?:${TABLES})\\b`, 'i');
 /** A Drizzle query builder over a kernel table object: db.insert/update/delete/select…from/join(t), db.query.t. */
@@ -177,9 +177,17 @@ describe('workflow kernel tables have one writer', () => {
  * S3a (docs/specs/workflow-kernel-library.md §3): every door reaches a kernel command
  * through ONE client, `kernel-client.ts`, which runs it where the kernel is hosted (the
  * control plane in own mode). A door that imports one of these straight from the seam
- * would apply the command on whatever host it runs on.
+ * would apply the command on whatever host it runs on. `attemptEnded` (T4) is one too: the
+ * worker PATCH, the reaper, a cancel and a reviewer takeover report an attempt's end from the
+ * web host, and in own mode only the control plane applies it (AC-9). So is `observeCiFailure`
+ * (T10): the red-PR sweep (`cron:ci-red`), the landing path and the check_suite subscriber
+ * report a CI failure through `ci-failure-retry.ts`, and only the control plane applies it.
+ * And `observeCiGreen` (CiGreenObserved, and the CiObserved reading outside a repair): the
+ * check_suite success webhook reports a green head, and only the control plane applies it.
+ * And T6 and T9: `recordReviewVerdict` and `adoptReviewVerdict` (the worker PATCH reports a
+ * reviewer's verdict) and `claimFix` (the claim route revalidates a fix at claim).
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -234,6 +242,16 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`const r = await import('@/lib/workflow/seam').then((m) => m.abandonDelivery(p));`)).toEqual(['abandonDelivery']);
     expect(seamDoorImports(`import { openKernelDelivery } from '../../src/lib/workflow/seam';`)).toEqual(['openKernelDelivery']);
     expect(seamDoorImports(`import { openKernelDelivery } from '../../src/lib/workflow/seam.ts';`)).toEqual(['openKernelDelivery']);
+    expect(seamDoorImports(`import { noopEvidenceOf, attemptEnded as workflowAttemptEnded } from '@/lib/workflow/seam';`)).toEqual(['attemptEnded']);
+    expect(seamDoorImports(`const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');`)).toEqual(['attemptEnded']);
+    expect(seamDoorImports(`import { attemptEnded } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    expect(seamDoorImports(`import { observeCiFailure } from '@/lib/workflow/seam';`)).toEqual(['observeCiFailure']);
+    expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
+    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeCiGreen']);
+    expect(seamDoorImports(`import { observeCiGreen } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    expect(seamDoorImports(`import { adoptReviewVerdict, fixedElsewhereOf, recordReviewVerdict } from '@/lib/workflow/seam';`)).toEqual(['adoptReviewVerdict', 'recordReviewVerdict']);
+    expect(seamDoorImports(`import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';`)).toEqual(['claimFix']);
+    expect(seamDoorImports(`import { claimFix, recordReviewVerdict } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     // Every allowed file still exists and still needs the exception, so the list cannot rot.
     for (const f of Object.keys(DOOR_DIRECT_ALLOWED)) {
       expect(files).toContain(f);
@@ -273,32 +291,32 @@ const WORKERS_COLUMN_DECLARATIONS = new Set<string>([
   'scripts/demo/advance.ts',
 ]);
 
-/** Terminal facts here go under `factFunnelScope`; non-terminal facts are TODO S4b. */
+/** Terminal facts here go under `factFunnelScope`; non-terminal facts (open, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not scope them and no open slice owns it (a follow-up task, if wanted). */
 const FUNNEL = 'records PR facts through the funnel; a terminal fact under factFunnelScope (delivery-owned rows take only what their delivery says)';
 const FUNNEL_CALLERS: Record<string, string> = {
-  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (TODO S4b). A kernel-owned merge is T17's, reached through observePrState`,
+  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (unscoped, no owning slice). A kernel-owned merge is T17's, reached through observePrState`,
   'apps/web/src/app/api/github/pr/route.ts': `${FUNNEL}: the legacy merge door's receipt`,
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': `${FUNNEL}: the dashboard merge door's receipt`,
-  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal; TODO S4b)',
+  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal, unscoped; no owning slice)',
   'apps/web/src/lib/dead-pr-shutdown.ts': `${FUNNEL}: the loser of a duplicate PR closes`,
   'apps/web/src/lib/dead-zone-sweep.ts': `${FUNNEL}: the sweep heals a missed merge or close`,
-  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (TODO S4b). The mission PR has no delivery until S6`,
+  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice). The mission PR's delivery is opened by openMissionPrDelivery (S6)`,
   'apps/web/src/lib/pr-fact-import.ts': `${FUNNEL}: the reconcile script's import`,
   'apps/web/src/lib/pr-merge-stamp.ts': `${FUNNEL}: stampPrMergedOnAllRows, the legacy merge's stamp`,
   // runMergedPrWork stamps only with \`stamp: true\`: the webhook's legacy path. A kernel-owned PR's
   // work runs from the emit_pr_merged effect with \`stamp: false\`, after T17 already projected the rows.
   'apps/web/src/lib/pr-merged-work.ts': `${FUNNEL}: stampPrMergedOnAllRows for a PR the kernel does not own`,
-  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (TODO S4b)`,
-  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (TODO S4b)`,
-  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (TODO S4b). The render read-through itself retires with AC-3`,
-  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal; TODO S4b)',
-  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal; TODO S4b): the sibling owner row of a second PR from one worker',
+  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (unscoped; no owning slice)`,
+  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice)`,
+  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (unscoped; no owning slice). The render read-through itself retires with AC-3`,
+  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal, unscoped; no owning slice)',
+  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal, unscoped; no owning slice): the sibling owner row of a second PR from one worker',
   // Cannot import apps/web, so it mints an unscoped scope (below).
-  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. TODO S4b: heal through the kernel floor instead',
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. Healing through the kernel floor instead has no owning slice',
 };
 /** Minting a terminal-fact scope outside the kernel bypasses the delivery check. */
 const SCOPE_MINTERS: Record<string, string> = {
-  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill in @buildd/core, which cannot import the kernel. TODO S4b',
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill in @buildd/core, which cannot import the kernel. Moving it behind the kernel floor has no owning slice',
 };
 const FUNNEL_CALL = /\b(?:recordPrFact|stampPrMergedOnAllRows)\b/;
 /** The funnel's SQL builders write the columns: only the funnel and the kernel may run them. */
@@ -317,11 +335,11 @@ const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope
  *    stale-failure archive, a dependency failure cascading). It skips a delivery-owned task in its
  *    own WHERE (`deliveryOwnedTaskSql`, pr-fact-scope.ts) and keeps today's write for every other
  *    task. The test below pins that each still carries the predicate.
- *  - ATTEMPT: the end or requeue of a worker's own attempt. For an owner task `tasks.status` is the
- *    attempt's lifecycle, which the kernel READS (`forwardOwnerEnd` acts only once it is completed
- *    or failed, and a requeue is deliberately not an attempt end). Skipping these for a
- *    delivery-owned task would strand it in progress and the delivery would never hear the
- *    attempt ended.
+ *  - ATTEMPT: the end or requeue of a worker's own attempt. The kernel reads the end from the
+ *    worker row (`ownerAttemptEndOf`: `forwardOwnerEnd` re-sends a finished worker's end even while
+ *    the task is still assigned; a requeue is deliberately not an attempt end), but nothing projects
+ *    the end back onto the task yet. Skipping these for a delivery-owned task would leave it in
+ *    progress after its delivery moved on.
  *  - PERSON: a person's explicit act on the task (or an external tracker acting for one). Not a
  *    delivery fact; the delivery is settled by its own transitions.
  *  - NON_DELIVERY: provably never a delivery-owned task (a task that never started, a release
@@ -329,14 +347,14 @@ const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope
  *  - NOT_LIFECYCLE: writes `result` keys that are not delivery fields (evidence, shipped record).
  */
 const GUARDED = (why: string) => `GUARDED: ${why}; skips a delivery-owned task (deliveryOwnedTaskSql)`;
-const ATTEMPT = (why: string) => `ATTEMPT: ${why}; the attempt's own lifecycle, which the kernel reads (forwardOwnerEnd, T4)`;
+const ATTEMPT = (why: string) => `ATTEMPT: ${why}; the attempt's own lifecycle, which the kernel reads from the worker row (forwardOwnerEnd, T4)`;
 const PERSON = (why: string) => `PERSON: ${why}`;
 const NON_DELIVERY = (why: string) => `NON_DELIVERY: ${why}`;
 const TASK_STATUS_WRITERS: Record<string, string> = {
-  'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b)`,
+  'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (TODO S7: derive on read)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (S7, projections, task c16eb202: derive on read)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
   'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
@@ -386,6 +404,27 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
   'apps/web/src/lib/github-repo-access-store.ts': "WHERE status = 'failed'",
   'apps/web/src/lib/conflict-retry.ts': 'the conflict-fix attempt task, WHERE its status is still the live one it read',
   'apps/web/src/lib/loop-webhook.ts': 'writes completed only',
+};
+
+/**
+ * AC-1 ratchet: the rest of AC-1 for `tasks.status` (workflow-kernel-library.md §9) moves these
+ * ATTEMPT writers behind an attempt-to-task projection one family at a time. Until then each
+ * file's count of `tasks.status` / `tasks.result` write statements is pinned here, and the count
+ * only goes down: a new ATTEMPT file, or a new statement in one of these, fails CI. Moving a
+ * family lowers its number (to 0, then the file leaves TASK_STATUS_WRITERS); never raise one.
+ */
+const ATTEMPT_SITE_CEILING: Record<string, number> = {
+  'apps/web/src/app/api/workers/[id]/route.ts': 13,
+  'apps/web/src/app/api/workers/claim/route.ts': 4,
+  'apps/web/src/app/api/tasks/cleanup/route.ts': 3,
+  'apps/web/src/lib/stale-workers.ts': 11,
+  'apps/web/src/lib/interactive-detach.ts': 1,
+  'apps/web/src/lib/credential-recovery.ts': 1,
+  'apps/web/src/lib/github-repo-access-store.ts': 1,
+  'apps/web/src/lib/task-recovery-hold.ts': 1,
+  'apps/web/src/lib/conflict-retry.ts': 1,
+  'apps/web/src/lib/ci-failure-retry.ts': 1,
+  'apps/web/src/lib/loop-webhook.ts': 2,
 };
 
 /** The GUARDED writers: each must still carry the delivery-owned predicate. */
@@ -459,6 +498,16 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
       if (typeof want === 'number') expect(`${f}: ${n}`).toBe(`${f}: ${want}`);
       else expect(want.length).toBeGreaterThan(10);
     }
+  });
+
+  it('AC-1 ratchet: the ATTEMPT writers only shrink: no new file, and no new statement in one', () => {
+    const attempt = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('ATTEMPT')).map(([f]) => f).sort();
+    expect(attempt).toEqual(Object.keys(ATTEMPT_SITE_CEILING).sort());
+    const over = Object.entries(ATTEMPT_SITE_CEILING)
+      .map(([f, max]) => [f, taskStatusSites(code(f)).length, max] as const)
+      .filter(([, n, max]) => n !== max)
+      .map(([f, n, max]) => `${f}: ${n} statements, pinned at ${max}${n < max ? ' (lower the pin: the ratchet only goes down)' : ''}`);
+    expect(over).toEqual([]);
   });
 
   it('S4b: a GUARDED writer still skips a delivery-owned task in its own statement', () => {

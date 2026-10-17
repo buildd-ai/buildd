@@ -12,12 +12,13 @@
  *              plus prMergedAt on a finished task, and the mission's stage, which
  *              the runner adds from GET /api/missions/stages). Refetched when the runner learns of a
  *              queue change (task_assigned, claim_rejected, a worker finishing),
- *              and at most once a minute otherwise.
+ *              at most once per TASK_EVENT_MIN_MS, and every 2 minutes otherwise.
  *   - capacity: maxConcurrent from GET /api/config.
  *   - workspaces: GET /api/workspaces, the workspaces this runner's key reaches
  *     (the `w` switcher and the header count, R-19).
  *   - missions: GET /api/missions/recent, the open missions of those workspaces
- *     and the ones delivered in the last 7 days (R-24), at most once a minute.
+ *     and the ones delivered in the last 7 days (R-24), at most every 5 minutes.
+ *   Neither is read after IDLE_PAUSE_MS without a key (run.ts).
  *   - claim outcomes: what the server said about the runner's last claim of
  *     each task and its last broad claim (R-25), in the `init` frame, then
  *     `claim_outcome` frames. They say what really holds a waiting task.
@@ -26,6 +27,7 @@
  */
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
+import { queueRowList, type QueueRow } from './queue';
 import { TERMINAL_TASK_STATUSES, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -218,6 +220,8 @@ export interface ClaimOutcome {
 }
 
 export const NO_MISSION = '(none)';
+/** The missions pane's row for tasks outside any mission. */
+export const NO_MISSION_TITLE = 'Other tasks';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
@@ -441,9 +445,9 @@ function workerByTask(state: TopState): Map<string, TopWorker> {
 }
 
 /**
- * Tasks this runner has taken or could take. A mission a person runs from
- * their own session (executor=local) is never claimed by a runner, so it is
- * left out unless this runner already holds one of its tasks.
+ * The work top lists: tasks this runner has taken or could take, and the tasks
+ * of a mission managed from a local session (executor=local). No runner
+ * claims those, but the mission pane still shows how far they got.
  */
 function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTask[] {
   const seen = new Set<string>();
@@ -452,7 +456,6 @@ function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTas
   for (const t of state.tasks) {
     if (seen.has(t.id)) continue;
     seen.add(t.id);
-    if (t.mission?.executor === 'local' && !workers.has(t.id)) continue;
     if (isOrganizerTask(t)) continue;
     if (!inWorkspace(taskWorkspaceId(t))) continue;
     out.push(t);
@@ -646,7 +649,7 @@ export interface MissionRow {
   /** The team heading it sits under (R-24); null when the server names none. */
   team: string | null;
   workspaceId?: string;
-  /** A person runs it from their own session; no runner takes its tasks. */
+  /** Managed from a local session (executor=local); no runner takes its tasks. */
   local: boolean;
   held: boolean;
   /** Delivered: when, in ms; it is listed for 7 days after. */
@@ -674,11 +677,17 @@ export function deliveredDay(ms: number): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
 }
 
-/** What a mission row says besides its title and stage: its delivered day, or that a person runs it. */
-export function missionMeta(row: Pick<MissionRow, 'deliveredAt' | 'local'>): string | null {
+/** What a mission row says besides its title and stage: its delivered day. */
+export function missionMeta(row: Pick<MissionRow, 'deliveredAt'>): string | null {
   if (row.deliveredAt !== undefined) return `delivered ${deliveredDay(row.deliveredAt)}`;
-  if (row.local) return 'local session';
   return null;
+}
+
+/** The sidebar's stage words: `building`, or `building locally` for a mission managed from a local session. */
+export function missionRowStage(row: Pick<MissionRow, 'stage' | 'local'>): string | null {
+  const word = missionStageWord(row);
+  if (!word) return row.local ? 'local' : null;
+  return row.local ? `${word} locally` : word;
 }
 
 const STAGE_WORD: Record<MissionStageStep, string> = {
@@ -690,11 +699,53 @@ export function missionStageWord(row: Pick<MissionRow, 'stage'>): string | null 
   return row.stage ? STAGE_WORD[row.stage.step] ?? null : null;
 }
 
-/** The stage and what it waits on, for the heading: `verifying: 2 checks left`. */
+/**
+ * What the server's stage says the mission waits on, in top's words. A
+ * finished visual review reads "see the mission page" on the server, which
+ * says where to look, not what happened.
+ */
+function waitingOnWords(waitingOn: string | null): string | null {
+  if (!waitingOn) return null;
+  if (waitingOn === 'see the mission page') return 'visual review finished, results on buildd';
+  if (waitingOn === 'a question for you') return 'the visual review asks you a question';
+  return waitingOn;
+}
+
+/** The stage and what it waits on: `verifying: 2 checks left`. */
 export function missionStageLine(row: Pick<MissionRow, 'stage'>): string | null {
   const word = missionStageWord(row);
   if (!word) return null;
-  return row.stage!.waitingOn ? `${word}: ${row.stage!.waitingOn}` : word;
+  const on = waitingOnWords(row.stage!.waitingOn);
+  return on ? `${word}: ${on}` : word;
+}
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The selected mission's status line, under its title: the stage, how far it
+ * got, and who runs it. `Building · 5 of 6 landed`, `Verifying · visual review
+ * finished, results on buildd`, `Building · 1 of 2 landed · Managed from a
+ * local session`, `Delivered Oct 14`. "Landed" is the server's word and means
+ * merged. Null for the fold row, and for loose tasks when there are none.
+ */
+export function missionStatusLine(row: MissionRow): string | null {
+  if (row.fold) return null;
+  if (row.key === NO_MISSION) return row.total > 0 ? `Tasks outside any mission · ${row.total - row.done} open` : null;
+  if (row.deliveredAt !== undefined) return `Delivered ${deliveredDay(row.deliveredAt)}`;
+  const parts: string[] = [];
+  const word = missionStageWord(row);
+  if (word) {
+    parts.push(capital(word));
+    const on = waitingOnWords(row.stage!.waitingOn);
+    if (on) parts.push(on);
+  } else if (row.planning) {
+    parts.push('Planning');
+  } else if (row.held) {
+    parts.push('On hold');
+  }
+  if (!word && row.total > 0) parts.push(`${row.done} of ${row.total} tasks done`);
+  if (row.local) parts.push('Managed from a local session');
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 function sameLocalDay(iso: string | null | undefined, now: number): boolean {
@@ -716,7 +767,7 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     const key = t.missionId || NO_MISSION;
     let row = map.get(key);
     if (!row) {
-      row = emptyRow(key, key === NO_MISSION ? '(no mission)' : t.mission?.title || `mission ${key.slice(0, 8)}`);
+      row = emptyRow(key, key === NO_MISSION ? NO_MISSION_TITLE : t.mission?.title || `mission ${key.slice(0, 8)}`);
       map.set(key, row);
     }
     row.total++;
@@ -781,8 +832,9 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     || rank(a) - rank(b)
     || (rank(a) === 2 ? (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0) : (b.running > 0 ? 1 : 0) - (a.running > 0 ? 1 : 0))
     || a.title.localeCompare(b.title));
-  // `(no mission)` is always there, last, so loose tasks have a home.
-  rows.push(map.get(NO_MISSION) ?? emptyRow(NO_MISSION, '(no mission)'));
+  // `Other tasks` is always there, last, so loose tasks have a home. It sits
+  // under no team heading: its tasks can come from every team.
+  rows.push({ ...(map.get(NO_MISSION) ?? emptyRow(NO_MISSION, NO_MISSION_TITLE)), team: null });
   return rows;
 }
 
@@ -821,6 +873,26 @@ export function missionList(state: TopState, now: number = Date.now()): MissionR
   return out;
 }
 
+/** The missions a fold row holds: its team's deliveries of the last 7 days, newest first. */
+export function deliveredMissions(state: TopState, fold: MissionRow, now: number = Date.now()): MissionRow[] {
+  return missionRows(state, now)
+    .filter(r => r.deliveredAt !== undefined && r.team === fold.team)
+    .sort((a, b) => (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0));
+}
+
+/**
+ * What the mission pane says when it lists no task. Task state and activity
+ * are different things: a mission whose tasks are done, but that has nothing
+ * running or waiting today, says "No activity today", never that it is empty.
+ */
+export function emptyMissionWords(mission: MissionRow, filter: string): string {
+  if (filter) return 'Nothing matches the filter.';
+  if (mission.deliveredAt !== undefined) return 'Its work is finished. o opens it on buildd.';
+  if (mission.key === NO_MISSION) return 'No tasks outside a mission.';
+  if (mission.total > 0 || (mission.stage?.progress?.length ?? 0) > 0) return 'No activity today. o opens the mission on buildd.';
+  return 'No activity yet.';
+}
+
 /** The mission the right pane shows: the selection if it still exists, else the first. */
 export function currentMission(state: TopState, now: number = Date.now()): MissionRow {
   const rows = missionList(state, now);
@@ -854,6 +926,8 @@ export interface TaskRow {
   route?: string;
   /** Running rows: "$0.08" billed or "~$0.08" estimated; never for a plan run (R-41). */
   dollars?: string;
+  /** Work this runner does not run: a local session's, or another runner's. Its keys say so instead of acting. */
+  elsewhere?: 'local' | 'runner';
 }
 
 export function formatDuration(ms: number): string {
@@ -977,7 +1051,10 @@ function taskBackend(t: TopTask): string {
 }
 
 const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
-const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'rate limit', tenant_budget: 'tenant budget' };
+// provider_pause is a limit recorded for every runner of the team (a shared
+// key or credential); runner_seat is this machine's own login (spec "A
+// runner", R-9, R-12). Neither is necessarily an API rate limit.
+const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'shared limit', runner_seat: 'login limit', tenant_budget: 'tenant budget' };
 
 export function wallWord(kind: string): string {
   return WALL_WORD[kind] ?? 'usage limit';
@@ -1000,6 +1077,8 @@ export function localLiftTime(iso: string, now: number): string {
 export interface ProviderHold {
   backend: string;
   provider: string;
+  /** The wall kind the server named (`runner_seat`, `provider_pause`, ...). */
+  kind?: string;
   /** `plan limit`, `rate limit`, ... */
   word: string;
   /** When it lifts (ISO), or null when the server did not say. */
@@ -1024,13 +1103,14 @@ export function providerHolds(state: TopState, now: number): ProviderHold[] {
   const add = (w: { kind: string; backend: string; resetsAt: string | null }) => {
     const prev = out.get(w.backend);
     if (prev && (isoMs(prev.resetsAt) ?? Infinity) <= (isoMs(w.resetsAt) ?? Infinity)) return;
-    out.set(w.backend, { backend: w.backend, provider: PROVIDER_NAME[w.backend] ?? w.backend, word: wallWord(w.kind), resetsAt: w.resetsAt ?? null });
+    out.set(w.backend, { backend: w.backend, provider: PROVIDER_NAME[w.backend] ?? w.backend, kind: w.kind, word: wallWord(w.kind), resetsAt: w.resetsAt ?? null });
   };
   const broad = liveBroad(state, now);
   if (broad) for (const w of activeWalls(broad, now)) add(w);
 
   const workers = workerByTask(state);
-  const pending = relevantTasks(state, workers).filter(t => t.status === 'pending' && !workers.has(t.id));
+  // A local session's tasks are never this runner's to claim, so no limit holds them here.
+  const pending = relevantTasks(state, workers).filter(t => t.status === 'pending' && !workers.has(t.id) && t.mission?.executor !== 'local');
   const backends = new Set(pending.map(taskBackend));
   for (const b of backends) {
     if (out.has(b)) continue;
@@ -1072,10 +1152,16 @@ export function holdLine(state: TopState, now: number): string | null {
 
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
 export function providerHoldLine(h: ProviderHold, now: number): string {
-  const head = `${h.provider} work waits for the ${h.word}`;
+  // Whose access waits (spec "A runner", R-12): this machine's own login holds
+  // only this runner, so say the others are free.
+  const own = h.kind === 'runner_seat';
+  const head = own ? `This machine's ${h.provider} login waits for its limit`
+    : h.kind === 'provider_pause' ? `${h.provider} work waits for a limit every runner shares`
+    : `${h.provider} work waits for the ${h.word}`;
+  const tail = own ? ` · other runners can take ${h.provider} work` : '';
   const reset = isoMs(h.resetsAt);
-  if (reset === null || reset <= now) return `${head}.`;
-  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})`;
+  if (reset === null || reset <= now) return `${head}.${tail}`;
+  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})${tail}`;
 }
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
@@ -1181,6 +1267,8 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   duplicate_worker: 'a worker already has it',
   sibling_retry_open: 'a retry of it is already open',
   fix_not_needed: 'its fix is no longer needed',
+  kernel_unavailable: 'the workflow control plane did not answer',
+  kernel_refused: 'the workflow control plane refused its fix claim',
   runner_capability: 'needs something this runner lacks',
   role_env_unsatisfied: 'its role needs settings this runner lacks',
   managed_concurrency: 'managed runs are at their limit',
@@ -1326,7 +1414,30 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
       continue;
     }
 
+    // Running somewhere else: listed as running, so the mission shows all its live work.
+    const local = t.mission?.executor === 'local';
+    if (!w && (t.status === 'assigned' || t.status === 'in_progress' || t.status === 'waiting_input')) {
+      const where = local ? 'in a local session' : 'on another runner';
+      running.push({ ...base, group: 'running', kind: 'running', elsewhere: local ? 'local' : 'runner', action: t.status === 'waiting_input' ? `asks a question ${where}, o opens it` : `running ${where}` });
+      continue;
+    }
+    if (local && !w) {
+      waiting.push({ ...base, group: 'waiting', kind: 'waiting', elsewhere: 'local', reason: 'for the local session to pick up' });
+      continue;
+    }
     waiting.push({ ...base, group: 'waiting', kind: 'waiting', reason: waitingReason(t, state, now, holds) });
+  }
+
+  // The task list is windowed (a day of finished work fills it), so queued
+  // work of this mission it did not send comes from the queue top last read.
+  const listed = new Set(tasks.map(t => t.id));
+  for (const q of queueRowList(state, now)) {
+    if ((q.missionId || NO_MISSION) !== mission.key || listed.has(q.taskId)) continue;
+    listed.add(q.taskId);
+    const role = roleLabel(q.roleSlug);
+    const base = { taskId: q.taskId, title: q.title, ...(role ? { role } : {}), group: 'waiting' as const, kind: 'waiting' as const };
+    if (q.exclusion === 'local_session') waiting.push({ ...base, elsewhere: 'local', reason: 'for the local session to pick up' });
+    else waiting.push({ ...base, reason: queueRowReason(q) });
   }
 
   running.sort((a, b) => (b.elapsedMs ?? 0) - (a.elapsedMs ?? 0));
@@ -1334,6 +1445,16 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   const ready = (r: TaskRow) => (r.reason?.startsWith('ready') ? 0 : 1);
   waiting.sort((a, b) => ready(a) - ready(b));
   return [...running, ...waiting, ...done];
+}
+
+/**
+ * A queued row's wait, in the Missions view: its place in the Queue view and
+ * when it starts there ("#3 in queue · after its dependency"), a held row's
+ * reason, or why this runner never takes it.
+ */
+export function queueRowReason(q: QueueRow): string {
+  if (q.position !== null) return q.starts === 'now' ? `#${q.position} in queue · starts on the next claim` : `#${q.position} in queue · ${q.starts}`;
+  return q.reason ?? q.starts;
 }
 
 /** Lines that say a task failed without saying why. */

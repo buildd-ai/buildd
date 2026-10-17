@@ -11,38 +11,51 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { q } from './harness';
+import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
+const { drainParkedCommands, postgresCommandOutbox } = await import('../../src/lib/workflow/command-outbox');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
 const { postgresCommandLedger, COMMAND_LEASE_MS, COMMAND_HEARTBEAT_MS } = await import('../../src/lib/workflow/command-ledger');
 const { applyCommand } = await import('../../src/lib/workflow/kernel');
 
-const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS'] as const;
+const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS', 'KERNEL_DOOR_BUDGET_MS'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
-interface ControlPlane { calls: Array<{ path: string; op: string | null }>; down: boolean; restore(): void }
+interface ControlPlane {
+  calls: Array<{ path: string; op: string | null }>;
+  /** The idempotency key of each request, in order. */
+  keys: Array<string | null>;
+  down: boolean;
+  /** It applies the command, and the answer is lost on the way back (a reset after the body was sent). */
+  losesAnswers: boolean;
+  restore(): void;
+}
 
 /** The control plane in-process: its URL is answered by the real command endpoint, as the control-plane host. */
 function installControlPlane(): ControlPlane {
   const original = globalThis.fetch;
   let depth = 0;
-  const cp: ControlPlane = { calls: [], down: false, restore: () => { globalThis.fetch = original; } };
+  const cp: ControlPlane = { calls: [], keys: [], down: false, losesAnswers: false, restore: () => { globalThis.fetch = original; } };
   const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (!href.startsWith(CONTROL_PLANE_URL)) return original(input, init);
     let op: string | null = null;
-    try { op = JSON.parse(String(init?.body ?? '{}')).op ?? null; } catch { /* not JSON */ }
+    let key: string | null = null;
+    try { ({ op = null, idempotencyKey: key = null } = JSON.parse(String(init?.body ?? '{}'))); } catch { /* not JSON */ }
     cp.calls.push({ path: new URL(href).pathname, op });
+    cp.keys.push(key);
     // Unreachable: the connection is refused, so nothing was sent.
     if (cp.down) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
     depth++;
     setKernelHost('control-plane');
     try {
-      return await handleCommandRequest(new Request(href, init));
+      const res = await handleCommandRequest(new Request(href, init));
+      if (cp.losesAnswers) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
+      return res;
     } finally {
       if (--depth === 0) setKernelHost('web');
     }
@@ -143,6 +156,31 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
   });
 
+  test('a green head from the check_suite webhook → one observe_ci_green command; the control plane reads the live checks and records the CI reading, tagged control-plane', async () => {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/own-ci-green', files: { 'src/a.ts': 'export const a = 3;\n' } });
+    await w.handOn(pr);
+    const head = w.gh.pr(w.repo, pr.prNumber).headSha;
+    // Green on GitHub, its webhook not delivered: the door below is the only report of it.
+    w.gh.greenCi(w.repo, head, ['build', 'test']);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    const before = (await w.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const seen = await observeCiGreen(
+      { workspaceId: w.workspaceId, repoFullName: w.repo, prNumber: pr.prNumber, installationId: w.installationId, headSha: head, source: 'webhook:check_suite' },
+      { principal: systemPrincipal('system:webhook:check_suite') },
+    );
+
+    expect(seen).toMatchObject({ handled: true, result: { result: 'applied' } });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_ci_green' }]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toContain('CiObserved');
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
   test('in shadow nothing is submitted: the web host applies, and its rows say web', async () => {
     const { pr, head, userId } = await approvedPr('feat/shadow-merge');
     process.env.EXECUTION_MODE = 'shadow';
@@ -155,6 +193,72 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
     const written = await hostsSince(pr.deliveryId, before);
     expect(written.length).toBeGreaterThan(0);
     expect(written.every((t) => t.host === 'web')).toBe(true);
+  });
+});
+
+describe('AC-9: a review verdict and a fix claim are applied by the control plane', () => {
+  /** A PR handed on to review in shadow (the world's setup), then own mode for the act. */
+  async function inReview(branch: string) {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 4;\n' } });
+    await w.handOn(pr);
+    const head = w.gh.pr(w.repo, pr.prNumber).headSha;
+    const rv = await w.reviewer(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    return { pr, head, rv };
+  }
+  const reviewer = systemPrincipal('system:test-reviewer');
+
+  test('a reviewer\'s request-changes → one record_review_verdict command, then the fix\'s claim → one claim_fix command; both transitions tagged control-plane', async () => {
+    const { pr, head, rv } = await inReview('feat/own-verdict');
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const kv = await recordReviewVerdict({
+      workspaceId: w!.workspaceId, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+      verdict: 'request_changes', effectiveVerdict: 'request_changes', headSha: head, confidence: 0.9,
+    }, { principal: reviewer });
+
+    expect(kv).toMatchObject({ handled: true, toState: 'CHANGES_REQUESTED' });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'record_review_verdict' }]);
+    expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+
+    const [fix] = await q<{ id: string; workspace_id: string; delivery_id: string; delivery_role: string; context: Record<string, unknown> }>(
+      sql`SELECT id, workspace_id, delivery_id, delivery_role, context FROM tasks WHERE delivery_id = ${pr.deliveryId}::uuid AND delivery_role = 'fix' ORDER BY created_at DESC LIMIT 1`);
+    expect(fix).toBeDefined();
+    cp.calls.length = 0;
+    const decision = await claimFix(
+      { id: fix.id, workspaceId: fix.workspace_id, deliveryId: fix.delivery_id, deliveryRole: fix.delivery_role, context: fix.context },
+      { principal: reviewer },
+    );
+
+    expect(decision).toEqual({ action: 'proceed' });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'claim_fix' }]);
+    expect((await w!.delivery(pr)).state).toBe('FIXING');
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toEqual(expect.arrayContaining(['ReviewVerdictRecorded', 'FixClaimed']));
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a verdict named for another workspace fails closed: refused, never read as a release to legacy, and nothing is applied', async () => {
+    const { pr, head, rv } = await inReview('feat/own-verdict-other-ws');
+    const { workspaceId: other } = await seedWorkspace();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const err = await recordReviewVerdict({
+      workspaceId: other, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+      verdict: 'approve', effectiveVerdict: 'approve', headSha: head, confidence: 0.9,
+    }, { principal: reviewer }).catch((e: unknown) => e);
+
+    // The control plane's command threw (the PATCH's catch: it acts on nothing), not `handled: false`.
+    expect(err).toBeInstanceOf(Error);
+    expect(String((err as Error).message)).toContain('is not a delivery of workspace');
+    expect((await w!.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect((await w!.delivery(pr)).version).toBe(before);
+    expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
   });
 });
 
@@ -193,6 +297,226 @@ describe('AC-12: the control plane unreachable', () => {
     expect(w!.mergeCalls(pr)).toEqual([]);
     expect(await w!.delivery(pr)).toMatchObject({ state: 'APPROVED', version: before.version });
   });
+});
+
+/** Each test waits out real door budgets (the control plane down), more than once: slow CI runners need room. */
+const AC35_TIMEOUT_MS = 30_000;
+
+describe('AC-35: a door command the control plane never answered lands once it recovers, exactly once', () => {
+  /** A PR whose owner is still working, set up in shadow; then own mode for the act, with a short door budget. */
+  async function working(branch: string) {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 5;\n' } });
+    process.env.EXECUTION_MODE = 'own';
+    process.env.KERNEL_DOOR_BUDGET_MS = '800';
+    resetKernelModeCache();
+    return pr;
+  }
+  const runner = systemPrincipal('system:test-runner');
+  const ownerEnd = (pr: OpenedPr) => ({
+    task: { id: pr.ownerTaskId, workspaceId: w!.workspaceId, deliveryId: pr.deliveryId, deliveryRole: 'owner', context: null },
+    workerId: pr.workerId, status: 'completed' as const, localHeadSha: w!.gh.pr(w!.repo, pr.prNumber).headSha, commitCount: 1, source: 'runner',
+  });
+  const parked = async (key: string) =>
+    (await q<{ status: string; outcome: string | null; prior_unknown: boolean; attempt_count: number }>(sql`SELECT status, outcome, prior_unknown, attempt_count FROM workflow_command_outbox WHERE idempotency_key = ${key}`))[0];
+  const ledgerRows = async (key: string) => q<{ status: string; host: string }>(sql`SELECT status, host FROM workflow_commands WHERE idempotency_key = ${key}`);
+  const countOf = async (pr: OpenedPr, command: string) => (await w!.commands(pr)).filter((c) => c === command).length;
+  /** The floor's pass, scoped to this test's keys: the shared database holds other files' rows. */
+  const floorPass = (keys: string[], host: 'control-plane' | 'web') => {
+    const outbox = postgresCommandOutbox();
+    return drainParkedCommands({ host: () => host, outbox: { ...outbox, claimDue: async (n) => (await outbox.claimDue(n)).filter((r) => keys.includes(r.key)) } });
+  };
+  async function onControlPlane<T>(fn: () => Promise<T>): Promise<T> {
+    setKernelHost('control-plane');
+    try { return await fn(); } finally { setKernelHost('web'); }
+  }
+
+  test('an attempt end while the control plane is down is parked under its key; after it recovers the control plane\'s floor applies it once, and a repeat is answered from the ledger', async () => {
+    const pr = await working('feat/park-end');
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `attempt_ended:${crypto.randomUUID()}`;
+
+    const err = await attemptEnded(ownerEnd(pr), { principal: runner, idempotencyKey: key }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect((await w!.delivery(pr)).state).toBe('WORKING');
+    expect(await parked(key)).toMatchObject({ status: 'pending', prior_unknown: false });
+    expect(await ledgerRows(key)).toEqual([]);
+
+    // Recovered. The control plane's floor applies the row itself: the same reach check and ledger, no request.
+    cp.down = false;
+    cp.calls.length = 0;
+    const before = (await w!.delivery(pr)).version;
+    const s = await onControlPlane(() => floorPass([key], 'control-plane'));
+
+    expect(s).toMatchObject({ claimed: 1, done: 1, dead: 0 });
+    expect(cp.calls.filter((c) => c.op === 'attempt_ended')).toEqual([]);
+    expect((await w!.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect(await countOf(pr, 'AttemptEnded')).toBe(1);
+    expect((await hostsSince(pr.deliveryId, before)).filter((t) => t.host !== 'control-plane')).toEqual([]);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied' });
+    expect(await ledgerRows(key)).toEqual([{ status: 'done', host: 'control-plane' }]);
+
+    // Exactly once: another floor pass has nothing to do, and the door's own retry with the key is replayed.
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ claimed: 0 });
+    const again = await submitKernelCommand('attempt_ended', { ...ownerEnd(pr), workspaceId: w!.workspaceId }, { principal: runner, idempotencyKey: key });
+    expect(again.replayed).toBe(true);
+    expect(await countOf(pr, 'AttemptEnded')).toBe(1);
+  }, AC35_TIMEOUT_MS);
+
+  test('GitHub\'s one green while the control plane is down: the web host\'s floor re-submits it with the same key once it answers, and it is recorded once', async () => {
+    const pr = await working('feat/park-green');
+    await w!.handOn(pr);
+    const head = w!.gh.pr(w!.repo, pr.prNumber).headSha;
+    w!.gh.greenCi(w!.repo, head, ['build', 'test']);
+    cp = installControlPlane();
+    cp.down = true;
+    const green = { workspaceId: w!.workspaceId, repoFullName: w!.repo, prNumber: pr.prNumber, installationId: w!.installationId, headSha: head, source: 'webhook:check_suite' };
+    const key = `observe_ci_green:${crypto.randomUUID()}`;
+
+    const err = await observeCiGreen(green, { principal: systemPrincipal('system:webhook:check_suite'), idempotencyKey: key }).catch((e) => e);
+    expect(err.parked).toBe(true);
+
+    // Still down at the next pass: nothing lands, the row waits (its retry delay passes before the next one).
+    expect(await floorPass([key], 'web')).toMatchObject({ claimed: 1, retried: 1, done: 0 });
+    expect(await countOf(pr, 'CiObserved')).toBe(0);
+    await q(sql`UPDATE workflow_command_outbox SET not_before = now() WHERE idempotency_key = ${key}`);
+
+    cp.down = false;
+    cp.keys.length = 0;
+    cp.calls.length = 0;
+    expect(await floorPass([key], 'web')).toMatchObject({ claimed: 1, done: 1 });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_ci_green' }]);
+    expect(cp.keys.filter((k) => k?.startsWith('observe_ci_green'))).toEqual([key]);
+    expect(await countOf(pr, 'CiObserved')).toBe(1);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied', attempt_count: 2 });
+    expect(await floorPass([key], 'web')).toMatchObject({ claimed: 0 });
+    expect(await countOf(pr, 'CiObserved')).toBe(1);
+  }, AC35_TIMEOUT_MS);
+
+  test('applied there but the answer was lost (unknown): parked as unknown, and the ledger\'s word settles it without applying it twice', async () => {
+    const pr = await working('feat/park-unknown');
+    cp = installControlPlane();
+    cp.losesAnswers = true;
+    const key = `attempt_ended:${crypto.randomUUID()}`;
+
+    const err = await attemptEnded(ownerEnd(pr), { principal: runner, idempotencyKey: key }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('unknown');
+    expect(await parked(key)).toMatchObject({ status: 'pending', prior_unknown: true });
+    expect(await countOf(pr, 'AttemptEnded')).toBe(1);
+
+    cp.losesAnswers = false;
+    cp.calls.length = 0;
+    expect(await floorPass([key], 'web')).toMatchObject({ done: 1 });
+    // Settled from the ledger: nothing sent, nothing run here.
+    expect(cp.calls.filter((c) => c.op === 'attempt_ended')).toEqual([]);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'replayed:applied' });
+    expect(await countOf(pr, 'AttemptEnded')).toBe(1);
+  }, AC35_TIMEOUT_MS);
+
+  /** A PR handed on to review, its reviewer filed (shadow setup), then own mode with a short door budget. */
+  async function reviewing(branch: string) {
+    const pr = await working(branch);
+    process.env.EXECUTION_MODE = 'shadow';
+    await w!.handOn(pr);
+    const rv = await w!.reviewer(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    return { pr, rv, head: w!.gh.pr(w!.repo, pr.prNumber).headSha };
+  }
+  const verdictOf = (pr: OpenedPr, rv: { id: string; context: Record<string, unknown> }, head: string) => ({
+    workspaceId: w!.workspaceId, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+    verdict: 'request_changes', effectiveVerdict: 'request_changes', headSha: head, confidence: 0.9,
+  });
+
+  test('a reviewer\'s verdict while the control plane is down is parked; after it recovers it lands once, and the fix it asks for is filed once', async () => {
+    const { pr, rv, head } = await reviewing('feat/park-verdict');
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `record_review_verdict:${crypto.randomUUID()}`;
+
+    const err = await recordReviewVerdict(verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect((await w!.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(0);
+
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ claimed: 1, done: 1, dead: 0 });
+    expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied' });
+    const fixes = await w!.tasksOf(pr, 'fix');
+    expect(fixes).toHaveLength(1);
+
+    // Exactly once, whoever asks next: the floor again, or the web host's own retry with the key.
+    expect(await floorPass([key], 'web')).toMatchObject({ claimed: 0 });
+    const again = await submitKernelCommand('record_review_verdict', verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key });
+    expect(again.replayed).toBe(true);
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
+    expect(await w!.tasksOf(pr, 'fix')).toHaveLength(1);
+  }, AC35_TIMEOUT_MS);
+
+  test('a verdict re-sent after a newer head is refused as stale by the reducer and settled, never applied', async () => {
+    const { pr, rv, head } = await reviewing('feat/park-stale-verdict');
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `record_review_verdict:${crypto.randomUUID()}`;
+    await recordReviewVerdict(verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key }).catch(() => null);
+    expect(await parked(key)).toMatchObject({ status: 'pending' });
+
+    // The owner pushes again while the verdict waits.
+    w!.gh.push(w!.repo, pr.branch, { 'src/a.ts': 'export const a = 7;\n' }, { message: 'newer' });
+    process.env.EXECUTION_MODE = 'shadow';
+    await w!.deliver();
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    const moved = await w!.delivery(pr);
+    expect(moved.currentHeadSha).not.toBe(head);
+
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ done: 1, dead: 0 });
+    const row = await parked(key);
+    expect(row.status).toBe('done');
+    expect(['stale', 'rejected']).toContain(row.outcome);
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(0);
+    expect((await w!.delivery(pr)).state).not.toBe('CHANGES_REQUESTED');
+    expect(await w!.tasksOf(pr, 'fix')).toEqual([]);
+  }, AC35_TIMEOUT_MS);
+
+  test('an old green re-sent after a newer head is answered as for another head and settled, never recorded for the new one', async () => {
+    const pr = await working('feat/park-stale-green');
+    await w!.handOn(pr);
+    const oldHead = w!.gh.pr(w!.repo, pr.prNumber).headSha;
+    w!.gh.greenCi(w!.repo, oldHead, ['build', 'test']);
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `observe_ci_green:${crypto.randomUUID()}`;
+    await observeCiGreen({ workspaceId: w!.workspaceId, repoFullName: w!.repo, prNumber: pr.prNumber, installationId: w!.installationId, headSha: oldHead, source: 'webhook:check_suite' },
+      { principal: systemPrincipal('system:webhook:check_suite'), idempotencyKey: key }).catch(() => null);
+    expect(await parked(key)).toMatchObject({ status: 'pending' });
+
+    // A newer head arrives while it waits.
+    w!.gh.push(w!.repo, pr.branch, { 'src/a.ts': 'export const a = 6;\n' }, { message: 'newer' });
+    process.env.EXECUTION_MODE = 'shadow';
+    await w!.deliver();
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    const newHead = w!.gh.pr(w!.repo, pr.prNumber).headSha;
+    expect((await w!.delivery(pr)).currentHeadSha).toBe(newHead);
+    const before = await countOf(pr, 'CiObserved');
+
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ done: 1, dead: 0 });
+    expect(await countOf(pr, 'CiObserved')).toBe(before);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'answered' });
+  }, AC35_TIMEOUT_MS);
 });
 
 describe('AC-10: the drain and the floor on the control plane, with the web app absent', () => {

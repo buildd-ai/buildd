@@ -1,3 +1,4 @@
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
@@ -41,7 +42,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -77,7 +78,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+// T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -3060,6 +3063,12 @@ export async function PATCH(
       accountId: account.id,
       teamId,
       workspaceId: taskForBudget?.workspaceId,
+      // Which Claude login this run used, as its runner reports it (newer
+      // runners): a machine login walls only that runner.
+      loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
+      // The login's identity (a one-way hash), so the wall holds every runner
+      // on the same login, not only this one.
+      loginId: parseClaudeLoginId(body.claudeLoginId),
     });
     const runnerSeatWall = seatWall.seatKey;
     if (runnerSeatWall) {
@@ -4543,7 +4552,7 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         // A kernel round that broke its contract has no verdict to act on (T27 below).
         if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
-        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput, kernelPrincipalOf({ account }));
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
@@ -4578,7 +4587,7 @@ export async function PATCH(
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
           ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
-        });
+        }, { principal: kernelPrincipalOf({ account }) });
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -5573,6 +5582,8 @@ async function handleReviewerOutcomeIfNeeded(
   reviewerTaskId: string,
   workspaceId: string,
   structuredOutput: unknown,
+  /** Who reported the verdict: the principal its kernel command is submitted for (AC-9). */
+  principal: KernelPrincipal | null,
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, reviewerTaskId)),
@@ -5670,7 +5681,8 @@ async function handleReviewerOutcomeIfNeeded(
   let serverOverrideReason: string | null = null;
   let serverOverrideSource: 'files' | 'confidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
-    let currentFiles: Array<{ filename: string }> = [];
+    // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
+    let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
     try {
       const { githubApi } = await import('@/lib/github');
@@ -5691,11 +5703,11 @@ async function handleReviewerOutcomeIfNeeded(
         repoFullName,
         prNumber,
         headSha,
-        files: currentFiles as never,
+        files: (currentFiles ?? []) as never,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
-      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // Leave currentFiles null: the helper treats an unreadable file list as
       // grounds to escalate, so a transient GitHub failure cannot grant a merge.
       console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
     }
@@ -5802,13 +5814,14 @@ async function handleReviewerOutcomeIfNeeded(
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
     const kv = await recordReviewVerdict({
+      workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
       output,
-    }).catch((err) => {
+    }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
       return null;
@@ -5838,8 +5851,8 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
-      }).catch((err: unknown) => {
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+      }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
       });
@@ -6228,6 +6241,8 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
       // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
       // partial unique index so a second reviewer completion on the same headSha is a
       // no-op. A new headSha after the fix push starts a fresh cycle (new row).
@@ -6272,7 +6287,7 @@ async function handleReviewerOutcomeIfNeeded(
             workerBranch,
             ...lineageStamp(originalTask, [prNumber]),
           },
-          pathManifest: originalTask.pathManifest,
+          pathManifest: repairPathManifest(originalTask.pathManifest as string[] | null, repairFiles),
           release: 'false',
           priority: 8,
           status: 'pending',

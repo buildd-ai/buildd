@@ -90,7 +90,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-10-15
   For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
-- [Release Flow](./release-flow.md) · @max — verified 2026-10-15
+- [Release Flow](./release-flow.md) · @max — verified 2026-10-17
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
 ### runners (14)
@@ -230,7 +230,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Context: a runner already uses its machine's own Claude login when the claim brings no credential (`host-seat.ts`), and its own `codex login` for Codex tasks (`decideCodexSeat`).
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-10-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-14
+- [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-17
   Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-13
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.

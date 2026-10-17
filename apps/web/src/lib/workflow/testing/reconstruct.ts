@@ -287,6 +287,15 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         ...(liveChecksOf(E.liveChecks) ? { liveChecks: liveChecksOf(E.liveChecks) } : {}),
       });
     }
+    case 'CiObserved': {
+      // cifact:{delivery}:{head}:{verdict}@v{n}
+      const parts = keyParts(t.idempotencyKey, 'cifact');
+      const h = parts?.[1];
+      const verdict = str(E.verdict);
+      const checks = liveChecksOf(E.liveChecks);
+      if (!h || (verdict !== 'red' && verdict !== 'green' && verdict !== 'running') || !checks) return miss('no head, verdict or live read');
+      return ok({ type: 'CiObserved', actor, headSha: h, verdict, liveChecks: checks, ...(E.allPassing === true ? { allPassing: true } : {}) });
+    }
     case 'ConflictObserved': {
       const parts = keyParts(t.idempotencyKey, 'conflict');
       const h = parts?.[1];
@@ -328,11 +337,12 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
     case 'LandingRequested': {
       const parts = keyParts(t.idempotencyKey, 'merge');
       const h = parts && parts.length >= 3 ? parts[parts.length - 2] : null;
-      if (!h || !E.door || !E.rails) return miss('no head, door or rails');
+      if (!h || !E.door) return miss('no head or door');
       const call = fx.find((e) => e.kind === 'merge_call');
       return ok({
         type: 'LandingRequested', actor, door: String(E.door), headSha: h, live: synthLive(view, h),
-        rails: E.rails as { passed: boolean },
+        // Recordings from before S3b carry the door's reading; later ones carry none.
+        ...(E.rails ? { rails: E.rails as { passed: boolean } } : {}),
         override: B ? { reason: str(B.reason) ?? '', ...(B.kinds ? { kinds: B.kinds as never } : {}), ...(B.grantedBy ? { grantedBy: String(B.grantedBy) } : {}) } : null,
         ...(call?.payload.mergeMethod ? { mergeMethod: call.payload.mergeMethod as 'merge' | 'squash' | 'rebase' } : {}),
       });

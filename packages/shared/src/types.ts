@@ -1599,6 +1599,13 @@ export interface ClaimTasksInput {
    */
   requestedByPerson?: boolean;
   /**
+   * Which Claude login this runner's agents run on, when it is the machine's
+   * own `claude login`: a one-way hash of the CLI profile's account id (32 hex
+   * characters, never a credential). A limit another runner on the same login
+   * hit holds this runner too (apps/web/src/lib/runner-seat-wall.ts).
+   */
+  claudeLoginId?: string;
+  /**
    * Protocol features this runner build implements, so the server does not send
    * a payload field an older runner would silently ignore.
    */
@@ -1829,6 +1836,17 @@ export interface ClaimDiagnostics {
      * live revalidation could not run and the claim was rolled back.
      */
     fix_not_needed?: number;
+    /**
+     * Workflow-kernel fix claim rolled back to pending because the kernel could not answer: the
+     * control plane did not respond in time, or the claim request's control-plane budget was spent.
+     * Retried on the next poll.
+     */
+    kernel_unavailable?: number;
+    /**
+     * Workflow-kernel fix claim rolled back to pending because the control plane refused it (auth, the
+     * claiming account's reach, a malformed input): not an outage, so a retry gets the same answer.
+     */
+    kernel_refused?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll

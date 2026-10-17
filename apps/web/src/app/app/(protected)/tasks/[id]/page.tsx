@@ -91,7 +91,7 @@ import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
-import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_TASK_EXTRAS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
@@ -258,7 +258,7 @@ export default async function TaskDetailPage({
           with: {
             tasks: {
               columns: MISSION_CARD_TASK_COLUMNS,
-                extras: MISSION_TASK_REFRESH_EXTRAS,
+              extras: MISSION_CARD_TASK_EXTRAS,
               with: { workers: MISSION_CARD_WORKERS_WITH },
             },
             schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
@@ -396,7 +396,7 @@ export default async function TaskDetailPage({
     prWorker?.prNumber
       ? db.query.tasks.findMany({
           where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
-          columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
+          columns: { id: true, title: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
@@ -1016,7 +1016,7 @@ export default async function TaskDetailPage({
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
                 // One line each: the runner, then its attempt number. "(retry)"
-                // is what "attempt 2" already says, and it wrapped on its own.
+                // is what "CI fix 1" already says, and it wrapped on its own.
                 <li key={w.id} className="flex min-w-0 min-h-11 md:min-h-0 items-center md:items-baseline gap-2">
                   <span className="min-w-0 truncate">{runnerLabel(w)}</span>
                   <span className="shrink-0 whitespace-nowrap text-text-muted">attempt {i + 1}</span>
@@ -1867,6 +1867,12 @@ export default async function TaskDetailPage({
             hideAction: !!shippedView,
             statedAbove: prStatedAbove,
             openAttempt,
+            repairLinks: {
+              parent: deliverableLink && subject.kind === 'fix'
+                ? { taskId: deliverableLink.taskId, title: deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null }
+                : null,
+              fixes: ciAttemptTasks.map(t => ({ taskId: t.id, title: t.title ? displayTaskTitle(t.title) : null })),
+            },
             // AC-24: the delivery's rounds, the same line the checks list and get_pr print.
             reviewRounds: checksSection?.checks.review ?? null,
           };

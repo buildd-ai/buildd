@@ -166,9 +166,14 @@ const realDispatch = await import('../../src/lib/dispatch-authority');
 mock.module('../../src/lib/dispatch-authority', () => ({ ...realDispatch, announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 const realScope = await import('../../src/lib/pr-scope-reconcile-trigger');
 mock.module('../../src/lib/pr-scope-reconcile-trigger', () => ({ ...realScope, schedulePrScopeReconcile: () => {} }));
-// Supersession reads find the installation for a PR's repo; every repo here is the fake one.
+// Supersession reads find the installation for a PR's repo; every repo here is the fake one,
+// under the workspace's own team's installation.
 const realInstallation = await import('../../src/lib/workspace-installation');
-mock.module('../../src/lib/workspace-installation', () => ({ ...realInstallation, installationIdForRepo: async () => 1 }));
+mock.module('../../src/lib/workspace-installation', () => ({
+  ...realInstallation,
+  installationIdForRepo: async () => 1,
+  teamInstallationIdForRepo: async () => ({ installationId: 1 }),
+}));
 const realReviewRequest = await import('../../src/lib/pr-review-request');
 mock.module('../../src/lib/pr-review-request', () => ({ ...realReviewRequest, listWorkspaceRoles: async () => [{ slug: 'reviewer' }] }));
 const realAutoMerge = await import('../../src/lib/auto-merge');
@@ -940,8 +945,8 @@ describe('S9–S15', () => {
     expect(railsCalls).toEqual([{ headSha: 'H1', door: 'auto_merge' }]);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
     const t = (await transitions(o.deliveryId)).filter((x) => x.command === 'LandingRequested').at(-1)!;
-    // The door still sends a passing reading for one release (deploy skew); it decided nothing: the merge effect refused.
-    expect((t.evidence as Record<string, unknown>).rails).toEqual({ passed: true });
+    // The door sends no rails reading: the merge effect decided, and refused.
+    expect((t.evidence as Record<string, unknown>).rails).toBeUndefined();
     railsReading = { passed: true, reasons: [] };
     expect(await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps))
       .toMatchObject({ merged: true });

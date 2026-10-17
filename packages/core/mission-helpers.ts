@@ -884,6 +884,18 @@ export function isDeliverableTask(task: {
  */
 export type DeliverableRole = 'build' | 'verification' | 'repair' | 'maintenance';
 
+/**
+ * Every `tasks.context` key `deliverableRole` reads (with `isTrunkRefreshTask`).
+ * A list that cannot afford whole context blobs (the mission stages `buildd top`
+ * polls) projects exactly these: an object marker only by whether it is an
+ * object, a value as itself. A new key read below must be added here;
+ * __tests__/deliverable-role.test.ts fails otherwise.
+ */
+export const DELIVERABLE_ROLE_CONTEXT_KEYS = {
+  objectMarkers: ['finalVerification', 'surfaceFix', 'specRepair'],
+  values: ['requireMergeCommit', 'refreshTrunk'],
+} as const;
+
 
 export function deliverableRole(task: { title?: string | null; roleSlug?: string | null; context?: unknown }): DeliverableRole {
   const title = task.title ?? '';

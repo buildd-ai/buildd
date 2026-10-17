@@ -65,7 +65,7 @@ describe('the missions list folds delivered missions (state)', () => {
     expect(rows.map(r => r.title)).toEqual([
       'Pair on the parser', 'Ship the importer', 'Docs refresh', 'Delivered this week',
       'Billing cleanup', 'Delivered this week',
-      '(no mission)',
+      'Other tasks',
     ]);
     const folds = rows.filter(r => r.fold);
     expect(folds.map(f => [f.team, f.fold!.count, f.fold!.open])).toEqual([['Acme', 4, false], ['Initech', 1, false]]);
@@ -94,7 +94,7 @@ describe('the missions list folds delivered missions (state)', () => {
   test('`/` finds a delivered mission by name without unfolding; open missions are filtered the same way', () => {
     const s = { ...teamed(), filter: 'billing' };
     const rows = missionList(s, NOW);
-    expect(rows.map(r => r.title)).toEqual(['Billing export', 'Billing cleanup', '(no mission)']);
+    expect(rows.map(r => r.title)).toEqual(['Billing export', 'Billing cleanup', 'Other tasks']);
     expect(rows.find(r => r.title === 'Billing export')!.deliveredAt).toBe(NOW - 2 * DAY);
     expect(s.unfolded).toEqual([]);
   });
@@ -169,7 +169,7 @@ describe('frames (R-7, R-21, AC-10)', () => {
       for (const title of ['Retire', 'Billing ex', 'Search', 'Onboard']) expect(t).toContain(title);
       const day = (ago: number) => { const d = new Date(NOW - ago * DAY); return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]} ${d.getDate()}`; };
       // The day is on the mission's own row, beside its title.
-      const retire = lines.map(l => stripAnsi(l)).find(l => l.includes('Retire'))!;
+      const retire = lines.map(l => stripAnsi(l)).find(l => l.split('│')[0].includes('Retire'))!;
       expect(retire.split('│')[0]).toContain(day(1));
       expect(t).toContain(day(6));
       expect(t).toMatchSnapshot();
@@ -204,9 +204,16 @@ describe('frames (R-7, R-21, AC-10)', () => {
     expect(before(done, 'Invoice')).not.toBe(before(open, 'Ship'));
   });
 
-  test('the right pane on the fold row says what it holds and how to open it', () => {
-    const t = text(frame(onMissions(teamed(), 'fold:Acme'), 80, 24));
-    expect(t).toContain('Delivered this week · 4');
-    expect(t).toMatch(/⏎ lists them/);
+  test('the right pane on the fold row lists the deliveries themselves, newest first, each with its day', () => {
+    const lines = frame(onMissions(teamed(), 'fold:Acme'), 80, 24).map(l => stripAnsi(l));
+    const t = lines.join('\n');
+    expect(t).toContain('Delivered · 4');
+    expect(t).toContain('│ 4 delivered in the last 7 days');
+    // No sentence about the keys: the work is shown.
+    expect(t).not.toMatch(/⏎ lists them|Delivered in the last 7 days\./);
+    const right = lines.map(l => l.split('│')[1] ?? '');
+    const retire = right.findIndex(l => l.includes('Retire'));
+    expect(retire).toBeGreaterThan(-1);
+    expect(right[retire]).toMatch(/^ [A-Z][a-z]{2} \d{1,2} +Retire/);
   });
 });

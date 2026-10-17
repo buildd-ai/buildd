@@ -32,6 +32,7 @@ import {
   COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
+import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
 
 export type { KernelOp, KernelOps, KernelPrincipal, DeliveryVersion } from './command-api';
 
@@ -47,6 +48,8 @@ export const CONTROL_PLANE_URL = 'https://control-plane.buildd.dev';
 export class ControlPlaneUnavailableError extends Error {
   readonly code = 'control_plane_unavailable';
   readonly retryable = true;
+  /** Set by a door that kept the command for the floor to re-submit (command-outbox.ts): it is not lost. */
+  parked = false;
   constructor(readonly why: string, readonly outcome: 'not_applied' | 'unknown' = 'not_applied', readonly idempotencyKey: string | null = null) {
     super(outcome === 'unknown'
       ? `The control plane did not confirm the outcome (${why}); it may have been applied. Retry with the same idempotency key${idempotencyKey ? ` (${idempotencyKey})` : ''} to get its answer.`
@@ -93,6 +96,7 @@ export function doorErrorAnswer(err: DoorError): { status: number; body: Record<
       headers: { ...headers, 'Retry-After': '5' },
       body: {
         error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
+        ...(err.parked ? { parked: true } : {}),
         // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
         ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
       },
@@ -127,6 +131,8 @@ export interface ClientDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   newKey?: () => string;
+  /** Keeps an unanswered door command for the floor (command-outbox.ts). */
+  park?: CommandOutbox['park'];
 }
 
 // ── The mode ────────────────────────────────────────────────────────────────
@@ -413,7 +419,7 @@ async function submitUntil<K extends KernelOp>(
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
       throw new KernelCommandFailedError(String(answer.error ?? 'unknown error'), opts.idempotencyKey);
     }
-    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable')) {
+    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable' || answer?.code === 'installation_unavailable')) {
       // Refused before the claim: this request ran nothing (earlier ones may have; mayHaveApplied keeps that).
       // One more try, then the answer: a database that is down now is not back within a door's budget.
       why = `answered 503 ${String(answer.code)}`;
@@ -495,6 +501,25 @@ export const DOOR_BUDGET_MS = 20_000;
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+  try {
+    return await submitDoor(op, input, c, idempotencyKey);
+  } catch (err) {
+    // Unanswered for the whole budget: an op nothing else re-sends is kept, under this same key, for the
+    // floor to re-submit until it is answered (command-outbox.ts). The door still answers unavailable.
+    if (err instanceof ControlPlaneUnavailableError && c.principal && shouldPark(op)) {
+      err.parked = await (c.deps?.park ?? ((p) => postgresCommandOutbox().park(p)))({
+        key: idempotencyKey, op, input, principal: c.principal, priorUnknown: err.outcome === 'unknown', why: err.why,
+      }).catch((parkErr: unknown) => {
+        console.error(`[workflow] ${op} ${idempotencyKey}: the control plane did not answer and the command could not be parked; it is lost until re-sent:`, parkErr);
+        return false;
+      });
+      if (err.parked) console.warn(`[workflow] ${op} ${idempotencyKey}: the control plane did not answer (${err.why}); parked, the kernel floor re-submits it.`);
+    }
+    throw err;
+  }
+}
+
+async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, idempotencyKey: string): Promise<KernelOps[K]['result']> {
   // Never read off the input's actor: null (no caller) stays null and is refused before sending.
   const principal = c.principal;
   const now = c.deps?.now ?? Date.now;
@@ -525,6 +550,82 @@ export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: Doo
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
+/**
+ * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
+ * (`unknown op "<op>"`), which a control plane on an older build answers before it reads anything.
+ * Nothing was applied there. Any other refusal (auth, reach, a malformed input) is not this.
+ */
+export function refusedAsUnknownOp(err: unknown, op: KernelOp): boolean {
+  if (!(err instanceof KernelCommandRefusedError) || err.status !== 400) return false;
+  const { code, error } = err.body;
+  return code === 'bad_request' && typeof error === 'string' && error.startsWith(`unknown op ${JSON.stringify(op)}`);
+}
+
+/**
+ * A door for an op newer than the control plane may be (release skew). Vercel and the control-plane
+ * Worker deploy separately, so for a few minutes the web host can submit an op to a control plane that
+ * predates it. That control plane refuses it as unknown and applies nothing, and the op has no other
+ * backstop. Only then the web host applies it itself, as it does in shadow, and says so loudly. Every
+ * other refusal stays a refusal.
+ */
+async function doorOrHereOnSkew<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, what: string): Promise<KernelOps[K]['result']> {
+  try {
+    return await door(op, input, c);
+  } catch (err) {
+    if (!refusedAsUnknownOp(err, op)) throw err;
+    console.error(`[workflow] SKEW: the control plane does not know ${op} (an older build); applying ${what} on the ${(c.deps?.host ?? kernelHost)()} host instead. This should stop once the control plane is on this release.`);
+    return (c.deps?.run ?? runKernelOp)(op, input);
+  }
+}
+
+/**
+ * T4 from the web host: the attempt's end, applied where the kernel is hosted (AC-9). A repair's or a
+ * review's end has no other backstop, so during release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_ended']['result']> {
+  return doorOrHereOnSkew('attempt_ended', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s attempt end`);
+}
+
+/**
+ * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
+ * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it
+ * is applied here, so a red PR is never left without its repair (`doorOrHereOnSkew`).
+ */
+export async function observeCiFailure(p: KernelOps['observe_ci_failure']['input'], c: DoorCall): Promise<KernelOps['observe_ci_failure']['result']> {
+  return doorOrHereOnSkew('observe_ci_failure', p, c, `the CI failure on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
+
+/**
+ * A green head from the check_suite success webhook: CiGreenObserved ends a CI repair bound to it, and
+ * outside a repair it is recorded as a CiObserved reading; applied where the kernel is hosted (AC-9).
+ * GitHub sends the green once, so during release skew it is applied here (`doorOrHereOnSkew`) rather
+ * than leave a repair waiting on a green nobody records.
+ */
+export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], c: DoorCall): Promise<KernelOps['observe_ci_green']['result']> {
+  return doorOrHereOnSkew('observe_ci_green', p, c, `the green CI on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
+
+/**
+ * T6 from the worker PATCH: a kernel review round's verdict, applied where the kernel is hosted (AC-9).
+ * The runner reports a verdict once, so during release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function recordReviewVerdict(p: KernelOps['record_review_verdict']['input'], c: DoorCall): Promise<KernelOps['record_review_verdict']['result']> {
+  return doorOrHereOnSkew('record_review_verdict', p, c, `reviewer ${p.reviewerTask.id}'s verdict`);
+}
+
+/** 00d288fd from the worker PATCH: a verdict from outside the kernel's rounds, adopted where the kernel is hosted (AC-9). */
+export async function adoptReviewVerdict(p: KernelOps['adopt_review_verdict']['input'], c: DoorCall): Promise<KernelOps['adopt_review_verdict']['result']> {
+  return doorOrHereOnSkew('adopt_review_verdict', p, c, `reviewer ${p.reviewerTaskId}'s verdict on delivery ${p.deliveryId}`);
+}
+
+/**
+ * T9 from the claim route: a fix claim, revalidated and applied where the kernel is hosted (AC-9). On the
+ * claim's hot path it is one request in place of the seam's own reads, never one more. During release
+ * skew it is applied here, so a claim is never held up by an older control plane.
+ */
+export async function claimFix(task: KernelOps['claim_fix']['input']['task'], c: DoorCall): Promise<KernelOps['claim_fix']['result']> {
+  return doorOrHereOnSkew('claim_fix', { task, workspaceId: task.workspaceId }, c, `fix task ${task.id}'s claim`);
+}
 
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {

@@ -546,6 +546,8 @@ mock.module('@/lib/runner-seat-wall', () => ({
   resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
   runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
   isMachineLoginWallError: () => true,
+  parseRunLoginUsed: (v: unknown) => (v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null),
+  parseClaudeLoginId: (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null),
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -736,11 +738,11 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 // The workflow kernel seam (lib/workflow/seam.ts) has its own real-Postgres
 // suite (apps/web/tests/db/workflow-seam.test.ts). Here: that the route calls
 // it at the right points and that the legacy write does not run beside it.
-const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
+const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
-const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
-const mockAdoptReviewVerdict = mock(async (_p: any): Promise<any> => ({ result: 'applied' }));
+const mockRecordReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
+const mockAdoptReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ result: 'applied' }));
 const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
@@ -748,14 +750,18 @@ const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
 }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+// T6 too (recorded or adopted): the verdict is the kernel's door, not the seam's.
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict }));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
-  recordReviewVerdict: mockRecordReviewVerdict,
-  adoptReviewVerdict: mockAdoptReviewVerdict,
+  recordReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s recordReviewVerdict, not the kernel client\'s'); }),
+  adoptReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s adoptReviewVerdict, not the kernel client\'s'); }),
   noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
   fixedElsewhereOf: (o: any) => (o?.fixedElsewhere?.findingIds?.length ? o.fixedElsewhere : null),
   isKernelReviewRound: mockIsKernelReviewRound,
@@ -3921,6 +3927,8 @@ describe('PATCH /api/workers/[id]', () => {
         task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
         workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
       });
+      // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
+      expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
     });
 
     it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
@@ -7661,6 +7669,26 @@ describe('PATCH /api/workers/[id]', () => {
         expect(wakeCausesFor('task-1')).toContain('task.requeued');
       });
 
+      it("passes the run's reported login identity to the decision, and drops a malformed one", async () => {
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginUsed: 'machine_login', claudeLoginId: 'a'.repeat(32) },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          loginUsed: 'machine_login', loginId: 'a'.repeat(32),
+        }));
+
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginId: 'not-a-hash' },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenLastCalledWith(expect.objectContaining({ loginId: null }));
+      });
+
       it('keeps the account-wide wall when the login identity is unknown', async () => {
         const { taskSets } = setup();
         // default mock: seatKey null
@@ -9119,8 +9147,10 @@ describe('PATCH /api/workers/[id]', () => {
         expect(res.status).toBe(200);
         expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
         expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({
-          reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
+          workspaceId: 'ws-1', reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
         });
+        // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
+        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
         expect(mockLandPr).not.toHaveBeenCalled();
@@ -9156,6 +9186,21 @@ describe('PATCH /api/workers/[id]', () => {
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockLandPr.mock.calls.length + mockTryAutoMergeWorkerPr.mock.calls.length).toBeGreaterThan(0);
+      });
+
+      it('fails closed: a kernel round naming another workspace\'s delivery is refused, and the PATCH posts no review and merges nothing', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        // What the door raises when the seam's lookup throws DeliveryWorkspaceMismatchError there.
+        mockRecordReviewVerdict.mockRejectedValue(new Error('delivery delivery-1 is not a delivery of workspace ws-1'));
+        mockKernelDeliveryForPr.mockClear();
+        mockAdoptReviewVerdict.mockClear();
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        // Not read as a release to legacy: the legacy authority lookup and adoption never run.
+        expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
+        expect(mockAdoptReviewVerdict).not.toHaveBeenCalled();
       });
 
       it('a delivery released to legacy by the kill switch falls back to the legacy verdict path', async () => {
@@ -9401,7 +9446,8 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       // Not dropped: the kernel keeps it as the head's review (applied when the owner ends).
       expect(mockAdoptReviewVerdict).toHaveBeenCalledTimes(1);
-      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-9', verdict: 'approve' });
+      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', deliveryId: 'delivery-9', verdict: 'approve' });
+      expect(mockAdoptReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
     });
 
     it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {
