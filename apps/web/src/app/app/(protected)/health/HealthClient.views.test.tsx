@@ -31,6 +31,7 @@ const runner = (over: Partial<RunnerHeartbeat> = {}): RunnerHeartbeat => ({
   sandboxProbeAt: ago(HOUR),
   mountAllowlistEnforced: true,
   isolation: null,
+  shared: true,
   ...over,
 });
 
