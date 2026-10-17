@@ -1062,7 +1062,8 @@ describe('escalateConflictExhaustion', () => {
     const call = mockNotify.mock.calls[0][0] as any;
     expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
-    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.urlTitle).toContain(`PR #${PR_NUMBER}`);
+    expect(call.title).not.toContain(`#${PR_NUMBER}`);
     expect(call.message).toContain('feat: add dark mode');
   });
 
@@ -1154,7 +1155,8 @@ describe('escalateReviewerExhaustion', () => {
     const call = mockNotify.mock.calls[0][0] as any;
     expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
-    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.urlTitle).toContain(`PR #${PR_NUMBER}`);
+    expect(call.title).not.toContain(`#${PR_NUMBER}`);
     expect(call.message).toContain('feat: add search');
   });
 
@@ -1251,7 +1253,8 @@ describe('escalateReviewContractFailure', () => {
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const notifyCall = mockNotify.mock.calls[0][0] as any;
     expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
-    expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
+    expect(notifyCall.urlTitle).toContain(`PR #${PR_NUMBER}`);
+    expect(notifyCall.title).not.toContain(`#${PR_NUMBER}`);
     expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });
 
