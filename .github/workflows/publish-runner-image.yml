@@ -1,0 +1,256 @@
+name: Publish runner image
+
+# Builds the runner's --once image (apps/runner/Dockerfile.once, linux/amd64)
+# for every release and pushes it to GHCR as a public package:
+#
+#   ghcr.io/buildd-ai/runner-once:v<version>   one per release, never moved
+#   ghcr.io/buildd-ai/runner-once:latest       the highest v* tag published
+#
+# Why: the image was only ever built from source, on whichever machine needed
+# it (wrangler builds it on every Cloudflare deploy; a Docker host builds it by
+# hand). A prebuilt, versioned image gives every consumer the exact runner a
+# release shipped, pullable by tag or digest, without the repo or a 10-minute
+# amd64 build. How Cloudflare consumes it is decided separately; wrangler.jsonc
+# still builds from the Dockerfile.
+#
+# Trigger. Tag Release (release-tag.yml) tags every merge to main, but it
+# pushes the tag with GITHUB_TOKEN, and a push made with GITHUB_TOKEN starts no
+# workflow: `on: push: tags` never fires for it, and neither does `release:`
+# for the release it creates. `workflow_run` would fire, but the run it hands
+# over describes the pull_request event, not the tag, so this side would have
+# to guess which version was tagged. workflow_dispatch is the one event
+# GITHUB_TOKEN may start, so Tag Release dispatches this workflow on main with
+# `tag=v<version>` right after tagging. The workflow file comes from main and
+# the image is built from the tag.
+#
+#   push: tags        a tag pushed by a person (`scripts/release.sh --tag`)
+#   workflow_dispatch `tag` set: publish that tag (Tag Release, or by hand to
+#                     backfill a missed one); main only, because a branch's
+#                     copy of this file must not write the release tags.
+#                     `tag` empty: build and smoke the checked-out ref, push
+#                     nothing.
+#   pull_request      the same dry run, when the image's inputs change.
+#
+# Before anything is pushed: the tag must be vX.Y.Z, apps/runner/package.json
+# at the tag must carry that version, and apps/runner/scripts/once-smoke.sh
+# must pass against the built image. Any of those failing pushes nothing.
+# `:latest` only moves when the tag is the highest v* tag on origin, so a
+# backfill of an old release cannot roll it back.
+#
+# Public. GHCR creates a new package private, and there is no API to change a
+# package's visibility. One-time owner step after the first publish:
+# github.com/orgs/buildd-ai/packages/container/runner-once/settings →
+# "Change visibility" → Public. Every run checks an anonymous pull and warns
+# (in the log and the job summary) while the package is still private.
+# docs/runner-container.md, "Prebuilt image", is the consumer side.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (vX.Y.Z). Run on main. Empty = build and smoke only, push nothing.'
+        type: string
+        default: ''
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'apps/runner/Dockerfile.once'
+      - 'apps/runner/scripts/buildd-once.sh'
+      - 'apps/runner/scripts/once-smoke.sh'
+      - '.github/workflows/publish-runner-image.yml'
+
+concurrency:
+  # A dispatch for vX.Y.Z and a push of that tag share one group.
+  group: publish-runner-image-${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/buildd-ai/runner-once
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      # No `${{ }}` in the script: scripts/publish-runner-image-workflow.test.ts
+      # runs it verbatim.
+      - name: Resolve what to publish
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG=""
+          if [ "$EVENT_NAME" = push ] && [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ -n "${INPUT_TAG:-}" ]; then
+            if [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+              echo "::error::Publishing ${INPUT_TAG} must be dispatched on main, not ${GITHUB_REF:-this ref}. A branch's copy of this workflow does not write the release tags; dispatch without a tag for a dry run."
+              exit 1
+            fi
+            TAG="$INPUT_TAG"
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "::notice::Dry run: building and smoking ${GITHUB_REF:-this ref}, pushing nothing."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${TAG}' is not a release tag (vX.Y.Z); nothing to publish."
+            exit 1
+          fi
+          echo "::notice::Publishing ${TAG}."
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  dry-run:
+    needs: plan
+    if: needs.plan.outputs.publish == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        env:
+          SOURCE_REPO: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 -f apps/runner/Dockerfile.once \
+            --label "org.opencontainers.image.source=$SOURCE_REPO" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.version=dry-run" \
+            -t "$IMAGE:dry-run" --load .
+
+      - name: Smoke
+        run: SKIP_BUILD=1 IMAGE="$IMAGE:dry-run" bash apps/runner/scripts/once-smoke.sh
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.plan.outputs.tag }}
+
+      # No `${{ }}` in the script: scripts/publish-runner-image-workflow.test.ts
+      # runs it verbatim against scratch repositories.
+      - name: Check the tag against the checkout
+        id: version
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SEMVER="${TAG#v}"
+          RUNNER_VERSION=$(node -p "require('./apps/runner/package.json').version")
+          if [ "$RUNNER_VERSION" != "$SEMVER" ]; then
+            echo "::error::apps/runner/package.json at ${TAG} says ${RUNNER_VERSION}, not ${SEMVER}. The image would report the wrong version; nothing pushed."
+            exit 1
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Only the highest release tag on origin moves :latest.
+          HIGHEST=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+            | sed 's#.*refs/tags/##' \
+            | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
+            | sort -V | tail -1)
+          if [ "$HIGHEST" = "$TAG" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${TAG} is not the highest release tag (${HIGHEST:-none}); :latest stays where it is."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          REVISION: ${{ steps.version.outputs.revision }}
+          SOURCE_REPO: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The source label links the package to this repo.
+          docker buildx build --platform linux/amd64 -f apps/runner/Dockerfile.once \
+            --label "org.opencontainers.image.source=$SOURCE_REPO" \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --label "org.opencontainers.image.version=$TAG" \
+            -t "$IMAGE:$TAG" --load .
+
+      - name: Smoke
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: SKIP_BUILD=1 IMAGE="$IMAGE:$TAG" bash apps/runner/scripts/once-smoke.sh
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Push
+        id: push
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:$TAG"
+          if [ "$LATEST" = true ]; then
+            docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+          # Read back from the registry: the digest consumers will pull.
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' | jq -r '.digest // empty')
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Pushed $IMAGE:$TAG but could not read its digest back from the registry (got '${DIGEST}')."
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Record the digest
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          LATEST: ${{ steps.version.outputs.latest }}
+          REVISION: ${{ steps.version.outputs.revision }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ${IMAGE}:${TAG}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Pull | \`docker pull ${IMAGE}@${DIGEST}\` |"
+            echo "| Revision | \`${REVISION}\` |"
+            echo "| :latest | $([ "$LATEST" = true ] && echo moved here || echo unchanged) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Anonymous pull = public package. GHCR creates packages private and
+          # visibility has no API, so this warns rather than fails.
+          REPO_PATH="${IMAGE#ghcr.io/}"
+          ANON=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull" | jq -r '.token // empty' || true)
+          if [ -n "$ANON" ] && curl -fsS -o /dev/null \
+               -H "Authorization: Bearer ${ANON}" \
+               -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+               "https://ghcr.io/v2/${REPO_PATH}/manifests/${DIGEST}"; then
+            echo "| Visibility | public |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            MSG="${IMAGE} is not anonymously pullable yet. One-time owner step: github.com/orgs/buildd-ai/packages/container/runner-once/settings → Change visibility → Public."
+            echo "::warning::${MSG}"
+            printf '| Visibility | **private** |\n\n%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -155,7 +155,7 @@ export interface RepairLinks {
   fixes?: Array<{ taskId: string; title: string | null }>;
 }
 
-/** "Repair of <task>" on a repair's page, "Repairs: <task>, …" on the parent's; null when neither applies. */
+/** "Fix for <task>" on a repair's page, "CI fix: <task>, …" on the parent's; null when neither applies. */
 export function RepairLinkLine({ links }: { links?: RepairLinks | null }) {
   const parent = links?.parent ?? null;
   const fixes = links?.fixes ?? [];
@@ -164,21 +164,21 @@ export function RepairLinkLine({ links }: { links?: RepairLinks | null }) {
     <div data-testid="pr-repair-links" className="text-meta text-text-muted">
       {parent && (
         <>
-          Repair of{' '}
+          Fix for{' '}
           <Link href={`/app/tasks/${parent.taskId}`} className="text-accent-text hover:underline">
-            {parent.title ?? 'the task that opened this PR'}
+            {parent.title ?? 'the original task'}
           </Link>
         </>
       )}
       {parent && fixes.length > 0 && ' · '}
       {fixes.length > 0 && (
         <>
-          {fixes.length === 1 ? 'Repair task: ' : 'Repair tasks: '}
+          {fixes.length === 1 ? 'CI fix: ' : 'CI fixes: '}
           {fixes.map((f, i) => (
             <span key={f.taskId}>
               {i > 0 && ', '}
               <Link href={`/app/tasks/${f.taskId}`} className="text-accent-text hover:underline">
-                {f.title ?? `Repair ${i + 1}`}
+                {f.title ?? `CI fix ${i + 1}`}
               </Link>
             </span>
           ))}

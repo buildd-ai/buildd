@@ -9,6 +9,7 @@
 
 import { githubApi, githubApiText } from '@/lib/github';
 import { extractFailureDigest } from '@/lib/ci-failure-digest';
+import type { ReleasePrFacts } from '@buildd/core/release-candidate';
 
 export interface CIFailureInfo {
   /** Failed-job/step summary plus the extracted failure digest, or null. */
@@ -51,19 +52,41 @@ export async function checkPrIsDraft(
  * `checkPrIsDraft`: a failed read reports an open, non-draft PR, and a response
  * without `state` is treated as open.
  */
+export interface PrRetryGate {
+  draft: boolean;
+  closed: boolean;
+  merged: boolean;
+  headRef?: string | null;
+  baseRef?: string | null;
+  /** What `classifyCiRedReleasePr` needs to tell a frozen release candidate from an ordinary PR. */
+  release?: ReleasePrFacts;
+}
+
 export async function fetchPrRetryGate(
   installationId: number,
   repoFullName: string,
   prNumber: number,
-): Promise<{ draft: boolean; closed: boolean; merged: boolean; headRef?: string | null; baseRef?: string | null }> {
+): Promise<PrRetryGate> {
   try {
     const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    const headRef = str(pr?.head?.ref);
+    const baseRef = str(pr?.base?.ref);
     return {
       draft: pr?.draft === true,
       closed: typeof pr?.state === 'string' && pr.state !== 'open',
       merged: pr?.merged === true,
-      headRef: pr?.head?.ref ? String(pr.head.ref) : null,
-      baseRef: pr?.base?.ref ? String(pr.base.ref) : null,
+      headRef,
+      baseRef,
+      release: {
+        headRef,
+        baseRef,
+        headSha: str(pr?.head?.sha),
+        author: str(pr?.user?.login),
+        headRepoFullName: str(pr?.head?.repo?.full_name),
+        baseRepoFullName: str(pr?.base?.repo?.full_name),
+        body: typeof pr?.body === 'string' ? pr.body : null,
+      },
     };
   } catch (error) {
     console.warn(`Failed to read PR #${prNumber} on ${repoFullName} for the CI-retry gate:`, error);

@@ -6,7 +6,8 @@ const {
   parsePublicationFeatures, publicationOverride, publicationState, interpretPublication, decidePublication, lineOfReason,
   specPublicationKind, PUBLICATION_PUBLISH_P, MAX_PUBLICATION_TEXT_CHARS, SPEC_PUBLICATION_CONFIG,
 } = await import('./spec-publication-decision');
-const { parsePublicationSection, publicationReason } = await import('./specs/publication');
+const { parsePublicationSection, publicationReason, publicationSentence } = await import('./specs/publication');
+import type { SpecPublicationDecision } from '@buildd/core/db/schema';
 const { runDecisionKind } = await import('@builddai/ai-kit/decide');
 
 const POLICY_BODY = `# Shop
@@ -122,12 +123,12 @@ describe('decidePublication', () => {
   it('a rule answer is applied as-is and carries its sentence', async () => {
     const out = await decidePublication(input({ policy: null }), respond({ decision: 'keep_private', source: 'rule', reasonCode: 'rule_no_policy' }));
     expect(out).toMatchObject({ publish: false, source: 'rule', reasonCode: 'rule_no_policy', decisionRecordId: 'rec-1' });
-    expect(out.reason).toContain('no publication policy yet');
+    expect(out.reason).toContain('no publication policy');
   });
   it('AC-51: no model available keeps it private, recorded as a fallback', async () => {
     const out = await decidePublication(input(), respond({ decision: 'keep_private', source: 'fallback', fallbackCause: 'no_provider', reasonCode: 'fallback_no_provider' }));
     expect(out).toMatchObject({ publish: false, source: 'fallback', reasonCode: 'fallback_no_provider' });
-    expect(out.reason).toContain('no decision model');
+    expect(out.reason).toBe('Not in the repo yet.');
   });
   it('AC-51: an answer below the bar keeps it private as a fallback, with the line the model named', async () => {
     const out = await decidePublication(input(), respond({
@@ -148,7 +149,7 @@ describe('decidePublication', () => {
   });
   it('a model keep_private names the policy line in the sentence (R-68)', async () => {
     const out = await decidePublication(input(), respond({ decision: 'keep_private', source: 'model', confidence: 1, reasonCode: 'model_keep_private_line_3' }));
-    expect(out.reason).toBe('Not published: the policy keeps this out of the repo ("Operator-only tooling and how the platform is run day to day.").');
+    expect(out.reason).toBe('Kept out of the repo by the policy: "Operator-only tooling and how the platform is run day to day".');
   });
   it('a throw keeps it private', async () => {
     const out = await decidePublication(input(), { judge: async () => { throw new Error('boom'); }, teamOf: async () => 'team' });
@@ -157,12 +158,41 @@ describe('decidePublication', () => {
 });
 
 describe('the sentences (R-68)', () => {
-  it('say why in one sentence, without status labels', () => {
-    for (const code of ['rule_prod_data', 'rule_no_policy', 'rule_marked_private', 'rule_too_long', 'model_keep_private_line_none', 'model_unsure_line_none', 'below_bar', 'fallback_no_provider']) {
+  const VOCAB = /measured|decision model|policy check|on its own|in force|—/i;
+  it('say why in one plain sentence, naming the rule or the line, never how it was decided', () => {
+    for (const code of ['rule_prod_data', 'rule_no_policy', 'rule_marked_private', 'rule_too_long', 'model_keep_private_line_none', 'model_unsure_line_none', 'below_bar', 'fallback_no_provider', 'fallback_error']) {
       const s = publicationReason({ publish: false, reasonCode: code });
-      expect(s.startsWith('Not published: ')).toBe(true);
-      expect(s).not.toMatch(/—/);
+      expect(s).not.toMatch(VOCAB);
+      expect(s.endsWith('.')).toBe(true);
     }
-    expect(publicationReason({ publish: false, reasonCode: 'rule_marked_private', markFrom: 'area' })).toBe('Not published: its area is marked private.');
+    expect(publicationReason({ publish: false, reasonCode: 'below_bar' })).toBe('Not in the repo yet.');
+    expect(publicationReason({ publish: false, reasonCode: 'rule_marked_private' })).toBe('Marked private.');
+    expect(publicationReason({ publish: false, reasonCode: 'rule_marked_private', markFrom: 'area' })).toBe('Its area is marked private.');
+    expect(publicationReason({ publish: false, reasonCode: 'rule_prod_data', hit: 'line 4: a UUID' })).toBe('Not in the repo: it looks like it contains production data (line 4: a UUID). Remove it in a new revision.');
+    expect(publicationReason({ publish: false, reasonCode: 'model_keep_private_line_2', line: 'Operator tooling.' })).toBe('Kept out of the repo by the policy: "Operator tooling".');
+    expect(publicationReason({ publish: true, reasonCode: 'model_publish_line_1', line: 'How a feature behaves.' })).toBe('Published under "How a feature behaves".');
+    expect(publicationReason({ publish: true, reasonCode: 'person_published_anyway' })).toBe('Published by a person.');
+  });
+});
+
+describe('publicationSentence: a stored decision is worded now, not when it was decided', () => {
+  const stored = (over: Partial<SpecPublicationDecision>): SpecPublicationDecision => ({
+    publish: false, source: 'fallback', reasonCode: 'below_bar', policyVersion: null, revision: 1, decidedAt: '2026-10-01T00:00:00Z',
+    reason: 'Not published: the policy check has not been measured well enough to publish on its own yet, so a person decides.', ...over,
+  });
+  it('never shows the old stored sentence', () => {
+    const s = publicationSentence(stored({}));
+    expect(s).toBe('Not in the repo yet.');
+    expect(s).not.toContain('measured');
+  });
+  it('recovers the hit and the area from a decision stored before they were kept', () => {
+    expect(publicationSentence(stored({ source: 'rule', reasonCode: 'rule_prod_data', reason: 'Not published: the text has what looks like production data (line 3: a UUID). Take it out in a new revision.' })))
+      .toBe('Not in the repo: it looks like it contains production data (line 3: a UUID). Remove it in a new revision.');
+    expect(publicationSentence(stored({ source: 'rule', reasonCode: 'rule_marked_private', reason: 'Not published: its area is marked private.' }))).toBe('Its area is marked private.');
+    expect(publicationSentence(stored({ source: 'rule', reasonCode: 'rule_marked_private', reason: 'Not published: a person marked this spec private.' }))).toBe('Marked private.');
+  });
+  it('prefers the stored hit and mark', () => {
+    expect(publicationSentence(stored({ reasonCode: 'rule_marked_private', markFrom: 'area', reason: 'x' }))).toBe('Its area is marked private.');
+    expect(publicationSentence(stored({ reasonCode: 'rule_prod_data', hit: 'line 9: a token', reason: 'x' }))).toContain('(line 9: a token)');
   });
 });

@@ -39,10 +39,8 @@ export const BUILD_PROOF_CHECK_TOKENS = ['typecheck', 'build', 'test'] as const;
 
 export type BoundVerdict = { permitted: true } | { permitted: false; reason: string };
 
-export type { CheckRunState } from '@/lib/ci-verdict';
-import type { CheckRunState } from '@/lib/ci-verdict';
-
-export { latestRunPerName } from '@/lib/ci-verdict';
+export { latestRunPerName, type CheckRunState } from './ci-verdict';
+import type { CheckRunState } from './ci-verdict';
 
 /**
  * The branches a model verdict may never merge into: the workspace's own trunk

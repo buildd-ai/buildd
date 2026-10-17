@@ -304,14 +304,14 @@ describe('merged PR the status row already states', () => {
 describe('PrCard repair links', () => {
   it('links a parent PR to its repair tasks', () => {
     const html = render({ prLifecycleStatus: 'pr_open', repairLinks: { fixes: [{ taskId: 'fix-9', title: 'Fix the lint failure' }] } });
-    expect(html).toContain('Repair task: ');
+    expect(html).toContain('CI fix: ');
     expect(html).toContain('href="/app/tasks/fix-9"');
     expect(html).toContain('Fix the lint failure');
   });
 
   it('links a repair back to the task that opened the PR', () => {
     const html = render({ prLifecycleStatus: 'pr_open', repairLinks: { parent: { taskId: 'parent-1', title: 'Add the thing' } } });
-    expect(html).toContain('Repair of');
+    expect(html).toContain('Fix for');
     expect(html).toContain('href="/app/tasks/parent-1"');
   });
 
