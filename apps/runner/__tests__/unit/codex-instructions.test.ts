@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
+  healStaleCodexAgentsMd,
   restoreCodexAgentsMd,
   BUILDD_AGENTS_BEGIN,
   BUILDD_AGENTS_END,
@@ -352,5 +353,60 @@ describe('Codex instruction block: review findings on restore', () => {
     expect(restore).toBeLessThan(early);
     const sessionIf = src.lastIndexOf('const session = this.sessions.get(worker.id);', restore);
     expect(sessionIf === -1 || sessionIf < src.lastIndexOf('cleanupSessionPromptFiles(worker.id);', restore)).toBe(true);
+  });
+
+  test('tracked AGENTS.md with no final newline comes back byte for byte', async () => {
+    await writeFile(join(dir, 'AGENTS.md'), 'repo agents, no newline');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const r = await writeCodexAgentsMd(dir, 'B');
+    await restoreCodexAgentsMd(dir, r);
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toBe('repo agents, no newline');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('heals a stale skip-worktree flag from a killed run, for any backend', async () => {
+    await linkedRepo();
+    await rm(join(dir, 'AGENTS.md'));
+    await writeFile(join(dir, 'AGENTS.md'), `${BUILDD_AGENTS_BEGIN}\nOLD\n${BUILDD_AGENTS_END}\n`);
+    g('update-index', '--skip-worktree', 'AGENTS.md');
+    await healStaleCodexAgentsMd(dir);
+    expect((await lstat(join(dir, 'AGENTS.md'))).isSymbolicLink()).toBe(true);
+    expect(flag()).toBe('H');
+    expect(g('status', '--porcelain')).toBe('');
+  });
+
+  test('heal leaves a skip-worktree flag the user set on their own file', async () => {
+    await writeFile(join(dir, 'AGENTS.md'), 'mine\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    g('update-index', '--skip-worktree', 'AGENTS.md');
+    await writeFile(join(dir, 'AGENTS.md'), 'edited locally\n');
+    await healStaleCodexAgentsMd(dir);
+    expect(flag()).toBe('S');
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toBe('edited locally\n');
+  });
+
+  test('heals a stale marked exclude line, but never a bare line the user wrote', async () => {
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const excl = join(dir, '.git', 'info', 'exclude');
+    await mkdir(join(dir, '.git', 'info'), { recursive: true });
+    const mark = '# added by buildd for the Codex AGENTS.md; safe to delete';
+    await writeFile(excl, `*.log\n${mark}\n/AGENTS.md\n`);
+    await healStaleCodexAgentsMd(dir);
+    expect(await readFile(excl, 'utf-8')).toBe('*.log\n');
+    await writeFile(excl, '*.log\n/AGENTS.md\n');
+    await healStaleCodexAgentsMd(dir);
+    expect(await readFile(excl, 'utf-8')).toBe('*.log\n/AGENTS.md\n');
+  });
+
+  test('a killed untracked run is healed by the next full run', async () => {
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const excl = join(dir, '.git', 'info', 'exclude');
+    await mkdir(join(dir, '.git', 'info'), { recursive: true });
+    await writeFile(excl, '# added by buildd for the Codex AGENTS.md; safe to delete\n/AGENTS.md\n');
+    const r = await writeCodexAgentsMd(dir, 'X');
+    await restoreCodexAgentsMd(dir, r);
+    expect(await readFile(excl, 'utf-8')).toBe('');
   });
 });

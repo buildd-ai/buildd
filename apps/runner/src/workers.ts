@@ -33,6 +33,7 @@ import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
   restoreCodexAgentsMd,
+  healStaleCodexAgentsMd,
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
 // `cleanupWorktree` is deliberately NOT imported: every teardown path in this
@@ -5367,6 +5368,9 @@ export class WorkerManager {
       // output-requirement-nudge/steering loop below, unlike a
       // first-turn-only prompt preamble). Must run before promptArg is built
       // so the prompt pointer below is included.
+      // Whatever backend this run uses, first clear what a killed earlier run
+      // left in this checkout (stale skip-worktree flag, stale exclude line).
+      await healStaleCodexAgentsMd(cwd);
       if (isCodexTask) {
         try {
           // Role persona — the same claim-delivered text Claude appends to its

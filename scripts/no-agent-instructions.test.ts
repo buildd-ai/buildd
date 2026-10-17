@@ -43,4 +43,10 @@ describe('check-no-agent-instructions.sh', () => {
     g('add', '-A');
     expect(run().status).toBe(0);
   });
+
+  test('an unknown base is an error, never a clean pass', () => {
+    const r = spawnSync('bash', [script, 'no-such-base'], { cwd: dir, encoding: 'utf-8' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('not a commit');
+  });
 });

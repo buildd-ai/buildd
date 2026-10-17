@@ -1,4 +1,4 @@
-import { readFile, writeFile, rm, lstat, realpath, symlink, appendFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, rm, lstat, realpath, appendFile, mkdir } from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 
@@ -110,6 +110,9 @@ export interface AgentsMdWriteResult {
 const active = new Map<string, AgentsMdWriteResult>();
 /** Exclude lines added by live runs, by exclude file (linked worktrees share one). */
 const excludeHolders = new Map<string, number>();
+/** Comment line written above our exclude line so a stale one (killed run) is
+ *  recognisable and never confused with a line the user wrote. */
+const EXCLUDE_MARK = '# added by buildd for the Codex AGENTS.md; safe to delete';
 
 function git(cwd: string, args: string[]): string | null {
   try {
@@ -175,6 +178,7 @@ export async function writeCodexAgentsMd(cwd: string, body: string): Promise<Age
     return live;
   }
 
+  await healStaleCodexAgentsMd(cwd);
   const existed = await pathExists(path);
   const result: AgentsMdWriteResult = { path, cwd, existed, holders: 1 };
   const inRepo = git(cwd, ['rev-parse', '--is-inside-work-tree']) === 'true';
@@ -205,7 +209,7 @@ export async function writeCodexAgentsMd(cwd: string, body: string): Promise<Age
         } else if (!cur.split('\n').includes(line)) {
           try {
             await mkdir(dirname(file), { recursive: true });
-            await appendFile(file, `${cur === '' || cur.endsWith('\n') ? '' : '\n'}${line}\n`);
+            await appendFile(file, `${cur === '' || cur.endsWith('\n') ? '' : '\n'}${EXCLUDE_MARK}\n${line}\n`);
             excludeHolders.set(file, 1);
             result.excludeFile = file;
             result.excludeLine = line;
@@ -248,14 +252,14 @@ export async function restoreCodexAgentsMd(_cwd: string, result: AgentsMdWriteRe
   } else {
     result.holders = 0;
   }
-  const { path, cwd, existed, originalContent, indexMode, indexBlob } = result;
+  const { path, cwd, existed, originalContent, indexMode } = result;
   try {
-    if (indexMode !== undefined && indexBlob !== undefined) {
+    if (indexMode !== undefined) {
+      // Let git put back exactly what the index holds, byte for byte (link or
+      // file, with or without a final newline).
       await rm(path, { force: true });
-      const content = git(cwd, ['cat-file', 'blob', indexBlob]);
-      if (indexMode === '120000' && content !== null) await symlink(content, path);
-      else if (content !== null) await writeFile(path, content === '' ? '' : `${content}\n`);
       git(cwd, ['update-index', '--no-skip-worktree', '--', AGENTS_FILENAME]);
+      git(cwd, ['checkout', '--', AGENTS_FILENAME]);
     } else if (!existed) {
       await rm(path, { force: true });
     } else if (originalContent !== undefined) {
@@ -278,10 +282,50 @@ async function releaseExclude(result: AgentsMdWriteResult): Promise<void> {
   }
   excludeHolders.delete(file);
   try {
-    const cur = await readFile(file, 'utf-8');
-    const i = cur.lastIndexOf(`\n${line}\n`);
-    const next = i >= 0 ? cur.slice(0, i + 1) + cur.slice(i + line.length + 2) : cur.startsWith(`${line}\n`) ? cur.slice(line.length + 1) : cur;
-    await writeFile(file, next);
+    await writeFile(file, stripOurExclude(await readFile(file, 'utf-8'), line));
+  } catch {
+    // best-effort
+  }
+}
+
+/** Remove our marked exclude line (comment plus line) and nothing else. */
+function stripOurExclude(cur: string, line: string): string {
+  const pair = `${EXCLUDE_MARK}\n${line}\n`;
+  const i = cur.lastIndexOf(pair);
+  return i >= 0 ? cur.slice(0, i) + cur.slice(i + pair.length) : cur;
+}
+
+/**
+ * Heal what a killed run left behind, for any backend, before the next run
+ * starts. A live run in this process is never touched.
+ * - tracked AGENTS.md flagged skip-worktree whose file still holds the block:
+ *   put back what the index holds and clear the flag;
+ * - untracked: drop our marked line from the shared info/exclude when no live
+ *   run holds it (a bare line the user wrote has no marker and stays).
+ */
+export async function healStaleCodexAgentsMd(cwd: string): Promise<void> {
+  const path = join(cwd, AGENTS_FILENAME);
+  if (active.has(path)) return;
+  if (git(cwd, ['rev-parse', '--is-inside-work-tree']) !== 'true') return;
+  try {
+    if (indexEntry(cwd)) {
+      const flagged = git(cwd, ['ls-files', '-v', '--', AGENTS_FILENAME])?.startsWith('S');
+      if (!flagged) return;
+      const body = await readFile(path, 'utf-8').catch(() => '');
+      if (!body.includes(BUILDD_AGENTS_BEGIN)) return; // the user's own flag
+      await rm(path, { force: true });
+      git(cwd, ['update-index', '--no-skip-worktree', '--', AGENTS_FILENAME]);
+      git(cwd, ['checkout', '--', AGENTS_FILENAME]);
+      return;
+    }
+    const rel = git(cwd, ['rev-parse', '--git-path', 'info/exclude']);
+    if (!rel) return;
+    const abs = isAbsolute(rel) ? rel : resolve(cwd, rel);
+    const file = join(await realpath(dirname(abs)).catch(() => dirname(abs)), basename(abs));
+    if ((excludeHolders.get(file) ?? 0) > 0) return;
+    const cur = await readFile(file, 'utf-8').catch(() => '');
+    const next = stripOurExclude(cur, `/${AGENTS_FILENAME}`);
+    if (next !== cur) await writeFile(file, next);
   } catch {
     // best-effort
   }

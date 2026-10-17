@@ -7,8 +7,12 @@
 set -euo pipefail
 base="${1:-origin/dev}"
 marker='BEGIN buildd agent instructions'
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  echo "error: base '$base' is not a commit here (fetch it first); refusing to report a clean diff" >&2
+  exit 2
+fi
 # Files that legitimately name the marker: the writer, the scanner, their tests, this check.
-hits="$(git diff "$base"...HEAD -U0 --no-color -- . \
+diff_out="$(git diff "$base"...HEAD -U0 --no-color -- . \
   ':!apps/runner/src/codex-instructions.ts' \
   ':!apps/runner/__tests__/unit/codex-instructions.test.ts' \
   ':!packages/core/agent-instruction-leak.ts' \
@@ -16,7 +20,9 @@ hits="$(git diff "$base"...HEAD -U0 --no-color -- . \
   ':!apps/web/src/lib/agent-instruction-guard.test.ts' \
   ':!scripts/check-no-agent-instructions.sh' \
   ':!scripts/no-agent-instructions.test.ts' \
-  | grep -E '^\+' | grep -v '^+++' | grep -F "$marker" || true)"
+  )"
+# A failing git diff aborts here (set -e); only grep's no-match is tolerated.
+hits="$(printf '%s\n' "$diff_out" | grep -E '^\+' | grep -v '^+++' | grep -F "$marker" || true)"
 if [ -n "$hits" ]; then
   echo "error: the diff adds the runner's auto-generated agent instructions block:" >&2
   echo "$hits" | head -5 >&2
