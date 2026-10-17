@@ -293,7 +293,7 @@ export interface OutcomeLabel {
 
 export interface CollectedDeps {
   /** Ledger ids a model was asked for, newest first. */
-  listReplayable: (opts: { teamId: string; since: Date; limit: number }) => Promise<Array<{ decisionId: string; capability: string }>>;
+  listReplayable: (opts: { teamId: string; since: Date; limit: number; capability?: string }) => Promise<Array<{ decisionId: string; capability: string }>>;
   loadReplay: (opts: { teamId: string; decisionIds: string[] }) => Promise<Map<string, DecisionReplayInput>>;
   /** Every outcome label for these decision records. */
   loadOutcomes: (decisionIds: string[]) => Promise<Map<string, OutcomeLabel[]>>;
@@ -314,7 +314,15 @@ export async function collectedFromReplay(
 ): Promise<{ groups: CaseGroup[]; unscored: UnscoredGroup[] }> {
   const unscored: UnscoredGroup[] = [];
   const kinds = new Map((await deps.kinds()).map(k => [k.kind, k]));
+  // Newest first across every capability, so a busy one (thousands of rows) fills the window and a kind whose
+  // outcomes arrived later is never reached: each requested kind is also listed on its own.
   const listed = await deps.listReplayable({ teamId: opts.teamId, since: opts.since, limit: opts.limit });
+  const seen = new Set(listed.map(l => l.decisionId));
+  for (const kind of opts.kinds ?? []) {
+    for (const l of await deps.listReplayable({ teamId: opts.teamId, since: opts.since, limit: opts.limit, capability: kind })) {
+      if (!seen.has(l.decisionId)) { seen.add(l.decisionId); listed.push(l); }
+    }
+  }
   if (listed.length === 0) return { groups: [], unscored: [{ kind: '*', source: 'collected', origin: 'replay', reason: 'no_replayable_decisions' }] };
   const inputs = await deps.loadReplay({ teamId: opts.teamId, decisionIds: listed.map(l => l.decisionId) });
   const recordIds = [...inputs.values()].filter(i => i.source === 'decision_records').map(i => i.decisionId);

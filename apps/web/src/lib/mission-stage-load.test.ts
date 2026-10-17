@@ -8,7 +8,10 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ type: 'inArray', field, values }),
   isNotNull: (field: any) => ({ type: 'isNotNull', field }),
 }));
-mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (expr: any) => expr }));
+mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (expr: any) => expr, sqlExtras: (extras: any) => extras }));
+// The narrowed SQL itself is rendered and pinned in mission-stage-sql.test.ts;
+// here only that the loader uses it.
+mock.module('./mission-stage-sql', () => ({ stageContextSql: 'STAGE_CONTEXT_SQL', stageWorkersPredicate: () => 'STAGE_WORKERS_PREDICATE' }));
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'missions.id', workspaceId: 'missions.workspaceId' },
   tasks: { missionId: 'tasks.missionId', workspaceId: 'tasks.workspaceId' },
@@ -60,7 +63,7 @@ const mission = (over: any = {}) => ({
 });
 const task = (over: any = {}) => ({
   id: 't1', missionId: 'm1', title: 'Build it', status: 'completed', taskClass: 'work', kind: 'engineering',
-  mode: 'execution', category: 'feature', roleSlug: 'builder', context: null, ...over,
+  mode: 'execution', category: 'feature', roleSlug: 'builder', stageContext: null, ...over,
 });
 
 beforeEach(() => {
@@ -95,9 +98,34 @@ describe('loadMissionStages', () => {
       { type: 'inArray', field: 'tasks.missionId', values: ['m1', 'm2'] },
       { type: 'inArray', field: 'tasks.workspaceId', values: ['ws-1'] },
     ] });
-    // Workers: only the tasks those scoped reads returned (every worker: the progress row needs them).
+    // Workers: only the tasks those scoped reads returned, narrowed to the newest
+    // few per task plus every PR-bearing one.
     expect(selectCalls).toHaveLength(1);
-    expect(selectCalls[0].where).toEqual({ type: 'inArray', field: 'workers.taskId', values: ['t1'] });
+    expect(selectCalls[0].where).toEqual({ type: 'and', args: [
+      { type: 'inArray', field: 'workers.taskId', values: ['t1'] },
+      'STAGE_WORKERS_PREDICATE',
+    ] });
+  });
+
+  it('never reads the whole task context: only the projected keys the stage reads', async () => {
+    missionRows = [mission()];
+    taskRows = [task()];
+    await loadMissionStages(['m1'], ['ws-1']);
+    const tq = tasksFindMany.mock.calls[0][0];
+    expect(tq.columns.context).toBeUndefined();
+    expect(tq.extras).toEqual({ stageContext: 'STAGE_CONTEXT_SQL' });
+  });
+
+  it('the projected context still decides what a task is for: a trunk refresh never counts toward the build', async () => {
+    missionRows = [mission({ goalCriteria: [] })];
+    const merged = { prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: '2026-10-14T10:00:00.000Z', prLifecycleStatus: 'merged' };
+    taskRows = [
+      task({ id: 't1' }),
+      task({ id: 'r1', title: 'Bring the branch up to date', status: 'in_progress', stageContext: { refreshTrunk: 'dev' } }),
+    ];
+    workerRows = [{ taskId: 't1', ...merged }];
+    const stage = (await loadMissionStages(['m1'], ['ws-1'])).get('m1');
+    expect(stage?.waitingOn).not.toBe('1 of 2 landed');
   });
 
   it('is a fixed number of reads however many missions are listed (no N+1)', async () => {

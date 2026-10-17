@@ -28,7 +28,7 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
 import { classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { detectPrSupersession } from '@/lib/pr-supersession-detect';
+import { detectPrSupersession, rescanOnMerge } from '@/lib/pr-supersession-detect';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { reviewRowFromEvent, commentRowFromEvent, withOwner, type ReviewFeedbackRow } from '@/lib/review-feedback';
@@ -142,6 +142,23 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
       after(detect);
     } catch {
       await detect();
+    }
+  }),
+  // b6cfdbb9: a merge may carry a closed PR's work (a re-land opened after the close, which the
+  // close-time scan could not see). Look at the closed PRs it names, suggested before, or shares a
+  // mission with; an edge still needs the content to verify. Kernel-owned or not: the edge goes
+  // through recordPrSupersession either way.
+  subscriber('reviews', 'pr.closed', 'supersession-rescan-on-merge', async e => {
+    if (!e.merged || !e.mergeIsNew) return;
+    const rescan = () => rescanOnMerge({ workspaceId: e.workspaceId, repoFullName: e.repoFullName, prNumber: e.prNumber, taskId: e.taskId })
+      .then(
+        r => { if (r.nominated) console.log(`[webhook] supersession re-check after PR #${e.prNumber} merged: ${r.results.map(x => `${x.prUrl} ${x.outcome}`).join(', ')}`); },
+        err => console.error(`[webhook] supersession re-check after PR #${e.prNumber} merged failed:`, err),
+      );
+    try {
+      after(rescan);
+    } catch {
+      await rescan();
     }
   }),
   // The reconciler cancels what the close made obsolete: a live reviewer and

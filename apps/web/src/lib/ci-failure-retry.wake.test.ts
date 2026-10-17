@@ -84,8 +84,11 @@ mock.module('@/lib/ci-red-queue', () => ({
 
 // Workflow kernel door (lib/workflow/seam.ts; real-SQL cases in tests/db/workflow-matrix.test.ts).
 let kernelSeen: any = { handled: false };
-const mockObserveCiFailure = mock(async (_p: any) => kernelSeen);
+const mockObserveCiFailure = mock(async (_p: any, _c?: any) => kernelSeen);
 mock.module('@/lib/workflow/seam', () => ({ observeCiFailure: mockObserveCiFailure }));
+// T10 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observeCiFailure: mockObserveCiFailure }));
 const gateEvents: any[] = [];
 mock.module('@/lib/policy-overrides', () => ({ policyValue: () => 3, POLICY_DEFAULTS: { maxCiRetries: 3 } }));
 
@@ -140,6 +143,16 @@ describe('retryCiFailureForPr on a kernel-owned PR (§5.7, T10)', () => {
     expect(out).toEqual({ kind: 'dispatched', taskId: 'ci-task-1' });
     expect(insertedRows).toEqual([]);
     expect(mockObserveCiFailure.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', prNumber: 7, headSha: 'abc1234', maxAttempts: 3, source: 'cron:ci-red' });
+    // Through the kernel client as buildd's own sweep (AC-9): the control plane applies it in own mode.
+    expect(mockObserveCiFailure.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:cron:ci-red' } });
+  });
+
+  it('the landing path submits T10 through the client too, as buildd\'s own landing rule', async () => {
+    kernelSeen = { handled: true, attemptTaskId: 'ci-task-2', result: { result: 'applied', decision: { toState: 'REPAIRING' } } };
+    mockObserveCiFailure.mockClear();
+    expect(await retryCiFailureForPr({ ...input, surface: 'landing' })).toEqual({ kind: 'dispatched', taskId: 'ci-task-2' });
+    expect(mockObserveCiFailure.mock.calls[0][0]).toMatchObject({ source: 'landing' });
+    expect(mockObserveCiFailure.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:landing' } });
   });
 
   it('a kernel refusal is a skip the sweep understands, still with no legacy insert', async () => {

@@ -216,6 +216,8 @@ export interface PublicationOutcome {
   /** The one sentence the spec page shows (R-68). */
   reason: string;
   line?: string;
+  hit?: string;
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence: number | null;
   model: string | null;
@@ -293,9 +295,12 @@ export async function decidePublication(input: PublicationDecideInput, deps: Pub
 
 function ruleOutcome(rule: DecisionVerdict<SpecPublicationKindDecision>, f: SpecPublicationFeatures, input: PublicationDecideInput, recordId: string | null): PublicationOutcome {
   const publish = rule.decision === 'publish';
+  const hit = !publish && rule.reasonCode === 'rule_prod_data' ? f.prodDataHits[0] : undefined;
+  const markFrom = !publish && rule.reasonCode === 'rule_marked_private' ? input.markFrom : undefined;
   return {
     publish, source: 'rule', reasonCode: rule.reasonCode,
-    reason: publish ? 'Published.' : publicationReason({ publish: false, reasonCode: rule.reasonCode, hit: f.prodDataHits[0], markFrom: input.markFrom }),
+    reason: publish ? 'Published.' : publicationReason({ publish: false, reasonCode: rule.reasonCode, hit, markFrom }),
+    ...(hit ? { hit } : {}), ...(markFrom ? { markFrom } : {}),
     policyVersion: input.policy?.version ?? null, confidence: null, model: null, decisionRecordId: recordId,
   };
 }

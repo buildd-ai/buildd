@@ -78,6 +78,15 @@ export interface KernelOps {
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
   mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
+  /**
+   * T4: an attempt of a delivery ended (the worker PATCH, the reaper, a cancel, a reviewer takeover).
+   * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
+   */
+  attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
+  /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
+  observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
+  /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
+  observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -93,6 +102,13 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
+  attempt_ended: (s, { workspaceId, ...p }) => {
+    // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
+    return s.attemptEnded(p);
+  },
+  observe_ci_failure: (s, i) => s.observeCiFailure(i),
+  observe_ci_green: (s, i) => s.observeCiGreen(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];

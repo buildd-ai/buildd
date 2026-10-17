@@ -16,6 +16,7 @@ import { isUuid } from '@/lib/uuid';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
+import { revisionCriterionHashes } from './criteria';
 
 /**
  * Mission-level verdicts on the mission's selected outcome spec (Living Specs
@@ -109,12 +110,13 @@ export async function resolveMissionTarget(mission: MissionRow, candidateHeads: 
   return { kind: 'direct', mergeShas, validHeads };
 }
 
-async function missionRows(missionId: string, specRevisionId: string): Promise<MissionVerdictRow[]> {
-  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt })
+async function missionRows(missionId: string, specRevisionId: string, hashes: ReadonlyMap<string, string>): Promise<MissionVerdictRow[]> {
+  const rows = await db.select({ id: specOutcomeVerdicts.id, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha, at: specOutcomeVerdicts.createdAt, textHash: specOutcomeVerdicts.criterionTextHash })
     .from(specOutcomeVerdicts)
     .where(and(eq(specOutcomeVerdicts.missionId, missionId), eq(specOutcomeVerdicts.specRevisionId, specRevisionId)))
     .orderBy(asc(specOutcomeVerdicts.createdAt));
-  return rows as MissionVerdictRow[];
+  // A verdict on another wording does not count for this one (R-13); one recorded before wordings were kept does.
+  return rows.filter((r) => !r.textHash || r.textHash === hashes.get(r.criterionId)).map(({ textHash: _t, ...r }) => r) as MissionVerdictRow[];
 }
 
 export type MissionSpecStanding = MissionSpecFold & { target: MissionTarget; scope: RequirementRef[]; title: string };
@@ -125,7 +127,7 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   if (!scope.ok) {
     return { verdict: 'UNVERIFIED', evidence: `The selected spec revision is unavailable: ${scope.reason}`, targetSha: null, standings: [], target: { kind: 'unknown', reason: scope.reason }, scope: [], title: '' };
   }
-  const rows = await missionRows(mission.id, c.specRevisionId);
+  const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
   const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target });
   return { ...folded, target, scope: scope.criteria, title: scope.title };
@@ -221,6 +223,7 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
     missionId: mission.id,
     specRevisionId: c.specRevisionId,
     criterionId,
+    criterionTextHash: (await revisionCriterionHashes(c.specId, c.revision)).get(criterionId) ?? null,
     verdict: verdict as VerificationVerdict,
     headSha: headSha.toLowerCase(),
     evidence: { refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
@@ -251,6 +254,7 @@ export async function recordMissionVerdictServer(missionId: string, input: {
     missionId: mission.id,
     specRevisionId: c.specRevisionId,
     criterionId: input.criterionId,
+    criterionTextHash: (await revisionCriterionHashes(c.specId, c.revision)).get(input.criterionId) ?? null,
     verdict: input.verdict,
     headSha: input.headSha.toLowerCase(),
     evidence: { ...input.evidence, recordedBy: input.recordedBy },

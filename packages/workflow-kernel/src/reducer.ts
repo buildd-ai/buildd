@@ -126,6 +126,41 @@ function liftsReviewBudget(cmd: Command): boolean {
   return (cmd.type === 'ReviewRequested' && cmd.forced === true) || cmd.type === 'HumanResolve';
 }
 
+/**
+ * Task c1d66a6a: the review budget counts change-request cycles, not every round. A round started
+ * after an approval at another head (`startRound` records `scope.deltaApproval` exactly then: a
+ * re-check of what a repair or a push changed since the approval) is a verification and spends
+ * nothing. A re-check that asks for changes gets one repair cycle before the delivery is a
+ * person's, even with the counted budget spent; the review of that repair counts as usual. A
+ * delivery that never had an approval spends exactly as before (2ded4e88).
+ */
+export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | undefined): boolean {
+  const da = r?.scope?.deltaApproval;
+  return da != null && typeof da === 'object';
+}
+
+/** The rounds up to `upTo` (default the current one) that spend the review budget. */
+export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number): number {
+  const n = upTo ?? view.delivery?.currentRound ?? 0;
+  const rechecks = new Set(view.rounds.filter((r) => r.round <= n && isRecheckAfterApproval(r)).map((r) => r.round));
+  return n - rechecks.size;
+}
+
+/**
+ * A re-check's one repair cycle is used once a fix was dispatched for it, or a later counted round
+ * was decided (the delivery moved past it): re-entering its verdict then owes no second cycle.
+ */
+function recheckCycleUsed(view: Pick<KernelView, 'rounds' | 'attempts'>, round: Pick<RoundSnapshot, 'id' | 'round'>): boolean {
+  if (view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id)) return true;
+  return view.rounds.some((r) => r.round > round.round && r.status === 'decided' && !isRecheckAfterApproval(r));
+}
+
+/** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
+function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
+  if (isRecheckAfterApproval(round)) return false;
+  return spentReviewRounds(view, round.round) >= maxRounds;
+}
+
 /** The patch that carries a spent review budget into a repair that starts from its escalation. */
 function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeState'> {
   return d.state === 'ESCALATED' && d.stateReason === 'review_exhausted' ? { resumeState: 'ESCALATED' } : {};
@@ -278,6 +313,10 @@ export function verifyCompositionAttestation(
  * Commands whose key embeds mutable state (the next round number) return
  * null; their replays are answered by the reducer's own preconditions.
  */
+/** One CI reading per head, verdict and version: a replay is a duplicate, a re-run that flips it is not. */
+const ciFactKey = (d: Pick<DeliverySnapshot, 'id' | 'version'>, headSha: string, verdict: 'red' | 'green' | 'running'): string =>
+  `cifact:${d.id}:${headSha}:${verdict}@v${d.version}`;
+
 export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): string | null {
   const pr = d?.repoFullName && d.prNumber != null ? `${d.repoFullName}#${d.prNumber}` : null;
   switch (cmd.type) {
@@ -302,6 +341,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
     case 'CiGreenObserved': return d?.boundAttemptId ? `cigreen:${d.boundAttemptId}` : null;
+    case 'CiObserved': return d ? ciFactKey(d, cmd.headSha, cmd.verdict) : null;
     case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
     case 'TreadmillCycleRestarted': return d ? `treadmill:${d.id}:v${d.version}` : null;
     case 'EffectDead': return `effectdead:${cmd.effectId}`;
@@ -383,6 +423,24 @@ export function currentOf(view: KernelView): CurrentView {
 
 const OPEN_ROUND = new Set(['queued', 'reviewing']);
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
+
+/** The task role each repair family files under (the host's `Work` roles). */
+const REPAIR_ROLE: Partial<Record<AttemptFamily, string>> = { review_fix: 'fix', ci: 'ci_fix', conflict: 'conflict_fix', migration: 'conflict_fix' };
+const RESOLUTION_FAMILIES: AttemptFamily[] = ['review_fix', 'ci', 'conflict', 'migration'];
+
+/**
+ * What a close (T18) or a merge (T17) makes moot, for its `cancel_open_attempts` (b6cfdbb9): the
+ * tasks of every open repair and of every open round's reviewer, by id. A repair row not yet
+ * linked to its task names its role instead, so the host can cancel that role's unstarted tasks.
+ * The ledger rows are cancelled by the transition itself; the tasks are the host's, and without
+ * this a queued repair stayed pending on a PR that no longer existed.
+ */
+function mootOnResolution(view: KernelView): { taskIds: string[]; unlinkedRoles?: string[] } {
+  const open = view.attempts.filter((a) => RESOLUTION_FAMILIES.includes(a.family) && OPEN_ATTEMPT.has(a.status));
+  const taskIds = [...open.flatMap((a) => (a.taskId ? [a.taskId] : [])), ...view.rounds.flatMap((r) => (OPEN_ROUND.has(r.status) && r.reviewerTaskId ? [r.reviewerTaskId] : []))];
+  const unlinkedRoles = [...new Set(open.filter((a) => !a.taskId).map((a) => REPAIR_ROLE[a.family]!))];
+  return { taskIds: [...new Set(taskIds)], ...(unlinkedRoles.length ? { unlinkedRoles } : {}) };
+}
 
 class Ctx {
   readonly d: DeliverySnapshot | null;
@@ -727,7 +785,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'ReviewBudgetExhausted': {
       const dd = d!;
       if (dd.state !== 'CHANGES_REQUESTED' && dd.state !== 'FIXING') return c.stale('state_moved');
-      if (dd.currentRound < dd.maxRounds) return c.rejected('budget_not_exhausted');
+      const cur = c.currentRound();
+      if (cur ? !budgetSpentAt(c.view, cur, dd.maxRounds) : spentReviewRounds(c.view) < dd.maxRounds) return c.rejected('budget_not_exhausted');
       // The version it was read at (10658a4c): a person who resolves back to this head and
       // sees it exhaust again is a second escalation, not a replay of the first.
       const key = `exhaust:${dd.id}:${dd.currentHeadSha}@v${dd.version}`;
@@ -754,7 +813,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const inflight = c.view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
       if (inflight) return c.duplicate('fix_in_flight');
       const n = c.nextNo('review_fix', 'agent');
-      if (n > cmd.maxAttempts && !human) {
+      // c1d66a6a: a re-check after an approval that asks for changes is owed one repair cycle, past
+      // a spent fix ledger too. Exactly one: a second fix for the same round is not free.
+      const recheckCycle = n > cmd.maxAttempts && !human && isRecheckAfterApproval(round)
+        && !c.view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id);
+      if (n > cmd.maxAttempts && !human && !recheckCycle) {
         // AC-14: a spent fix ledger is an escalation, never a silent refusal. T6 escalates on
         // rounds; failed fixes spend attempts faster than rounds, so this is where they run out
         // (67d34094: fix 1 and 2 failed, fix 3 delivered, round 2 requested changes).
@@ -766,14 +829,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         });
       }
       // §5.7 rule 5: a person past the cap extends it by exactly this one dispatch, visibly.
-      const extended = human && n > cmd.maxAttempts;
+      const extended = (human || recheckCycle) && n > cmd.maxAttempts;
       const max = extended ? n : cmd.maxAttempts;
       const id = c.newId();
       return c.apply(`fix:${dd.id}:${round.id}:${n}`, 'CHANGES_REQUESTED', {
         guardHead: true, guardRound: true,
         attempts: [{ op: 'insert', id, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: round.headSha, triggerReason: round.id, taskId: cmd.taskId, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
-        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live, ...(human ? { trigger: 'human' } : {}) },
-        bypass: extended ? { family: 'review_fix', budgetFrom: cmd.maxAttempts, budgetTo: max, trigger: 'human' } : null,
+        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live, ...(human ? { trigger: 'human' } : {}), ...(recheckCycle ? { recheckCycle: true } : {}) },
+        bypass: extended ? { family: 'review_fix', budgetFrom: cmd.maxAttempts, budgetTo: max, trigger: human ? 'human' : 'recheck_after_approval' } : null,
       });
     }
 
@@ -874,6 +937,30 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
       if (r.result !== 'apply') return r;
       return { ...r, effects: [...r.effects, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:ci_green:${a.id}`, payload: { families: ['ci'], reason: 'ci_green', attemptId: a.id, taskId: a.taskId } }] };
+    }
+
+    // 6900a317: the CI reading on the current head as a fact, no state change.
+    case 'CiObserved': {
+      const dd = d!;
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      if (isTerminal(dd.state) || dd.state === 'CLOSED_UNMERGED' || dd.state === 'LANDING') return c.stale('state_not_allowed');
+      if (cmd.verdict === 'red' && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
+      if (cmd.verdict === 'green' && (cmd.allPassing !== true || !cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0)) return c.rejected('ci_not_green');
+      if (cmd.verdict === 'running' && (cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0)) return c.rejected('ci_not_running');
+      // A CI repair reads red by its state; its green is CiGreenObserved's, which also ends it.
+      if (dd.state === 'REPAIRING' && dd.stateReason === 'ci') return c.stale('ci_repair_owns_head');
+      if (dd.ci === cmd.verdict && dd.ciHeadSha === cmd.headSha) return c.stale('already_recorded');
+      // Running only withdraws a red on this head; with no red here there is nothing to withdraw.
+      if (cmd.verdict === 'running' && !(dd.ci === 'red' && dd.ciHeadSha === cmd.headSha)) return c.stale('already_recorded');
+      // Same state, same hold: a reading never re-enters review or clears a resume marker.
+      if (dd.state === 'AWAITING_REVIEW' && reviewBudgetHeld(dd)) return c.stale('state_not_allowed');
+      return c.apply(ciFactKey(dd, cmd.headSha, cmd.verdict), dd.state, {
+        guardHead: true,
+        patch: cmd.verdict === 'running'
+          ? { ci: null, ciHeadSha: null, resumeState: dd.resumeState }
+          : { ci: cmd.verdict, ciHeadSha: cmd.headSha, resumeState: dd.resumeState },
+        evidence: { verdict: cmd.verdict, liveChecks: cmd.liveChecks, ...(cmd.allPassing !== undefined ? { allPassing: cmd.allPassing } : {}) },
+      });
     }
 
     // §5.7 rule 5 / AC-14
@@ -1175,7 +1262,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
         // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
+        effects: [fx('stamp_pr_rows'), { ...fx('cancel_open_attempts'), payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null, reason: 'merged', ...mootOnResolution(c.view) } }, fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
         evidence: {
           live: cmd.live, reviewClass,
           ...(external ? { external: true, mergedBy: cmd.live.mergedBy ?? null, mergedHead, fromState: dd.state, merged_over_open_findings: mergedOverOpenFindings } : {}),
@@ -1199,7 +1286,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { stateReason: cmd.closeCause, boundAttemptId: null, resumeState: reviewBudgetHeld(dd) ? 'ESCALATED' : null },
         rounds: c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } })),
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
-        effects: [fx('cancel_open_attempts'), fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
+        effects: [{ ...fx('cancel_open_attempts'), payload: { closeCause: cmd.closeCause, reason: 'closed', ...mootOnResolution(c.view) } }, fx('scan_supersession'), fx('mission_note'), fx('stamp_pr_rows')],
         evidence: { live: cmd.live },
       });
     }
@@ -1656,8 +1743,9 @@ function verdictDecided(
       effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
     });
   }
-  if (dd.currentRound >= dd.maxRounds) {
+  if (budgetSpentAt(c.view, round, dd.maxRounds)) {
     // Rule 9: at the limit a repeated request for changes stays blocking, with its findings attached.
+    // A re-check after an approval is never at the limit: it gets its repair cycle (c1d66a6a).
     return c.apply(key, 'ESCALATED', {
       ...common,
       patch: { stateReason: 'review_exhausted' },
@@ -1690,7 +1778,8 @@ function verificationRound(
   const head = decided.headSha;
   const ids = open.map((x) => x.id);
   const evidence = { ...(o.evidence ?? {}), unverifiedFindings: ids };
-  if (dd.currentRound >= dd.maxRounds) {
+  // The verification round to come is a counted one: it follows a verdict at the same head.
+  if (spentReviewRounds(c.view) >= dd.maxRounds) {
     return c.apply(key, 'ESCALATED', {
       ...o, evidence,
       patch: { ...(o.patch ?? {}), stateReason: 'review_exhausted' },
@@ -2255,7 +2344,9 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
     return c.apply(key, 'APPROVED', { patch: { ...base, approvedHeads: heads, approvalBasis: 'verdict', stateReason: null }, evidence: ev });
   }
   if (round.effectiveVerdict === 'request_changes') {
-    if (round.round >= d.maxRounds) {
+    // Review of #5017: a held budget is final whichever round the head re-enters, and a re-check's
+    // free cycle is owed once, at its verdict, never again on a re-entry after it was used.
+    if (reviewBudgetHeld(d) || budgetSpentAt(c.view, round, d.maxRounds) || (isRecheckAfterApproval(round) && recheckCycleUsed(c.view, round))) {
       return c.apply(key, 'ESCALATED', {
         patch: { ...base, stateReason: 'review_exhausted' }, evidence: ev,
         effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}@v${d.version}`, payload: { family: 'review_fix', rounds: round.round } }],

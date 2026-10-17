@@ -38,6 +38,8 @@ interface MarkdownContentProps {
   attachments?: Record<string, { src: string; alt: string | null; image: boolean }>;
   /** Work-specific marks for the revision being read, never an aggregate verdict. */
   criterionVerdicts?: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
+  /** A spec page's address: each criterion links to its history there (`?history=<id>`). */
+  criterionHistoryBase?: string;
 }
 
 export const ATTACHMENT_SCHEME = 'attachment:';
@@ -59,7 +61,7 @@ export function mermaidSource(node: HastNode | undefined): string | null {
   return text(code!).replace(/\n$/, '');
 }
 
-export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default', attachments, criterionVerdicts = [] }: MarkdownContentProps) {
+export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default', attachments, criterionVerdicts = [], criterionHistoryBase }: MarkdownContentProps) {
   const compact = variant === 'compact';
   const spec = surface === 'spec';
   return (
@@ -74,7 +76,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           div: ({ children, node, ...props }) => {
             const id = node?.properties?.['data-criterion-id'];
             if (typeof id !== 'string') return <div {...props}>{children}</div>;
-            return <SpecCriteriaBody id={id} criterionVerdicts={criterionVerdicts}>{children}</SpecCriteriaBody>;
+            return <SpecCriteriaBody id={id} criterionVerdicts={criterionVerdicts} historyBase={criterionHistoryBase}>{children}</SpecCriteriaBody>;
           },
           // Style overrides for better integration
           h1: ({ children }) => (

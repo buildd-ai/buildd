@@ -151,6 +151,19 @@ describe('Health › Runners at first glance', () => {
     expect(location.href).toBe(href);
   });
 
+  it('the runner list names and counts each runner the way Running now does', async () => {
+    await mount(1);
+    const group = qa('running-now-group').find(g => !g.textContent?.includes('Your sessions'))!;
+    expect(group.textContent).toContain('runner-one');
+    expect(group.textContent).toContain('1 of 3 busy');
+    const row = q('health-runner-row')!;
+    expect(row.querySelector('[data-testid="health-runner-name"]')!.textContent).toBe('runner-one');
+    // The token's own name is secondary, so the row can still be found under Runner tokens.
+    expect(row.textContent).toContain('Runner one');
+    expect(row.textContent).toContain('1 of 3 busy');
+    expect(row.textContent).not.toContain('agents running');
+  });
+
   it('the per-slot timeline stays folded until opened', async () => {
     await mount(1);
     expect(q('runner-lanes-chart')).toBeNull();

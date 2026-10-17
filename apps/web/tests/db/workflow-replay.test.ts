@@ -168,15 +168,16 @@ describe('out-of-band rows are not the step’s decision', () => {
     });
   }, 60_000);
 
-  test('abe42d1b: a recording of the old decision (a successful fix, nothing local, its own push live) is reported as diverged, never tolerated', async () => {
+  test('abe42d1b: a recording of the old decision (a successful fix, nothing local, its own push live) stops as a superseded decision, never tolerated', async () => {
     // Before abe42d1b the kernel parked this end in AWAITING_PUSH; the attempt's attributed push is
     // its delivery (§9, §6.9), so the current kernel starts the next round. A different to-state is
-    // a different decision, which no known evolution may rewrite.
+    // a different decision, which no known evolution may rewrite: the delivery stops there as
+    // incomplete, naming the change, and is never counted identical.
     const { c } = awaitingPush({ outcome: 'success', commitCount: 0 });
     const report = await replayDelivery(c, { exec });
-    expect(report).toMatchObject({
-      result: 'diverged', divergence: { field: 'transition.toState', recorded: 'AWAITING_PUSH', replayed: 'AWAITING_REVIEW' },
-    });
+    expect(report).toMatchObject({ result: 'incomplete', step: 'command AttemptEnded (runner)' });
+    if (report.result !== 'incomplete') throw new Error('unreachable');
+    expect(report.reason).toBe('transition.toState: superseded decision, a successful fix is proven by its own attributed push (abe42d1b #4169, spec §9)');
     // The earlier steps' status effects are S3b's addition to every version, and the request for
     // changes' findings evidence is S5's (a recording from before has neither); nothing else was
     // tolerated, and nothing rewrote the diverging step.

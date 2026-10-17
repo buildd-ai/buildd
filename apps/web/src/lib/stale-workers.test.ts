@@ -109,8 +109,11 @@ mock.module('@/lib/worker-deliverables', () => ({
 // Workflow kernel (lib/workflow/*; real-SQL suite in apps/web/tests/db/workflow-seam.test.ts).
 let kernelOwned: string | null = null;
 mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async () => kernelOwned }));
-const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: true }));
+const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: true }));
 mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockWorkflowAttemptEnded }));
+// T4 goes through the one client (AC-9): the kernel's door, not the seam.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded }));
 
 // Every requeue and continuation here wakes through the dispatch authority.
 // Full export surface: mock.module is process-global.
@@ -406,6 +409,8 @@ describe('cleanupStuckWaitingInput', () => {
         workerId: 'w1',
         status: 'lost',
       });
+      // Through the kernel client as buildd's own sweep (AC-9).
+      expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:sweep:waiting-input' } });
     } finally {
       kernelOwned = null;
     }
@@ -1758,6 +1763,36 @@ describe('cleanupStaleWorkers — retry cap', () => {
 
     expect(taskUpdateSet.context?.baseBranch).toBe('buildd/task-2-slug');
     expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-2-slug');
+  });
+
+  it('#4909: an infra reset of a mission refresh resumes its branch but keeps the mission branch it was filed for', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w3', taskId: 'task-3', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/task-3-refresh', error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'f1', exitCause: 'infra_failure' }])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-3', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-3', workspaceId: 'ws-1', status: 'assigned', category: 'chore',
+      context: { requireMergeCommit: true, baseBranch: 'mission/m-1', refreshTrunk: 'dev' },
+      loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.context?.baseBranch).toBe('mission/m-1');
+    expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-3-refresh');
   });
 
   it('uses 15-minute backoff on second infra failure (infraRetryCount=1)', async () => {
