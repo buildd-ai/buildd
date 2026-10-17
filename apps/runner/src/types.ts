@@ -353,6 +353,8 @@ export interface LocalWorker {
   costBasis?: 'real' | 'virtual' | 'unknown';
   /** Which Claude login this run used (terminal-attribution.ts claudeLoginUsed); sent on the terminal report. */
   claudeLoginUsed?: 'machine_login' | 'machine_token' | 'stored';
+  /** That login's identity when it is this machine's `claude login` (host-seat.ts claudeLoginIdentity): a one-way hash, no credential. */
+  claudeLoginId?: string;
   /**
    * Which route this run reached its model by (run-route.ts): plan, API key,
    * gateway or cloud account, the provider and whose credential. Set with
