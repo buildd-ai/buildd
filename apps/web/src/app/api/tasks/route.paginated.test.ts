@@ -205,7 +205,12 @@ mock.module('drizzle-orm', () => ({
   isNotNull: (f: any) => ({ f, type: 'isNotNull' }),
   isNull: (f: any) => ({ f, type: 'isNull' }),
   like: (f: any, p: any) => ({ f, p, type: 'like' }),
-  sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
+  // `join` is read at module load by lib/workflow/task-projection (reached through the
+  // surface-audit gate's delivery-view import).
+  sql: Object.assign(
+    (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
+    { join: (chunks: any[], sep: any) => ({ chunks, sep, type: 'sql-join' }) },
+  ),
   count: () => ({ type: 'count' }),
 }));
 
