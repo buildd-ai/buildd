@@ -309,6 +309,19 @@ describe('WorkerSync.restoreWorkersFromDisk — paused, not failed, when the ses
     expect(mockUpdateWorker.mock.calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
   });
 
+  test('a pause a person asked for while a tool ran stays theirs after a kill: not auto-continued', () => {
+    diskWorkers = [crashed({ pauseRequestedAt: 1_700_000_000_000 })];
+    const { sync, ctx } = syncWith(probe());
+
+    sync.restoreWorkersFromDisk();
+
+    const w = ctx.workers.get('w-crash')!;
+    expect(w.status).toBe('waiting');
+    expect(w.waitingFor?.type).toBe('pause');
+    expect(w.resumeOnStart).toBeUndefined();
+    expect(w.pauseRequestedAt).toBeUndefined();
+  });
+
   test('a Codex run needs its thread, not a Claude session', () => {
     diskWorkers = [crashed({ taskBackend: 'codex', sessionId: undefined, codexThreadId: 'thread-abc123' })];
     const { sync, ctx } = syncWith(probe({ session: true }));
