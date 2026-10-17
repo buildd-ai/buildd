@@ -66,7 +66,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { homeMissionRecencyWhere, loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_SCHEDULE_EXTRAS, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_TASK_EXTRAS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
@@ -530,19 +530,20 @@ export default async function HomePage({
             : undefined;
 
           // Exclude archived missions: they can never be active/scheduled on Home.
+          // Completed ones only inside the window Home still shows them for.
           // Columns are the card's (lib/mission-card-views.ts) so the visible
-          // cards cost no second task fan-out.
+          // cards cost no second task fan-out; task context is a digest.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
-            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'))),
+            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'), homeMissionRecencyWhere())),
             orderBy: sqlOrderBy([desc(missionsTable.priority), desc(missionsTable.createdAt)]),
-            columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
+            columns: { id: true, teamId: true, title: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
-                extras: MISSION_TASK_REFRESH_EXTRAS,
+                extras: MISSION_CARD_TASK_EXTRAS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
-              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
+              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true }, extras: MISSION_CARD_SCHEDULE_EXTRAS },
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
