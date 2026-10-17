@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { latestRunPerName } from '@/lib/auto-merge-bound';
+import { latestRunPerName } from '@/lib/ci-verdict';
 import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
 import { StoredPrCard, type StoredPrFacts } from '@/components/task/StoredPrCard';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
