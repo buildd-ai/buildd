@@ -23,7 +23,7 @@ export default function MissionRecoveryNotice({ items }: MissionRecoveryNoticePr
           <li key={taskId} className="flex flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
               <StatePill state={view.pill} label={view.stateWord} />
-              <Link href={`/app/tasks/${taskId}`} className="min-w-0 truncate text-body text-text-primary hover:underline">{title}</Link>
+              <Link href={`/app/tasks/${taskId}`} className="block min-h-11 md:min-h-0 py-3 md:py-0 min-w-0 truncate text-body text-text-primary hover:underline">{title}</Link>
             </div>
             <p className="text-meta text-text-secondary">
               {view.sentence}
