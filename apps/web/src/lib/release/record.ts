@@ -72,6 +72,14 @@ export interface RecordAndDispatchDeps {
   attribute?: typeof attributeRelease;
 }
 
+/** Release workflow inputs that amend an open candidate rather than cut one. */
+const AMENDMENT_INPUTS = ['amend', 'exclude'] as const;
+
+/** True when the dispatch asks the release workflow to amend the open candidate. */
+export function isAmendmentDispatch(inputs: Record<string, string> | null | undefined): boolean {
+  return AMENDMENT_INPUTS.some((k) => typeof inputs?.[k] === 'string' && inputs[k].trim() !== '');
+}
+
 export async function recordAndDispatchRelease(
   params: RecordAndDispatchParams,
   deps: RecordAndDispatchDeps = {},
@@ -130,7 +138,12 @@ export async function recordAndDispatchRelease(
   // reset the row — wiping its runUrl/deployedAt and flipping it back to
   // 'dispatched' — while the real release PR is still open, effectively
   // re-dispatching a release that was never actually finished.
-  if (!params.force) {
+  //
+  // An amendment (`amend` / `exclude`) is not a repeat of the plain cut that
+  // recorded the row: a plain dispatch leaves an open frozen candidate as it
+  // is, and the amendment is the only way to move it. It is never deduped; the
+  // upsert below re-arms the commit's row for it.
+  if (!params.force && !isAmendmentDispatch(params.inputs)) {
     const existing = await db.query.releases.findFirst({
       where: sqlWhere(and(
         eq(releases.workspaceId, workspaceId),
