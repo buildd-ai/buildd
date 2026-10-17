@@ -286,32 +286,32 @@ const WORKERS_COLUMN_DECLARATIONS = new Set<string>([
   'scripts/demo/advance.ts',
 ]);
 
-/** Terminal facts here go under `factFunnelScope`; non-terminal facts are TODO S4b. */
+/** Terminal facts here go under `factFunnelScope`; non-terminal facts (open, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not scope them and no open slice owns it (a follow-up task, if wanted). */
 const FUNNEL = 'records PR facts through the funnel; a terminal fact under factFunnelScope (delivery-owned rows take only what their delivery says)';
 const FUNNEL_CALLERS: Record<string, string> = {
-  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (TODO S4b). A kernel-owned merge is T17's, reached through observePrState`,
+  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (unscoped, no owning slice). A kernel-owned merge is T17's, reached through observePrState`,
   'apps/web/src/app/api/github/pr/route.ts': `${FUNNEL}: the legacy merge door's receipt`,
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': `${FUNNEL}: the dashboard merge door's receipt`,
-  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal; TODO S4b)',
+  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal, unscoped; no owning slice)',
   'apps/web/src/lib/dead-pr-shutdown.ts': `${FUNNEL}: the loser of a duplicate PR closes`,
   'apps/web/src/lib/dead-zone-sweep.ts': `${FUNNEL}: the sweep heals a missed merge or close`,
-  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (TODO S4b). The mission PR has no delivery until S6`,
+  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice). The mission PR's delivery is opened by openMissionPrDelivery (S6)`,
   'apps/web/src/lib/pr-fact-import.ts': `${FUNNEL}: the reconcile script's import`,
   'apps/web/src/lib/pr-merge-stamp.ts': `${FUNNEL}: stampPrMergedOnAllRows, the legacy merge's stamp`,
   // runMergedPrWork stamps only with \`stamp: true\`: the webhook's legacy path. A kernel-owned PR's
   // work runs from the emit_pr_merged effect with \`stamp: false\`, after T17 already projected the rows.
   'apps/web/src/lib/pr-merged-work.ts': `${FUNNEL}: stampPrMergedOnAllRows for a PR the kernel does not own`,
-  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (TODO S4b)`,
-  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (TODO S4b)`,
-  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (TODO S4b). The render read-through itself retires with AC-3`,
-  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal; TODO S4b)',
-  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal; TODO S4b): the sibling owner row of a second PR from one worker',
+  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (unscoped; no owning slice)`,
+  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice)`,
+  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (unscoped; no owning slice). The render read-through itself retires with AC-3`,
+  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal, unscoped; no owning slice)',
+  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal, unscoped; no owning slice): the sibling owner row of a second PR from one worker',
   // Cannot import apps/web, so it mints an unscoped scope (below).
-  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. TODO S4b: heal through the kernel floor instead',
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. Healing through the kernel floor instead has no owning slice',
 };
 /** Minting a terminal-fact scope outside the kernel bypasses the delivery check. */
 const SCOPE_MINTERS: Record<string, string> = {
-  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill in @buildd/core, which cannot import the kernel. TODO S4b',
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill in @buildd/core, which cannot import the kernel. Moving it behind the kernel floor has no owning slice',
 };
 const FUNNEL_CALL = /\b(?:recordPrFact|stampPrMergedOnAllRows)\b/;
 /** The funnel's SQL builders write the columns: only the funnel and the kernel may run them. */
@@ -346,10 +346,10 @@ const ATTEMPT = (why: string) => `ATTEMPT: ${why}; the attempt's own lifecycle, 
 const PERSON = (why: string) => `PERSON: ${why}`;
 const NON_DELIVERY = (why: string) => `NON_DELIVERY: ${why}`;
 const TASK_STATUS_WRITERS: Record<string, string> = {
-  'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b)`,
+  'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (TODO S7: derive on read)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (S7, projections, task c16eb202: derive on read)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
   'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
