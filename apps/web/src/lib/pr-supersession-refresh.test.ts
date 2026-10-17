@@ -19,7 +19,9 @@ const {
   retireSupersededRefreshPr,
   sweepSupersededRefreshPrs,
   verifyRefreshSuperseded,
+  shouldSkipExhaustedRefreshPr,
   REFRESH_SUPERSESSION_MARKER,
+  REFRESH_DEFERRAL_EXHAUSTED_KEY,
 } = await import('./pr-supersession-refresh');
 
 const BRANCH = 'mission/abc-integration';
@@ -284,40 +286,12 @@ describe('sweepSupersededRefreshPrs', () => {
     expect(mockFireGateEvent.mock.calls.some((c: any[]) => c[0].outcome === 'stranded' && c[0].detail.kind === 'control_plane_deferral_exhausted')).toBe(true);
   });
 
-  it('an exhausted PR is skipped on subsequent sweeps; no stranded event is fired again', async () => {
-    // Scenario: first sweep exhausts a PR's deferral, second sweep should skip it entirely
-    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: { code: 'control_plane_unavailable' }, headers: {} } }));
-    const now = new Date('2026-10-14T23:10:00Z');
-    const saved: Array<{ taskId: string; count: number; exhausted: boolean }> = [];
-    const saveDeferral = async (taskId: string, state: { count: number }, exhausted: boolean) => { saved.push({ taskId, count: state.count, exhausted }); };
-
-    const exhaustedPr = { ...OLDER, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 24, reason: 'cp down' } };
-    const firstSweep = await sweepSupersededRefreshPrs(now, {
-      load: async () => ({ open: [exhaustedPr], merged: [NEWER] }),
-      installation: async () => 1,
-      api,
-      saveDeferral,
-    });
-    expect(firstSweep.deferralExhausted).toBe(1);
-    const strandedInFirst = mockFireGateEvent.mock.calls.filter((c: any[]) => c[0].outcome === 'stranded' && c[0].detail.kind === 'control_plane_deferral_exhausted').length;
-    expect(strandedInFirst).toBe(1);
-
-    // Second sweep: the loader now has the exhausted flag, and the filter should exclude it
-    mockFireGateEvent.mockClear();
-    const prContextWithExhausted = (ctx: any) => ({ ...exhaustedPr, ...ctx });
-    const secondSweep = await sweepSupersededRefreshPrs(now, {
-      load: async () => {
-        // The loader's filter (line 317) excludes PRs with REFRESH_DEFERRAL_EXHAUSTED_KEY
-        // So a PR that's exhausted is not returned in open PRs
-        return { open: [], merged: [NEWER] };
-      },
-      installation: async () => 1,
-      api,
-      saveDeferral,
-    });
-    expect(secondSweep).toEqual({ candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0, deferralExhausted: 0 });
-    const strandedInSecond = mockFireGateEvent.mock.calls.filter((c: any[]) => c[0].outcome === 'stranded' && c[0].detail.kind === 'control_plane_deferral_exhausted').length;
-    expect(strandedInSecond).toBe(0);
+  it('an exhausted PR is excluded from the sweep by shouldSkipExhaustedRefreshPr', () => {
+    // The filter excludes PRs whose context carries the exhausted flag.
+    expect(shouldSkipExhaustedRefreshPr({})).toBe(false);
+    expect(shouldSkipExhaustedRefreshPr({ other: 'value' })).toBe(false);
+    expect(shouldSkipExhaustedRefreshPr({ [REFRESH_DEFERRAL_EXHAUSTED_KEY]: true })).toBe(true);
+    expect(shouldSkipExhaustedRefreshPr({ [REFRESH_DEFERRAL_EXHAUSTED_KEY]: false })).toBe(false);
   });
 
   it('a successful retire clears the deferral so future outages start fresh', async () => {

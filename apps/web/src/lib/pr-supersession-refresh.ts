@@ -286,6 +286,11 @@ export interface RefreshSupersessionSweepResult {
   deferralExhausted: number;
 }
 
+/** Returns true if a PR's exhausted deferral should prevent the sweep from retrying. */
+export function shouldSkipExhaustedRefreshPr(ctx: Record<string, unknown>): boolean {
+  return !!ctx[REFRESH_DEFERRAL_EXHAUSTED_KEY];
+}
+
 /** Open (or closed-without-an-edge) and merged refresh PRs, from our own rows. */
 async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: RefreshPr[] }> {
   const rows = await db
@@ -314,7 +319,7 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
     if (!refresh || !repo || !r.missionId || typeof r.prNumber !== 'number') continue;
     const ctx = (r.context ?? {}) as Record<string, unknown>;
     // A retirement whose deferral ran out is a person's now; the sweep does not retry it.
-    if (ctx[REFRESH_DEFERRAL_EXHAUSTED_KEY]) continue;
+    if (shouldSkipExhaustedRefreshPr(ctx)) continue;
     const pr: RefreshPr = { workerId: r.workerId, taskId: r.taskId, workspaceId: r.workspaceId, missionId: r.missionId, repo, prNumber: r.prNumber, refresh, deferral: deferralOf(ctx[REFRESH_DEFERRAL_KEY]) };
     if (r.mergedAt) merged.push(pr);
     else if (r.supersededBy == null && !r.abandonedAt && r.lifecycle !== 'unresolvable') open.push(pr);
