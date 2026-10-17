@@ -10,7 +10,7 @@ const { GATE_SLUGS: REAL_GATE_SLUGS } = await import('@buildd/core/gate-slugs');
 const mockFireGateEvent = mock((_e: any) => 'sig');
 mock.module('@/lib/gate-ledger', () => ({ GATE_SLUGS: REAL_GATE_SLUGS, fireGateEvent: mockFireGateEvent }));
 mock.module('@/lib/github', () => ({ githubApi: async () => ({}) }));
-mock.module('@/lib/workspace-installation', () => ({ installationIdForRepo: async () => 1 }));
+mock.module('@/lib/workspace-installation', () => ({ createTeamInstallationResolver: () => ({ forWorkspace: async () => ({ installationId: 1 }) }) }));
 mock.module('@/lib/repo-scope', () => ({ repoFullNameFromPrUrl: () => 'org/repo' }));
 const mockRecord = mock(async (_p: any): Promise<any> => ({ ok: true }));
 mock.module('@/lib/pr-supersession', () => ({ recordPrSupersession: mockRecord }));

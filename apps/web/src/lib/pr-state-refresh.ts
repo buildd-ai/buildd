@@ -37,7 +37,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
@@ -302,14 +302,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
 
   const ownerOf = await deliveryOwnership(candidates.map((c) => c.id));
 
-  /** Repo → installation, memoized for the batch. See pr-reconcile.ts. */
-  const installationByRepo = new Map<string, number | null>();
-  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
-    }
-    return installationByRepo.get(repo) ?? null;
-  };
+  /** The team's installation per repo, memoized for the batch. See pr-reconcile.ts. */
+  const installations = createTeamInstallationResolver();
 
   // Group by workspace to share one installation token per workspace.
   const byWorkspace = new Map<string, _Candidate[]>();
@@ -321,7 +315,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const ws = await db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { repo: true },
+      columns: { repo: true, teamId: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
@@ -339,10 +333,11 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) continue;
 
-      const installationId =
-        (repo === workspaceRepo ? workspaceInstallationId : null)
-        ?? await resolveInstallationCached(repo)
-        ?? workspaceInstallationId;
+      const { installationId } = await installations.resolve(
+        repo,
+        { teamId: ws?.teamId, fullName: workspaceRepo, installationId: workspaceInstallationId },
+        { fallbackToWorkspace: true },
+      );
       if (!installationId) continue;
 
       if (i > 0) {

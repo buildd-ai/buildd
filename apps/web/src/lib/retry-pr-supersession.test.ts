@@ -127,7 +127,16 @@ mock.module('@/lib/repo-scope', () => ({
     (u ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null,
 }));
 const mockInstallationIdForRepo = mock(async (_repo: string) => 123 as number | null);
-mock.module('@/lib/workspace-installation', () => ({ installationIdForRepo: mockInstallationIdForRepo }));
+const mockForWorkspace = mock(async (_repo: string, _workspaceId: string | null) => ({ installationId: 123 }));
+mock.module('@/lib/workspace-installation', () => ({
+  createTeamInstallationResolver: () => ({
+    forWorkspace: async (repo: string, workspaceId: string | null) => {
+      await mockForWorkspace(repo, workspaceId);
+      const id = await mockInstallationIdForRepo(repo);
+      return id ? { installationId: id } : { installationId: null, reason: 'no_installation' };
+    },
+  }),
+}));
 
 const {
   closeAncestorRetryPrs,
