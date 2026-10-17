@@ -4759,7 +4759,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({
         workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 42, installationId: 5000, hintedHeadSha: NEW_SHA,
-      }));
+      }), { principal: { kind: 'system', id: 'system:webhook:synchronize' } });
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
       expect(mockCarryForwardApproval).not.toHaveBeenCalled();
     });
@@ -4772,7 +4772,7 @@ describe('POST /api/github/webhook', () => {
 
       await POST(createWebhookRequest('pull_request', makeSynchronizePayload({ pull_request: { draft: true } })));
 
-      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }));
+      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }), expect.anything());
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
 
       // A legacy (not kernel-owned) draft keeps its old behaviour: no re-dispatch.
