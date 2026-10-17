@@ -14,6 +14,9 @@ import { Select } from '@/components/ui/Select';
 import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
+import SpecReviewChanges from '@/components/SpecReviewChanges';
+import SpecCriterionHistory from '@/components/SpecCriterionHistory';
+import Disclosure from '@/components/ui/Disclosure';
 import SpecComments from '@/components/SpecComments';
 import SpecAttachments from '@/components/SpecAttachments';
 import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
@@ -27,6 +30,7 @@ import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
 import type { RepoCopyPreflight } from '@/lib/specs/repo-copy';
 import { nativeHistoryData } from '@/lib/native-history';
+import type { CriterionMark } from '@/lib/specs/delivery-words';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
 
@@ -43,6 +47,18 @@ export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'> & { canA
   if (v.reading.approved) return waits || null;
   if (approved == null) return `Nothing is approved yet.${waits ? ` ${waits}` : ''}`;
   return `You're reading revision ${n}. Revision ${approved} is approved.${waits ? ` ${waits}` : ''}`;
+}
+
+/**
+ * The work marks shown under each criterion of the revision being read: the
+ * work built to it, and, on the revision in force, work built to an older
+ * one whose verdict judged words this revision has changed ("Passed an
+ * earlier wording", R-13).
+ */
+export function criterionMarks(v: Pick<Ok, 'delivery' | 'reading'>): Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }> {
+  return (v.delivery?.entries ?? []).flatMap((e) => e.criteria
+    .filter((c) => e.builtTo === v.reading.revision || (v.reading.approved && (c.mark === 'earlier-pass' || c.mark === 'earlier-fail')))
+    .map((c) => ({ criterionId: c.criterionId, mark: c.mark, title: e.title, href: e.href })));
 }
 
 /** The body without a first heading that only repeats the page title. */
@@ -170,9 +186,11 @@ type ReviewPanes = SpecPanes & { version?: number };
 const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
 
 /**
- * What approving the waiting revision puts in force (R-7, R-8): from the
+ * What approving the waiting revision puts in force (R-1 to R-8): from the
  * server when the page was loaded with ?review=1, else fetched on the press,
- * with the heading and a loading line shown at once.
+ * with the heading and a loading line shown at once. It leads with the change
+ * summary and the per-criterion change list; the line diff is behind "Show
+ * full diff", never the default.
  */
 function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean }) {
   const [panes, setPanes] = useState<ReviewPanes | null>(initial);
@@ -193,34 +211,42 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
   const revision = panes?.revision ?? waiting;
   const replaces = panes ? panes.replaces : spec.approvedRevision;
   return (
-    <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
+    <section className="flex flex-col gap-4" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
       <h2 id="spec-review-heading" className="text-title font-semibold text-text-primary">
         {replaces ? `Revision ${revision} replaces revision ${replaces}` : `Revision ${revision} (nothing approved yet)`}
       </h2>
-      {panes ? (
-        // Above the text it approves on a phone; in the Ask corner on desktop.
-        <ActionDock>
-          <Approve specId={spec.id} revision={panes.revision} expectedVersion={panes.version ?? spec.version} />
-        </ActionDock>
-      ) : null}
-      {repoChecks ? <RepoChecks specId={spec.id} /> : null}
       {error ? (
         <Notice tone="warn" data-testid="spec-page-review-error">{error}</Notice>
       ) : panes ? (
-        <SpecRevisionPanes
-          body={panes.body}
-          hunks={panes.hunks}
-          omittedLines={panes.omittedLines}
-          sectionCount={panes.sectionCount}
-          linesAdded={panes.linesAdded}
-          linesRemoved={panes.linesRemoved}
-          initial={panes.replaces ? 'changes' : 'spec'}
-          attachments={panes.attachmentSources}
-        />
+        <>
+          {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
+          {/* After the changes on a phone; in the Ask corner on desktop. */}
+          <ActionDock>
+            <Approve specId={spec.id} revision={panes.revision} expectedVersion={panes.version ?? spec.version} />
+          </ActionDock>
+          {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+          <Disclosure summary={<span data-testid="spec-page-full-diff">Show full diff</span>} defaultOpen={!panes.changes}>
+            <div className="mt-2 flex flex-col gap-3">
+              <SpecRevisionPanes
+                body={panes.body}
+                hunks={panes.hunks}
+                omittedLines={panes.omittedLines}
+                sectionCount={panes.sectionCount}
+                linesAdded={panes.linesAdded}
+                linesRemoved={panes.linesRemoved}
+                initial={panes.replaces ? 'changes' : 'spec'}
+                attachments={panes.attachmentSources}
+              />
+            </div>
+          </Disclosure>
+        </>
       ) : (
-        <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-page-review-loading">
-          <Spinner size="sm" aria-label="Reading the changes" /> Reading what changed…
-        </p>
+        <>
+          {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+          <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-page-review-loading">
+            <Spinner size="sm" aria-label="Reading the changes" /> Reading what changed…
+          </p>
+        </>
       )}
     </section>
   );
@@ -281,10 +307,15 @@ export default function SpecPage({ view }: { view: Ok }) {
         )}
       </section>
     ) : (
-      <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
-        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
-          criterionVerdicts={(view.delivery?.entries ?? []).filter(e => e.builtTo === view.reading.revision).flatMap(e => e.criteria.map(c => ({ criterionId: c.criterionId, mark: c.mark, title: e.title, href: e.href })))} />
-      </Card>
+      <>
+        {view.criterionHistory ? (
+          <SpecCriterionHistory specId={spec.id} criterionId={view.criterionHistory.criterionId} history={view.criterionHistory.history} />
+        ) : null}
+        <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
+          <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
+            criterionVerdicts={criterionMarks(view)} criterionHistoryBase={base} />
+        </Card>
+      </>
     )
   );
 
