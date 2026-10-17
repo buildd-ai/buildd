@@ -7,14 +7,24 @@ import { expectedInstallation, type InstallationLookups } from './command-instal
 
 const WS = '11111111-1111-4111-8111-111111111111';
 
-function lookups(o: { ws?: { fullName: string | null; installationId: number | null }; repos?: Record<string, number>; scope?: string[] } = {}) {
+const TEAM = '22222222-2222-4222-8222-222222222222';
+
+function lookups(o: {
+  ws?: { fullName: string | null; installationId: number | null; teamId?: string | null };
+  repos?: Record<string, number>;
+  scope?: string[];
+  /** Installations of the team; every one by default. */
+  teamOwns?: number[];
+} = {}) {
   const asked: string[] = [];
+  const ownership: number[] = [];
   const l: InstallationLookups = {
-    workspace: async () => o.ws ?? { fullName: 'acme/w', installationId: 1 },
+    workspace: async () => ({ teamId: TEAM, ...(o.ws ?? { fullName: 'acme/w', installationId: 1 }) }),
     forRepo: async (r) => o.repos?.[r] ?? null,
     inScope: async (_ws, r) => { asked.push(r); return (o.scope ?? []).includes(r); },
+    ownedByTeam: async (id, team) => { ownership.push(id); return team === TEAM && (o.teamOwns ? o.teamOwns.includes(id) : true); },
   };
-  return { l, asked };
+  return { l, asked, ownership };
 }
 
 describe('expectedInstallation', () => {
@@ -47,5 +57,27 @@ describe('expectedInstallation', () => {
   it('nothing covers the repo: no_installation', async () => {
     const { l } = lookups({ ws: { fullName: 'acme/w', installationId: null } });
     expect(await expectedInstallation(WS, 'acme/w', l)).toEqual({ refused: 'no_installation' });
+  });
+
+  it('the workspace\'s own linked installation is used without an ownership read', async () => {
+    const { l, ownership } = lookups({ repos: { 'acme/w': 1 }, teamOwns: [] });
+    expect(await expectedInstallation(WS, 'acme/w', l)).toEqual({ installationId: 1 });
+    expect(ownership).toEqual([]);
+  });
+
+  it('a cross-repo PR in scope under another of the team\'s installations is accepted', async () => {
+    const { l, ownership } = lookups({ repos: { 'other/mobile': 2 }, scope: ['other/mobile'], teamOwns: [2] });
+    expect(await expectedInstallation(WS, 'other/mobile', l)).toEqual({ installationId: 2 });
+    expect(ownership).toEqual([2]);
+  });
+
+  it('a repo in scope whose installation belongs to another team is refused', async () => {
+    const { l } = lookups({ repos: { 'other/mobile': 2 }, scope: ['other/mobile'], teamOwns: [] });
+    expect(await expectedInstallation(WS, 'other/mobile', l)).toEqual({ refused: 'installation_not_team_owned' });
+  });
+
+  it('a workspace with no linked installation is refused an installation its team does not own, even for its own repo', async () => {
+    const { l } = lookups({ ws: { fullName: 'acme/w', installationId: null }, repos: { 'acme/w': 7 }, teamOwns: [] });
+    expect(await expectedInstallation(WS, 'acme/w', l)).toEqual({ refused: 'installation_not_team_owned' });
   });
 });

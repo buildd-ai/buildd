@@ -132,6 +132,12 @@ export type Command =
       taskId?: string;
       attemptId?: string;
       outcome: 'success' | 'failed' | 'lost' | 'unproven';
+      /**
+       * 295486ba: the end is the attempt's task being cancelled (a person, or the platform),
+       * not a run that stopped. A CI repair cancelled while still queued (never claimed) with
+       * nothing local did no work, so it spends nothing (skipped). Absent = a run's end.
+       */
+      cancelled?: boolean;
       localHeadSha: string | null;
       commitCount: number;
       live: LivePr | null;
