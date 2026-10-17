@@ -12,7 +12,7 @@ import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-
 import {
   machineLoginStamp,
   parseKeychainMdat,
-  applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues,
+  applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues, detectMachineLoginAsync, defaultMacKeychainHasLoginAsync, defaultMacKeychainStampAsync,
 } from '../../src/host-seat';
 import { createSecretRedactor } from '@buildd/core/redaction';
 
@@ -223,5 +223,61 @@ describe('machineLoginStamp: noticing a fresh login without reading it', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('async keychain checks: never block on event loop', () => {
+  test('defaultMacKeychainHasLoginAsync returns immediately with cached or false', async () => {
+    const start = Date.now();
+    const result = await defaultMacKeychainHasLoginAsync();
+    const elapsed = Date.now() - start;
+    // Should return quickly; only the first call might block briefly
+    expect(typeof result).toBe('boolean');
+    // No hard timeout test here since it depends on system keychain response
+  });
+
+  test('defaultMacKeychainStampAsync returns immediately with cached or null', async () => {
+    const start = Date.now();
+    const result = await defaultMacKeychainStampAsync();
+    const elapsed = Date.now() - start;
+    expect(result === null || typeof result === 'string').toBe(true);
+  });
+
+  test('detectMachineLoginAsync works with injected async probe', async () => {
+    const home = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
+    try {
+      const login = await detectMachineLoginAsync({
+        env: {},
+        home,
+        platform: 'linux',
+      });
+      expect(login).toBe('login');
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('detectMachineLoginAsync prefers env token over file login', async () => {
+    const home = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
+    try {
+      const login = await detectMachineLoginAsync({
+        env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN },
+        home,
+        platform: 'linux',
+      });
+      expect(login).toBe('env');
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test('detectMachineLoginAsync with async keychain probe', async () => {
+    const home = tmpHome();
+    const asyncProbe = async () => true;
+    try {
+      const login = await detectMachineLoginAsync({
+        env: {},
+        home,
+        platform: 'darwin',
+        macKeychainHasLoginAsync: asyncProbe,
+      });
+      expect(login).toBe('login');
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });

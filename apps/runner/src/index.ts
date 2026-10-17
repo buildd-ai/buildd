@@ -1542,10 +1542,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
       const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, codexAuthSource: undefined };
-      const routeStatus = workerManager ? (() => {
-        const { routes, problems } = workerManager.getRouteStatus();
+      const routeStatus = workerManager ? (async () => {
+        const { routes, problems } = await workerManager.getRouteStatusAsync();
         return { routes, routeProblems: problems, spendToday: todayTotals(workerManager.getWorkers(), Date.now()) };
       })() : {};
+      const resolvedRouteStatus = routeStatus instanceof Promise ? await routeStatus : routeStatus;
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
@@ -1558,7 +1559,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         // The routes this machine's own credentials give each backend, the
         // ones that do not work, and today's dollars on this runner per
         // bucket (run-route.ts). `buildd top`'s header reads these.
-        ...routeStatus,
+        ...resolvedRouteStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,

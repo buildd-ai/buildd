@@ -21,7 +21,7 @@
  * Applies to Claude Coding runs only; Codex, Chat and inference calls are
  * outside this switch. Hosted managed runners never set it.
  */
-import { detectMachineLogin, type MachineLogin, type MachineLoginProbe } from './host-seat';
+import { detectMachineLogin, detectMachineLoginAsync, type MachineLogin, type MachineLoginProbe } from './host-seat';
 
 export const MODEL_AUTH_SOURCE_ENV = 'BUILDD_MODEL_AUTH_SOURCE';
 
@@ -93,6 +93,34 @@ export function decideModelAuthSource(
   };
 }
 
+/** Async version: never blocks on sync keychain checks. */
+export async function decideModelAuthSourceAsync(
+  env: Record<string, string | undefined>,
+  input: ModelAuthSourceInput,
+): Promise<ModelAuthSourceDecision> {
+  const mode = modelAuthSourceMode(env);
+  const inert: ModelAuthSourceDecision = {
+    mode, active: false, dropServerCredentials: false, dropInheritedApiKeys: false, blocked: false, localLogin: null,
+  };
+  if (mode !== 'runner' || input.isCodexTask || input.cloud || !input.runnerLocalAllowed) return inert;
+
+  const operatorBaseUrl = (env.ANTHROPIC_BASE_URL ?? '').trim().length > 0;
+  const paidSelected = input.teamEndpointSelected || input.runnerProviderSelected || operatorBaseUrl;
+  if (paidSelected) {
+    return { ...inert, active: true, label: 'api-provider' };
+  }
+  const localLogin = await detectMachineLoginAsync({ ...input.probe, env: { ...(input.probe?.env ?? env) } });
+  return {
+    mode,
+    active: true,
+    label: 'runner-managed',
+    dropServerCredentials: true,
+    dropInheritedApiKeys: true,
+    blocked: !localLogin,
+    localLogin,
+  };
+}
+
 /** Remove inherited metered credentials from the agent env (never reads their values). */
 export function stripInheritedApiKeys(env: Record<string, string>): void {
   delete env.ANTHROPIC_API_KEY;
@@ -137,6 +165,29 @@ export function resolveModelAuthSource(
   claim: ModelAuthSourceClaim,
 ): ResolvedModelAuthSource {
   const decision = decideModelAuthSource(env, {
+    isCodexTask: claim.isCodexTask,
+    runnerLocalAllowed: claim.runnerLocalAllowed,
+    teamEndpointSelected: !!claim.modelEndpoint,
+    runnerProviderSelected: !!(claim.llmProvider?.provider === 'openrouter' || claim.llmProvider?.baseUrl),
+    cloud: claim.cloud,
+    probe: claim.probe,
+  });
+  if (decision.blocked) throw new Error(NO_CODING_AUTH_MESSAGE);
+  const credentials: ClaimCredentials = decision.dropServerCredentials ? {} : { ...claim.credentials };
+  const c = credentials;
+  return {
+    decision,
+    credentials,
+    serverSeatDelivered: !!(c.serverOauthToken || c.claudeAccessToken || c.claudeCredentialId),
+  };
+}
+
+/** Async version: never blocks on sync keychain checks. */
+export async function resolveModelAuthSourceAsync(
+  env: Record<string, string | undefined>,
+  claim: ModelAuthSourceClaim,
+): Promise<ResolvedModelAuthSource> {
+  const decision = await decideModelAuthSourceAsync(env, {
     isCodexTask: claim.isCodexTask,
     runnerLocalAllowed: claim.runnerLocalAllowed,
     teamEndpointSelected: !!claim.modelEndpoint,

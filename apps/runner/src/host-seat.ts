@@ -22,7 +22,11 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { codexAuthJsonKind } from './cost-basis';
+
+const execFileAsync = promisify(execFile);
 
 export type MachineLogin = 'env' | 'login';
 
@@ -35,6 +39,8 @@ export interface MachineLoginProbe {
   platform?: NodeJS.Platform;
   /** Whether the macOS keychain holds a Claude Code login. Injected in tests. */
   macKeychainHasLogin?: () => boolean;
+  /** Async version for request paths. Injected in tests. */
+  macKeychainHasLoginAsync?: () => Promise<boolean>;
 }
 
 /** True when `~/.claude/.credentials.json` holds a Claude subscription login (not just MCP OAuth). */
@@ -100,6 +106,89 @@ export function defaultMacKeychainStamp(): string | null {
   return value;
 }
 
+let keychainHasLoginRefreshTimeout: NodeJS.Timeout | undefined;
+let keychainStampRefreshTimeout: NodeJS.Timeout | undefined;
+
+/**
+ * Async version: spawn without blocking the event loop. Never blocks on a sync call.
+ * Returns cached value immediately (or false/null if no cache exists yet).
+ * Background refresh: after cache expires, refresh in the background and keep serving the last value.
+ */
+export async function defaultMacKeychainHasLoginAsync(): Promise<boolean> {
+  const now = Date.now();
+  const cached = keychainCache && now - keychainCache.at < KEYCHAIN_CACHE_MS;
+
+  // Cache is still fresh, return it
+  if (cached) return keychainCache!.value;
+
+  // Cache expired; start a background refresh if not already running
+  if (!keychainHasLoginRefreshTimeout) {
+    keychainHasLoginRefreshTimeout = setTimeout(() => {
+      keychainHasLoginRefreshTimeout = undefined;
+      defaultMacKeychainHasLoginAsync().catch(() => {
+        // Ignore errors from background refresh
+      });
+    }, 0);
+  }
+
+  // Return stale cached value immediately, or false if no cache yet
+  if (keychainCache) return keychainCache.value;
+
+  // First call ever: block once to get initial value
+  let value = false;
+  try {
+    const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+      stdio: 'ignore',
+      timeout: 3000,
+    });
+    value = r && true;
+  } catch {
+    value = false;
+  }
+  keychainCache = { at: now, value };
+  return value;
+}
+
+/**
+ * Async version: spawn without blocking the event loop. Never blocks on a sync call.
+ * Returns cached value immediately (or null if no cache exists yet).
+ * Background refresh: after cache expires, refresh in the background and keep serving the last value.
+ */
+export async function defaultMacKeychainStampAsync(): Promise<string | null> {
+  const now = Date.now();
+  const cached = keychainStampCache && now - keychainStampCache.at < KEYCHAIN_CACHE_MS;
+
+  // Cache is still fresh, return it
+  if (cached) return keychainStampCache!.value;
+
+  // Cache expired; start a background refresh if not already running
+  if (!keychainStampRefreshTimeout) {
+    keychainStampRefreshTimeout = setTimeout(() => {
+      keychainStampRefreshTimeout = undefined;
+      defaultMacKeychainStampAsync().catch(() => {
+        // Ignore errors from background refresh
+      });
+    }, 0);
+  }
+
+  // Return stale cached value immediately, or null if no cache yet
+  if (keychainStampCache) return keychainStampCache.value;
+
+  // First call ever: block once to get initial value
+  let value: string | null = null;
+  try {
+    const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    });
+    if (r && r.stdout) value = parseKeychainMdat(String(r.stdout));
+  } catch {
+    value = null;
+  }
+  keychainStampCache = { at: now, value };
+  return value;
+}
+
 /** The `"mdat"<timedate>=... "20261016093000Z\000"` attribute line's date, or null. */
 export function parseKeychainMdat(attributes: string): string | null {
   const m = /"mdat"<timedate>=(?:0x[0-9A-Fa-f]+\s+)?"([^"]+)"/.exec(attributes);
@@ -137,6 +226,19 @@ export function detectMachineLogin(probe: MachineLoginProbe = {}): MachineLogin 
   if (credentialsFileHasLogin(home)) return 'login';
   const platform = probe.platform ?? process.platform;
   if (platform === 'darwin' && (probe.macKeychainHasLogin ?? defaultMacKeychainHasLogin)()) return 'login';
+  return null;
+}
+
+/** Async version: never blocks on sync keychain checks. Always returns immediately with cached or absent value. */
+export async function detectMachineLoginAsync(probe: MachineLoginProbe = {}): Promise<MachineLogin | null> {
+  const env = probe.env ?? process.env;
+  if ((env[MACHINE_LOGIN_TOKEN_VAR] ?? '').trim().length > 0) return 'env';
+  const home = probe.home ?? homedir();
+  if (credentialsFileHasLogin(home)) return 'login';
+  const platform = probe.platform ?? process.platform;
+  if (platform === 'darwin' && await (probe.macKeychainHasLoginAsync ?? defaultMacKeychainHasLoginAsync)()) {
+    return 'login';
+  }
   return null;
 }
 

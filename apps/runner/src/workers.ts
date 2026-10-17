@@ -79,6 +79,7 @@ import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-c
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
 import { advertisedRoleSlugs } from './role-advertising';
+import { detectMachineLoginAsync } from './host-seat';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -1139,6 +1140,24 @@ export class WorkerManager {
       env: process.env,
       llmProvider: this.config.llmProvider,
       machineLogin: detectMachineLogin(),
+      trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
+      codexAuthJson,
+      loginFailures: this.loginFailures,
+    });
+  }
+
+  /** Async version: never blocks on keychain checks. */
+  async getRouteStatusAsync(): Promise<{ routes: RunRoute[]; problems: RouteProblem[] }> {
+    this.loginFailures = clearRedoneLogins(this.loginFailures, (b) => machineLoginStamp(b));
+    let codexAuthJson: Record<string, unknown> | null = null;
+    const codexAuthPath = localCodexAuthPath();
+    if (codexAuthPath) {
+      try { codexAuthJson = JSON.parse(readFileSync(codexAuthPath, 'utf-8')); } catch { codexAuthJson = null; }
+    }
+    return machineRoutes({
+      env: process.env,
+      llmProvider: this.config.llmProvider,
+      machineLogin: await detectMachineLoginAsync(),
       trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
       codexAuthJson,
       loginFailures: this.loginFailures,
