@@ -78,6 +78,11 @@ export interface KernelOps {
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
   mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
+  /**
+   * T4: an attempt of a delivery ended (the worker PATCH, the reaper, a cancel, a reviewer takeover).
+   * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
+   */
+  attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -93,6 +98,11 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
+  attempt_ended: (s, { workspaceId, ...p }) => {
+    // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
+    return s.attemptEnded(p);
+  },
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
