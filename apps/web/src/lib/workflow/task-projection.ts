@@ -165,22 +165,44 @@ const open = sql.join(OWNER_OPEN_STATUSES.map((s) => sql`${s}::text`), sql`, `);
 const tkCols = { id: sql`tk.id`, workspaceId: sql`tk.workspace_id`, status: sql`tk.status` };
 
 /**
+ * The ending worker is the task's current attempt: its latest worker row, and not older than the
+ * task's `claimed_at` (a claim stamps it before inserting the new worker row, so an older row is the
+ * previous attempt's while a re-claim is in flight; same rule and skew as `ownerAttemptEndOf`).
+ * An end that lands late (a parked re-send, a slow door) after its task was requeued and claimed
+ * again belongs to the attempt before, so it must not settle the new one. Compared as text: a
+ * reaper end with no worker row names a synthetic id, which matches nothing.
+ */
+export function endingWorkerIsCurrentSql(workerId: string): SQL {
+  return sql`EXISTS (SELECT 1 FROM workers ew
+      WHERE ew.id::text = ${workerId}::text AND ew.task_id = tk.id
+        AND (tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
+        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id
+          AND (nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id))))`;
+}
+
+/** The worker an end names, from its idempotency key (`end:<workerId>`, reducer.ts). */
+const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ? key.slice(4) : null);
+
+/**
  * The `t_attempt` CTE (workflow-kernel-library.md §9, AC-1): T4 for an owner sets the owner task
  * in the transition's own statement. It reads the delivery CTE `d` (empty on a CAS miss), so a
  * version miss writes nothing. Only an owner end has a task to project: the end of the attempt a
  * `WORKING` delivery is bound to (a repair's end is FIXING/REPAIRING and its task is not the
- * owner). Empty when the decision projects nothing.
+ * owner). Only for the task's current attempt (`endingWorkerIsCurrentSql`). Empty when the
+ * decision projects nothing.
  */
-export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence'>, d = 'd'): SQL[] {
+export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'>, d = 'd'): SQL[] {
   if (decision.command !== 'AttemptEnded' || decision.fromState !== 'WORKING') return [];
   const status = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
-  if (!status) return [];
+  const workerId = endingWorkerOf(decision.idempotencyKey);
+  if (!status || !workerId) return [];
   const a = sql.raw(d);
   return [sql`t_attempt AS (
   UPDATE tasks tk SET status = ${status}::text, updated_at = now()
   FROM ${a} JOIN workflow_deliveries od ON od.id = ${a}.id
   WHERE tk.id = od.owner_task_id
     AND tk.status IN (${open})
+    AND ${endingWorkerIsCurrentSql(workerId)}
     AND ${notKernelMergedTaskSql(tkCols)}
   RETURNING tk.id
 )`];
@@ -193,7 +215,7 @@ export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'comm
  * The ledger's recorded end wins: a duplicate projects what the kernel recorded, not what was re-sent.
  * With no recorded end it projects `fallback`, the end the caller sent, so the task cannot strand
  * open. Same rules as `t_attempt`: only the delivery's owner task, only while it is still open,
- * never over a kernel-merged completion. Returns the status written, or null when nothing moved.
+ * only for the task's current attempt, never over a kernel-merged completion. Returns the status written, or null when nothing moved.
  */
 export function projectOwnerEndSql(p: { deliveryId: string; taskId: string; workerId: string; fallback: 'completed' | 'failed' | null }): SQL {
   const key = `end:${p.workerId}`;
@@ -215,6 +237,7 @@ FROM o
 WHERE tk.id = ${p.taskId}::uuid AND o.status IS NOT NULL
   AND tk.status IN (${open})
   AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${endingWorkerIsCurrentSql(p.workerId)}
   AND ${notKernelMergedTaskSql(tkCols)}
 RETURNING tk.status`;
 }

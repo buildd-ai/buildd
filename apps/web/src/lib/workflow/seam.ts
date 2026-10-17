@@ -301,6 +301,24 @@ export async function projectOwnerEnd(
 }
 
 /**
+ * AC-1 slice 3: an owner task still open whose latest worker ended (`ownerAttemptEndOf`, the
+ * floor's own settle rule) gets that end projected, for a delivery that already moved past WORKING.
+ * Answers the status written, or null.
+ */
+async function settleOwnerTask(p: { ownerTaskId: string; deliveryId: string }, deps: SeamDeps): Promise<'completed' | 'failed' | null> {
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, claimedAt: true } });
+  if (!task || (task.status !== 'assigned' && task.status !== 'in_progress')) return null;
+  const latest = await db.query.workers.findFirst({
+    where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
+    columns: { id: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
+  });
+  const end = latest ? ownerAttemptEndOf(task, latest) : null;
+  if (!latest || !end) return null;
+  return projectOwnerEnd({ deliveryId: p.deliveryId, taskId: p.ownerTaskId, workerId: latest.id, status: end }, deps.exec);
+}
+
+/**
  * bb6a3a56: the owner end the kernel is owed, rebuilt from the workers row.
  * Stamps `tasks.delivery_id` when it is missing (a crash between the open's
  * transitions and its stamp), then, when the owner's latest worker ended, sends
@@ -1484,6 +1502,10 @@ export async function reconcileKernelDeliveries(
           view = await loadView({ deliveryId }, deps.exec);
           if (view.delivery?.state !== 'WORKING') s.imported++;
         }
+      } else if (view.delivery) {
+        // AC-1 slice 3: past WORKING the kernel has the end, but the task may not: an older control
+        // plane applied it without projecting and the route's own projection failed. Settle it.
+        await settleOwnerTask({ ownerTaskId: view.delivery.ownerTaskId, deliveryId }, deps);
       }
       // 75c04d5d: a mechanical refresh pinned to a head the delivery already left. The head read
       // above is a duplicate (the delivery holds it), so nothing else ever ends the row.

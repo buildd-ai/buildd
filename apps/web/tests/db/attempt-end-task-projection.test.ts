@@ -156,6 +156,68 @@ describe('T4 projects the owner attempt\'s end onto its task', () => {
     expect(await status(pr)).toBe('failed');
   });
 
+  // Review of #5049: an end that lands late, after its task was requeued and claimed again,
+  // belongs to the attempt before and must not settle the new one.
+  async function reclaimed(pr: OpenedPr, o: { newWorker: boolean }): Promise<void> {
+    await q(sql`UPDATE workers SET status = 'completed', created_at = now() - interval '10 minutes' WHERE id = ${pr.workerId}::uuid`);
+    // The requeue (loop hold or retry) put the task back to pending; a runner claims it again.
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() WHERE id = ${pr.ownerTaskId}::uuid`);
+    if (o.newWorker) {
+      await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status)
+        VALUES (${w!.workspaceId}::uuid, ${pr.ownerTaskId}::uuid, 'w2', 'test', ${pr.branch}, 'running')`);
+    }
+  }
+
+  test('loop hold: requeued, claimed again, then the old completed end lands late: the new attempt stays assigned', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/late-hold', files: { 'src/a.ts': 'export const a = 20;\n' } });
+    await reclaimed(pr, { newWorker: true });
+    const r = await end(pr, { status: 'completed' });
+    expect(r.result?.result).toBe('applied');
+    expect((await w.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect(await status(pr)).toBe('assigned');
+  });
+
+  test('retry: an unproven end with commits and retry budget lands after the re-claim: AWAITING_PUSH, the new attempt stays assigned', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/late-retry', files: { 'src/a.ts': 'export const a = 21;\n' } });
+    await reclaimed(pr, { newWorker: true });
+    const r = await end(pr, { status: 'unproven', localHeadSha: 'f'.repeat(40), commitCount: 2, taskRetryBudgetLeft: true });
+    expect(r.result?.result).toBe('applied');
+    expect((await w.delivery(pr)).state).toBe('AWAITING_PUSH');
+    expect(await status(pr)).toBe('assigned');
+  });
+
+  test('a re-claim in flight (claimed_at stamped, the new worker row not inserted yet): a late end does not settle it', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/late-inflight', files: { 'src/a.ts': 'export const a = 22;\n' } });
+    await reclaimed(pr, { newWorker: false });
+    await end(pr, { status: 'failed' });
+    expect(await status(pr)).toBe('assigned');
+  });
+
+  test('past WORKING with the owner task still open (an older control plane applied the end without projecting): the floor settles it', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/floor-past-working', files: { 'src/a.ts': 'export const a = 23;\n' } });
+    await w.handOn(pr);
+    expect((await w.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    // As an older control plane leaves it: the end applied, the task untouched; the worker settled.
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() - interval '40 minutes' WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`UPDATE workers SET created_at = now() - interval '35 minutes', updated_at = now() - interval '30 minutes' WHERE id = ${pr.workerId}::uuid`);
+    await w.floor(pr);
+    expect(await status(pr)).toBe('completed');
+  });
+
+  test('past WORKING, the latest worker still settling: the floor leaves the task for now', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/floor-settling', files: { 'src/a.ts': 'export const a = 24;\n' } });
+    await w.handOn(pr);
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() - interval '40 minutes' WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`UPDATE workers SET created_at = now() - interval '35 minutes', updated_at = now() WHERE id = ${pr.workerId}::uuid`);
+    await w.floor(pr);
+    expect(await status(pr)).toBe('assigned');
+  });
+
   test('a task that is not the delivery\'s owner is never projected', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/proj-not-owner', files: { 'src/a.ts': 'export const a = 9;\n' } });

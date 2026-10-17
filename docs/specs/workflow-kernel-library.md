@@ -1307,13 +1307,23 @@ column outside the kernel; S3 and S4 remove or route each one.
   of the attempt a `WORKING` delivery is bound to) sets the owner task in
   its own statement (`t_attempt`, task-projection.ts), reading the delivery
   CTE, so a version miss writes nothing. `success` completes it; `failed`,
-  `lost` and `unproven` fail it; a requeue (`taskRetryBudgetLeft`) projects
-  nothing. It moves only an open task (`assigned`, legacy `in_progress`), so a
-  cancel, a requeue to `pending`, or a status another writer already settled
-  is kept, and it carries `notKernelMergedTaskSql`. An owner end that applies
-  nothing (a duplicate, a stale end) still projects (`projectOwnerEnd`): the
-  ledger's recorded `end:<workerId>` wins, else the end that was sent. The
-  floor's re-sent end therefore settles a task that stranded `assigned`.
+  `lost` and `unproven` fail it. The kernel's own requeue (a
+  `taskRetryBudgetLeft` end it answers by keeping the delivery `WORKING`)
+  projects nothing; a `taskRetryBudgetLeft` end that moves the delivery on (an
+  unproven end with commits goes to `AWAITING_PUSH`) projects like any other,
+  which leaves the task alone because its retry already set it `pending`. It
+  moves only an open task (`assigned`, legacy `in_progress`), so a cancel, a
+  requeue to `pending`, or a status another writer already settled is kept,
+  and only for the task's current attempt: the ending worker must be the
+  task's latest worker row and not older than its `claimed_at`, so an end
+  that lands late (a parked re-send, a slow door) after the task was requeued
+  and claimed again never settles the new attempt. It carries
+  `notKernelMergedTaskSql`. An owner end that applies nothing (a duplicate, a
+  stale end) still projects (`projectOwnerEnd`): the ledger's recorded
+  `end:<workerId>` wins, else the end that was sent. The floor's re-sent end
+  therefore settles a task that stranded `assigned`, and for a delivery
+  already past `WORKING` (an end applied by an older control plane that did
+  not project) the floor projects the settled latest worker's end itself.
   The worker PATCH is the first family behind it: for the plain end of a
   kernel owner attempt (no retry or loop hold, no contract or loop failure)
   its completion statement writes result, loop and context but not status.
