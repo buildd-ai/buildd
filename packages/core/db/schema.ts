@@ -3668,6 +3668,8 @@ export const githubInstallations = pgTable('github_installations', {
 }, (t) => ({
   installationIdIdx: uniqueIndex('github_installations_installation_id_idx').on(t.installationId),
   accountLoginIdx: index('github_installations_account_login_idx').on(t.accountLogin),
+  // installationBelongsToTeam / getInstallationOwnerTeamIds: a reinstall on the same account.
+  accountIdIdx: index('github_installations_account_id_idx').on(t.accountId),
   installedByIdx: index('github_installations_installed_by_idx').on(t.installedByUserId),
 }));
 
