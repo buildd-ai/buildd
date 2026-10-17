@@ -15,7 +15,7 @@ import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, recordReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, recordReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
 const { postgresCommandLedger, COMMAND_LEASE_MS, COMMAND_HEARTBEAT_MS } = await import('../../src/lib/workflow/command-ledger');
@@ -140,6 +140,31 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
     expect(w!.mergeCalls(pr).map((c) => c.status)).toEqual([200]);
     const written = await hostsSince(pr.deliveryId, before + 1);
     expect(written.map((t) => t.command)).toContain('PrMerged');
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a green head from the check_suite webhook → one observe_ci_green command; the control plane reads the live checks and records the CI reading, tagged control-plane', async () => {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/own-ci-green', files: { 'src/a.ts': 'export const a = 3;\n' } });
+    await w.handOn(pr);
+    const head = w.gh.pr(w.repo, pr.prNumber).headSha;
+    // Green on GitHub, its webhook not delivered: the door below is the only report of it.
+    w.gh.greenCi(w.repo, head, ['build', 'test']);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    const before = (await w.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const seen = await observeCiGreen(
+      { workspaceId: w.workspaceId, repoFullName: w.repo, prNumber: pr.prNumber, installationId: w.installationId, headSha: head, source: 'webhook:check_suite' },
+      { principal: systemPrincipal('system:webhook:check_suite') },
+    );
+
+    expect(seen).toMatchObject({ handled: true, result: { result: 'applied' } });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_ci_green' }]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toContain('CiObserved');
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
   });
 

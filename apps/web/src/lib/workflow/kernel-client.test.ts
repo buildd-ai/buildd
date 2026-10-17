@@ -298,7 +298,7 @@ describe('the client and the endpoint agree', () => {
     };
     let runs = 0;
     const endpoint = (url: string, init: RequestInit) => handleCommandRequest(new Request(url, init), {
-      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true,
+      env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => ({ installationId: 1 }),
       run: (async () => { runs++; return { merged: true }; }) as never, deliveryAfter: async () => ({ id: DELIVERY, version: 6 }),
     });
     const l = local();
@@ -536,6 +536,62 @@ describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the lan
   it('the command endpoint knows the op', async () => {
     const { isKernelOp } = await import('./command-api');
     expect(isKernelOp('observe_ci_failure')).toBe(true);
+  });
+});
+
+describe('a green head from the check_suite webhook is a door too (AC-9): CiGreenObserved, or a CiObserved reading', () => {
+  const green = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' };
+  const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
+
+  it('in own mode it is submitted to the control plane as buildd\'s own webhook, and nothing runs here', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_ci_green', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeCiGreen(green, { principal: webhook, idempotencyKey: 'observe_ci_green:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_ci_green', input: green, principal: webhook, idempotencyKey: 'observe_ci_green:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_ci_green']);
+  });
+
+  it('release skew: a control plane that predates the op refused it as unknown, so the web host applies it itself and says so', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_ci_green"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_ci_green']);
+    expect(String(errors[0])).toContain('SKEW');
+    expect(String(errors[0])).toContain('observe_ci_green');
+  });
+
+  it('release skew only: any other refusal stays a refusal and nothing runs here', async () => {
+    const { observeCiGreen } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'principal refused'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await observeCiGreen(green, { principal: webhook, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_ci_green')).toBe(true);
   });
 });
 
@@ -910,7 +966,7 @@ describe('time spent before the ledger claim', () => {
       requests++;
       clock.t += 300;
       try {
-        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, sleep: async () => {} });
+        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => ({ installationId: 1 }), sleep: async () => {} });
       } catch {
         return new Response('error code: 1101', { status: 500 });
       }
@@ -967,7 +1023,7 @@ describe('a reach check the control plane could not make', () => {
     const fetchImpl = (async (url: string, init: RequestInit) => {
       requests++;
       clock.t += 300;
-      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, sleep: async () => {} });
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, installationOf: async () => ({ installationId: 1 }), sleep: async () => {} });
     }) as unknown as typeof fetch;
     const err = await landThroughKernel(input, {
       principal,
@@ -977,5 +1033,29 @@ describe('a reach check the control plane could not make', () => {
     expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 reach_unavailable']);
     expect(requests).toBe(2);
     expect(clock.t).toBeLessThan(1_000);
+  });
+});
+
+describe('an installation the control plane could not read', () => {
+  it('is answered 503 installation_unavailable; the client retries once and fails not_applied, nothing ran', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('the installation should be read first'); },
+      renew: async () => false, complete: async () => false, release: async () => {}, read: async () => null, prune: async () => 0,
+    };
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, installationOf: async () => { throw new Error('db down'); }, sleep: async () => {} });
+    }) as unknown as typeof fetch;
+    const err = await landThroughKernel(input, {
+      principal,
+      deps: { env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 installation_unavailable']);
+    expect(requests).toBe(2);
   });
 });

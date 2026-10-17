@@ -117,6 +117,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   lastAssistantMessage: true,
   tokenTally: true,
   costBasis: true,
+  claudeLoginUsed: true, // a label (machine_login | machine_token | stored); no credential
   route: true, // bucket/provider/owner/host label; no credential
   modelLoginFailed: true, // a boolean
   sandboxMountGap: true,

@@ -357,6 +357,10 @@ the control plane, authenticated as the caller).
     own CI doors: the red-PR sweep `cron:ci-red`, the landing path and the
     `check_suite` subscriber, each as a `system` principal; the same skew
     rule applies, so a red PR is never left without its repair), and
+    `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
+    outside a repair, from the `check_suite` success webhook as a `system`
+    principal; the same skew rule applies, so a repair is never left waiting
+    on a green GitHub sends once), and
     `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
     PATCH: a kernel round's verdict, or one from outside the rounds on a PR
     the kernel owns) and `claim_fix` (T9 from the claim route, one request in
@@ -839,12 +843,19 @@ push, refresh, completion or owner change can make it disappear.
   while the owner works, a repair holds or trunk is red, and the kernel has
   asked no reviewer of its own, it is kept as a decided round and the
   hand-off applies it. It is never posted to GitHub as a review. The kept
-  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  round is a round like any other: it uses one of the delivery's `maxRounds`
+  (unless it re-checks a head after an approval, which spends none:
+  workflow-state-kernel.md §8.2, c1d66a6a).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
+- A push after an escalation that touches a finding's path marks the finding
+  `addressed` (AC-17's interim disposition), held deliveries included. No
+  review is queued for it while the hold stands, but the person sees it: the
+  review line reads "2 open findings, 1 with a fix waiting for a re-review" and
+  the escalation detail says how many have a fix waiting (c1d66a6a).
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
   proof is §9's "L unknown" rule (the head moved off the bound head; a
@@ -1009,6 +1020,29 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor; a refresh with work of its own, or anything unreadable, holds the
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
+- When a delivery branch is finished (`deliveryBranchFinished`, task fbc93ebd):
+  the mission is completed or archived; the delivery merged (and no later
+  delivery reuses its branch) or its branch retired; or its PR closed unmerged
+  and was superseded with no successor, meaning the closed PR's work is
+  recorded as landed in another merged PR, or a content check shows the branch
+  already in trunk, and no other PR from the branch into trunk is open.
+  Closing the integration PR alone does not finish the branch: it is still the
+  mission's, a new PR can open from it, and a refresh onto it stays valid.
+- On a finished open delivery, every reconcile settles the refresh PRs still
+  based on its branch (`settleFinishedBranch`): each is closed with a comment
+  saying why the branch is finished, and recorded as superseded by the merged
+  PR that carries the branch's work when one is known; a refresh filed for the
+  branch that never started is cancelled. With no such PR (the branch is in
+  trunk, but no row says through which PR) one mission note asks a person
+  where to record the closed PRs. Task PRs on the branch are never touched.
+  A closed refresh whose record or note failed is found again from the rows
+  (closed, unmerged, no resolution, based on the branch) and settled on the
+  next pass; the note is posted once per delivery. The settlement reads only
+  as far as it needs: an open or merged delivery PR stops at one read, and the
+  content check runs only when a refresh is left to settle. The mission-PR
+  line names where a closed PR's work landed when an edge records it, and
+  never claims the branch finished: the rows it reads cannot rule out an open
+  successor, which only the live settlement checks.
 - Projection (S6c): the mission page and `manage_missions get` read the
   delivery records. The mission-PR line is the current delivery ("Delivery 2"),
   with shipped deliveries named beside it ("Delivery 1 merged (#n)"), never a
@@ -1037,6 +1071,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
+- AC-34: GIVEN an open delivery whose integration PR closed unmerged, with an
+  open refresh PR on its branch WHEN the delivery is reconciled THEN the
+  refresh PR stays open while the closed PR's work is neither recorded as
+  landed elsewhere nor in trunk, and is closed with a comment (and recorded as
+  superseded by that merged PR, when there is one) once it is; a successor PR
+  from the branch keeps it open (the #4909/#4913 sequence).
 
 | AC | Test |
 | --- | --- |
@@ -1045,6 +1085,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 | Criterion AC-32 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
+| Criterion AC-34 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |

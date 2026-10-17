@@ -31,6 +31,8 @@ export interface ReviewSummary {
   reviewing?: boolean;
   /** Findings still open (`open` or `addressed`), required or not. */
   openFindings: number;
+  /** Of those, how many a push already touched (`addressed`, AC-17): a fix waiting for a re-review. Absent when none. */
+  addressedFindings?: number;
   totalFindings: number;
 }
 
@@ -48,6 +50,7 @@ export function reviewSummaryOf(v: { rounds: readonly RoundSnapshot[]; findings?
     inFlight: latest.status === 'queued' || latest.status === 'reviewing',
     ...(latest.status === 'reviewing' ? { reviewing: true } : {}),
     openFindings: findings.filter(isOpenFinding).length,
+    ...(findings.some((f) => f.status === 'addressed') ? { addressedFindings: findings.filter((f) => f.status === 'addressed').length } : {}),
     totalFindings: findings.length,
   };
 }
@@ -63,7 +66,8 @@ export function reviewSummaryLine(s: ReviewSummary): string {
   const parts = [`${s.rounds} ${s.rounds === 1 ? 'round' : 'rounds'}`];
   if (s.latestVerdict) parts.push(`latest: ${VERDICT_WORDS[s.latestVerdict]}`);
   if (s.inFlight && s.latestRound != null) parts.push(`round ${s.latestRound} ${s.reviewing ? 'in review' : 'queued'}`);
-  parts.push(s.openFindings === 0 ? 'no open findings' : `${s.openFindings} open ${s.openFindings === 1 ? 'finding' : 'findings'}`);
+  const waiting = s.addressedFindings ? `, ${s.addressedFindings} with a fix waiting for a re-review` : '';
+  parts.push(s.openFindings === 0 ? 'no open findings' : `${s.openFindings} open ${s.openFindings === 1 ? 'finding' : 'findings'}${waiting}`);
   return parts.join(' · ');
 }
 
