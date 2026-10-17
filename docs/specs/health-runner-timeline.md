@@ -9,6 +9,33 @@ surfaces: [apps/web/src/lib/fleet-view.ts, apps/web/src/lib/home-fleet.ts, apps/
 related: [agent-question-protocol, worker-reclamation, runner-heartbeat]
 keywords: [runners and capacity, runner lanes, slot lanes, has a question, phantom duration, open-ended bar, loadRunnersFleet, buildFleetSnapshot]
 verified_by: [apps/web/src/lib/fleet-view.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/web/src/components/fleet/runner-lanes.test.tsx]
+assertions:
+  - id: question-session-ended
+    type: symbol
+    name: questionSessionEnded
+    path: packages/shared/src/status.ts
+  - id: snapshot-uses-session-rule
+    type: symbol_reachable
+    symbol: questionSessionEnded
+    entry: apps/web/src/lib/fleet-view.ts
+  - id: run-end-reason
+    type: symbol
+    name: runEndReason
+    path: apps/web/src/lib/fleet-view-end-reason.ts
+  - id: settle-on-cancel
+    type: symbol_reachable
+    symbol: settleSessionlessWorkersOfTask
+    entry: apps/web/src/lib/task-cancel.ts
+  - id: runners-page-refreshes
+    type: symbol_reachable
+    symbol: HomeAutoRefresh
+    entry: apps/web/src/app/app/(protected)/health/_lib/render-health.tsx
+  - id: fleet-view-tests
+    type: test_file
+    path: apps/web/src/lib/fleet-view.test.ts
+  - id: settle-tests
+    type: test_file
+    path: apps/web/src/lib/sessionless-worker-settle.test.ts
 ---
 
 # Health Runner Timeline
