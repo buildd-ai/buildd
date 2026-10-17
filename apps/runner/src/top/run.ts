@@ -10,7 +10,8 @@
  * has them, and a queue change the runner learns of (a task assigned over
  * Pusher, a task claimed in one of its workspaces, a refused claim, a worker
  * starting or finishing) refetches the task list, and the queue while the
- * Queue view is open. Timers fetch at most once a minute.
+ * Queue view is open. Timers fetch at most once a minute, only for the view on
+ * screen, and not at all after IDLE_PAUSE_MS without a key.
  */
 import { hostname as osHostname } from 'os';
 import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
