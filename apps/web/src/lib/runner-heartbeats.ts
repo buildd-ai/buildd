@@ -5,6 +5,7 @@ import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach'
 import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
+  isSharedRunner,
   mountAllowlistEnforcedFrom,
   selectRelevantRunnerAccounts,
   RUNNER_ONLINE_WINDOW_MS,
@@ -14,7 +15,6 @@ import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } 
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveLinkCondition } from './granted-links';
-import { isSharedRunner } from './runner-isolation-health';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its

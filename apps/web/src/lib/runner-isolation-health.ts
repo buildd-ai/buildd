@@ -31,20 +31,7 @@ export interface IsolationProblem {
   detail: string;
 }
 
-/**
- * Other people's tasks can run on this runner: more than one person across
- * the runner's own team and the team it serves here. Unknown reads as shared,
- * so an operator's opt-out is never hidden for want of a lookup.
- */
-export function isSharedRunner(
-  membersByTeam: Map<string, Set<string>> | null,
-  runnerTeamId: string | null,
-  viewingTeamId: string,
-): boolean {
-  if (!membersByTeam || !runnerTeamId) return true;
-  const people = new Set([...(membersByTeam.get(runnerTeamId) ?? []), ...(membersByTeam.get(viewingTeamId) ?? [])]);
-  return people.size > 1;
-}
+export { isSharedRunner } from './runner-heartbeats-shared';
 
 const FIXER = "The runner's operator fixes this on its host; buildd never changes host security settings.";
 
