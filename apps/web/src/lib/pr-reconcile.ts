@@ -517,12 +517,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             // reading "Waiting for mission X PRs to merge" until something
             // unrelated poked it.
             //
-            // Ordered AFTER the opener, deliberately: the helper re-checks
-            // `missionHasUnmergedWork`, so the mission's own PR must already
-            // exist — and be unmerged — before it is asked. Reversing these two
-            // would unblock dependents on a task-PR merge, before the mission's
-            // review gate had even opened. Idempotent: its only write is guarded
-            // on `dependencyMetAt IS NULL`.
+            // Ordered AFTER the opener: the helper re-checks the mission-wide
+            // predicate (`evaluateUpstreamGate`), which on a mission branch
+            // also requires the mission PR merged, so a task-PR merge alone can
+            // never unblock dependents. Idempotent: its only write is guarded
+            // on `dependencyMetAt IS NULL`. `isMissionBlocked` reads the same
+            // predicate live, so a gap here no longer strands a dependent.
             await checkAndUnblockDependentMissions(missionId, 'merged').catch(err =>
               console.error(`[pr-reconcile] mission unblock failed for mission ${missionId}:`, err),
             );
