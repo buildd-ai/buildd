@@ -17,7 +17,7 @@
 import { afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { and, eq, sql } from 'drizzle-orm';
-import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { assertDbConfigured, confinedRunnerEnvironment, q, seedTask, seedWorkspace } from './harness';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
@@ -107,7 +107,7 @@ async function session(s: S, c: Conn) {
 async function claimAs(s: S, c: Conn) {
   const taskId = await seedTask(s.workspaceId, { title: `t-${rand()}` });
   const res = await claimRoute.POST(req(s, c, '/api/workers/claim', {
-    method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 1, workspaceId: s.workspaceId, taskId },
+    method: 'POST', body: { runner: `r-${rand()}`, maxTasks: 1, workspaceId: s.workspaceId, taskId, environment: confinedRunnerEnvironment() },
   }));
   expect(res.status).toBe(200);
   const body = (await res.json()) as { workers?: Array<{ id: string; taskId: string }> };

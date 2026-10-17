@@ -10,7 +10,7 @@ const ALL: DeferralReason[] = [
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
   'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
-  'tier_policy', 'delegation_unmet',
+  'tier_policy', 'delegation_unmet', 'isolation_unenforced',
 ];
 
 describe('describeExplicitDeferral', () => {

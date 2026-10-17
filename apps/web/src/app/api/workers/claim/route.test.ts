@@ -397,6 +397,18 @@ mock.module('./role-env-injection', () => ({
 const mockCheckDelegationGate = mock(async (..._args: any[]): Promise<any> => null);
 mock.module('./delegation-gate', () => ({ checkDelegationGate: mockCheckDelegationGate }));
 
+// Runner isolation gate (its rules: isolation-gate.test.ts and
+// lib/isolation-policy.test.ts). Default: the runner confines the task.
+const ISOLATION_ALLOW = {
+  decision: { ok: true, requirement: 'protected', mode: 'enforced', confinement: { mechanism: 'bwrap', scope: ['write'] } },
+  stamp: { requirement: 'protected', source: 'default', mode: 'enforced' },
+};
+const mockDecideClaimIsolation = mock(async (..._args: any[]): Promise<any> => ISOLATION_ALLOW);
+mock.module('./isolation-gate', () => ({
+  decideClaimIsolation: mockDecideClaimIsolation,
+  teamSizeLoader: () => async () => 1,
+}));
+
 // Model-routing experiment glue. The real module is exercised against rendered
 // SQL in packages/core/__tests__/model-routing-experiment-source.test.ts; here
 // only the call-site wiring is under test. Default: no running experiment.
@@ -9739,6 +9751,68 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.taskExclusion.code).toBe('delegation_unmet');
+  });
+
+  it('a runner whose probe cannot confine a protected task gets nothing; the task stays queued with the cause and the steps', async () => {
+    mockDecideClaimIsolation.mockResolvedValueOnce({
+      decision: {
+        ok: false, requirement: 'protected', code: 'confinement_not_enforced', reason: 'bwrap_missing',
+        message: 'The task needs protected isolation and this runner has no confinement for Claude: bubblewrap is not installed on this host.',
+        remedy: ['Install bubblewrap, then restart the runner.'],
+      },
+      stamp: null,
+    });
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockWorkersInsert.mockClear();
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const environment = { tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: '2026-01-01T00:00:00.000Z', isolation: { platform: 'linux' } };
+
+    const data = await (await claim({ runner: 'test-runner', environment })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockWorkersInsert).not.toHaveBeenCalled();
+    expect(mockDecideClaimIsolation.mock.calls.at(-1)![0]).toMatchObject({ environment });
+    expect(data.diagnostics.deferrals.isolation_unenforced).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('isolation_unenforced');
+    expect(data.diagnostics.taskExclusion.detail).toContain('bubblewrap is not installed');
+    expect(data.diagnostics.taskExclusion.detail).toContain('Install bubblewrap');
+    const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'isolation_unenforced');
+    expect(deferred?.detail).toMatchObject({ code: 'confinement_not_enforced', requirement: 'protected', reason: 'bwrap_missing' });
+  });
+
+  it('an admin force claim does not lift the isolation gate', async () => {
+    mockDecideClaimIsolation.mockResolvedValueOnce({
+      decision: { ok: false, requirement: 'protected', code: 'probe_unknown', reason: null, message: 'unknown probe', remedy: [] },
+      stamp: null,
+    });
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'test-runner', forceOverride: true })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.taskExclusion.code).toBe('isolation_unenforced');
+  });
+
+  it('a claimed task carries the isolation decision the runner enforces', async () => {
+    const stamp = { requirement: 'trusted_local', source: 'single_owner_team', mode: 'reduced' };
+    mockDecideClaimIsolation.mockResolvedValueOnce({ ...ISOLATION_ALLOW, stamp });
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    const context = claimedContext();
+    mockTasksFindMany.mockResolvedValueOnce([task({ context: { isolation: { requirement: 'protected', mode: 'enforced' } } })]);
+    const data = await (await claim({ runner: 'test-runner' })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(context().isolation).toEqual(stamp);
+  });
+
+  it("a person's own session is not gated on runner isolation and carries no stamp", async () => {
+    mockDecideClaimIsolation.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    const context = claimedContext();
+    mockTasksFindMany.mockResolvedValueOnce([task({ context: { isolation: { requirement: 'protected', mode: 'enforced' } } })]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(mockDecideClaimIsolation).not.toHaveBeenCalled();
+    expect(context().isolation).toBeUndefined();
   });
 
   it('a task whose delegation the token covers is claimed as before', async () => {

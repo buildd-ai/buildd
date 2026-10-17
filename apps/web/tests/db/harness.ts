@@ -81,6 +81,23 @@ export async function seedMission(teamId: string, workspaceId: string): Promise<
   return m.id;
 }
 
+/**
+ * A claim's `environment` from a runner whose current probe confines both
+ * backends, so the claim route's isolation gate (Living Spec "Runner
+ * isolation", R-4) passes and the test's own rule decides the claim.
+ */
+export function confinedRunnerEnvironment() {
+  const bwrap = { mechanism: 'bwrap', scope: ['write', 'network', 'env'] };
+  const now = Date.now();
+  return {
+    tools: [], envKeys: [], mcp: [], labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'h' }, scannedAt: new Date(now).toISOString(),
+    isolation: {
+      platform: 'linux', evidence: [], claude: bwrap, codex: { 'read-only': bwrap, 'workspace-write': bwrap },
+      probeAt: new Date(now).toISOString(), processStartedAt: new Date(now - 1000).toISOString(), runnerVersion: '1.0.0',
+    },
+  };
+}
+
 export async function outboxFor(taskId: string) {
   return q<{ id: string; cause: string; causes: string[]; status: string; dedupe_key: string; not_before: string; attempt_count: number; delivered_via: string | null }>(
     sql`SELECT id, cause, causes, status, dedupe_key, not_before, attempt_count, delivered_via

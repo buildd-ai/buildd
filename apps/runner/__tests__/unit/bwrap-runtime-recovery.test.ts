@@ -23,6 +23,10 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // Closure-controlled query: first-call abort for retry tests, normal otherwise.
 let queryCallCount = 0;
+// What the mocked Claude bwrap probe answers (false = this host cannot confine Claude).
+let bwrapProbeOk = true;
+// Runs as the first query aborts: what a mid-run bwrap denial does to the runner.
+let onFirstAbort: (() => void) | null = null;
 let queryAbortFirstCall = false;
 // Captures the sessionId from each query() call so tests can assert no reuse.
 const capturedSessionIds: string[] = [];
@@ -38,7 +42,10 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
       [Symbol.asyncIterator]() {
         return {
           async next() {
-            if (shouldAbort) throw new Error('Request was aborted.');
+            if (shouldAbort) {
+              onFirstAbort?.();
+              throw new Error('Request was aborted.');
+            }
             return { value: undefined, done: true };
           },
         };
@@ -122,7 +129,7 @@ mock.module('../../src/env-scan', () => ({
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
   parseMcpJson: () => [],
   scanMcpServersRich: () => [],
-  checkBwrapSupport: () => true,
+  checkBwrapSupport: () => bwrapProbeOk,
   checkBwrapMountIsolationSupport: () => true,
 }));
 
@@ -217,8 +224,9 @@ function makeBashToolResultMessage(text: string) {
   };
 }
 
-function makeTask() {
+function makeTask(context?: Record<string, unknown>) {
   return {
+    ...(context ? { context } : {}),
     id: 'task-bwrap',
     title: 'Test bwrap task',
     description: 'Do something',
@@ -234,6 +242,7 @@ function makeTask() {
 
 describe('bwrap runtime recovery', () => {
   let originalDisableSandbox: string | undefined;
+  let originalOptIn: string | undefined;
 
   afterAll(() => {
 
@@ -251,11 +260,15 @@ describe('bwrap runtime recovery', () => {
     // Exercise mocked probes regardless of the worker's operator flag.
     originalDisableSandbox = process.env.BUILDD_DISABLE_SANDBOX;
     delete process.env.BUILDD_DISABLE_SANDBOX;
+    originalOptIn = process.env.BUILDD_ALLOW_REDUCED_ISOLATION;
+    delete process.env.BUILDD_ALLOW_REDUCED_ISOLATION;
   });
 
   afterEach(() => {
     if (originalDisableSandbox === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
     else process.env.BUILDD_DISABLE_SANDBOX = originalDisableSandbox;
+    if (originalOptIn === undefined) delete process.env.BUILDD_ALLOW_REDUCED_ISOLATION;
+    else process.env.BUILDD_ALLOW_REDUCED_ISOLATION = originalOptIn;
   });
 
   let manager: InstanceType<typeof WorkerManager>;
@@ -264,6 +277,8 @@ describe('bwrap runtime recovery', () => {
     // Reset module-level bwrap cache so recovery fires from a clean state,
     // even when other test files have already set _bwrapSupported=false.
     __resetBwrapSupportForTest();
+    bwrapProbeOk = true;
+    onFirstAbort = null;
     queryCallCount = 0;
     queryAbortFirstCall = false;
     capturedSessionIds.length = 0;
@@ -337,9 +352,23 @@ describe('bwrap runtime recovery', () => {
     expect(isBwrapSupported()).toBe(true);
   });
 
-  test('regression: bwrap abort does not call updateWorker(status=failed); restarts instead', async () => {
-    // Regression test: simulate namespace-creation denial and assert the run
-    // does NOT reach a Failed terminal state. Instead startSession restarts.
+  /** A trusted_local task, on a runner whose operator opted in, on a host whose bwrap is denied. */
+  function trustedLocalOnDeniedHost() {
+    process.env.BUILDD_ALLOW_REDUCED_ISOLATION = '1';
+    bwrapProbeOk = false;
+    __resetBwrapSupportForTest();
+    return makeTask({ isolation: { requirement: 'trusted_local', source: 'workspace', mode: 'reduced' } });
+  }
+  function denyMidRun(worker: LocalWorker) {
+    worker.bwrapRetryPending = true;
+    bwrapProbeOk = false;
+    __resetBwrapSupportForTest();
+  }
+  const failedCalls = () => mockUpdateWorker.mock.calls.filter((args: any[]) => args[0] && args[1]?.status === 'failed');
+
+  test('regression: bwrap abort of a trusted_local task (operator opt-in) restarts instead of failing, as a recorded degradation', async () => {
+    // Simulate namespace-creation denial and assert the run does NOT reach a
+    // Failed terminal state. Instead startSession restarts.
     //
     // Setup: query throws AbortError on first call (simulating bwrap abort after
     // bwrapRetryPending is pre-set). On second call it completes normally.
@@ -352,7 +381,11 @@ describe('bwrap runtime recovery', () => {
 
     // Call startSession directly — first query aborts, catch block detects
     // bwrapRetryPending and restarts; second query completes normally.
-    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
+    await (manager as any).startSession(worker, getTestWorkspace(), trustedLocalOnDeniedHost());
+    // R-7: the restart is on the task's timeline as a degradation.
+    expect(worker.milestones.some((m: any) => /isolation degraded/.test(m.label ?? ''))).toBe(true);
+    // R-5: the effective mode it ran under is too.
+    expect(worker.milestones.some((m: any) => /trusted_local, Claude runs REDUCED/.test(m.label ?? ''))).toBe(true);
 
     // The session must NOT have been reported as failed
     const failedCalls = mockUpdateWorker.mock.calls.filter(
@@ -378,7 +411,7 @@ describe('bwrap runtime recovery', () => {
     const worker = makeWorker({ id: 'w-bwrap-session-id' });
     worker.bwrapRetryPending = true;
 
-    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
+    await (manager as any).startSession(worker, getTestWorkspace(), trustedLocalOnDeniedHost());
 
     expect(queryCallCount).toBe(2);
     // Both calls must have a non-empty session ID
@@ -386,5 +419,61 @@ describe('bwrap runtime recovery', () => {
     expect(capturedSessionIds[1]).toBeTruthy();
     // The retry must use a DIFFERENT session ID than the first invocation
     expect(capturedSessionIds[0]).not.toBe(capturedSessionIds[1]);
+  });
+
+  // AC-7: a mid-run confinement failure on a protected task fails the attempt.
+  test('a bwrap abort of a protected task fails the attempt with the cause; nothing restarts it with less confinement', async () => {
+    queryAbortFirstCall = true;
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-protected' });
+    const task = makeTask({ isolation: { requirement: 'protected', source: 'default', mode: 'enforced' } });
+    // The session starts confined; then Claude's own bwrap is denied mid-run
+    // and the runtime flips the probe, as handleMessage does.
+    onFirstAbort = () => denyMidRun(worker);
+    await (manager as any).startSession(worker, getTestWorkspace(), task);
+
+    expect(queryCallCount).toBe(1);
+    expect(failedCalls()).toHaveLength(1);
+    expect(String((failedCalls()[0] as any[])[1].error)).toMatch(/not restarted with less confinement/);
+    expect(worker.status).toBe('error');
+  });
+
+  test('a task with no isolation stamp is held to protected: no restart', async () => {
+    queryAbortFirstCall = true;
+    process.env.BUILDD_ALLOW_REDUCED_ISOLATION = '1';
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-unstamped' });
+    onFirstAbort = () => denyMidRun(worker);
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
+    expect(queryCallCount).toBe(1);
+    expect(failedCalls()).toHaveLength(1);
+  });
+
+  test('a protected task never starts on a host that cannot confine Claude', async () => {
+    bwrapProbeOk = false;
+    process.env.BUILDD_ALLOW_REDUCED_ISOLATION = '1';
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-never' });
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask({ isolation: { requirement: 'protected', source: 'default', mode: 'enforced' } }));
+    expect(queryCallCount).toBe(0);
+    expect(String(worker.error)).toMatch(/Not started: The task needs protected isolation/);
+  });
+
+  // AC-4: trusted_local runs reduced only with the operator opt-in.
+  test('a trusted_local task without the operator opt-in does not run reduced', async () => {
+    bwrapProbeOk = false;
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-no-optin' });
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask({ isolation: { requirement: 'trusted_local', source: 'workspace', mode: 'reduced' } }));
+    expect(queryCallCount).toBe(0);
+    expect(String(worker.error)).toMatch(/BUILDD_ALLOW_REDUCED_ISOLATION=1/);
+  });
+
+  test('a confined run records its effective mode', async () => {
+    manager = new WorkerManager(makeConfig());
+    const worker = makeWorker({ id: 'w-bwrap-confined' });
+    await (manager as any).startSession(worker, getTestWorkspace(), makeTask());
+    expect(queryCallCount).toBe(1);
+    expect(worker.milestones.some((m: any) => /isolation: protected, Claude confined by bubblewrap/.test(m.label ?? ''))).toBe(true);
   });
 });
