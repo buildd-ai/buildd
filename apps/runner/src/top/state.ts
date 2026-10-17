@@ -1189,6 +1189,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   no_personal_credential: 'needs a personal login that is not set up',
   provider_not_allowed: 'its model provider is not allowed here',
   tier_policy: 'its model tier is not allowed here',
+  isolation_unenforced: 'this runner cannot confine it as its isolation policy requires',
 };
 
 /** Words for a deferral or exclusion code; a code this view has no words for never prints raw. */

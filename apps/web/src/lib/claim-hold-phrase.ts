@@ -40,6 +40,7 @@ export const CLAIM_HOLD_PHRASES: Readonly<Record<ClaimHoldReason, string>> = {
   no_personal_credential: 'it needs your own model key, which is not set',
   provider_not_allowed: "the team's model policy does not allow its provider",
   tier_policy: "the team's model policy does not allow its tier",
+  isolation_unenforced: 'no online runner can confine it as its isolation policy requires',
 };
 
 /** The one cause for a visual audit no online runner can take (spec 8e137fdb I-4, I-5). */

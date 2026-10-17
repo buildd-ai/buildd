@@ -1889,6 +1889,14 @@ export interface ClaimDiagnostics {
      * re-tiered. The gate event's detail is the structured policy_denied error.
      */
     tier_policy?: number;
+    /**
+     * The task's isolation requirement (`protected`, or `trusted_local`
+     * without the operator's reduced-mode opt-in) is not met by this runner's
+     * current isolation probe for its backend and mode. Held for an eligible
+     * runner, never run with less confinement. See
+     * packages/shared/src/isolation-policy.ts.
+     */
+    isolation_unenforced?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
