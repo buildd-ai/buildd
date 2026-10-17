@@ -68,6 +68,13 @@ export interface VisualReviewStateInput {
    * commit, and an audit that recorded none cannot prove it.
    */
   auditedSha?: string | null;
+  /**
+   * The mission is completed or archived. Its completion gate already ran, and
+   * the scheduler files nothing for a closed mission, so a pass on an earlier
+   * commit is reported as exactly that (`passedOnEarlierCommit`), never as a
+   * check that will run again.
+   */
+  missionClosed?: boolean;
 }
 
 export interface MissionVisualReviewState {
@@ -80,6 +87,15 @@ export interface MissionVisualReviewState {
   pendingVerification: boolean;
   /** The audit passed on an older commit than the branch head now is: a new review is owed, the old pass is not evidence. */
   staleEvidence: boolean;
+  /**
+   * A closed mission whose last pass judged an earlier commit than the one it
+   * delivered. Status stays `passed` (the completion gate accepted it and
+   * nothing re-checks a closed mission) and `staleEvidence` stays true: the
+   * delivered commit was not checked, and every surface says so.
+   */
+  passedOnEarlierCommit: boolean;
+  /** The commit the latest audit judged, when it recorded one. */
+  evidenceSha: string | null;
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
   scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
@@ -142,6 +158,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let blocked: MissionVisualReviewState['blocked'];
   let blockedActor: VisualReviewNextActor | null = null;
   let staleEvidence = false;
+  let passedOnEarlierCommit = false;
 
   const hasAudit = !!audit && !(review && review.phase === 'off');
   if (waiverActive) {
@@ -175,8 +192,14 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     } else if (input.auditedSha !== undefined && input.uiChange.state !== 'no' && branch.headSha && input.auditedSha !== branch.headSha) {
       // Same-commit evidence only: a pass on another commit (or on none we can name) is not a pass for this head.
       staleEvidence = true;
-      status = 'needed';
-      nextActor = policy.mode === 'ask' ? 'owner' : 'system';
+      if (input.missionClosed) {
+        // Closed: nothing re-checks it. Say what was checked, never that it checks again.
+        passedOnEarlierCommit = true;
+        status = 'passed';
+      } else {
+        status = 'needed';
+        nextActor = policy.mode === 'ask' ? 'owner' : 'system';
+      }
     } else {
       status = 'passed';
     }
@@ -206,6 +229,8 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     blocksMerge: pendingVerification && !!pr && !merged && prStage !== 'closed',
     pendingVerification,
     staleEvidence,
+    passedOnEarlierCommit,
+    evidenceSha: input.auditedSha ?? null,
     nextActor: required || status === 'waived' || status === 'passed' ? nextActor : 'none',
     policy: { mode: policy.mode, origin: policy.origin, waiverAllowed: policy.waiverAllowed, locked: policy.locked },
     scope: {

@@ -90,7 +90,7 @@ import { hostsKernelHere, withControlPlaneBudget } from '@/lib/workflow/kernel-c
 import { timedSteps } from '@/lib/cron-step-timing';
 
 // One name per step of the pass below, in order: each logs its time as it settles.
-const PR_RECONCILE_STEPS = ['reconcile', 'deadZone', 'missionPrs', 'branchRefresh', 'stranded', 'specRecheck', 'lineagePrs', 'landing', 'refreshRedrive', 'ciRed', 'closedPrs', 'earlyRelease', 'kernel', 'hourlySubscribers'] as const;
+const PR_RECONCILE_STEPS = ['reconcile', 'deadZone', 'missionPrs', 'branchRefresh', 'stranded', 'specRecheck', 'lineagePrs', 'landing', 'refreshRedrive', 'ciRed', 'closedPrs', 'earlyRelease', 'kernel', 'hourlySubscribers', 'heldReleases'] as const;
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -147,8 +147,8 @@ export async function GET(req: NextRequest) {
       const m = /\bstep=(\w+) ms=(\d+)/.exec(line);
       if (m) timings[m[1]] = Number(m[2]);
     };
-    const { value: [[reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernel], heldReleases], budget: controlPlane } = await withControlPlaneBudget(job, SWEEP_CONTROL_PLANE_BUDGET_MS, async () => {
-      const steps = await Promise.all(timedSteps('PrReconcile', PR_RECONCILE_STEPS, [
+    const { value: [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernel, hourlySubscribers, heldReleases], budget: controlPlane } = await withControlPlaneBudget(job, SWEEP_CONTROL_PLANE_BUDGET_MS, async () => {
+      return Promise.all(timedSteps('PrReconcile', PR_RECONCILE_STEPS, [
         reconcileStalePrWorkers(),
         mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
         // Isolated, unlike the other two: healing merge state is the time-critical
@@ -233,15 +233,14 @@ export async function GET(req: NextRequest) {
         // labels). Core only emits; modules.ts lists who reacts. Each
         // subscriber is isolated by emit().
         emit({ type: 'sweep.pr_hourly', at: new Date() }),
+        // Held release tasks (lib/held-pr-tasks.ts): a release that could not land when its task
+        // finished and whose PR event never came (CI already green, the control plane down, landed by
+        // another path). Runs on both scopes: the hourly merge-state pass (which already wakes the
+        // database every hour) and the daily full one. No wake window of its own; bounded per task. Isolated.
+        sweepHeldReleases().catch((err): { error: string } => ({
+          error: err instanceof Error ? err.message : String(err),
+        })),
       ] as const, { log }));
-      // Held release tasks (lib/held-pr-tasks.ts): a release that could not land when its task
-      // finished and whose PR event never came (CI already green, the control plane down, landed by
-      // another path). Runs on both scopes: the hourly merge-state pass (which already wakes the
-      // database every hour) and the daily full one. No wake window of its own; bounded per task. Isolated.
-      const [held] = await Promise.all(timedSteps('PrReconcile', ['heldReleases'], [sweepHeldReleases().catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      }))] as const, { log }));
-      return [steps, held] as const;
     });
     // Which step a slow run waited on, and how much of it was the control plane.
     const slowest = Object.entries(timings).sort((a, b) => b[1] - a[1])[0] ?? null;

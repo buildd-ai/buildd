@@ -287,6 +287,15 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         ...(liveChecksOf(E.liveChecks) ? { liveChecks: liveChecksOf(E.liveChecks) } : {}),
       });
     }
+    case 'CiObserved': {
+      // cifact:{delivery}:{head}:{verdict}@v{n}
+      const parts = keyParts(t.idempotencyKey, 'cifact');
+      const h = parts?.[1];
+      const verdict = str(E.verdict);
+      const checks = liveChecksOf(E.liveChecks);
+      if (!h || (verdict !== 'red' && verdict !== 'green' && verdict !== 'running') || !checks) return miss('no head, verdict or live read');
+      return ok({ type: 'CiObserved', actor, headSha: h, verdict, liveChecks: checks, ...(E.allPassing === true ? { allPassing: true } : {}) });
+    }
     case 'ConflictObserved': {
       const parts = keyParts(t.idempotencyKey, 'conflict');
       const h = parts?.[1];
