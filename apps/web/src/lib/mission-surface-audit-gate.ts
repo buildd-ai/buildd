@@ -19,6 +19,7 @@ import {
   type VisualImpactAssessment,
 } from './workflow/visual-review-impact';
 import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
+import { loadPrSurfaceFiles, persistMergedSurfaceEvidence } from '@/lib/pr-surface-evidence';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -34,6 +35,14 @@ import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
 
 /** Cap on PR diffs fetched per check; a mission this large is audited by hand. */
 const MAX_PRS_CHECKED = 25;
+/** PR evidence reads in flight at once: a cache hit is one DB read, a live miss a few GitHub calls. */
+export const PR_READ_CONCURRENCY = 4;
+
+async function forEachBounded<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => { while (next < items.length) await fn(items[next++]); };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
 
 export interface SurfaceAuditGateTask {
   id: string;
@@ -45,7 +54,8 @@ export interface SurfaceAuditGateTask {
   pathManifest?: string[] | null;
   /** Read only to recognise a trunk-refresh task (`isTrunkRefreshTask`). */
   context?: unknown;
-  workers?: Array<{ prNumber?: number | null }>;
+  /** `mergedAt` set: the PR is merged, so its files come only from durable evidence, never GitHub. */
+  workers?: Array<{ prNumber?: number | null; mergedAt?: Date | string | null }>;
 }
 
 export type SurfaceAuditGate =
@@ -143,22 +153,6 @@ export async function repoFor(workspaceId: string): Promise<{ installationId: nu
   return fullName && installationId ? { installationId, fullName } : null;
 }
 
-/** A PR's changed files with their patches (the classifier reads the hunks). A renamed file's old name carries no patch. */
-async function changedFiles(installationId: number, fullName: string, prNumber: number): Promise<ImpactFile[]> {
-  const { githubApi } = await import('@/lib/github');
-  const out: ImpactFile[] = [];
-  for (let page = 1; page <= 3; page++) {
-    const files = await githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}/files?per_page=100&page=${page}`);
-    if (!Array.isArray(files)) break;
-    for (const f of files as Array<{ filename?: string; previous_filename?: string; patch?: string }>) {
-      if (f.filename) out.push({ path: f.filename, patch: f.patch ?? null });
-      if (f.previous_filename) out.push({ path: f.previous_filename, patch: null });
-    }
-    if (files.length < 100) break;
-  }
-  return out;
-}
-
 /**
  * Whether the mission still owes a surface audit, and under which Visual
  * Review policy. Cheapest evidence first: the policy, a completed audit and a
@@ -168,6 +162,13 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
  * widens to trunk's whole diff) and the mission-PR bookkeeping row are not
  * builders. A builder's PR diff, with patches, is the truth; its declared
  * manifest stands in only when there is no PR to read or it could not be read.
+ * The diff comes from `loadPrSurfaceFiles` (lib/pr-surface-evidence.ts): an
+ * open PR's files are cached per authoritative head, a merged PR's are read
+ * only from the durable evidence the merge wrote, so evaluating a merged
+ * mission makes no GitHub file-list call. A merged PR without that evidence
+ * (merged before it was recorded) falls back to its declared manifest, unless
+ * the caller is a completion decision (`fillMergedEvidence`), which records it
+ * first. Rendering callers never pass it.
  * The rendered-surface files are then handed to the visual impact classifier
  * (`assessVisualImpact`, deterministic rules only, see `NO_MODEL`): a change it
  * proves cannot render (comments, types, server-only code) owes nothing, and
@@ -180,6 +181,7 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
 export async function evaluateSurfaceAuditGate(
   mission: { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
   tasks: SurfaceAuditGateTask[],
+  opts: { fillMergedEvidence?: boolean } = {},
 ): Promise<SurfaceAuditGate> {
   // Without a workspace there is nothing to read: the legacy opt-out alone decides, at no cost.
   const policy = resolveVisualReviewPolicy({
@@ -196,30 +198,40 @@ export async function evaluateSurfaceAuditGate(
   // Strict forbids waiving, so a recorded waiver does not count there.
   if (policy.waiverAllowed && await hasWaiver(mission.id)) return { required: false, why: 'waived' };
 
-  const prs = new Map<number, string>();
+  const prs = new Map<number, { workspaceId: string; merged: boolean }>();
   for (const t of builders) {
-    const n = t.workers?.[0]?.prNumber;
-    if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, t.workspaceId);
+    const w = t.workers?.[0];
+    const n = w?.prNumber;
+    if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, { workspaceId: t.workspaceId, merged: w?.mergedAt != null });
   }
 
-  const repos = new Map<string, { installationId: number; fullName: string } | null>();
+  const repos = new Map<string, Promise<{ installationId: number; fullName: string } | null>>();
+  const repoOf = (workspaceId: string) => {
+    if (!repos.has(workspaceId)) repos.set(workspaceId, repoFor(workspaceId));
+    return repos.get(workspaceId)!;
+  };
   const read = new Set<number>();
   const diffFiles: ImpactFile[] = [];
   let unreadable = false;
-  for (const [prNumber, workspaceId] of [...prs].slice(0, MAX_PRS_CHECKED)) {
+  await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
     try {
-      if (!repos.has(workspaceId)) repos.set(workspaceId, await repoFor(workspaceId));
-      const repo = repos.get(workspaceId);
-      if (!repo) { unreadable = true; continue; }
-      for (const f of await changedFiles(repo.installationId, repo.fullName, prNumber)) {
-        if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
+      const repo = await repoOf(workspaceId);
+      if (!repo) { unreadable = true; return; }
+      let files = await loadPrSurfaceFiles(repo, prNumber, merged);
+      if (!files && merged && opts.fillMergedEvidence) {
+        await persistMergedSurfaceEvidence(repo, prNumber);
+        files = await loadPrSurfaceFiles(repo, prNumber, true);
       }
+      // No evidence (a merged PR never recorded, a capped list, a head that moved mid-read):
+      // its declared manifest answers for it, and the result says it could not be checked.
+      if (!files) { unreadable = true; return; }
+      for (const f of files) if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
       read.add(prNumber);
     } catch (err) {
       unreadable = true;
       console.error(`[surface-audit-gate] could not read PR #${prNumber} files (not blocking on it):`, err);
     }
-  }
+  });
   if (prs.size > MAX_PRS_CHECKED) unreadable = true;
 
   // A builder whose PR was read is answered by its diff; the rest by what they declared.
@@ -260,7 +272,7 @@ export async function loadSurfaceAuditGateTasks(missionId: string): Promise<Surf
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true, context: true },
     with: {
-      workers: { columns: { prNumber: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
+      workers: { columns: { prNumber: true, mergedAt: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
     },
   });
 }
