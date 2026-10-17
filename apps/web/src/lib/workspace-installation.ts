@@ -137,6 +137,100 @@ export async function teamInstallationIdForRepo(
 }
 
 /**
+ * The installation on GitHub account `owner` (by login, any casing) that belongs to `teamId`
+ * (`installationBelongsToTeam`), for a caller that knows only the owner, not a repo
+ * `github_repos` lists. Null when no installation on that account is the team's.
+ */
+export async function teamInstallationIdForOwner(owner: string, teamId: string | null | undefined): Promise<number | null> {
+  if (!owner || !teamId) return null;
+  const { db } = await import('@buildd/core/db');
+  const { githubInstallations } = await import('@buildd/core/db/schema');
+  const rows = await db
+    .select({ installationId: githubInstallations.installationId, suspendedAt: githubInstallations.suspendedAt })
+    .from(githubInstallations)
+    .where(sql`lower(${githubInstallations.accountLogin}) = ${owner.toLowerCase()}`);
+  const { installationBelongsToTeam } = await import('@/lib/github-installation-access');
+  for (const r of rows) {
+    if (!r.suspendedAt && await installationBelongsToTeam(r.installationId, teamId)) return r.installationId;
+  }
+  return null;
+}
+
+export type PrInstallation =
+  | { installationId: number }
+  | { installationId: null; reason: 'no_installation' | 'installation_not_team_owned' };
+
+export interface TeamWorkspaceIdentity {
+  teamId: string | null | undefined;
+  /** The workspace's own repo and installation (`pickWorkspaceRepoIdentity`). */
+  fullName: string | null;
+  installationId: number | null;
+}
+
+/**
+ * The installation a PR in a repo is read or acted on through, for a workspace, memoised
+ * for one sweep or batch (repos repeat heavily inside one):
+ *
+ *  - the workspace's own repo: the workspace's linked installation;
+ *  - any other repo: the team's installation covering it (`teamInstallationIdForRepo`); one
+ *    that covers the repo but belongs to another team is refused (`installation_not_team_owned`),
+ *    never fallen back from. With `fallbackToWorkspace`, a repo no installation covers uses the
+ *    workspace's own (the team's) installation, as the reconcile sweeps always have.
+ *
+ * Every caller that picked `installationIdForRepo(repo)` goes through this, so each acts only
+ * through its own team's installation. `forWorkspace` reads the workspace by id first, for a
+ * caller holding only a workspace id; it never falls back.
+ */
+export function createTeamInstallationResolver() {
+  const byTeamRepo = new Map<string, Promise<{ installationId: number | null; notTeamOwned?: true }>>();
+  const byWorkspace = new Map<string, Promise<TeamWorkspaceIdentity | null>>();
+
+  async function resolve(repo: string, ws: TeamWorkspaceIdentity, opts: { fallbackToWorkspace?: boolean } = {}): Promise<PrInstallation> {
+    if (ws.fullName && ws.installationId && ws.fullName.toLowerCase() === repo.toLowerCase()) {
+      return { installationId: ws.installationId };
+    }
+    let found: { installationId: number | null; notTeamOwned?: true } = { installationId: null };
+    if (ws.teamId) {
+      const key = `${ws.teamId}:${repo.toLowerCase()}`;
+      if (!byTeamRepo.has(key)) {
+        byTeamRepo.set(key, teamInstallationIdForRepo(repo, ws.teamId).catch(() => ({ installationId: null })));
+      }
+      found = await byTeamRepo.get(key)!;
+    }
+    if (found.notTeamOwned) return { installationId: null, reason: 'installation_not_team_owned' };
+    const installationId = found.installationId ?? (opts.fallbackToWorkspace ? ws.installationId : null);
+    return installationId ? { installationId } : { installationId: null, reason: 'no_installation' };
+  }
+
+  async function workspaceIdentity(workspaceId: string): Promise<TeamWorkspaceIdentity | null> {
+    if (!byWorkspace.has(workspaceId)) {
+      byWorkspace.set(workspaceId, (async () => {
+        const { db } = await import('@buildd/core/db');
+        const { workspaces } = await import('@buildd/core/db/schema');
+        const { eq } = await import('drizzle-orm');
+        const row = await db.query.workspaces.findFirst({
+          where: sqlWhere(eq(workspaces.id, workspaceId)),
+          columns: { id: true, teamId: true, repo: true },
+          with: WORKSPACE_INSTALLATION_WITH,
+        });
+        if (!row) return null;
+        const identity = pickWorkspaceRepoIdentity(row);
+        return { teamId: row.teamId, fullName: identity.fullName, installationId: identity.installationId };
+      })().catch(() => null));
+    }
+    return byWorkspace.get(workspaceId)!;
+  }
+
+  async function forWorkspace(repo: string, workspaceId: string | null | undefined): Promise<PrInstallation> {
+    const ws = workspaceId ? await workspaceIdentity(workspaceId) : null;
+    if (!ws) return { installationId: null, reason: 'no_installation' };
+    return resolve(repo, ws);
+  }
+
+  return { resolve, forWorkspace };
+}
+
+/**
  * The repo a workspace is about, preferring the linked `github_repos` row over
  * the free-text `workspaces.repo` column.
  *

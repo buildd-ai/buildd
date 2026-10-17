@@ -32,7 +32,10 @@ mock.module('@/lib/merge-policy', () => ({ resolvePolicy: mockResolvePolicy, RES
 mock.module('@/lib/workspace-installation', () => ({
   WORKSPACE_INSTALLATION_WITH: {},
   pickWorkspaceRepoIdentity: (ws: any) => ({ fullName: ws.repoFullName, installationId: ws.installationId }),
-  installationIdForRepo: async () => null,
+  createTeamInstallationResolver: () => ({
+    resolve: async (_repo: string, ws: any, opts: any = {}) =>
+      (opts.fallbackToWorkspace && ws.installationId) ? { installationId: ws.installationId } : { installationId: null, reason: 'no_installation' },
+  }),
 }));
 mock.module('@/lib/pr-landing', () => ({
   landPr: mockLandPr,
