@@ -34,10 +34,7 @@ import type { PathOverlapDeferralFact, RetryChildFact, SentinelFacts, WorkerFail
 import { reassessIncidentsNamingPr } from './failure-pattern-sweep';
 import { readRecovery, type RecoveryEffects, type RecoveryFamily } from './failure-incident-recovery';
 import { evaluatePathOverlap, type PathOverlapRecoveryFacts } from './failure-incident-recovery-path-overlap';
-import { createGatedIncidentSender, incidentNeedsYouItems, verdictGeneration, type IncidentGateDeps } from './failure-incident-escalation';
-import { projectIncident, type IncidentVerdictView } from './incident-view';
-import { applyIncidentCapability } from '../app/api/health/incidents/[id]/actions/apply';
-import { verdictFromCode } from '@buildd/core/escalation-gate';
+import { projectIncident } from './incident-view';
 
 const WS = '00000000-0000-4000-8000-0000000000e2';
 const T0 = Date.parse('2026-10-05T09:00:00.000Z');
@@ -294,9 +291,9 @@ describe('Failure Pattern Sentinel — transient/budget noise stays ledger-only'
 // ── path-overlap recovery: sweep → assessment → gate → every surface ───────
 //
 // failure-incident-recovery §12(c), without a database: the production sweep,
-// recovery planner, path-overlap policy, escalation gate, Home projection and
-// click-time action route, over an in-memory world whose writers do what the
-// real ones do (a release frees the leases and wakes every waiter once). The
+// recovery planner, path-overlap policy and projection, over an in-memory world
+// whose writers do what the real ones do (a release frees the leases and wakes
+// every waiter once). The
 // same scenario runs on real Postgres in tests/db/failure-incident-recovery.test.ts.
 
 /** Clock-relative: `reassessIncidentsNamingPr` (the merge hook) reads the real clock. */
@@ -394,36 +391,8 @@ function pathOverlapWorld() {
   };
 }
 
-/** The escalation gate over an in-memory decision ledger; pushes are recorded. */
-function memoryGate() {
-  const records: Array<{ subjectId: string; fingerprint: string; appliedAnswer: string; reason: string }> = [];
-  const pushes: Array<{ title: string; message: string; url: string }> = [];
-  const deps: IncidentGateDeps = {
-    async loadTeamId() { return 'team-1'; },
-    async loadFixTask() { return null; },
-    async loadStored(_team, key) {
-      const r = [...records].reverse().find(x => x.subjectId === key);
-      return r ? { fingerprint: r.fingerprint, appliedAnswer: r.appliedAnswer } : null;
-    },
-    async record(input) { records.push({ subjectId: input.subjectId!, fingerprint: input.fingerprint, appliedAnswer: input.appliedAnswer!, reason: input.reason ?? '' }); },
-    async notify(_team, payload) { pushes.push(payload); },
-  };
-  /** loadIncidentVerdicts' reading of the ledger: newest per incident, with its generation stamp. */
-  const verdicts = (): Map<string, IncidentVerdictView> => {
-    const out = new Map<string, IncidentVerdictView>();
-    for (const r of [...records].reverse()) {
-      const id = r.subjectId.slice('incident:'.length);
-      const v = verdictFromCode(r.appliedAnswer);
-      if (v && !out.has(id)) out.set(id, { ...v, generation: verdictGeneration(r.reason) });
-    }
-    return out;
-  };
-  return { send: createGatedIncidentSender(deps), pushes, verdicts };
-}
-
 function recoveryHarness() {
   const world = pathOverlapWorld();
-  const gate = memoryGate();
   const incidentPort = listingPort();
   const deps: SweepDeps = {
     async listWorkspaceIds() { return [WS]; },
@@ -432,7 +401,7 @@ function recoveryHarness() {
     async collectFacts() { return world.sentinelFacts(); },
     incidentPort,
     decide: null,
-    send: gate.send,
+    send: async () => false,
     fixTasks: null,
     recovery: { families: [world.family], effects: world.effects },
     async reportOpsError() {},
@@ -440,16 +409,11 @@ function recoveryHarness() {
   };
   const sweepNow = () => runFailurePatternSweep(deps, { workspaceIds: [WS] });
   const only = () => { expect(incidentPort.rows.size).toBe(1); return [...incidentPort.rows.values()][0]; };
-  /** Home's Needs You rows (the badge counts these). */
-  const home = () => incidentNeedsYouItems(
-    [...incidentPort.rows.values()].filter(r => r.status !== 'resolved' && (r.severity === 'high' || r.severity === 'critical')),
-    gate.verdicts(),
-  );
-  return { world, gate, incidentPort, deps, sweepNow, only, home };
+  return { world, incidentPort, deps, sweepNow, only };
 }
 
 describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c))', () => {
-  it('T behind PR A then PR B: no inflated age (AC-1); B merges: one release, one wake each (AC-4); resolved only once the tasks move, then gone from Home (AC-2)', async () => {
+  it('T behind PR A then PR B: no inflated age (AC-1); B merges: one release, one wake each (AC-4); resolved only once the tasks move (AC-2)', async () => {
     const h = recoveryHarness();
 
     // AC-1: ten minutes behind B is under the threshold, and A's three hours are not B's.
@@ -466,10 +430,8 @@ describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c)
     expect(inc.affectedRefs.prNumbers).toEqual([PR_B]);
     expect(Date.parse(inc.firstSeenAt)).toBeGreaterThan(Date.parse(ago(151)));
     expect(readRecovery(inc)!.firstSeenAt).toBe(h.world.bFirst.at);
-    // An open, moving PR: Buildd waits; no page, not on Home.
+    // An open, moving PR: Buildd waits.
     expect(readRecovery(inc)!.state).toBe('waiting');
-    expect(h.gate.pushes).toHaveLength(0);
-    expect(h.home()).toHaveLength(0);
 
     // B lands; its leases are still held. The merge hook fires twice at once.
     h.world.blocker.prState = 'merged';
@@ -490,20 +452,18 @@ describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c)
     expect(h.only().status).toBe('open');
     expect(h.world.releases).toHaveLength(1);
 
-    // Every task starts: resolved on fresh facts, Buildd's, absent from Home.
+    // Every task starts: resolved on fresh facts, Buildd's.
     for (const id of [T, ...OTHERS]) h.world.start(id);
     await reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps);
     inc = h.only();
     expect(inc.status).toBe('resolved');
     expect(readRecovery(inc)!.state).toBe('recovered');
-    expect(h.home()).toHaveLength(0);
-    expect(h.gate.verdicts().get(inc.id)?.owner).toBe('buildd');
-    expect(projectIncident(inc, h.gate.verdicts().get(inc.id)).sentence).toMatch(/^Recovered at /);
-    expect(h.gate.pushes).toHaveLength(0);
+    expect(readRecovery(inc)!.owner).toBe('buildd');
+    expect(projectIncident(inc, null).sentence).toMatch(/^Recovered at /);
     expect(h.world.wakes).toEqual({ [T]: 1, [OTHERS[0]]: 1, [OTHERS[1]]: 1 });
   });
 
-  it('a cycle asks once with typed options (page, Home and push agree, AC-11); a stale click is a 409 with the new assessment (AC-7); the old verdict leaves Home (AC-5); an unreadable re-check is inconclusive, never resolved (AC-3)', async () => {
+  it('a cycle needs a decision with typed options (AC-11); once it breaks the next check is a new generation, waiting (AC-7); an unreadable re-check is inconclusive, never resolved (AC-3)', async () => {
     const h = recoveryHarness();
     h.world.bFirst.at = ago(150);
     h.world.blocker.dependsOn = [T];
@@ -512,40 +472,20 @@ describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c)
     const g1 = readRecovery(inc)!.generation;
     expect(readRecovery(inc)!.state).toBe('needs_decision');
 
-    // One push; Home lists it; all three carry the projection's sentence and no "fixed"/"resolved".
-    expect(h.gate.pushes).toHaveLength(1);
-    const view = projectIncident(inc, h.gate.verdicts().get(inc.id));
-    expect(view.needsYou).toBe(true);
-    const [card] = h.home();
-    expect(card.failureMessage).toBe(view.sentence);
-    expect(h.gate.pushes[0].message).toContain(view.sentence);
-    for (const text of [view.sentence, card.failureMessage!, h.gate.pushes[0].message]) expect(text).not.toMatch(RECOVERED_WORDS);
+    // The projection's sentence never claims a fix; the options are typed.
+    const view = projectIncident(inc, null);
+    expect(view.sentence).not.toMatch(RECOVERED_WORDS);
     expect(view.options.map(o => o.capability)).toContain('cancel_attempt');
 
-    // The cycle breaks before the click lands: a new generation, waiting.
+    // The cycle breaks: the re-check is a new generation, waiting.
     h.world.blocker.dependsOn = [];
-    const actionDeps = {
-      port: h.incidentPort,
-      async reassess(id: string) {
-        const [r] = await reassessIncidentsNamingPr(WS, PR_B, 'click', { ...h.deps, send: async () => false });
-        return r?.incident ?? h.incidentPort.findById(id);
-      },
-      async loadVerdict(row: StoredIncident) { return h.gate.verdicts().get(row.id) ?? null; },
-      async regate() {},
-      now: () => new Date().toISOString(),
-    };
-    const res = await applyIncidentCapability(actionDeps, inc.id, { capability: 'cancel_attempt', generation: g1 });
-    expect(res.status).toBe(409);
-    if (res.status !== 409) throw new Error('expected 409');
-    expect(res.body.reason).toBe('generation_changed');
-    expect(res.body.projection.generation).toBe(g1 + 1);
-    expect(res.body.projection.phase).toBe('waiting');
-    expect(res.body.projection.sentence).not.toMatch(RECOVERED_WORDS);
-
-    // AC-5: the stored person verdict is generation 1's; the incident is at 2 and waiting.
-    inc = h.only();
-    expect(h.gate.verdicts().get(inc.id)?.generation).toBe(g1);
-    expect(h.home()).toHaveLength(0);
+    const [r2] = await reassessIncidentsNamingPr(WS, PR_B, 'merge_hook', h.deps);
+    inc = r2.incident!;
+    expect(readRecovery(inc)!.generation).toBe(g1 + 1);
+    expect(readRecovery(inc)!.state).toBe('waiting');
+    const v2 = projectIncident(inc, null);
+    expect(v2.phase).toBe('waiting');
+    expect(v2.sentence).not.toMatch(RECOVERED_WORDS);
 
     // AC-3: the re-check cannot read its facts: inconclusive, still open, Buildd's, checked again.
     h.world.readFails = true;
@@ -553,9 +493,8 @@ describe('Failure Pattern Sentinel — path-overlap recovery end to end (§12(c)
     inc = r3.incident!;
     expect(inc.status).toBe('open');
     expect(readRecovery(inc)!.state).toBe('inconclusive');
-    const v3 = projectIncident(inc, h.gate.verdicts().get(inc.id));
+    const v3 = projectIncident(inc, null);
     expect(v3.needsYou).toBe(false);
     expect(v3.sentence).not.toMatch(RECOVERED_WORDS);
-    expect(h.gate.pushes).toHaveLength(1);
   });
 });

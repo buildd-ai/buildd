@@ -5,38 +5,26 @@ owner: max
 last_verified: 2026-10-12
 summary: Each viewer MUST see one plain status per root cause, actionable only by whoever controls the broken runner; Home never carries operator machinery, operator included.
 domain: surfaces
-surfaces: [apps/web/src/lib/service-status.ts, apps/web/src/lib/service-status-loader.ts, apps/web/src/lib/home-attention.ts, apps/web/src/lib/failure-incident-escalation.ts]
+surfaces: [apps/web/src/lib/service-status.ts, apps/web/src/lib/service-status-loader.ts, apps/web/src/lib/home-attention.ts, apps/web/src/app/app/(protected)/home/page.tsx]
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]
 keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin, operator parity, hosted runner, self-hosted runner, runner owner, platform-owner API]
-verified_by: [apps/web/src/lib/service-status.test.ts, apps/web/src/lib/team-service-status.ownership.test.ts, apps/web/src/lib/service-status-loader.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
+verified_by: [apps/web/src/lib/service-status.test.ts, apps/web/src/lib/team-service-status.ownership.test.ts, apps/web/src/lib/service-status-loader.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/home-operator-parity.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
 assertions:
-  - id: "escalation-rule"
-    type: "symbol"
-    name: "incidentEscalationRule"
-    path: "apps/web/src/lib/failure-incident-escalation.ts"
   - id: "member-scope-tests"
     type: "test_file"
     path: "apps/web/src/app/app/(protected)/health/member-scope.test.ts"
-  - id: "escalation-tests"
+  - id: "operator-parity-tests"
     type: "test_file"
-    path: "apps/web/src/lib/failure-incident-escalation.test.ts"
+    path: "apps/web/src/lib/home-operator-parity.test.ts"
 supersedes: []
 ---
 
 # Team Service Status
 
 **Status of this document**: active. The pure projection
-(`apps/web/src/lib/service-status.ts`, section 6), the operator gates on the
-incident page, its API and Home's incident read, and the section 9 loader with
-its Home, Health and task-page renderers have landed. One gap remains, and
-section 7 is the contract that closes it:
-
-1. **Home still carries operator machinery for whoever is the platform
-   operator.** Incident cards and decision-feature health rows are gated on
-   the operator role, not removed from Home. An operator is also a member of
-   their own team, so their Home mixes platform machinery into "things need
-   you". Gating by role kept the machinery off other teams' Home; it did not
-   move it to the operator's surface.
+(`apps/web/src/lib/service-status.ts`, section 6), the section 7 placement
+(Home carries no operator machinery, operator included) and the section 9
+loader with its Home, Health and task-page renderers have landed.
 
 Each acceptance criterion names the test that MUST exist; a name marked
 *(new)* does not exist yet, is plain text on purpose, and is to be replaced
@@ -54,11 +42,10 @@ This spec is the team-facing contract. It does not redo recovery.
   Pattern Sentinel and the incident store (`failure-incident-actions.ts`,
   `failure-incident-store.ts`, `failure-pattern-sweep.ts`). Nothing here
   changes when a pattern opens, who fixes it, or the fix task.
-- **Who gets paged** stays with the escalation gate
-  (`apps/web/src/lib/failure-incident-escalation.ts`, `incidentEscalationRule`).
-  Its critical-incident and no-next-step rails page the platform owner. This
-  spec adds a separate, team-scoped surface and rule; it does not loosen or
-  tighten the owner's page.
+- **Who gets paged** is operator tooling's, outside the open product. The
+  open product pages nobody about a root cause (`defaultIncidentSender` in
+  `failure-incident-actions.ts` delivers nothing); operator tooling reads the
+  root causes through the platform-owner API and pages from its own state.
 - **Health scoping** (members see their own work and the runners they can use,
   team admins see the team; Operator stays the platform owner's) is fixed by
   `health/member-scope.test.ts` and the Health PRs that landed it. This spec
@@ -137,8 +124,8 @@ that person with the action and where it happens.
   one banner on Home and Health, until restored.
 - A status MUST NOT contribute to any badge count, including the Needs You
   badge. A banner is not a count and a count is not a banner.
-- The escalation gate's owner verdicts (`owner: 'person'` rails) are not Needs
-  You items for team members. They continue to reach the platform owner only.
+- Paging the platform owner is not a Needs You item for anyone on a team,
+  the platform operator included.
 
 ## 4. Known credential state
 
@@ -183,9 +170,9 @@ Rules:
   cause after it cleared reopens the same status without a new notification;
   a new notification is sent only for a root cause that was not already
   active for that scope.
-- An escalation gate fingerprint and a status are separate objects. The gate
-  decides whether the owner is paged; the status decides what the team sees.
-  Neither reads the other's "sent" flag.
+- Paging and a status are separate. Operator tooling decides whether the
+  platform owner is paged; the status decides what the team sees and reads
+  no paging state.
 
 ## 6. Service-status projection contract
 
@@ -220,15 +207,13 @@ thing for a platform operator as for any other team admin with the same team
 role. The operator role adds nothing to them.
 
 - **Leaves Home for every viewer, the operator included**: Sentinel incident
-  cards (the stored escalation verdicts), decision-feature health rows ("…is
+  cards (owner verdicts), decision-feature health rows ("…is
   not deciding", the decision collection items), and any other item whose
   subject is buildd's own machinery rather than the team's work.
 - **Where it goes**: operator tooling, which reads root causes through the
-  platform-owner API and keeps its own state. Team surfaces carry no operator
-  items. The operator's push page for an owner verdict is unchanged; only
-  its Home card goes. Moving them MUST NOT leave the operator without them:
-  the platform-owner API serves the same items, with the same verdicts, before
-  Home stops rendering them.
+  platform-owner API and keeps its own state, verdicts and pages. Team
+  surfaces carry no operator items, and the open product has no incident
+  page, incident API or incident MCP action.
 - **What the operator sees on Home instead**: the section 6 projection for
   their own team, at their team role, like anyone else. A Sentinel pattern
   that hit their team's work reaches them as a team status ("Runner A needs
@@ -357,9 +342,10 @@ others exist and cover the neighbouring behaviour.
   WHEN their Home and Needs You badge are computed THEN neither item is
   present, the badge equals a non-operator team admin's, and the platform-owner
   API returns both items with their verdicts.
-  Test: `home-operator-parity.test.ts` *(new)*; replaces the "loads incident
-  cards onto Home only for a platform operator" case in
-  `team-incident-boundary.test.ts`.
+  Test: `apps/web/src/lib/home-operator-parity.test.ts`, with
+  `apps/web/src/lib/team-incident-boundary.test.ts` (no incident page, API,
+  MCP action or page sent). The platform-owner API half is operator
+  tooling's.
 - AC-9: GIVEN each runner row of the section 8 table with its failure WHEN the
   projection is read for the credential owner, a team admin and a member THEN
   the action goes to the holder that row names, a hosted runner never yields a
@@ -379,8 +365,6 @@ others exist and cover the neighbouring behaviour.
 
 Existing, read-only context for this spec:
 
-- `apps/web/src/lib/failure-incident-escalation.ts` — owner paging gate;
-  `incidentEscalationRule`, `incidentNeedsYouItems`.
 - `apps/web/src/lib/home-attention.ts` — Home card rules, `waitsOnBuildd`.
 - `apps/web/src/lib/action-queue.ts` — Needs You queue items.
 - `apps/web/src/lib/incident-view.ts` — operator-side incident wording.
@@ -392,8 +376,8 @@ Existing, read-only context for this spec:
 - `apps/web/src/lib/service-status.ts` — the pure projection:
   `correlateSignals`, `projectServiceStatus`, `statusAttentionItems`,
   `reconcileServiceStatus`.
-- `apps/web/src/app/app/(protected)/home/page.tsx` — Home's reads; the
-  operator-gated incident and decision-collection reads that section 7 removes.
+- `apps/web/src/app/app/(protected)/home/page.tsx` — Home's reads; none
+  depends on the operator role (section 7).
 - `packages/core/db/schema.ts` — `accounts.authType`, `managedRunner`,
   `hostRunner`, `createdByUserId`: the section 8 inputs.
 
@@ -415,14 +399,11 @@ Existing, read-only context for this spec:
   status list (Health Overview, an affected task's page) and the banner (Home,
   every Health page).
 
-To be added: the platform-owner API routes for incidents and decision-feature
-health.
-
 ## Out of scope
 
 - Detecting, classifying severity of or fixing failures (Sentinel, fix tasks).
 - Resuming interrupted work (mission `ecea17f3`, delivery kernel).
 - Operator clients of the platform-owner API, their storage and their UI.
 - Storing, refreshing, relaying or substituting any subscription login.
-- Paging the platform owner (the escalation gate).
+- Paging the platform owner (operator tooling).
 - Visual design of the status surface and banner.

@@ -18,7 +18,6 @@ import { ESCALATION_GATE_CAPABILITY, verdictFromCode } from '@buildd/core/escala
 import { GATE_SLUGS } from '@buildd/core/gate-events';
 import type { RecoveryCauseDetail, RecoveryFilter, RecoveryPanel } from '@buildd/shared';
 import { readSentinelLastRun, SENTINEL_LAST_RUN_KEY, type RecoveryAttemptDetail } from '@/lib/failure-incident-recovery-events';
-import { INCIDENT_SUBJECT_TYPE, incidentSubjectKey } from '@/lib/failure-incident-escalation';
 import { buildRecoveryCauseDetail, buildRecoveryPanel, type CauseModelDecisions, type PriorityOverride, type QueueFacts, type QueueIncident } from './recovery/queue';
 import { readOperatorReceipt } from '@/lib/operator-recovery-decisions';
 import { buildAutomationState } from '@/lib/failure-incident-recovery-automation';
@@ -59,6 +58,10 @@ import { fetchOperatorEstimateCounts, fetchOperatorEstimateRows, OPERATOR_ROW_LI
 import type { DecisionFeatureCount, DecisionHealthRow } from './decision-features';
 import type { AdminScope, AdminWindow } from './scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** How stored escalation verdicts were keyed in the decision ledger: `incident:<id>`. */
+const INCIDENT_SUBJECT_TYPE = 'incident';
+const incidentSubjectKey = (id: string) => `${INCIDENT_SUBJECT_TYPE}:${id}`;
 
 export { applyExperimentUpdate, findOtherRunning };
 

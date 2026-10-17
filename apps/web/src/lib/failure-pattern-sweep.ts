@@ -499,10 +499,9 @@ export function regateAlert(incident: StoredIncident): IncidentAlert {
 }
 
 /**
- * Count, re-gate on any change of assessment (G4: the verdict is no longer
- * rewritten only when a page is claimed), and tell the operator through the
- * existing ops path when recovery needs one. The gate pages only when the
- * new verdict is the person's, once per fingerprint.
+ * Count, hand any change of assessment to the sender (G4), and tell the
+ * operator through the existing ops path when recovery needs one. The
+ * default sender delivers nothing (`defaultIncidentSender`).
  */
 async function afterAssessment(deps: Pick<SweepDeps, 'send' | 'reportOpsError'>, results: ReadonlyArray<AssessResult>, counters?: SweepRunCounters): Promise<void> {
   const send = deps.send ?? defaultIncidentSender();

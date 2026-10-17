@@ -103,7 +103,7 @@ export type IncidentPhase =
   | 'inconclusive' | 'unavailable' | 'decision' | 'recovered';
 
 export type IncidentOptionMode =
-  /** Posted to the click-time re-check route (`/api/health/incidents/[id]/actions`). */
+  /** The typed action this capability names. */
   | 'post'
   /** Done where the subject lives (the PR, the task); the link goes there. */
   | 'link'
