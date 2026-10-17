@@ -1843,6 +1843,11 @@ export interface ClaimDiagnostics {
      */
     kernel_unavailable?: number;
     /**
+     * Workflow-kernel fix claim rolled back to pending because the control plane refused it (auth, the
+     * claiming account's reach, a malformed input): not an outage, so a retry gets the same answer.
+     */
+    kernel_refused?: number;
+    /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
      * path_overlap / advisory_manifest deferral for that task.

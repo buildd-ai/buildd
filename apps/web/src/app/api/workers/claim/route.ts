@@ -97,7 +97,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { claimFix as claimKernelFix, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
 
 /**
  * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
@@ -1135,6 +1135,7 @@ export async function POST(req: NextRequest) {
     sibling_retry_open: 0,
     fix_not_needed: 0,
     kernel_unavailable: 0,
+    kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -2837,9 +2838,14 @@ export async function POST(req: NextRequest) {
       fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
       const { value: fixDecision } = await withControlPlaneBudget('claim', Math.max(0, fixClaimDeadline - Date.now()), () => claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
-      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string; unavailable: true } => {
+      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string; code: 'kernel_unavailable' | 'kernel_refused' } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
-        return { action: 'defer', reason: 'kernel_error', unavailable: true };
+        // A refusal (auth, the principal's reach, a malformed input) is not an outage: asking again on
+        // the next poll gets the same answer, so it reads as its own code in claim diagnostics.
+        if (err instanceof KernelCommandRefusedError) {
+          return { action: 'defer', reason: `refused ${err.status}${err.body.code ? ` ${String(err.body.code)}` : ''}`, code: 'kernel_refused' };
+        }
+        return { action: 'defer', reason: 'kernel_error', code: 'kernel_unavailable' };
       }));
       if (fixDecision.action !== 'proceed') {
         if (gatedStartLeaseIds.length > 0) {
@@ -2854,9 +2860,9 @@ export async function POST(req: NextRequest) {
             .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
             .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
         }
-        // The kernel could not answer (the control plane down or slow, or the claim budget spent): its
-        // own code, so an outage reads as one in claim diagnostics, not as fixes nobody needs.
-        deferTask(task, 'unavailable' in fixDecision ? 'kernel_unavailable' : 'fix_not_needed', { reason: fixDecision.reason });
+        // The kernel could not answer (the control plane down or slow, or the claim budget spent), or it
+        // refused the claim: each its own code, so neither reads as fixes nobody needs.
+        deferTask(task, 'code' in fixDecision ? fixDecision.code : 'fix_not_needed', { reason: fixDecision.reason });
         continue;
       }
     }

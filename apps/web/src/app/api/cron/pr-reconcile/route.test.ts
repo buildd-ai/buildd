@@ -97,6 +97,10 @@ mock.module('@/lib/workflow/command-ledger', () => ({
   postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 30_000, COMMAND_HEARTBEAT_MS: 10_000, COMMAND_RETENTION_DAYS: 7,
 }));
 
+// …and re-submitting the door commands the control plane never answered (lib/workflow/command-outbox.ts).
+const realCommandOutbox = await import('@/lib/workflow/command-outbox');
+mock.module('@/lib/workflow/command-outbox', () => ({ ...realCommandOutbox, drainParkedCommands: async () => ({ claimed: 0, done: 0, retried: 0, dead: 0, pruned: 0 }) }));
+
 // When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
 let lastFloorAt: Date | null = null;
 const realKernelFloor = await import('@/lib/workflow/kernel-floor');

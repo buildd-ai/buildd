@@ -369,7 +369,20 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
-  const cmd = body as CommandRequest;
+  return applyCommandRequest(body as CommandRequest, deps);
+}
+
+/**
+ * A well-formed command on the host that applies it: the reach check, the installation, then the
+ * ledger claim and the run. The endpoint calls it after the signature and shape checks; the floor
+ * calls it for a parked command (command-outbox.ts), which the web host wrote and signed nothing for,
+ * so the principal's reach is re-checked here exactly as for a request.
+ */
+export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServerDeps = {}): Promise<Response> {
+  const host = (deps.host ?? kernelHost)();
+  if (host !== 'control-plane' || executionModeOf((deps.env ?? process.env).EXECUTION_MODE) !== 'own') {
+    return refuse(409, 'not_host', 'This host does not apply kernel commands in the current mode; the web host runs them.', { host });
+  }
   const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
