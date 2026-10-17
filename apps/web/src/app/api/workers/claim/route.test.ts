@@ -17,6 +17,7 @@ const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
 const mockTeamsFindFirst = mock(() => null as any);
 const mockHeartbeatsFindFirst = mock(() => null as any);
+const mockHeartbeatsFindMany = mock(async () => [] as any[]);
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
@@ -132,7 +133,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
-      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
+      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst, findMany: mockHeartbeatsFindMany },
       secrets: { findMany: mockSecretsFindMany },
       tenantBudgets: { findFirst: mock(() => null as any) },
       // Provider pause log (backend_pauses) — empty means every pool is open.
@@ -634,6 +635,9 @@ describe('POST /api/workers/claim', () => {
     mockSecretsFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    // Default: no live runner reports its own slots (the account's limit applies)
+    mockHeartbeatsFindMany.mockReset();
+    mockHeartbeatsFindMany.mockResolvedValue([]);
     // Default: no workspace permissions
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     // Default: no role overrides
@@ -825,6 +829,62 @@ describe('POST /api/workers/claim', () => {
     // Task e7e8740a: the refusal names its limit and what lifts it.
     expect(data.code).toBe('max_concurrent_workers');
     expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
+  });
+
+  it('the account limit is the slots its live runners report, not the account default', async () => {
+    // The account default is 3, but its two runners report 9 and 5 slots:
+    // three busy workers leave room (the runner caps its own slots).
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 9 }, { maxConcurrentWorkers: 5 }]);
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+      { id: 'w3', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    const data = await res.json();
+    expect(data.code).not.toBe('max_concurrent_workers');
+  });
+
+  it('live runners reporting fewer slots than are busy still get the 429, naming their total', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 2 }, { maxConcurrentWorkers: 2 }]);
+    mockWorkersFindMany.mockResolvedValueOnce(
+      ['w1', 'w2', 'w3', 'w4'].map(id => ({ id, status: 'running', runner: 'r' })),
+    );
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(429);
+    const data = await res.json();
+    expect(data.limit).toBe(4);
+  });
+
+  it('a claim a person asked for is not refused by the account-wide worker count', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'r', taskId: '11111111-1111-4111-8111-111111111111', requestedByPerson: true },
+    }));
+    const data = await res.json();
+    expect(res.status).not.toBe(429);
+    expect(data.code).not.toBe('max_concurrent_workers');
+    expect(data.diagnostics?.reason).not.toBe('no_slots');
+  });
+
+  it('requestedByPerson without a named task is an ordinary claim', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'r', requestedByPerson: true },
+    }));
+    expect(res.status).toBe(429);
   });
 
   it('a question whose session ended does not count against max concurrent workers', async () => {

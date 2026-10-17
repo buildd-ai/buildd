@@ -28,7 +28,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
+import { overlayDeliveryLifecycle, prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
@@ -602,6 +602,7 @@ export default async function HomePage({
           ]);
           const factsNow = Date.now();
           const lifecycleMissions = allMissions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], missionDeliveryViews) }));
+          const lifecycleById = new Map(lifecycleMissions.map(m => [m.id, m]));
 
           missionDeliveries = lifecycleMissions.map(m => ({
             delivery: projectMissionDelivery({
@@ -650,7 +651,8 @@ export default async function HomePage({
             const recentDone = m.status === 'completed' && m.completedAt && nowMs - new Date(m.completedAt).getTime() < recentMs;
             const live = summary.liveWorkers > 0 || ['running', 'attention', 'review'].includes(summary.group);
             if (!recurring && !recentDone && !live && !m.isHeld) return [];
-            const row = m as unknown as ListMissionRow;
+            // The card's pulse, PR line and primary read the delivery's lifecycle, not the raw worker rows.
+            const row = (lifecycleById.get(m.id) ?? m) as unknown as ListMissionRow;
             if (recurring) {
               const last = lastTickSummary.get(m.id);
               const lastTick = (row.tasks ?? []).filter(t => t.scheduleId && t.status === 'completed')
@@ -1823,17 +1825,22 @@ export default async function HomePage({
             // the row's own lastCheckedAt). One worker per task is assumed
             // (doc-fix tasks are single-shot planning tasks); a retried task
             // would have more than one, so the most recently started wins.
-            const docFixWorkers = docFixTaskIds.length > 0
-              ? await db.query.workers.findMany({
-                  where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
-                  columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
-                  orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
-                })
-              : [];
+            const [docFixWorkers, docFixViews] = docFixTaskIds.length > 0
+              ? await Promise.all([
+                  db.query.workers.findMany({
+                    where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
+                    columns: { taskId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true },
+                    orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
+                  }),
+                  // A kernel-owned delivery's merged/open/closed reading replaces its worker's columns.
+                  getDeliveryViewsForTasks(docFixTaskIds),
+                ])
+              : [[], new Map()] as const;
             const docFixWorkerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
             for (const w of docFixWorkers) {
               if (w.taskId && !docFixWorkerByTask.has(w.taskId)) {
-                docFixWorkerByTask.set(w.taskId, { prLifecycleStatus: w.prLifecycleStatus ?? null, mergedAt: w.mergedAt ?? null });
+                const life = prLifecycleFor(w, docFixViews.get(w.taskId), w.taskId);
+                docFixWorkerByTask.set(w.taskId, { prLifecycleStatus: life.prLifecycleStatus, mergedAt: (life.mergedAt as Date | null) ?? null });
               }
             }
             const { items: discrepancyItems, overflowCount } = buildDiscrepancyItems(

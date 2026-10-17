@@ -1874,7 +1874,9 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
         ? [{ op: 'update', attemptId: a.id, whenStatus: [a.status], set: { status: 'skipped', outcome: 'noop', ended: true } }]
         : [];
       const effects: EffectSpec[] = a && moot
-        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved', ...(a.taskId ? { taskIds: [a.taskId] } : {}) } }]
+        // The task it made moot, named. A mechanical row has no task, so nothing is cancelled (a81a100f);
+        // an agent row not yet linked to its task leaves the role-wide cancel.
+        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved', ...(a.taskId ? { taskIds: [a.taskId] } : a.mode === 'mechanical' ? { taskIds: [] } : {}) } }]
         : [];
       const ev = { ...evidence, foreignPush: true, repairSkipped: attempts.length > 0 };
       if (d.approvalBasis === 'policy') {
