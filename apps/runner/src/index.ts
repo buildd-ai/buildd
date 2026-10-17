@@ -2145,7 +2145,9 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         }
         return Response.json({ worker: toPublicWorker(worker) }, { headers: corsHeaders });
       } catch (err: any) {
-        return Response.json({ error: err.message || 'Failed to claim' }, { status: 400, headers: corsHeaders });
+        // The refusal's own fields, so top can say why in words (top/claim-refusal.ts).
+        const { claimRefusalBody } = await import('./top/claim-refusal');
+        return Response.json(claimRefusalBody(err), { status: 400, headers: corsHeaders });
       }
     }
 

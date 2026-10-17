@@ -95,11 +95,20 @@ describe('teams and missions (R-23, R-24)', () => {
     expect(text(frame(s, 80, 12))).toContain('Billing cleanup');
   });
 
-  test('the right pane says so for a delivered mission and a person-run one', () => {
+  test('the right pane: a delivered mission says when, a local one says who runs it, in a status line under the title', () => {
     const delivered = text(frame({ ...teamed(), selectedMission: 'm-4' }, 80, 24));
-    expect(delivered).toMatch(/Retire the old API · delivered [A-Z][a-z]{2} \d{1,2}/);
+    expect(delivered).toMatch(/│ Retire the old API +\n/);
+    expect(delivered).toMatch(/│ Delivered [A-Z][a-z]{2} \d{1,2}/);
+    expect(delivered).toContain('Its work is finished. o opens it on buildd.');
     const local = text(frame({ ...teamed(), selectedMission: 'm-3' }, 80, 24));
-    expect(local).toContain('A person runs this mission');
+    expect(local).toContain('│ Managed from a local session');
+    expect(local).toContain('No activity yet.');
+    // Never the old sentences, and no detached "local session" row in the sidebar.
+    for (const t of [delivered, local]) {
+      expect(t).not.toContain('A person runs this mission');
+      expect(t).not.toContain('Nothing here yet');
+      expect(t.split('\n').map(l => l.split('│')[0].trim())).not.toContain('local session');
+    }
   });
 
   test('the footer offers t', () => {
