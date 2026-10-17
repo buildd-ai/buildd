@@ -12,6 +12,7 @@ mock.module('next/navigation', () => ({
 import { MonthlySpend } from './usage/MonthlySpend';
 import { HealthClient } from './HealthClient';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import type { BackendConfinement, RunnerIsolationRecord } from '@buildd/shared';
 import type { CredentialHealthItem, RecentFailure, ScheduleRow } from './page';
 
 const NOW = Date.now();
@@ -31,7 +32,19 @@ const runner = (over: Partial<RunnerHeartbeat> = {}): RunnerHeartbeat => ({
   sandboxProbeAt: ago(HOUR),
   mountAllowlistEnforced: true,
   isolation: null,
+  shared: true,
   ...over,
+});
+
+const none = (reason: BackendConfinement['reason']): BackendConfinement => ({ mechanism: 'none', scope: [], reason });
+const isolation = (platform: RunnerIsolationRecord['platform'], claude: BackendConfinement): RunnerIsolationRecord => ({
+  platform,
+  evidence: [],
+  claude,
+  codex: { 'read-only': claude, 'workspace-write': claude },
+  probeAt: new Date(NOW - 60_000).toISOString(),
+  processStartedAt: new Date(NOW - 120_000).toISOString(),
+  runnerVersion: '0.0.0-test',
 });
 
 const failure = (over: Partial<RecentFailure> = {}): RecentFailure => ({
@@ -207,14 +220,47 @@ describe('HealthClient — layout', () => {
 });
 
 describe('HealthClient — Problems', () => {
-  it('flags a fleet whose only problem is degraded sandbox posture', () => {
-    // Regression: hasProblems used to omit degradedSandboxRunners entirely, so
-    // an unconfined fleet rendered "All systems healthy".
+  it('flags a fleet whose only problem is a runner that lost its sandbox', () => {
+    // Regression: hasProblems used to omit sandbox problems entirely, so an
+    // unconfined fleet rendered "All systems healthy".
     const html = render({
-      runners: [runner({ sandboxEnabled: true, mountAllowlistEnforced: false })],
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), isolation: isolation('linux', none('bwrap_missing')) })],
     });
     expect(html).not.toContain('All systems healthy');
-    expect(html).toContain('data-testid="health-section-problems"');
+    expect(html).toContain('data-testid="problem-isolation"');
+    expect(html).toContain('Runner one: not sandboxed');
+  });
+
+  // Living Spec "Runner isolation" AC-10.
+  it('keeps reduced isolation that policy allows out of Problems and in runner detail', () => {
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), shared: false, isolation: isolation('linux', none('opt_out')) })],
+      protectedWorkPending: true,
+    });
+    expect(html).toContain('All systems healthy');
+    expect(html).not.toContain('data-testid="problem-isolation"');
+    expect(html).toContain('data-testid="runner-isolation"');
+    expect(html).toContain('only its operator');
+  });
+
+  it('flags the same opt-out on a runner other people use', () => {
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), shared: true, isolation: isolation('linux', none('opt_out')) })],
+    });
+    expect(html).toContain('Runner one: sandbox turned off');
+  });
+
+  it('keeps bubblewrap with the mount allowlist off out of Problems', () => {
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), mountAllowlistEnforced: false, isolation: isolation('linux', { mechanism: 'bwrap', scope: ['write'] }) })],
+    });
+    expect(html).toContain('All systems healthy');
+  });
+
+  it('flags an unconfirmed sandbox only while work is pending', () => {
+    const unprobed = runner({ lastHeartbeatAt: ago(60 * 1000), sandboxEnabled: null, sandboxProbeAt: null });
+    expect(render({ runners: [unprobed] })).toContain('All systems healthy');
+    expect(render({ runners: [unprobed], protectedWorkPending: true })).toContain('Runner one: sandbox not confirmed');
   });
 
   it('says all systems healthy when nothing is wrong', () => {

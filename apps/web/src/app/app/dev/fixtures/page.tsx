@@ -40,6 +40,7 @@ import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import CoordinationHoldFixture from './CoordinationHoldFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
+import RunnerIsolationFixture from './RunnerIsolationFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import TaskSheetFixture from './TaskSheetFixture';
@@ -61,6 +62,7 @@ import {
     MCP_CONNECTIONS_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
+    RUNNER_ISOLATION_FIXTURE_STATE,
     WORKSPACES_LIST_FIXTURE_STATE,
     HOSTED_RUNNER_FIXTURE_STATE,
     SERVICE_STATUS_FIXTURE_STATE,
@@ -256,6 +258,9 @@ export default function DevFixturesPage() {
 
     if (state === RUNNER_SIZE_FIXTURE_STATE) {
         return <RunnerSizeFixture />;
+    }
+    if (state === RUNNER_ISOLATION_FIXTURE_STATE) {
+        return <RunnerIsolationFixture />;
     }
     if (state === WORKSPACES_LIST_FIXTURE_STATE) {
         return <WorkspacesListFixture />;

@@ -42,6 +42,12 @@ export interface RunnerHeartbeat {
    * it: then only `sandboxEnabled` is known, and its cause is not.
    */
   isolation: RunnerIsolationRecord | null;
+  /**
+   * Other people's tasks can run here: the runner's team or the team viewing
+   * it has more than one member. An operator's opt-out is allowed only when
+   * this is false (runner-isolation-health.ts).
+   */
+  shared: boolean;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */
@@ -201,4 +207,19 @@ export function selectRelevantRunnerAccounts(
     }
   }
   return relevant;
+}
+
+/**
+ * Other people's tasks can run on this runner: more than one person across
+ * the runner's own team and the team it serves here. Unknown reads as shared,
+ * so an operator's opt-out is never hidden for want of a lookup.
+ */
+export function isSharedRunner(
+  membersByTeam: Map<string, Set<string>> | null,
+  runnerTeamId: string | null,
+  viewingTeamId: string,
+): boolean {
+  if (!membersByTeam || !runnerTeamId) return true;
+  const people = new Set([...(membersByTeam.get(runnerTeamId) ?? []), ...(membersByTeam.get(viewingTeamId) ?? [])]);
+  return people.size > 1;
 }
