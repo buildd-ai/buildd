@@ -29,7 +29,7 @@ describe('workspaceAwaitingMissionsQuery', () => {
   it('candidate: an auditor-scoped unsure screenshot with no active review', () => {
     expect(sql).toContain(`"a"."type" = 'screenshot'`);
     expect(sql).toContain(`"a"."metadata" -> 'qa' ->> 'verdict' = 'unsure'`);
-    expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and \("t"\.role_slug = 'visual-auditor' or "t"\.title like '\[surface audit\] %'\)\)/);
+    expect(sql).toMatch(/"a"\."worker_id" in \(select "w"\."id" from "workers" "w" inner join "tasks" "t" on "t"\."id" = "w"\."task_id" where "t"\."mission_id" = "missions"\."id" and \("t"\.role_slug = \$\d+ or "t"\.title like \$\d+\)\)/);
     expect(sql).toContain('not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)');
   });
 
@@ -47,8 +47,8 @@ describe('workspaceAwaitingMissionsQuery', () => {
 });
 
 describe('one audit identity in SQL', () => {
-  const ROLE = `role_slug = 'visual-auditor'`;
-  const TITLE = `title like '[surface audit] %'`;
+  const ROLE = `"t".role_slug = $`;
+  const TITLE = `"t".title like $`;
   it('every task-scoped audit predicate matches the role or the title prefix', () => {
     const shots = visualReviewWorkersQuery(qb(), MISSION).toSQL().sql;
     const awaiting = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL().sql;

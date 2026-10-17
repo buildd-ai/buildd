@@ -147,7 +147,7 @@ describe('POST /api/missions/[id]/visual-review/decisions: validation and guards
     const scope = fake.calls.find(c => c.op === 'select' && c.table === 'artifacts')!;
     const q = renderSql(scope.where);
     expect(q.sql).toContain('"artifacts"."mission_id" = $');
-    expect(q.sql).toContain('"t"."role_slug" = $');
+    expect(q.sql).toContain('"t".role_slug = $');
     expect(q.params).toEqual(expect.arrayContaining([MISSION, 'visual-auditor', SHOT_M, SHOT_D]));
     expect(fake.calls.filter(c => c.op === 'insert' || c.op === 'update')).toHaveLength(0);
   });

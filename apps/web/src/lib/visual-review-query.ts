@@ -48,7 +48,7 @@ export const MISSION_VISUAL_SHOTS_ORDER = (
  * workers of this mission's `visual-auditor` tasks.
  */
 /** `isMissionAuditTask` in SQL: the audit title prefix or the visual-auditor role, on a raw `tasks` alias. */
-const auditTaskSql = (alias: string) => sql.raw(`(${alias}.role_slug = '${VISUAL_AUDITOR_ROLE_SLUG}' or ${alias}.title like '${SURFACE_AUDIT_TITLE_PREFIX}%')`);
+const auditTaskSql = (alias: string) => sql`(${sql.raw(alias)}.role_slug = ${VISUAL_AUDITOR_ROLE_SLUG} or ${sql.raw(alias)}.title like ${`${SURFACE_AUDIT_TITLE_PREFIX}%`})`;
 /** The same, on the drizzle `tasks` columns. */
 const isAuditTaskCol = sql`(${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} or ${tasks.title} like ${`${SURFACE_AUDIT_TITLE_PREFIX}%`})`;
 
