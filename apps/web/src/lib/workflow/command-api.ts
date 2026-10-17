@@ -125,7 +125,7 @@ export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' &
 type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOps[K]['input'] ? K : never }[KernelOp];
 // A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
 const INSTALLATION_OP: Record<InstallationOp, true> = {
-  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true,
+  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true,
 };
 /**
  * The control plane acts through the installation it resolves for the command's workspace and repo,
