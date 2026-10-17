@@ -75,4 +75,9 @@ describe('holdsRunnerSlot', () => {
     expect(holdsRunnerSlot({ status: 'working' })).toBe(true);
     expect(holdsRunnerSlot({ status: 'done' })).toBe(false);
   });
+  it('a question whose session ended holds no slot', () => {
+    expect(holdsRunnerSlot({ status: 'waiting', waitingFor: { type: 'question' } }, false)).toBe(false);
+    expect(holdsRunnerSlot({ status: 'waiting', waitingFor: { type: 'question' } }, true)).toBe(true);
+    expect(holdsRunnerSlot({ status: 'working' }, false)).toBe(true);
+  });
 });

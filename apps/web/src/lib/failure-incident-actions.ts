@@ -13,10 +13,9 @@
  *    confident answer can raise severity. Unavailable, malformed or timed-out
  *    answers fall back to the floor, deterministically.
  * 2. **Alert on transitions, never occurrences.** critical and high are page
- *    candidates, medium → digest, low → ledger only. A candidate goes through
- *    the escalation gate (`incident-escalation.ts`): a critical incident is
- *    the owner's, one whose fix task is running is Buildd's, and the verdict
- *    is stored. A
+ *    candidates, medium → digest, low → ledger only. A candidate is handed to
+ *    the sender, which in the open product delivers nothing
+ *    (`defaultIncidentSender`). A
  *    re-page needs a severity increase, the affected scope crossing the next
  *    `IMPACT_SCOPE_THRESHOLDS` tier, or a resolved incident recurring. The page
  *    is CLAIMED on the incident row (CAS on `version`, writing
@@ -54,7 +53,6 @@ import {
   type StoredIncident,
   type UpsertIncidentResult,
 } from './failure-incident-store';
-import { appBaseUrl } from './app-url';
 import { projectIncident, type IncidentVerdictView } from './incident-view';
 
 export type IncidentClassification = FailureIncidentTriageDecision;
@@ -271,11 +269,6 @@ export function incidentRuleLabel(rule: FailureIncidentRule): string {
   return RULE_LABEL[rule] ?? rule;
 }
 
-/** The one place the incident URL is spelled. */
-export function incidentDeepLink(incidentId: string, baseUrl: string = appBaseUrl()): string {
-  return `${baseUrl}/app/incidents/${incidentId}`;
-}
-
 /** `2026-10-04T12:00:00.000Z` → `2026-10-04 12:00Z`. */
 function shortTime(iso: string): string {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : iso;
@@ -289,7 +282,7 @@ function shortTime(iso: string): string {
 export function formatIncidentAlert(
   incident: StoredIncident,
   plan: Pick<IncidentAlertPlan, 'severity' | 'reason'>,
-  opts: { baseUrl?: string; verdict?: IncidentVerdictView | null; timeZone?: string } = {},
+  opts: { verdict?: IncidentVerdictView | null; timeZone?: string } = {},
 ): { title: string; message: string } {
   const label = incidentRuleLabel(incident.rule);
   const title = `${plan.severity.toUpperCase()} incident ${REASON_TEXT[plan.reason ?? 'opened']}: ${label}`;
@@ -303,7 +296,6 @@ export function formatIncidentAlert(
       (incident.recurrenceCount > 0 ? `, recurred ${incident.recurrenceCount}x` : ''),
     `first ${shortTime(incident.firstSeenAt)} · last ${shortTime(incident.lastSeenAt)}`,
     example ? `e.g. ${example}` : null,
-    incidentDeepLink(incident.id, opts.baseUrl),
   ].filter((l): l is string => !!l);
   return { title, message: lines.join('\n') };
 }
@@ -325,15 +317,12 @@ export interface IncidentAlert {
 export type IncidentAlertSender = (alert: IncidentAlert) => Promise<boolean>;
 
 /**
- * The default sender: the escalation gate (lib/failure-incident-escalation.ts). The
- * owner is paged only when the gate's rules say the incident is theirs; the
- * verdict is stored either way.
+ * The default sender delivers nothing: the open product pages nobody and
+ * stores no escalation verdict. Operator tooling reads root causes through
+ * the platform-owner API (lib/root-cause-record.ts) and keeps its own paging.
  */
 export function defaultIncidentSender(): IncidentAlertSender {
-  return async alert => {
-    const { createGatedIncidentSender, createDbIncidentGateDeps } = await import('./failure-incident-escalation');
-    return createGatedIncidentSender(createDbIncidentGateDeps())(alert);
-  };
+  return async () => false;
 }
 
 /**
@@ -420,7 +409,7 @@ export function fixTaskContextUpdate(incident: StoredIncident): Record<string, u
   };
 }
 
-export function buildFixTaskDraft(incident: StoredIncident, triage: IncidentTriage, opts: { baseUrl?: string } = {}): FixTaskDraft {
+export function buildFixTaskDraft(incident: StoredIncident, triage: IncidentTriage): FixTaskDraft {
   const label = incidentRuleLabel(incident.rule);
   const pr = incident.affectedRefs.prNumbers[0];
   const tasks = incident.affectedRefs.taskIds.slice(0, 5).map(t => `\`${t.slice(0, 8)}\``).join(', ');
@@ -437,7 +426,6 @@ export function buildFixTaskDraft(incident: StoredIncident, triage: IncidentTria
       `- **First / last seen**: ${incident.firstSeenAt} / ${incident.lastSeenAt}`,
       tasks ? `- **Affected tasks**: ${tasks}` : null,
       pr !== undefined ? `- **Representative PR**: #${pr}` : null,
-      `- **Incident**: ${incidentDeepLink(incident.id, opts.baseUrl)}`,
       '',
       'This is the one fix task for this incident. Later occurrences update this task\'s context ' +
         '(`failureIncident*` fields) instead of filing another. Fix the platform defect behind the pattern, ' +
@@ -506,7 +494,7 @@ export interface IncidentActionDeps {
   port?: IncidentStorePort;
   /** Default: the shared decision policy. `null`: never ask a model (floor only). */
   decide?: IncidentDecider | null;
-  /** Default: `defaultIncidentSender()` (the escalation gate). */
+  /** Default: `defaultIncidentSender()`, which delivers nothing. */
   send?: IncidentAlertSender;
   /** Default: the database. `null`: never file fix tasks. */
   fixTasks?: FixTaskPort | null;

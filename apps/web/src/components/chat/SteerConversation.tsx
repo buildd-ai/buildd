@@ -129,7 +129,7 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
       body: JSON.stringify({ message: text, priority: 'urgent' }),
     });
     const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(body?.error ?? 'Failed to send');
+    if (!res.ok) throw new Error(body?.error ?? 'Could not send. Try again.');
     await load();
   };
 

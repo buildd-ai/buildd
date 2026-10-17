@@ -31,7 +31,6 @@ export function readIncidentRecoveryRef(context: unknown): IncidentRecoveryRef |
 
 export interface TaskRecoveryView {
   incidentId: string;
-  href: string;
   phase: IncidentPhase;
   stateWord: string;
   sentence: string;
@@ -55,7 +54,6 @@ export function taskRecoveryView(incident: IncidentForView | null | undefined, o
   const p = projectIncident(incident, null, opts);
   return {
     incidentId: incident.id,
-    href: `/app/incidents/${incident.id}`,
     phase: p.phase,
     stateWord: p.stateWord,
     sentence: p.sentence,

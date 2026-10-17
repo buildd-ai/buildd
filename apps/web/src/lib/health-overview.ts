@@ -57,7 +57,7 @@ export function overviewHeadline(a: OverviewAttention): { tone: 'ok' | 'attentio
   const fact = (n: number, label: string) => n ? `${n} ${label}${n === 1 ? '' : 's'}` : null;
   const facts = [
     a.noRunners ? 'No runners connected' : null,
-    fact(a.offlineRunners, 'offline runner'), fact(a.unsandboxedRunners, 'unsandboxed runner'),
+    fact(a.offlineRunners, 'offline runner'), fact(a.unsandboxedRunners, 'sandbox problem'),
     fact(a.brokenCredentials, 'broken credential'), fact(a.strandedBackends, 'backend without a credential'),
     fact(a.failingSchedules, 'failing schedule'), fact(a.accessProblems ?? 0, 'access problem'),
     fact(a.failureGroups, 'failure cause'),

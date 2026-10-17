@@ -36,6 +36,7 @@ import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { INTERACTIVE_ANSWER_READ_DEADLINE_MS } from '@/lib/answer-resume';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { settleOrphanedSessionlessWorkers } from '@/lib/sessionless-worker-settle';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
@@ -55,6 +56,19 @@ export async function POST(req: NextRequest) {
 
 async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
+  let errors = 0;
+  // First, whatever its age: a question (or pause) parked on a task that was
+  // since cancelled or deleted. Nothing will answer it, and it holds a slot.
+  // Before the timeout below, so that sweep never fails a cancelled task or
+  // files a retry of it (lib/sessionless-worker-settle.ts).
+  let orphansSettled = 0;
+  try {
+    orphansSettled = await settleOrphanedSessionlessWorkers();
+  } catch (err) {
+    errors++;
+    console.error('[Cron] waiting-input-sweep orphan settle failed:', err);
+  }
+
   const cutoff = new Date(Date.now() - CANDIDATE_CUTOFF_MS);
 
   const candidates = await db.query.workers.findMany({
@@ -68,7 +82,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   let failedWorkers = 0;
   let retriedTasks = 0;
-  let errors = 0;
 
   for (const accountId of accountIds) {
     try {
@@ -115,12 +128,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   }
 
   console.log(
-    `[Cron] waiting-input-sweep: accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} answerAccounts=${answerAccountIds.length} answersDegraded=${answersDegraded} errors=${errors}`,
+    `[Cron] waiting-input-sweep: orphansSettled=${orphansSettled} accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} answerAccounts=${answerAccountIds.length} answersDegraded=${answersDegraded} errors=${errors}`,
   );
 
-  const result = { accountsSwept: accountIds.length, failedWorkers, retriedTasks, answerAccountsSwept: answerAccountIds.length, answersDegraded, errors };
+  const result = { orphansSettled, accountsSwept: accountIds.length, failedWorkers, retriedTasks, answerAccountsSwept: answerAccountIds.length, answersDegraded, errors };
   // Nothing stuck is the normal, healthy state, so changed=0 with errors=0 is
   // fine. Reclaiming a worker, retrying a task or moving an answer is the real work.
-  report({ processed: accountIds.length + answerAccountIds.length, changed: failedWorkers + retriedTasks + answersDegraded, errors, result });
+  report({ processed: accountIds.length + answerAccountIds.length, changed: orphansSettled + failedWorkers + retriedTasks + answersDegraded, errors, result });
   return NextResponse.json(result);
 }

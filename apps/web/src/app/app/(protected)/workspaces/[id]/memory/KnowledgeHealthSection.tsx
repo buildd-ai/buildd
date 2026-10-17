@@ -86,14 +86,14 @@ export default function KnowledgeHealthSection({ workspaceId }: Props) {
     let cancelled = false;
     fetch(`/api/workspaces/${workspaceId}/knowledge-health`)
       .then(async (r) => {
-        if (!r.ok) throw new Error(`Failed to load (${r.status})`);
+        if (!r.ok) throw new Error(`Could not load (${r.status}). Try again.`);
         return r.json();
       })
       .then((data) => {
         if (!cancelled) setHealth(data.health);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load');
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load. Try again.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

@@ -9,6 +9,7 @@ import { arrayOverlaps, desc, eq } from 'drizzle-orm';
 import { withCronRun } from '@/lib/cron-run';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { gradeStrandChoiceDecisions } from '@/lib/strand-choice-grading';
+import { gradeSpecDecisions } from '@/lib/spec-decision-grading';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
@@ -112,7 +113,9 @@ export async function GET(req: NextRequest) {
     }
     // Outcome gold for the strand choice (lib/strand-choice-grading.ts); never throws.
     const strandGrades = await gradeStrandChoiceDecisions({ now: until });
-    const result = { processed: optedIn.length, changed, errors, notes, strandGrades };
+    // Outcome labels for the spec duplicate check and area filing (lib/spec-decision-grading.ts); never throws.
+    const specGrades = await gradeSpecDecisions({ now: until });
+    const result = { processed: optedIn.length, changed, errors, notes, strandGrades, specGrades };
     report({ ...result, result });
     return NextResponse.json(result);
   });

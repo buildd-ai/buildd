@@ -48,8 +48,6 @@ import type {
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
-  FailureIncident,
-  FailureIncidentSeverity,
 } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -698,11 +696,6 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
-  // Read-only over the Failure Pattern Sentinel's own ledger (GET
-  // /api/health/incidents) — same reasoning as get_failure_analytics above:
-  // the agent chasing "is this already a known incident?" needs this without
-  // a dashboard session.
-  'list_incidents',
   // Read-only, team-scoped Dispatch transport health (Postgres counts plus one
   // Worker /health probe). Worker level for the same reason: the agent asking
   // "did my wake get delivered?" is the one waiting on it.
@@ -775,7 +768,6 @@ export const adminActions = [
   'send_agent_message',
   'answer_question',
   'correct_task_result',
-  'update_incident',
   'consolidate_knowledge',
   'memory_delete',
   // Agent audit of the decision ledger (packages/core/decision-feature-health.ts):
@@ -1083,13 +1075,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude learned floor pressure (forecast, not provider usage; source, observation age, sample basis) and Codex exhaustion, monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — learned pressure is advisory and must not be treated as a hard budget wall; use provider exhaustion or monthly depletion for startAfter: "budget_reset".',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
-    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d), capability?, since?, until?, limit?, overriddenOnly?, disagreementOnly? } — reads your own team\'s workspaces only (another team\'s workspace is not found). capability "*": every decision-ledger feature in the workspace that decided anything in the window, each with its health readout (no rows; since/until apply). with capability (e.g. \"question_gate\", or an orchestration_* one such as orchestration_claim, read from orchestration_decisions with the applied START/HOLD in byAppliedAnswer): the decision ledger for that capability in one workspace — every decision with verdict (for the question gate its decide / hold / ask disposition), confidence, reason, the answer in effect, any later human override and outcome labels, plus a summary and health (is the feature deciding at all, and if not why in plain words; acted %, fallback % by reason, latency p50/p95, cost, agent-graded accuracy with a Wilson 95% interval and the rule\'s accuracy on the same sample, override rate); since/until (ISO, at most 31 days) pin a stable window, limit (max 500) bounds the page and truncated + nextUntil continue it. Every answer starts with status: OK or NO_DATA reached the data; FORBIDDEN, UNAUTHORIZED or TOOL_UNAVAILABLE did not, and is never evidence of zero decisions. A scheduled task reads another workspace only when its schedule delegates analytics:read on it. Without capability: orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
+    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d), capability?, since?, until?, limit?, overriddenOnly?, disagreementOnly? } — reads your own team\'s workspaces only (another team\'s workspace is not found). capability "*": every decision-ledger feature in the workspace that decided anything in the window, each with its health readout (no rows; since/until apply). When the window holds more decisions than one read takes, truncated is true and sample.note says the counts cover only the newest ones; narrow since/until to read an older part. with capability (e.g. \"question_gate\", or an orchestration_* one such as orchestration_claim, read from orchestration_decisions with the applied START/HOLD in byAppliedAnswer): the decision ledger for that capability in one workspace — every decision with verdict (for the question gate its decide / hold / ask disposition), confidence, reason, the answer in effect, any later human override and outcome labels, plus a summary and health (is the feature deciding at all, and if not why in plain words; acted %, fallback % by reason, latency p50/p95, cost, agent-graded accuracy with a Wilson 95% interval and the rule\'s accuracy on the same sample, override rate); since/until (ISO, at most 31 days) pin a stable window, limit (max 500) bounds the page and truncated + nextUntil continue it. Every answer starts with status: OK or NO_DATA reached the data; FORBIDDEN, UNAUTHORIZED or TOOL_UNAVAILABLE did not, and is never evidence of zero decisions. A scheduled task reads another workspace only when its schedule delegates analytics:read on it. Without capability: orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. overlapStarts: of every overlap START (soft overlap, open PR, live lease), the share whose PR later hit a merge conflict (conflictShare = conflicted / observed; still running = pending), by area class and gate. The DB-free substitute for querying the ledger directly.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="role" reports a routed role (one the decision model filled in) as its own "<Role> · inferred" group beside the stated one, and every role group carries median/p90 time-to-claim. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only) and per-action buildd calls (recorded since capture began), each with its own coverage line.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. evidenceId also reads a runner-hosted Quality Scout run command log (cited in a probe result as evidence:<id>). With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     dispatch_health: '{ workspaceId? } — read-only Dispatch transport health for the caller\'s team (or one of its workspaces). Leads with a one-line verdict (healthy, or what is wrong), then the outbox counts (pending, due, overdue, delivering, stuck, handed off, unacked, unacked past the in-app fallback, orphaned, failed in 24h), deliveries in 24h by route (delivered_via), delivery latency p50/p95 (delivered_at minus not_before), whether the Dispatch Worker answers /health, the last hourly floor run\'s reconcile counts (platform-wide; any repair there is a bug signal), and workspaces not on the dispatch transport (the kill switch). Counts come from Postgres, which receipts keep in step with the Worker; the only Worker call is the /health probe. For one task\'s wakes use get_task include:["dispatch"]; for why a pending task has not started use explain.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, and review rounds per merged PR split by why each round started (first pass, CI fix, fix for requested changes, new commits, base refresh, a person, superseded by a push), plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
-    update_incident: '{ incidentId (required, full UUID from list_incidents), action (required: acknowledge|resolve) } — move one Failure Pattern Sentinel incident through its lifecycle (compare-and-swap; acknowledgedAt/resolvedAt are stamped on the ledger row). Resolving a pattern that is still live is not final: the next sweep that sees it reopens the incident. [admin]',
-    list_incidents: '{ workspaceId?, status? (CSV open|acknowledged|resolved, or "all"; default open,acknowledged), severity? (CSV low|medium|high|critical), rule? (CSV of rule names), signature? (exact), limit? (default 50, max 200) } — read-only: the Failure Pattern Sentinel\'s incident ledger. Each incident has severity, rule, first/last seen, counts, alert state and any linked fix task. Check it before filing a `[friction]` task: a systemic pattern may already be tracked. counts.total ignores limit.',
     get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — record it on every shot as qa.ref / qa.refSource. Dispatch the sandbox capture from trunk with captureRef.ref as the capture_ref input, never --ref captureRef.ref (the harness must match the prod clone): `dispatch` is the exact command, `harnessRef` the trunk, `freshness` how far captureRef.ref is behind trunk (needsSync: it lacks trunk\'s migrations, so it needs a trunk merge). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     deploy: '{ workerId?, provider (required: cloudflare), project (required), environment (required), credentialRef (required — the stored credential\'s reference: its label, or the provider name when unlabelled), operation (required: status|put_secret|upload_worker|ensure_bucket), params? } — Platform Operator deployment, run server-side with a stored credential you never see. Allowed only when this task\'s role is the Platform Operator AND this workspace\'s Operator grant covers the operation\'s capabilities (deployments:read or deployments:write, plus deployment_secrets:use) for exactly this provider, project, environment and credential ref; anything else is refused with a reason (not_enabled, capability_not_granted, project_not_allowed, ...). The Cloudflare Worker is the project in production and <project>-<environment> elsewhere. params by operation — status: none (latest deployment id/versions, secret NAMES, workers.dev URL); put_secret: { name, value } (value is sent to the Worker and never echoed); upload_worker: { modules: [{ name, content }], mainModule?, compatibilityDate (YYYY-MM-DD), compatibilityFlags?, vars? } (a built module bundle, e.g. `wrangler deploy --dry-run --outdir dist`, which needs no credential; existing secrets are kept; 3 MB cap); ensure_bucket: { bucket? (default <script>-snapshots; must start with <script>-), lifecycle?: [{ id, prefix, expireDays }] }. Every call, allowed or refused, is written to the deployment audit trail with the credential reference only. Returns { auditId, target, operation, result } and never a credential.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces (grouped by team when they span more than one), last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
@@ -1417,43 +1407,6 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
       lines.push(`  … ${omitted} more (raise limit, max ${FAILURE_SIGNATURES_MAX}, or pass error=<text> to look one up)`);
     }
   }
-
-  return lines.join('\n');
-}
-
-/**
- * Failure Pattern Sentinel incident list, newest/most-severe first (the route
- * already sorted it). Every field on `FailureIncident` surfaces: severity,
- * rule/reasonCode, first/last seen, occurrence/recurrence counts, impact,
- * a representative ref, alert state and any linked fix task.
- */
-function formatIncidentsList(
-  incidents: FailureIncident[],
-  counts: { total: number; bySeverity: Record<FailureIncidentSeverity, number> },
-): string {
-  const bySeverityLine = `${counts.bySeverity.critical} critical, ${counts.bySeverity.high} high, `
-    + `${counts.bySeverity.medium} medium, ${counts.bySeverity.low} low in scope`;
-  if (incidents.length === 0) return `No matching incidents (${bySeverityLine}).`;
-
-  const header = `${counts.total} incident(s) matched — ${bySeverityLine}`
-    + (counts.total > incidents.length ? ` (showing ${incidents.length}, raise limit for more)` : '');
-  const lines: string[] = [header];
-
-  incidents.forEach((inc, i) => {
-    const ref = [
-      inc.affectedRefs.taskIds[0] ? `task ${inc.affectedRefs.taskIds[0].slice(0, 8)}` : null,
-      inc.affectedRefs.prNumbers[0] !== undefined ? `PR #${inc.affectedRefs.prNumbers[0]}` : null,
-    ].filter(Boolean).join(' · ');
-    const alert = inc.lastAlertSeverity ? `alerted ${inc.lastAlertSeverity} @ ${inc.lastAlertedAt}` : 'not alerted';
-    const fix = inc.linkedFixTaskId ? `fix task ${inc.linkedFixTaskId.slice(0, 8)}` : 'no fix task';
-    const recurrence = inc.recurrenceCount > 0 ? ` · recurred ${inc.recurrenceCount}x` : '';
-    lines.push(
-      `  ${i + 1}. [${inc.severity.toUpperCase()}] ${inc.status} — ${truncateTo(inc.title, 160)}\n` +
-      `     ${inc.rule} (${inc.reasonCode}) · ${inc.occurrenceCount} occurrence(s)${recurrence}` +
-      ` · first ${inc.firstSeenAt} · last ${inc.lastSeenAt}\n` +
-      `     ${alert} · ${fix}${ref ? ` · e.g. ${ref}` : ''} · id ${inc.id}`,
-    );
-  });
 
   return lines.join('\n');
 }
@@ -6051,50 +6004,6 @@ export async function handleBuilddAction(
       return text(JSON.stringify({ connectors: data.connectors ?? [] }));
     }
 
-    case 'update_incident': {
-      requireFullUuid(params.incidentId, 'incidentId');
-      if (!(SUB_ACTIONS.update_incident as readonly unknown[]).includes(params.action)) {
-        throw new Error(`action must be one of: ${SUB_ACTIONS.update_incident.join(', ')}`);
-      }
-      const data = await api(`/api/health/incidents/${params.incidentId}`, {
-        method: 'POST',
-        body: JSON.stringify({ action: params.action }),
-      });
-      const inc = data.incident as FailureIncident;
-      return text(`Incident ${inc.id} (${inc.rule}, ${inc.severity}) is now ${inc.status}: ${inc.title}`);
-    }
-
-    case 'list_incidents': {
-      // Read-only. Scoping is not re-implemented here: GET /api/health/incidents
-      // derives the team from the caller's bearer token and 404s a workspaceId
-      // outside it, exactly like get_failure_analytics above.
-      const rawWsId = typeof params.workspaceId === 'string' && params.workspaceId.trim()
-        ? params.workspaceId.trim()
-        : null;
-      let wsId: string | null = null;
-      if (rawWsId) {
-        wsId = await resolveWorkspaceId(api, rawWsId, ctx);
-      }
-
-      const qs: string[] = [];
-      if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
-      for (const [key, max] of [['status', Infinity], ['severity', Infinity], ['rule', Infinity]] as const) {
-        const raw = typeof params[key] === 'string' && params[key].trim() ? params[key].trim() : null;
-        if (raw) qs.push(`${key}=${encodeURIComponent(raw.slice(0, max === Infinity ? 200 : max))}`);
-      }
-      const rawSignature = typeof params.signature === 'string' && params.signature.trim() ? params.signature.trim() : null;
-      if (rawSignature) qs.push(`signature=${encodeURIComponent(rawSignature.slice(0, 300))}`);
-      const limit = typeof params.limit === 'number' ? Math.min(Math.max(Math.round(params.limit), 1), 200) : null;
-      if (limit) qs.push(`limit=${limit}`);
-
-      const data = await api(`/api/health/incidents${qs.length ? `?${qs.join('&')}` : ''}`);
-      const incidents = (data?.incidents ?? []) as FailureIncident[];
-      const counts = (data?.counts ?? { total: 0, bySeverity: { low: 0, medium: 0, high: 0, critical: 0 } }) as {
-        total: number;
-        bySeverity: Record<FailureIncidentSeverity, number>;
-      };
-      return text(formatIncidentsList(incidents, counts));
-    }
     case 'get_failure_analytics': {
       // Read-only. Scoping is not re-implemented here: GET /api/health/failures
       // derives the team from the caller's bearer token and 404s a workspaceId

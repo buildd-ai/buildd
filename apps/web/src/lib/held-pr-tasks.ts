@@ -182,8 +182,8 @@ export async function settleHeldReleaseTask(
     await emitHeldReleaseOutcome(task.id, null);
   } else {
     void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-      title: `${o.title} — ${o.repoFullName}#${o.prNumber}`, message: o.reason, priority: 1,
-      url: prUrl || `https://github.com/${o.repoFullName}/pull/${o.prNumber}`, urlTitle: 'Open PR',
+      title: `${o.title} in ${o.repoFullName}`, message: o.reason, priority: 1,
+      url: prUrl || `https://github.com/${o.repoFullName}/pull/${o.prNumber}`, urlTitle: `PR #${o.prNumber}`,
     });
     console.error(`[release-pr] Task ${task.id} FAILED: ${o.reason}`);
     await emitHeldReleaseOutcome(task.id, { slot: 'release', label: o.label ?? 'Release failed', reason: o.reason });

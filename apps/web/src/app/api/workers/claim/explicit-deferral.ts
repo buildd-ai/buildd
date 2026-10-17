@@ -181,6 +181,14 @@ export function describeExplicitDeferral(
         detail: `${message ?? 'Its model tier is above the model-tier maximum that applies to it.'} ${remedy ?? 'Lower the task tier, or ask a team admin to raise the maximum.'} It stays queued and is re-checked on every claim.`,
       };
     }
+    case 'isolation_unenforced': {
+      const message = str(detail.message);
+      const remedy = Array.isArray(detail.remedy) ? (detail.remedy as unknown[]).filter((m): m is string => typeof m === 'string') : [];
+      return {
+        code: reason,
+        detail: `${message ?? "This runner cannot confine the task as its isolation policy requires."} It stays queued for a runner that can${remedy.length > 0 ? `; the runner operator can fix this one: ${remedy.join(' ')}` : ''}.`,
+      };
+    }
     case 'hosted_runner_hours': {
       const at = str(detail.resetsAt);
       const used = num(detail.used);

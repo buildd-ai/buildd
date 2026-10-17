@@ -134,13 +134,13 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to save');
+        throw new Error(data.error || 'Could not save. Try again.');
       }
 
       router.push(`/app/workspaces/${workspaceId}/schedules`);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }

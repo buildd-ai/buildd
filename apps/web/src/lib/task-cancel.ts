@@ -6,6 +6,8 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settleSessionlessWorkersOfTask } from '@/lib/sessionless-worker-settle';
+import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
 export interface TaskRef {
   id: string;
@@ -72,6 +74,10 @@ export async function applyTaskReopenSideEffects(task: TaskRef, reason: string):
  *  6. Detach an interactive (claim_task) worker. The abort push in step 1
  *     reaches only runner-held sessions; a local one would otherwise keep its
  *     seat (lib/interactive-detach.ts).
+ *  7. Settle a worker with no session to abort: a question park, a pause, a
+ *     parked cloud run (lib/sessionless-worker-settle.ts). Nothing would ever
+ *     report its end, so it stayed `waiting_input`, holding a slot and drawn
+ *     as a live run with a question.
  *
  * Each step is independent and failures are logged, never thrown, so one broken
  * side effect cannot stop the others or fail the caller's already-committed write.
@@ -106,9 +112,10 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
     import('@/lib/interactive-detach').then(({ detachInteractiveWorkersOfEndedTasks }) =>
       detachInteractiveWorkersOfEndedTasks({ taskId: id, graceMs: 0 })),
     kernelAttemptEnded(id, workspaceId),
+    settleSessionlessWorkersOfTask(id, 'task_cancelled'),
   ]);
 
-  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession', 'interactive detach', 'workflow AttemptEnded'];
+  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession', 'interactive detach', 'workflow AttemptEnded', 'sessionless settle'];
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.error(`[task-cancel] ${labels[i]} failed for ${id}:`, r.reason);
@@ -142,5 +149,47 @@ async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<
     localHeadSha: null,
     commitCount: worker?.commitCount ?? 0,
     source: 'cancel',
+    // A person cancelling a review round is taking it over: the kernel
+    // escalates (review_unavailable) instead of re-filing a reviewer at once.
+    // Rounds the platform itself superseded are no longer current, so the
+    // kernel treats this end as stale for them.
+    ...(task.deliveryRole === 'review' ? { reviewFailure: 'human_takeover' as const } : {}),
+  });
+}
+
+/**
+ * Before a task row is deleted (DELETE /api/tasks/[id], bulk delete). The
+ * delete sets `workers.task_id` to NULL and cascades the task's path claims
+ * away, so nothing that keys on the task can reach its workers afterwards:
+ *
+ *  1. Settle the sessionless live workers (a question park above all): with no
+ *     task left, nothing else would ever end them.
+ *  2. Abort any live session still running it. The runner's terminal PATCH
+ *     still lands, on a worker whose task is now NULL.
+ *  3. Release the path claims with notification, so blocked siblings hear it
+ *     (the cascade alone deletes the rows silently).
+ *
+ * The worker rows themselves are kept: they are the run's history.
+ * Failures are logged, never thrown, like applyTaskCancelSideEffects.
+ */
+export async function applyTaskDeleteSideEffects(taskId: string): Promise<void> {
+  const abort = async () => {
+    const live = await db.query.workers.findMany({
+      where: sqlWhere(and(eq(workers.taskId, taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
+      columns: { id: true },
+    });
+    await Promise.all(live.map(w => triggerEvent(
+      channels.worker(w.id),
+      events.WORKER_COMMAND,
+      { action: 'abort', reason: 'task_cancelled', timestamp: Date.now() },
+    )));
+  };
+  const results = await Promise.allSettled([
+    settleSessionlessWorkersOfTask(taskId, 'task_deleted').then(abort),
+    releaseAndNotify(taskId, 'abandoned'),
+  ]);
+  const labels = ['settle and abort', 'path-claim release'];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') console.error(`[task-delete] ${labels[i]} failed for ${taskId}:`, r.reason);
   });
 }

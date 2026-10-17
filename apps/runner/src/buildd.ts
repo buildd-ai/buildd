@@ -43,9 +43,13 @@ export function getLastServerContactAt(): number {
  * (`await claimTask` never returns) and `lastServerContactAt`, so the runner
  * silently stops claiming until restarted (observed 2026-06-23). Aborting after
  * a timeout both unblocks the loop and tears down the bad socket so the pool heals.
- * All endpoints here are short JSON calls, so 30s is a generous ceiling.
+ * Ordinary calls use 30s; claims also assemble prompts and use a separate ceiling.
  */
 const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
+// Claims include database arbitration and prompt assembly after worker creation.
+// Keep them bounded, but do not discard healthy answers at the ordinary 30s
+// ceiling. An explicit global timeout remains the operator override.
+const CLAIM_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 90_000);
 
 /** Outcome of one path-claim request — see BuilddClient.claimPaths. */
 export type PathClaimResponse =
@@ -198,7 +202,10 @@ export class BuilddClient {
    */
   async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
     const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
-    if (!data || data.error) return null;
+    // Only the 404 body (`{ error }`, no status) means gone. A worker row has
+    // its own `error` column: a question park writes `needs_input: …` there,
+    // and reading that as a 404 made reconcile forget every parked question.
+    if (!data || (typeof data.status !== 'string' && data.error)) return null;
     if (typeof data.status !== 'string') {
       throw new Error(`getWorkerRemote(${id}): response missing status field`);
     }
@@ -254,6 +261,7 @@ export class BuilddClient {
     let data: any;
     try {
       data = await this.fetch('/api/workers/claim', {
+        signal: AbortSignal.timeout(CLAIM_TIMEOUT_MS),
         method: 'POST',
         body: JSON.stringify(body),
       });

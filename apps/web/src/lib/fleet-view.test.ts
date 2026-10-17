@@ -77,6 +77,41 @@ describe('buildFleetSnapshot', () => {
     expect(by('merged').taskId).toBe('t-merged');
   });
 
+  // Seen in production: a run asked a question at 04:10, the runner ended its
+  // session, nobody answered, and Health drew it as a 23h47m run that "Has a
+  // question", in a slot, counted live. A question whose session ended is a
+  // wait for a person, not a running agent: the bar stops where the session
+  // did, and it holds no slot.
+  it('a question whose session ended is a bounded bar, not a live run in a slot', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 2)],
+      [
+        worker('asked', 'http://atlas.local:8766', {
+          status: 'waiting_input', startedAt: min(24 * 60), updatedAt: min(24 * 60 - 1),
+          error: 'needs_input: Which repo should this go in?', waitingFor: { type: 'question', prompt: 'Which repo should this go in?' },
+        }),
+      ],
+      { now: NOW, maxWindowMs: 48 * 3_600_000 },
+    );
+    const bar = s.runners[0].slots.flatMap(sl => sl.lane.bars)[0];
+    expect(bar.end).toBe(min(24 * 60 - 1).getTime());
+    expect(bar.state).toBe('waiting');
+    expect(bar.endReason).toBe('Has a question');
+    expect(s.live).toBe(0);
+    expect(s.runners[0].slots.every(sl => sl.worker === null)).toBe(true);
+  });
+
+  it('a question asked inside a live session still runs to now and holds its slot', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 2)],
+      [worker('asking', 'http://atlas.local:8766', { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which one?' } })],
+      { now: NOW },
+    );
+    const bar = s.runners[0].slots.flatMap(sl => sl.lane.bars)[0];
+    expect(bar.end).toBeNull();
+    expect(s.live).toBe(1);
+  });
+
   it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
     expect(snap.runners[0].slots[0].lane.bars.map(b => b.missionId)).toEqual(['m1', 'm1']);
   });

@@ -53,7 +53,10 @@ const mockAttachKnowledgeContext = mock(async (claimedWorkers: any[], _tasks: an
   // context reads what mission handoff excluded.
   expect(excluded.has('task:dep-1')).toBe(true);
   await knowledgeDeferred.promise;
-  for (const cw of claimedWorkers) sink(cw, '## Retrieved Knowledge\nblock');
+  for (const cw of claimedWorkers) {
+    cw.task.context.memoryIndex = ['server-authored'];
+    sink(cw, '## Retrieved Knowledge\nblock');
+  }
   finished.push('knowledge');
 });
 
@@ -67,6 +70,10 @@ mock.module('./context-injection', () => ({
   attachSubjectPriorWork: mockAttachSubjectPriorWork,
   attachDiscrepancyContext: mockAttachDiscrepancyContext,
   predictTaskAreas: mockPredictTaskAreas,
+  // The real strip, so the timeout tests below see a caller index removed.
+  stripCallerMemoryIndex: (workers: any[]) => {
+    for (const cw of workers) if (cw.task?.context) delete cw.task.context.memoryIndex;
+  },
 }));
 
 mock.module('./mission-handoff-injection', () => ({
@@ -257,4 +264,39 @@ describe('runDependentContextInjections', () => {
     predictionsDeferred.resolve(new Map());
     await resultPromise;
   });
+});
+
+
+describe('optional context deadline', () => {
+  it('returns a minted worker without waiting for hung retrieval, and discards late writes', async () => {
+    const cw = claimedWorker('task-1');
+    cw.resolvedContextProviders = ['existing'];
+    cw.task.context.memoryIndex = ['untrusted'];
+    const result = await Promise.race([
+      runDependentContextInjections([cw], [{ id: 'task-1', title: 'Fix', workspaceId: 'ws-1' }], null, 20),
+      new Promise<string>(resolve => setTimeout(() => resolve('still waiting'), 200)),
+    ]);
+    expect(result).not.toBe('still waiting');
+    expect(cw.task.context.memoryIndex).toBeUndefined();
+    expect(cw.resolvedContextProviders).toEqual(['existing']);
+    predictionsDeferred.resolve(new Map());
+    missionHandoffDeferred.resolve();
+    subjectPriorWorkDeferred.resolve();
+    discrepancyDeferred.resolve();
+    knowledgeDeferred.resolve();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(cw.resolvedContextProviders).toEqual(['existing']);
+    expect(cw.task.context.memoryIndex).toBeUndefined();
+  });
+});
+
+it('degrades a rejected retrieval without rejecting the committed claim', async () => {
+  mockAttachSubjectPriorWork.mockImplementationOnce(async () => { throw new Error('retrieval offline'); });
+  const cw = claimedWorker('task-1');
+  expect((await runDependentContextInjections([cw], [], null, 20)).size).toBe(0);
+  expect(cw.resolvedContextProviders).toBeUndefined();
+  predictionsDeferred.resolve(new Map());
+  missionHandoffDeferred.resolve();
+  discrepancyDeferred.resolve();
+  knowledgeDeferred.resolve();
 });
