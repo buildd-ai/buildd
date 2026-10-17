@@ -31,7 +31,7 @@ export function describeExplicitDeferral(
       const pr = num(detail.prNumber);
       const blocker = str(detail.blockingTaskId);
       const what = pr ? `open PR #${pr}` : blocker ? `an active claim held by task ${blocker}` : 'another task\'s files';
-      return { code: reason, detail: `Its files overlap ${what}. ${FORCE_HINT}` };
+      return { code: reason, detail: `Its files overlap ${what}. ${FORCE_HINT}`, ...(blocker ? { holderTaskId: blocker } : {}) };
     }
     case 'advisory_manifest': {
       const peer = str(detail.blockingPeer);
@@ -50,6 +50,7 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `Its declared scope overlaps in-flight task ${holder ?? '(unknown)'}${paths.length ? ` on ${paths.join(', ')}` : ''}, and ${why}. It starts when that task finishes or a START is decided. ${FORCE_HINT}`,
+        ...(holder ? { holderTaskId: holder } : {}),
       };
     }
     case 'mission_budget':

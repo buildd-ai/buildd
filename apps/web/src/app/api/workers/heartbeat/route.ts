@@ -27,6 +27,9 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * /api/* endpoints. The dashboard retrieves this token via /api/workers/active
  * and passes it to the browser so it can fetch live data directly.
  */
+/** The most slots a runner may report (the runner's own `buildd slots` bound). */
+const MAX_RUNNER_SLOTS = 50;
+
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -92,6 +95,12 @@ export async function POST(req: NextRequest) {
       modelAuthSource: rawModelAuthSource = undefined,
       /** The runner's Codex login label (same spec, R-12), under the same rules. */
       codexAuthSource: rawCodexAuthSource = undefined,
+      /**
+       * The runner's own slots: how many agents it runs at once (`buildd
+       * slots`, + / - in top; spec c7410e76 R-43). Absent from older runners,
+       * which keep the account's default here.
+       */
+      maxConcurrent: rawMaxConcurrent = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
@@ -122,7 +131,10 @@ export async function POST(req: NextRequest) {
     // `hold` (a person's `buildd hold`, R-35) is kept only as a valid
     // { since, until }; a lifted (null) or malformed one is dropped.
     const storedEnvironment = withNormalizedRunnerHold(storedHeartbeatEnvironment(environment, fleet));
-    const maxConcurrentWorkers = fleet.ephemeral ? 1 : account.maxConcurrentWorkers;
+    const reportedSlots = typeof rawMaxConcurrent === 'number' && Number.isInteger(rawMaxConcurrent) && rawMaxConcurrent >= 1 && rawMaxConcurrent <= MAX_RUNNER_SLOTS
+      ? rawMaxConcurrent
+      : null;
+    const maxConcurrentWorkers = fleet.ephemeral ? 1 : (reportedSlots ?? account.maxConcurrentWorkers);
 
     const now = new Date();
 

@@ -707,8 +707,13 @@ export async function setupWorktree(
    * behind the agent session (deps-gate.ts). A declared manifest is untouched:
    * the provision gate still owns that install.
    */
-  setupOpts: { deferInstall?: boolean } = {},
+  setupOpts: {
+    deferInstall?: boolean;
+    /** Each setup step as it starts, in words for `buildd top` ("Fetching the repo", spec c7410e76). Never throws into setup. */
+    onStep?: (words: string) => void;
+  } = {},
 ): Promise<SetupWorktreeResult | null> {
+  const step = (words: string) => { try { setupOpts.onStep?.(words); } catch { /* display only */ } };
   const cloud = isCloudExecutor(process.env);
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
@@ -746,6 +751,7 @@ export async function setupWorktree(
 
     // Cloud acquisition already fetched the default; candidate refs are fetched by name.
     if (!cloud) console.log(`[Worker ${workerId}] Fetching latest from remote...`);
+    step('Fetching the repo');
     try {
       if (!cloud) await execAsync('git fetch origin', execOpts);
     } catch (err) {
@@ -1322,6 +1328,7 @@ export async function setupWorktree(
     // piping only stops it from also going to the real log stream.
     emitPhase('worktree_start');
     emitWorktreeMode(cloud ? 'clone' : 'worktree');
+    step('Creating the worktree');
     try {
       if (cloud) {
         await execAsync(checkoutExistingBranch
@@ -1399,7 +1406,7 @@ export async function setupWorktree(
       ? { status: 'skipped', reason: 'declared-manifest' }
       : deferredInstall
         ? { status: 'skipped', reason: 'deferred' }
-        : await installWorkspaceDeps(worktreePath, workerId, installEnv, installOpts);
+        : (step('Installing dependencies'), await installWorkspaceDeps(worktreePath, workerId, installEnv, installOpts));
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
     return {

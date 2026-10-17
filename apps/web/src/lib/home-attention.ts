@@ -5,7 +5,7 @@ import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
-export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'incident' | 'access';
+export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'access';
 export interface AttentionLink { label: string; href: string }
 
 export interface HomeAttentionItem {
@@ -189,12 +189,6 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     }
     case 'STALE':
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
-    case 'INCIDENT':
-      // The shared projection (lib/incident-view.ts) put it here and wrote its sentence: one typed
-      // choice reads as a decision; a critical incident the owner is told about stays an incident.
-      return i.incidentDecision
-        ? make({ label: 'decision', tone: 'warning', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Choose…', href: text(i.fixHref) ?? '' } })
-        : make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'View details', href: text(i.fixHref) ?? '' } });
     case 'ACCESS':
       // A pending capability request (lib/capability-grants-needs-you.ts): what was asked is the title,
       // who asked and why is the sentence. The card approves or denies in place; the link is the fallback.
@@ -308,7 +302,6 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   merge: ['merge', 'merges'], review: ['review', 'reviews'], answer: ['question', 'questions'], decide: ['decision', 'decisions'],
   approve: ['approval', 'approvals'], reconnect: ['reconnect', 'reconnects'], resolve: ['blocker', 'blockers'], fix: ['failing PR', 'failing PRs'],
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
-  incident: ['incident', 'incidents'],
   access: ['access request', 'access requests'],
 };
 

@@ -21,7 +21,7 @@ export interface DecisionModelOverrideFixture {
 
 export interface DecisionsQaFixture {
   overrides: DecisionModelOverrideFixture[];
-  switches: { lines: Array<{ id: string; text: string }>; canUndo: boolean };
+  switches: { lines: Array<{ id: string; kind?: string; text: string }>; canUndo: boolean };
 }
 
 export const MODELS_QA_DECISIONS: DecisionsQaFixture = {
@@ -30,7 +30,7 @@ export const MODELS_QA_DECISIONS: DecisionsQaFixture = {
     { kind: 'buildd.orchestration_claim_hold', label: 'Start or wait', endpoint: 'systemone', model: 'clef', via: 'cloudflare' },
   ],
   switches: {
-    lines: [{ id: 'qa-fixture-switch', text: 'Start or wait now uses Clef' }],
+    lines: [{ id: 'qa-fixture-switch', kind: 'buildd.orchestration_claim_hold', text: 'Start or wait now uses Clef' }],
     canUndo: true,
   },
 };

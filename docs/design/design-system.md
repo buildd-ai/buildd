@@ -623,12 +623,12 @@ notification text) follows the same rules as a PR lede:
     chosen. Pick one to…".
 11. **Say it once** (`duplicate-explanation`). A sentence rendered twice in
     one file, on a card and again in its disclosure, counts.
-13. **People and accounts pay, keys don't** (`object-pays`). "Used when the
+12. **People and accounts pay, keys don't** (`object-pays`). "Used when the
     team lets personal keys pay" was the Settings → Keys line; it reads
     **Manage your personal API keys.** Say who is billed (you, the team, a
     provider account), and only beside the control where that decides
     something, never on an index line.
-14. **Settings reads like a service, not a narrator.** An index line is one
+13. **Settings reads like a service, not a narrator.** An index line is one
     short phrase naming what the page manages ("Configure team agents,
     models and tools."). No "the team decides", "chat follows", "just for
     me". An error says what failed and what to do: "Could not save. Try
@@ -636,9 +636,9 @@ notification text) follows the same rules as a PR lede:
     (`TEAM_MANAGED_LINE`). Keep real limits as short facts beside the control
     ("Requires a linked GitHub repository."). Platform readiness and
     review internals belong on operator surfaces, not a member's Settings.
-    Living Spec "Product voice and professional Settings copy" carries the
-    same rules as requirements.
-16. **One fact per Settings description** (`conditional-policy`,
+    Living Spec "Product voice and professional copy" carries the same rules
+    as requirements.
+14. **One fact per Settings description** (`conditional-policy`,
     `trailing-filler`, `em-dash`). An index line or page lede is a single
     sentence fragment, 14 words at most, ending in a full stop, with no
     trailing filler ("and more", "etc."). It never conditions a setting on team
@@ -655,13 +655,39 @@ notification text) follows the same rules as a PR lede:
     mirrors the data model. Collapse it: one row per thing the reader knows
     (Claude, not "Anthropic" plus "Claude subscription"), one input that
     works out what was pasted, a control hidden until it can matter.
-13. **One name per thing.** **Role** is a person's team role (owner, admin,
+16. **One name per thing.** **Role** is a person's team role (owner, admin,
     member); an agent persona (`isRole` skill) is an **agent**, on the Agents
     page. The planning agent is the **organizer**, never "planner". The
     machine that runs work is a **runner**, never "worker". No buildd-internal
     branch or deploy names ("dev", "main") in a customer's copy. Status
     labels are sentence case. UI strings kept in `lib/` are checked too: mark
     the module `// @ui-copy` and `copy:check` scans it.
+17. **State words come from the reader's situation** (planned rule
+    `state-jargon`). Members and team admins never read held, hold, arm,
+    disarm, claim, poll, heartbeat, lease or a raw status enum. A mission or
+    task shows one of **Not started**, **Paused**, **Waiting for approval**,
+    **Blocked** or **Ready**, from one projection that every surface uses,
+    with one reason and one action; the start-state words are planned to
+    live in one copy map, owned by task 19e58aa7 (not built yet). "Held
+    until you arm the mission" reads
+    **Not started**, with **Start**. An action names what it does ("Start
+    now"), never "Force start"; the confirmation says what it skips. Operator
+    pages (/app/health) may use the technical term when it is the clearest
+    name. Physical senses stay ("Press and hold").
+18. **Diagnostics are a layer, not the headline.** Headline: state and
+    action. Detail: one sentence of reason, and who can act. Diagnostics
+    (gate codes, runner scheduling, override flags, exact timings) sit in a
+    Disclosure for team admins and operators, or only on the operator page
+    that owns them (Settings › Runners, Health). A fact a member can act on
+    stays a plain sentence ("No runner is online."). No narration of the
+    machinery ("runners claim on their next poll"), and no precision beyond
+    what the reader acts on.
+19. **Errors and notifications say what happened and what to do.** "Could
+    not save the mission. Try again.", not "Failed to update mission". A
+    notification title is a plain sentence-case statement: no ALL CAPS tags,
+    no em dash, no PR number as the headline (it goes on the link).
+    Living Spec "Product voice and professional copy" R-13 to R-22 carries
+    these rules with acceptance criteria.
 
 ---
 

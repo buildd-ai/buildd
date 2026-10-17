@@ -78,6 +78,22 @@ describe('applyTaskCancelSideEffects', () => {
     });
   });
 
+  it('a cancelled review round is a takeover, not an infra failure the kernel re-files', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: 'd1', deliveryRole: 'review', context: { workflowRoundId: 'r1' } });
+
+    await applyTaskCancelSideEffects(TASK);
+
+    expect(mockAttemptEnded.mock.calls[0][0]).toMatchObject({ source: 'cancel', reviewFailure: 'human_takeover' });
+  });
+
+  it('leaves reviewFailure off a cancelled non-review attempt', async () => {
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: 'd1', deliveryRole: 'fix', context: {} });
+
+    await applyTaskCancelSideEffects(TASK);
+
+    expect(mockAttemptEnded.mock.calls[0][0].reviewFailure).toBeUndefined();
+  });
+
   it('does not touch the kernel for a task with no delivery', async () => {
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: null, deliveryRole: null, context: {} });
     await applyTaskCancelSideEffects(TASK);

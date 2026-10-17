@@ -103,7 +103,7 @@ describe('cloud: the session does not wait for the install', () => {
     const { manager, start } = harness();
     await start();
     await settle();
-    expect((setup.mock.calls[0] as unknown[])[8]).toEqual({ deferInstall: true });
+    expect((setup.mock.calls[0] as unknown[])[8]).toMatchObject({ deferInstall: true });
     expect(installStarted).toBe(true);
     expect(manager.startSession).toHaveBeenCalledTimes(1); // install still pending
     resolveInstall({ status: 'ok', dirs: ['.'] });
@@ -117,7 +117,7 @@ describe('cloud: the session does not wait for the install', () => {
     const { start } = harness();
     await start();
     await settle();
-    expect((setup.mock.calls[0] as unknown[])[8]).toEqual({ deferInstall: false });
+    expect((setup.mock.calls[0] as unknown[])[8]).toMatchObject({ deferInstall: false });
   });
 
   test('a non-structural failure after the start degrades visibly and does not stop the session', async () => {

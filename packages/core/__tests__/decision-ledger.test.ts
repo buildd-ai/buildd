@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
+  decisionHealthOutcomesWhere,
   decisionLedgerWhere,
   recordChallengerRun,
   recordDecision,
@@ -215,5 +216,18 @@ describe('summarizeDecisionLedger', () => {
   it('is all zeros for an empty page', () => {
     expect(summarizeDecisionLedger([]).total).toBe(0);
     expect(summarizeDecisionLedger([]).meanConfidence).toBeNull();
+  });
+});
+
+describe('decisionHealthOutcomesWhere', () => {
+  const since = new Date('2026-01-01T00:00:00Z');
+  it('scopes labels to the team and the window\'s rows, and to no source', () => {
+    const sql = dialect.sqlToQuery(decisionHealthOutcomesWhere({ teamId: 't', workspaceId: 'w', since }) as never).sql;
+    expect(sql).toContain('"decision_outcomes"."team_id" = $1');
+    expect(sql).toContain('"decision_records"."team_id" = $2');
+    expect(sql).toContain('"decision_records"."workspace_id" = $3');
+    expect(sql).toContain('"decision_records"."created_at" >= $4');
+    // An adapter's labels (post-session analysis, strand follow-up, ...) must load too.
+    expect(sql).not.toContain('"source"');
   });
 });

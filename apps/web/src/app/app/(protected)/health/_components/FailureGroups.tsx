@@ -44,17 +44,13 @@ function GroupMeta({ g, now }: { g: FailureGroup; now: number }) {
 }
 
 /**
- * Under the heading: a platform cause says where buildd stands on it (the
- * incident covering it, linked); a task cause says what to do.
+ * Under the heading: a platform cause says where buildd stands on it; a task
+ * cause says what to do.
  */
 function GroupNext({ g }: { g: FailureGroup }) {
   if (g.incident) {
     return (
-      <p className="pl-15 pr-4 pb-3 -mt-2">
-        <Link href={`/app/incidents/${g.incident.id}`} data-testid="failure-group-incident" className="inline-flex items-center min-h-6 text-meta text-text-secondary hover:text-text-primary hover:underline">
-          {g.incident.line} ›
-        </Link>
-      </p>
+      <p data-testid="failure-group-incident" className="pl-15 pr-4 pb-3 -mt-2 text-meta text-text-secondary">{g.incident.line}</p>
     );
   }
   if (!g.hint) return null;

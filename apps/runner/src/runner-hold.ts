@@ -266,7 +266,7 @@ export function holdLine(hold: RunnerHold, running: number, now: number): string
 /** What `buildd resume` prints. */
 export function resumeLine(wasHeld: boolean, running: number): string {
   return wasHeld
-    ? `Resumed: this runner takes new work again. ${agents(running, 'running')}`
+    ? `Resumed: looking for work now. ${agents(running, 'running')}`
     : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}`;
 }
 
