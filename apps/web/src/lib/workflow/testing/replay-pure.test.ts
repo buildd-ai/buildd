@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { compactIds, expandIds, parseCorpus, readCorpus, type CorpusAttempt, type CorpusDelivery, type CorpusTransition } from './corpus';
-import { canonical, firstDivergence, normalizeForCompare, remapIds, type StepDecision } from './diff';
+import { canonical, firstDivergence, normalizeForCompare, remapIds, RETIRED_INPUTS, SUPERSEDED_DECISIONS, type StepDecision } from './diff';
 import { recordedReader, UnansweredRead } from './recorded-github';
 import { buildSteps, isDecisionEffect, outOfBandAttemptEnds, outOfBandEffects, outOfBandFacts, reconstructCommand } from './reconstruct';
 import { isProse, Pseudonymizer, REDACTED, redactProse } from './sanitize';
@@ -321,6 +321,99 @@ describe('firstDivergence', () => {
     expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
     const n = normalizeForCompare(dead('dispatch_fix', 'effect_dead'), dead('dispatch_fix', 'review_unavailable'), redactProse);
     expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
+  });
+
+  const clean = (recorded: StepDecision, replayed: StepDecision) => {
+    const n = normalizeForCompare(recorded, replayed, redactProse);
+    return { div: firstDivergence(n.recorded, n.replayed), tolerated: n.tolerated };
+  };
+
+  test('#4911: a round trigger on dispatch_review is tolerated only when the recording has none and the trigger is a known one', () => {
+    const fx = (payload: Record<string, unknown>) => dec({ command: 'AttemptEnded', toState: 'AWAITING_REVIEW' }, [{ kind: 'dispatch_review', dedupeKey: 'dispatch_review:d:1', payload }]);
+    const old = { roundId: 'r1', round: 1, headSha: 'H', kind: 'full', priorRound: null, scope: null };
+    const r = clean(fx(old), fx({ ...old, trigger: 'first_pass' }));
+    expect(r.div).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('#4911')]);
+    for (const replayed of [fx({ ...old, trigger: 'not_a_trigger' }), fx({ ...old, trigger: 'first_pass', round: 2 })]) expect(clean(fx(old), replayed).div).not.toBeNull();
+    // A recording that carries a trigger is compared as is.
+    expect(clean(fx({ ...old, trigger: 'first_pass' }), fx({ ...old, trigger: 'new_commits' })).div).not.toBeNull();
+  });
+
+  test('#4911: a full round after an approval stands for the recorded delta round only with the unread eligibility answer', () => {
+    const fx = (payload: Record<string, unknown>) => dec({ command: 'HeadObserved', fromState: 'APPROVED', toState: 'AWAITING_REVIEW' }, [{ kind: 'dispatch_review', dedupeKey: 'dispatch_review:d:2', payload }]);
+    const old = { roundId: 'r2', round: 2, headSha: 'H2', priorRound: 1 };
+    const base = { ...old, trigger: 'new_commits' };
+    const recorded = fx({ ...old, kind: 'delta', scope: null });
+    const unread = { deltaApproval: { eligible: false, reason: 'the delta could not be read', fromHeadSha: null } };
+    expect(clean(recorded, fx({ ...base, kind: 'full', scope: unread })).div).toBeNull();
+    for (const scope of [
+      { deltaApproval: { eligible: true, reason: 'small', fromHeadSha: 'H1', files: 1, lines: 2 } },
+      { deltaApproval: { eligible: false, reason: 'too big', fromHeadSha: 'H1', files: 40, lines: 9000 } },
+      { ...unread, other: 1 },
+    ]) expect(clean(recorded, fx({ ...base, kind: 'full', scope })).div).not.toBeNull();
+    // A recorded full round, or a recorded delta with a scope, is not this change.
+    expect(clean(fx({ ...old, kind: 'full', scope: null }), fx({ ...base, kind: 'full', scope: unread })).div).not.toBeNull();
+  });
+
+  test('#4368: the unread freshness verdict on a behind refresh is tolerated, a read one is not', () => {
+    const refresh = (evidence: Record<string, unknown>) => dec({ command: 'ConflictObserved', fromState: 'APPROVED', toState: 'REPAIRING', idempotencyKey: 'conflict:d:H:m1', evidence });
+    const old = { actor: 'door:conflict', headSha: 'H', mode: 'mechanical', repairKind: 'behind' };
+    const r = clean(refresh(old), refresh({ ...old, freshness: { tolerated: false, cause: 'unread' } }));
+    expect(r.div).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('#4368')]);
+    for (const freshness of [{ tolerated: false, cause: 'refresh_unsafe', files: ['a'] }, { tolerated: true, rule: 'bounded' }, { tolerated: false, cause: 'unread', behindBy: 3 }]) {
+      expect(clean(refresh(old), refresh({ ...old, freshness })).div).not.toBeNull();
+    }
+    expect(clean(refresh(old), dec({ command: 'CiFailedObserved', fromState: 'APPROVED', toState: 'REPAIRING', idempotencyKey: 'conflict:d:H:m1', evidence: { ...old, freshness: { tolerated: false, cause: 'unread' } } })).div).not.toBeNull();
+  });
+
+  test('S5 #4815: findings on escalate_exhaustion are tolerated only when the recording has none', () => {
+    const fx = (payload: Record<string, unknown>) => dec({ command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'ESCALATED' }, [{ kind: 'escalate_exhaustion', dedupeKey: 'exhaust:d:H@v4', payload }]);
+    expect(clean(fx({ family: 'review_fix', rounds: 4 }), fx({ family: 'review_fix', rounds: 4, findings: ['f:0'] })).div).toBeNull();
+    expect(clean(fx({ family: 'review_fix', rounds: 4 }), fx({ family: 'review_fix', rounds: 5, findings: ['f:0'] })).div).not.toBeNull();
+    expect(clean(fx({ family: 'review_fix', rounds: 4, findings: [] }), fx({ family: 'review_fix', rounds: 4, findings: ['f:0'] })).div).not.toBeNull();
+  });
+
+  test('a90fc99b: a cycle-1 treadmill escalation may lack exactly the recorded landing_needs_human notice', () => {
+    const notify = [{ kind: 'notify', dedupeKey: 'notify:d:treadmill:H', payload: { event: 'landing_needs_human', detail: REDACTED } }];
+    const esc = (evidence: Record<string, unknown>, effects: StepDecision['effects'] = []) =>
+      dec({ command: 'ConflictObserved', fromState: 'APPROVED', toState: 'ESCALATED', idempotencyKey: 'conflict:d:H:treadmill', evidence }, effects);
+    const old = { actor: 'door:conflict', headSha: 'H', refreshes: 3, repairKind: 'behind' };
+    const r = clean(esc(old, notify), esc({ ...old, treadmill: true, cycle: 1 }));
+    expect(r.div).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('a90fc99b'), expect.stringContaining('#4072')]);
+    // The final cycle still pages, so a missing notice there is a divergence; so is another missing effect.
+    expect(clean(esc(old, notify), esc({ ...old, treadmill: true, cycle: 1, finalCycle: true })).div).not.toBeNull();
+    expect(clean(esc(old, [{ ...notify[0], payload: { event: 'other' } }]), esc({ ...old, treadmill: true, cycle: 1 })).div).not.toBeNull();
+  });
+
+  test('a decision the kernel replaced on purpose is recognised only in its exact shape, and never rewritten', () => {
+    const [abe, budget] = SUPERSEDED_DECISIONS;
+    const end = (toState: string, evidence: Record<string, unknown>) => dec({ command: 'AttemptEnded', fromState: 'FIXING', toState, idempotencyKey: 'end:w', evidence });
+    const parked = end('AWAITING_PUSH', { outcome: 'success', commitCount: 0, localHeadSha: null, proof: { holds: false, reason: 'local_head_unknown' } });
+    const next = end('AWAITING_REVIEW', { outcome: 'success', commitCount: 0, localHeadSha: null, proof: { holds: true } });
+    expect(abe.matches(parked, next, { state: 'FIXING', stateReason: null })).toBe(true);
+    // Unreported commits are not proof, a known local head is another decision, and so is any other to-state.
+    expect(abe.matches(end('AWAITING_PUSH', { outcome: 'unproven', commitCount: 1, localHeadSha: null, proof: { holds: false, reason: 'local_head_unknown' } }), next, null)).toBe(false);
+    expect(abe.matches(end('AWAITING_PUSH', { outcome: 'success', commitCount: 0, localHeadSha: 'L', proof: { holds: false, reason: 'live_head_missing_local' } }), next, null)).toBe(false);
+    expect(abe.matches(parked, end('ESCALATED', { proof: { holds: true } }), null)).toBe(false);
+    // The match is not a tolerance: the decisions still differ.
+    expect(clean(parked, next).div).not.toBeNull();
+
+    const head = (from: string, to: string, effects: StepDecision['effects'] = []) => dec({ command: 'HeadObserved', fromState: from, toState: to, idempotencyKey: 'head:r#1:A->B@v9' }, effects);
+    const rearmed = head('ESCALATED', 'AWAITING_REVIEW', [{ kind: 'dispatch_review', dedupeKey: 'dispatch_review:d:9', payload: {} }]);
+    expect(budget.matches(rearmed, head('ESCALATED', 'ESCALATED'), { state: 'ESCALATED', stateReason: 'review_exhausted' })).toBe(true);
+    // Only a spent review budget; another escalation re-reviews a push as before.
+    expect(budget.matches(rearmed, head('ESCALATED', 'ESCALATED'), { state: 'ESCALATED', stateReason: 'review_unavailable' })).toBe(false);
+    expect(budget.matches(rearmed, head('ESCALATED', 'ESCALATED', [{ kind: 'dispatch_review', dedupeKey: 'dispatch_review:d:9', payload: {} }]), { state: 'ESCALATED', stateReason: 'review_exhausted' })).toBe(false);
+  });
+
+  test('#4189: only the anonymous forced review request is a retired input', () => {
+    const [force] = RETIRED_INPUTS;
+    expect(force.matches({ command: 'ReviewRequested', actor: 'force', bypass: { forced: true, actor: 'force' } })).toBe(true);
+    expect(force.matches({ command: 'ReviewRequested', actor: 'human:user-1', bypass: { forced: true, actor: 'human:user-1' } })).toBe(false);
+    expect(force.matches({ command: 'ReviewRequested', actor: 'force', bypass: null })).toBe(false);
+    expect(force.matches({ command: 'HumanResolve', actor: 'force', bypass: { forced: true } })).toBe(false);
   });
 
   test('remapIds swaps replay ids back to recorded ones at any depth', () => {
