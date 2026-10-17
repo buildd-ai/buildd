@@ -12,6 +12,7 @@
 import type { DecisionObjective } from '@buildd/core/decision-readout';
 import { listBuilddDecisionKinds } from '@buildd/core/decision-kinds';
 import { strandChoiceObjective } from './strand-choice-gold';
+import { SPEC_AREA_KIND_ID, SPEC_DUPLICATE_KIND_ID, specAreaObjective, specDuplicateObjective } from './spec-decision-gold';
 
 /**
  * Objectives for features that write `decision_records` under a bare capability id, not a kind id.
@@ -20,6 +21,9 @@ import { strandChoiceObjective } from './strand-choice-gold';
  */
 export const CAPABILITY_OBJECTIVES: Readonly<Record<string, DecisionObjective>> = {
   mission_strand_choice: strandChoiceObjective,
+  // Kinds, but their modules reach the spec store; the pure gold module carries the objective (a test pins the ids).
+  [SPEC_DUPLICATE_KIND_ID]: specDuplicateObjective,
+  [SPEC_AREA_KIND_ID]: specAreaObjective,
 };
 
 /** The kinds whose bindings carry an objective. Loaded lazily: importing one registers it. */
