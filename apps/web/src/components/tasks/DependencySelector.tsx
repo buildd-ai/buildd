@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { statusPill } from '@/components/ui/states';
 
 interface TaskOption {
   id: string;
@@ -160,7 +161,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
                 >
                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[t.status] || 'bg-text-muted'}`} />
                   <span className="truncate">{t.title}</span>
-                  <span className="ml-auto text-xs text-text-muted shrink-0">{t.status}</span>
+                  <span className="ml-auto text-xs text-text-muted shrink-0">{statusPill(t.status).label}</span>
                 </button>
               ))
             )}
@@ -168,7 +169,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
         )}
       </div>
       <p className="text-xs text-text-muted mt-1">
-        Workers claim this task after these tasks complete.
+        Starts after these tasks finish.
       </p>
     </div>
   );
