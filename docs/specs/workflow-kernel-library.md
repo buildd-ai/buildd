@@ -237,7 +237,10 @@ GitHub or Next.js.
   §14 legacy hand-off (`handOffToLegacyOn`, which `seam.ts`
   `handOffToLegacy` calls). A kind several families share
   (`escalate_exhaustion`, `cancel_open_attempts`) is answered per family; a
-  family the kernel does not know is `skipped:legacy_owns`.
+  family the kernel does not know is `skipped:legacy_owns`. A close's or a
+  merge's `cancel_open_attempts` (reasons `closed`, `merged`) is the kernel's:
+  it cancels the unstarted tasks the transition named (b6cfdbb9); the legacy
+  reconciler skips a kernel-owned PR, so nothing else would.
 - Conformance suite: `CONFORMANCE_SCENARIOS`
   (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
   scenarios over a `ConformanceHost`, run on the in-memory store by

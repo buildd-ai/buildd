@@ -1113,7 +1113,9 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: moved },
         { role: 'ci_fix', reason: moved }, { role: 'conflict_fix', reason: moved }, { role: 'fix', reason: moved }, { role: 'fix', reason: moved },
       ], 'each family cancels its own pending tasks; no family named is the review fix');
-      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged' })), { outcome: 'skipped:legacy_owns' }, 'a merge\'s cancellation is legacy\'s');
+      // b6cfdbb9: a merge's or a close's cancellation is the kernel's too; it names its tasks.
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged', taskIds: [] })), { outcome: 'ok:cancelled_0' }, 'a merge\'s cancellation');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', {})), { outcome: 'skipped:no_reason' }, 'a row from before b6cfdbb9 names nothing');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'ok' }, 'a conflict family\'s exhaustion');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'ok' }, 'a review family\'s exhaustion');
       // Each through its own family's path: the conflict path would hand the review family over in its own words.
@@ -2331,6 +2333,39 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await n.submit({ type: 'PrReopened', actor: 'webhook', live: n.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'AWAITING_REVIEW', 'reopened (fresh)');
       eq(await n.count('dispatch_review'), 2, 'the reopen dispatches a reviewer');
       eq(await n.count('escalate_exhaustion'), 0, 'and tells nobody it is theirs');
+    },
+  },
+  {
+    // Task b6cfdbb9 (audit case: a PR closed while its review repair was still queued): the close
+    // cancelled the ledger row, but its effect left the task to a legacy path that skips kernel PRs,
+    // so the repair stayed pending on a closed PR.
+    name: 'b6cfdbb9: closing a PR unmerged cancels its queued repair task; a merge cancels a queued CI fix',
+    async run(host) {
+      const s = await new Delivery(host, 118).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const fixTask = (await s.view()).attempts.find((a) => a.family === 'review_fix')?.taskId;
+      ok(fixTask, 'the review fix was filed and linked');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      eq((await s.view()).attempts.filter((a) => a.family === 'review_fix').map((a) => a.status), ['cancelled'], 'the ledger row is cancelled');
+      await drainKernel(host, s, f.ports);
+      eq(f.work.cancelled.map((x) => x.taskId), [fixTask], 'and so is its task');
+      eq(await outcomesOf(host, s, 'cancel_open_attempts'), ['ok:cancelled_1'], 'the close owns the cancel, not legacy');
+
+      const m = await new Delivery(host, 119).open();
+      await m.approvedAt('H1');
+      await m.ciRed('H1');
+      const g = fakePorts(host);
+      g.github.setPr(m.repo, m.prNumber, m.live('H1'));
+      await drainKernel(host, m, g.ports);
+      const ciTask = (await m.view()).attempts.find((a) => a.family === 'ci')?.taskId;
+      ok(ciTask, 'the CI fix was filed and linked');
+      applied(await m.merged('H1'), 'MERGED', 'merged');
+      await drainKernel(host, m, g.ports);
+      eq(g.work.cancelled.map((x) => x.taskId), [ciTask], 'the merge cancels the CI fix nobody started');
     },
   },
   {
