@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { specRevisions, specs, workspaces, type SpecMetadataBlock, type SpecPublicationDecision, type SpecRepoCopyState, type SpecRepoSource } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { githubApi, checkSuitesAllPassed, type CheckSuiteSummary } from '@/lib/github';
 import { appBaseUrl } from '@/lib/app-url';
@@ -54,6 +55,8 @@ export interface RepoCopyDeps {
   now: () => Date;
   /** The publication decision; the decisions module's slot when absent. */
   decide?: PublicationDecide;
+  /** How long the pre-approval checks wait on each GitHub call (PREFLIGHT_TIMEOUT_MS when absent). */
+  timeoutMs?: number;
 }
 export const defaultRepoCopyDeps: RepoCopyDeps = { api: githubApi, repo: linkedRepo, now: () => new Date() };
 
@@ -138,11 +141,9 @@ interface RepoState {
   /** docs/specs/*.md by file name. */
   specFiles: Map<string, string>;
   checkSpecsSource: string | null;
-  /** Every path in the tree, when GitHub returned it whole. */
-  paths: Set<string> | null;
 }
 
-async function readRepoState(workspaceId: string, deps: RepoCopyDeps, withPaths: boolean): Promise<RepoState | { error: string }> {
+async function readRepoState(workspaceId: string, deps: RepoCopyDeps): Promise<RepoState | { error: string }> {
   const repo = await deps.repo(workspaceId);
   if (!repo) return { error: 'this workspace has no GitHub repo linked through the GitHub App' };
   const [ws] = await db.select({ gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
@@ -165,19 +166,19 @@ async function readRepoState(workspaceId: string, deps: RepoCopyDeps, withPaths:
       variables: { owner, name, specs: `${baseSha}:docs/specs`, script: `${baseSha}:scripts/check-specs.ts` },
     }),
   });
-  const specFiles = new Map<string, string>();
-  for (const e of gql?.data?.repository?.specs?.entries ?? []) {
-    if (e?.type === 'blob' && typeof e.name === 'string' && e.name.endsWith('.md') && typeof e.object?.text === 'string') specFiles.set(e.name, e.object.text);
-  }
-  let paths: Set<string> | null = null;
-  if (withPaths) {
-    const tree = await deps.api(repo.installationId, `/repos/${repo.fullName}/git/trees/${baseSha}?recursive=1`).catch(() => null);
-    if (tree && !tree.truncated && Array.isArray(tree.tree)) paths = new Set(tree.tree.map((t: { path: string }) => t.path));
-  }
   return {
     fullName: repo.fullName, installationId: repo.installationId, base, baseSha, baseTreeSha: commit?.tree?.sha,
-    specFiles, checkSpecsSource: gql?.data?.repository?.script?.text ?? null, paths,
+    specFiles: specFilesOf(gql?.data?.repository?.specs?.entries), checkSpecsSource: gql?.data?.repository?.script?.text ?? null,
   };
+}
+
+/** docs/specs/*.md by file name, from a GraphQL tree read. */
+function specFilesOf(entries: unknown): Map<string, string> {
+  const specFiles = new Map<string, string>();
+  for (const e of (Array.isArray(entries) ? entries : []) as Array<{ name?: unknown; type?: unknown; object?: { text?: unknown } }>) {
+    if (e?.type === 'blob' && typeof e.name === 'string' && e.name.endsWith('.md') && typeof e.object?.text === 'string') specFiles.set(e.name, e.object.text);
+  }
+  return specFiles;
 }
 
 /** Pick the file for a spec: its recorded path, else its title's slug, else the slug with its short id when that file is someone else's. */
@@ -237,7 +238,7 @@ export async function fileSpecRepoCopy(specId: string, deps: RepoCopyDeps = defa
   const publication = await decideSpecPublication(spec, built, deps);
   if (!publication.publish) return keepPrivate(spec, publication, deps);
   try {
-    const repo = await readRepoState(spec.workspaceId, deps, false);
+    const repo = await readRepoState(spec.workspaceId, deps);
     if ('error' in repo) return saveState(specId, { ...(spec.repoCopy ?? {}), state: 'failed', error: repo.error, updatedAt: at() });
     const path = await choosePath(built, spec.repoCopy?.path ?? confirmedImportPath(spec), repo.specFiles);
     const { files } = generatedFiles(built, path, repo);
@@ -434,7 +435,7 @@ export async function openRemovalPr(workspaceId: string, entries: Array<{ specId
     }
   };
   try {
-    const repo = await readRepoState(workspaceId, deps, false);
+    const repo = await readRepoState(workspaceId, deps);
     if ('error' in repo) { await record({ error: repo.error }); return null; }
     const names = new Set(entries.map((e) => e.path.slice('docs/specs/'.length)));
     const present = entries.filter((e) => repo.specFiles.has(e.path.slice('docs/specs/'.length)));
@@ -552,39 +553,121 @@ export type RepoCopyPreflight =
 /** Directories `scripts/check-public-docs.ts` keeps prose out of (GUARDED_DIRS). */
 export const PUBLIC_DOCS_GUARDED_DIRS = ['docs/design', 'docs/plans', 'docs/reports'] as const;
 
+/** How long the pre-approval checks wait on one GitHub call before they report it unread. */
+export const PREFLIGHT_TIMEOUT_MS = 4_000;
+/** Paths one copy may name that are checked against the repo; past this, the rest are not checked. */
+const MAX_PATH_PROBES = 100;
+const PREFLIGHT_TTL_MS = 10 * 60_000;
+const PREFLIGHT_CACHE_MAX = 200;
+/** Results by spec, revision, base commit and the copy's exact text: the same inputs give the same checks. */
+const preflightCache = new Map<string, { at: number; result: RepoCopyPreflight }>();
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+type PreflightRepo = { baseSha: string; specFiles: Map<string, string>; checkSpecsSource: string | null; exists: Map<string, boolean> };
+
+/**
+ * What the checks need from the repo, in two GraphQL calls, each under a
+ * timeout: the base branch's commit, then at that commit docs/specs, the
+ * DOMAINS script and whether each path the copy names exists. No recursive
+ * tree: only the copy's own paths are asked about. Throws when GitHub cannot
+ * be read; `cached` answers from an earlier read of the same commit.
+ */
+async function readPreflightRepo(
+  workspaceId: string, gitConfig: unknown, deps: RepoCopyDeps, probes: readonly string[],
+  cached: (baseSha: string) => RepoCopyPreflight | null,
+): Promise<PreflightRepo | { error: string } | { cached: RepoCopyPreflight; baseSha: string }> {
+  const repo = await deps.repo(workspaceId);
+  if (!repo) return { error: 'this workspace has no GitHub repo linked through the GitHub App' };
+  const ms = deps.timeoutMs ?? PREFLIGHT_TIMEOUT_MS;
+  const gql = (query: string, variables: Record<string, string>) => withTimeout(
+    deps.api(repo.installationId, '/graphql', { method: 'POST', body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(ms) }),
+    ms, 'GitHub',
+  );
+  const [owner, name] = repo.fullName.split('/');
+  const configured = (gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const branch = typeof configured === 'string' && configured ? configured : null;
+  const head = branch
+    ? await gql('query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { target { oid } } } }', { owner, name, ref: `refs/heads/${branch}` })
+    : await gql('query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { defaultBranchRef { target { oid } } } }', { owner, name });
+  const r = head?.data?.repository;
+  const baseSha: unknown = branch ? r?.ref?.target?.oid : r?.defaultBranchRef?.target?.oid;
+  if (typeof baseSha !== 'string' || !baseSha) return { error: `the base branch ${branch ?? '(the default branch)'} could not be read` };
+  const hit = cached(baseSha);
+  if (hit) return { cached: hit, baseSha };
+
+  const asked = probes.slice(0, MAX_PATH_PROBES);
+  const vars: Record<string, string> = { owner, name, specs: `${baseSha}:docs/specs`, script: `${baseSha}:scripts/check-specs.ts` };
+  asked.forEach((p, i) => { vars[`p${i}`] = `${baseSha}:${p}`; });
+  const at = await gql(`query($owner: String!, $name: String!, $specs: String!, $script: String!${asked.map((_, i) => `, $p${i}: String!`).join('')}) {
+    repository(owner: $owner, name: $name) {
+      specs: object(expression: $specs) { ... on Tree { entries { name type object { ... on Blob { text } } } } }
+      script: object(expression: $script) { ... on Blob { text } }
+      ${asked.map((_, i) => `p${i}: object(expression: $p${i}) { __typename }`).join('\n      ')}
+    }
+  }`, vars);
+  const repoAt = at?.data?.repository;
+  if (!repoAt) return { error: 'GitHub returned nothing for the base commit' };
+  return {
+    baseSha,
+    specFiles: specFilesOf(repoAt.specs?.entries),
+    checkSpecsSource: repoAt.script?.text ?? null,
+    exists: new Map(asked.map((p, i) => [p, !!repoAt[`p${i}`]])),
+  };
+}
+
 /**
  * Run the repo checks on the would-be copy of `revision` (R-34): `specs:lint`
  * (the same functions, over the repo's specs with this copy in place),
  * `public-docs:check` and no-prod-data without its identifier half. Warns,
- * never blocks: the caller only shows the result.
+ * never blocks: the caller only shows the result. Asks GitHub at most twice,
+ * each under a timeout, and once when the base commit has not moved since the
+ * same copy was last checked.
  */
 export async function repoCopyPreflight(spec: SpecRow, revision: number, deps: RepoCopyDeps = defaultRepoCopyDeps): Promise<RepoCopyPreflight> {
   const [ws] = await db.select({ gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
   if (!nativeSourceOn(ws?.gitConfig)) return { state: 'off' };
   const built = await buildSpecRepoCopy(spec, { revision, now: deps.now() });
   if (!built.ok) return { state: 'not_generated', message: built.message };
-  let repo: RepoState | { error: string };
+  const { fm, body } = parseSpecFrontmatter(built.copy.text);
+  const recordedPath = spec.repoCopy?.path ?? confirmedImportPath(spec);
+  // The paths the lint asks about come from the copy itself, so they are known before GitHub is asked.
+  const probes = new Set<string>();
+  lintSpecFile('', fm, body, { domains: new Set(), exists: (p) => { probes.add(p); return true; }, now: deps.now().getTime() });
+  const textKey = createHash('sha256').update(`${recordedPath ?? ''}\0${built.domain}\0${built.copy.text}`).digest('hex');
+  const keyOf = (baseSha: string) => `${spec.id}:${revision}:${baseSha}:${textKey}`;
+  const cached = (baseSha: string) => {
+    const e = preflightCache.get(keyOf(baseSha));
+    return e && deps.now().getTime() - e.at < PREFLIGHT_TTL_MS ? e.result : null;
+  };
+
+  let repo: Awaited<ReturnType<typeof readPreflightRepo>>;
   try {
-    repo = await readRepoState(spec.workspaceId, deps, true);
+    repo = await readPreflightRepo(spec.workspaceId, ws?.gitConfig, deps, [...probes], cached);
   } catch (err) {
     repo = { error: `GitHub could not be read: ${errMsg(err)}` };
   }
-  const offline = 'error' in repo;
-  const state: Pick<RepoState, 'specFiles' | 'checkSpecsSource' | 'paths'> = 'error' in repo ? { specFiles: new Map<string, string>(), checkSpecsSource: null, paths: null } : repo;
-  const path = offline ? built.path : await choosePath(built, spec.repoCopy?.path ?? confirmedImportPath(spec), state.specFiles);
+  if ('cached' in repo) return repo.cached;
+  const read = 'error' in repo ? null : repo;
+  const offline = !read;
+  const state: Pick<RepoState, 'specFiles' | 'checkSpecsSource'> = read ?? { specFiles: new Map<string, string>(), checkSpecsSource: null };
+  const exists = read?.exists ?? null;
+  const path = offline ? built.path : await choosePath(built, recordedPath, state.specFiles);
   const { domains, indexed } = generatedFiles(built, path, state);
   const slug = path.slice('docs/specs/'.length).replace(/\.md$/, '');
-  const { fm, body } = parseSpecFrontmatter(built.copy.text);
-  const paths = state.paths;
-  const lint = lintSpecFile(slug, fm, body, { domains, exists: (p) => (paths ? paths.has(p) : true), now: deps.now().getTime() });
+  const lint = lintSpecFile(slug, fm, body, { domains, exists: (p) => exists?.get(p) ?? true, now: deps.now().getTime() });
   const cross = offline ? [] : crossCheckSpecs(indexed).filter((m) => m.includes(`${slug}.md`));
   const lintMessages = [...lint.errors, ...cross];
   const notes: string[] = [];
   if (offline) notes.push(`${(repo as { error: string }).error}; related specs and paths were not checked`);
-  else if (!paths) notes.push('the repo tree was too large to read whole, so paths were not checked');
+  else if (probes.size > MAX_PATH_PROBES) notes.push(`the copy names ${probes.size} paths; only the first ${MAX_PATH_PROBES} were checked`);
   const guarded = PUBLIC_DOCS_GUARDED_DIRS.find((d) => path.startsWith(`${d}/`));
   const prod = scanForProdData(built.copy.text, { code: true });
-  return {
+  const result: RepoCopyPreflight = {
     state: 'ran', path,
     checks: [
       { name: 'specs:lint', ok: lintMessages.length === 0, messages: [...lintMessages, ...lint.warnings.map((w) => `warning: ${w}`)], ...(notes.length ? { note: notes.join('; ') } : {}) },
@@ -592,6 +675,11 @@ export async function repoCopyPreflight(spec: SpecRow, revision: number, deps: R
       { name: 'no-prod-data', ok: prod.length === 0, messages: prod, note: 'The personal-handle and private-repo half runs only in CI, which holds its pattern; the generated PR\'s own run is the first full check.' },
     ],
   };
+  if (read) {
+    if (preflightCache.size >= PREFLIGHT_CACHE_MAX) preflightCache.delete(preflightCache.keys().next().value!);
+    preflightCache.set(keyOf(read.baseSha), { at: deps.now().getTime(), result });
+  }
+  return result;
 }
 
 /** The spec page's source line (R-13) and how the repo copy stands (AC-79). */

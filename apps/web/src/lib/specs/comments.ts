@@ -129,13 +129,22 @@ export async function listSpecComments(caller: SpecCaller, specId: string, opts:
   if (!got.ok) return got;
   const n = got.view.revision.revision;
   const revs = await db.select({ id: specRevisions.id, revision: specRevisions.revision }).from(specRevisions).where(eq(specRevisions.specId, specId));
+  return { ok: true, revision: n, comments: await commentsOnRevision(specId, n, got.view.body, revs) };
+}
+
+/**
+ * The comments readable on revision `n` (whose text is `body`), given the
+ * spec's revision ids. For a caller that has already read the spec and
+ * checked reach, as the spec page has: listSpecComments is the checked one.
+ */
+export async function commentsOnRevision(specId: string, n: number, body: string, revs: ReadonlyArray<{ id: string; revision: number }>): Promise<CommentView[]> {
   const upTo = revs.filter((r) => r.revision <= n);
-  if (upTo.length === 0) return { ok: true, revision: n, comments: [] };
+  if (upTo.length === 0) return [];
   const byRev = new Map(upTo.map((r) => [r.id, r.revision]));
   const rows = await db.select().from(specComments)
     .where(and(eq(specComments.specId, specId), inArray(specComments.specRevisionId, [...byRev.keys()])))
     .orderBy(asc(specComments.createdAt));
-  return { ok: true, revision: n, comments: rows.map((r) => toView(r, byRev.get(r.specRevisionId)!, got.view.body)) };
+  return rows.map((r) => toView(r, byRev.get(r.specRevisionId)!, body));
 }
 
 /** Resolve a comment: a person's act, with write access. Idempotent. */
