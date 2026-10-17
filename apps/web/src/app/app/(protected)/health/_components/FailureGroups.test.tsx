@@ -79,14 +79,14 @@ describe('Failures for an outside reader', () => {
     expect(html.match(/data-testid="failure-group"/g)?.length ?? 0).toBe(0);
   });
 
-  it("shows a platform cause's incident state as a link, with no button to report it", () => {
+  it("shows where buildd stands on a platform cause as plain text, with no link and no button to report it", () => {
     const groups = { ...buildFailureGroups({
       failures: [w('a', 'Stale worker expired (no update for 30+ minutes)', 'infra_failure'), w('b', 'Stale worker expired (no update for 30+ minutes)', 'infra_failure')],
       traces: [],
       incidents: [{ id: 'inc-1', line: 'buildd is fixing this', resolved: false, workerIds: ['a'], taskIds: [], lastSeenAt: at(1) }],
     }), truncated: false };
     const html = renderToStaticMarkup(<FailureGroupsSection groups={groups} headline={null} windowLabel="7d" now={NOW} />);
-    expect(html).toContain('href="/app/incidents/inc-1"');
+    expect(html).not.toContain('href="/app/');
     expect(html).toContain('buildd is fixing this');
     expect(html).not.toContain('<button type="button" data-testid="file');
     expect(html).not.toMatch(/file with buildd|report to buildd/i);

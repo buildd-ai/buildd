@@ -9,12 +9,13 @@
  * mission concurrency, mission pacing, one scope-undeclared task per mission
  * (`advisory_manifest`), and planner order (`ordered_behind`, from the ledger).
  */
-import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { makeWaitingReason, overlapAreas, orderWaitingReasons, type WaitingReason } from '@buildd/core/waiting-reason';
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { splitOwnOpenPrs } from './claim-plan-input';
 import { checkMissionConcurrencyGate, checkMissionPacingGate } from './pacing-gate';
+import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from './overlap-policy';
 
 /**
  * True when the task's declared deliverable is not a code change
@@ -124,11 +125,15 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
   const manifest = (task.pathManifest as string[] | null) ?? null;
 
   if (manifest?.length) {
+    // Same overlap policy as the claim (./overlap-policy): only an overlap on
+    // an unmergeable surface holds; mergeable files start alongside.
+    const gitConfig = task.workspace?.gitConfig ?? null;
     // Layer 1: an open PR whose task's manifest overlaps this one.
     const others = splitOwnOpenPrs(task, s.openPrTasks).others;
-    const pr = findBlockingPr(manifest, others);
+    const held = findHoldingOpenPr(manifest, others, workspaceHardSurface(gitConfig));
+    const pr = held ? { prNumber: held.pr.prNumber ?? null, prUrl: held.pr.prUrl ?? null } : null;
     if (pr) {
-      const entry = others.find(t => (t.prNumber ?? null) === (pr.prNumber ?? null) && (t.prUrl ?? null) === (pr.prUrl ?? null));
+      const entry = held!.pr;
       const paths = intersectPaths(manifest, entry?.pathManifest ?? []);
       const live = LIVE_WRITER.has(entry?.workerStatus ?? '');
       out.push(makeWaitingReason(live ? 'pr_overlap_live' : 'pr_overlap_ended', {
@@ -146,7 +151,7 @@ export function evaluateCoordinationGates(task: any, s: CoordinationSnapshot): W
     }
 
     // Layer 2: a live lease another task holds on these files.
-    const lease = findActiveClaimBlocker(task.id, manifest, s.activeClaims);
+    const lease = findHoldingLease(task.id, manifest, s.activeClaims, undefined, gitConfig);
     if (lease) {
       out.push(makeWaitingReason('lease_overlap', {
         because: overlapSentence(lease.overlapPaths),

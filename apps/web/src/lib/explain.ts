@@ -55,7 +55,7 @@ import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-ch
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
-import { coordinationGateDetail, coordinationLink, type CoordinationHold } from '@/lib/explain-coordination';
+import { coordinationGateDetail, coordinationLink, latestOverlapStarts, overlapStartLink, type CoordinationHold } from '@/lib/explain-coordination';
 import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
@@ -1082,10 +1082,14 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const gateHistory = gateRows.map(r => r.entry);
   const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
+  // A task that started past an overlap on mergeable files says so (I-38).
+  const alongside = task.status !== 'pending'
+    ? overlapStartLink(latestOverlapStarts(gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }))), { taskId, workspaceId })
+    : null;
   const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
   const because = withDisagreements(withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), roundWhy), wake), hold),
-    coordLink as Parameters<typeof withDispatchLink>[1],
+    (coordLink ?? alongside) as Parameters<typeof withDispatchLink>[1],
   ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })

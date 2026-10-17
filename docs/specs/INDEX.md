@@ -179,7 +179,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 - [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-11
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
-- [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-11
+- [Failure Incident Recovery](./failure-incident-recovery.md) · @max — verified 2026-10-16
   A failure incident MUST carry one fresh, versioned recovery assessment that is re-checked before any repair, resolved only by a passing check, and shown identically on every surface.
 - [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-12
   A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
@@ -208,8 +208,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
-- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-15
-  An inferred path-overlap hold MUST bind only to live work (a live worker, a held lease or an open PR on the same base); overlap between unstarted tasks is settled by the first claim's lease.
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-17
+  Overlapping work MUST start by default; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-16

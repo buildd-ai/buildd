@@ -14,6 +14,9 @@
  *     since a read cannot see the claim's in-loop deferrals;
  *   - "in ~15m (next free slot)" only when the slots are full, from the
  *     running agents' estimates ("when a slot frees" without any).
+ * A row that shares only mergeable files with an open PR or a live lease (the
+ * server's `alongside`) also says it "starts alongside #n (same files, merges
+ * at the end)": the claim starts it next to that work, and the merge settles it.
  * A row the server is refusing is never "now". A task held on its own (a start
  * time ahead, e.g. a retry floor after failures, or a person's hold) is listed
  * after the queue, not in it, with its reason.
@@ -41,6 +44,8 @@ export interface QueueRow {
   reason?: string;
   /** Set on a row held on its own: it is listed after the queue and can still be picked. */
   held?: boolean;
+  /** "starts alongside #n (same files, merges at the end)" when it shares only mergeable files with other work. */
+  alongside?: string;
 }
 
 export interface QueueSection {
@@ -128,6 +133,18 @@ const OVERLAP_CODES = new Set(['soft_overlap', 'path_overlap', 'advisory_manifes
 
 function clip(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+/** Same words as the server's explain (apps/web/src/lib/explain-coordination.ts). */
+export function startsAlongsideWords(who: string): string {
+  return `starts alongside ${who} (same files, merges at the end)`;
+}
+
+/** The work a row starts alongside, in words: the PR as `#n`, else the holder by title. */
+function alongsideWords(a: NonNullable<RunnerQueueTask['alongside']>, state: TopState): string {
+  if (a.prNumber) return startsAlongsideWords(`#${a.prNumber}`);
+  const title = a.holderTaskId ? titleOf(a.holderTaskId, state) : null;
+  return startsAlongsideWords(title ? `"${clip(title, 24)}"` : a.holderTaskId ? `task ${a.holderTaskId.slice(0, 8)}` : 'other work');
 }
 
 /** The title of a task top knows of: the task list, its workers, or the queue. */
@@ -224,10 +241,12 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
     const notFor = tm.notForRunner.filter(keep);
     if (queued.length === 0 && heldTasks.length === 0 && notFor.length === 0) continue;
     const positions = new Map(queued.map((t, i) => [t.id, i + 1]));
+    const waits: boolean[] = [];
     const starts = queued.map(t => {
       // R-33: held, the order stays and nothing has a start time.
-      if (held) return 'on hold';
+      if (held) { waits.push(true); return 'on hold'; }
       const w = waitWords(t, positions, state, holds, now);
+      waits.push(!!w);
       if (w) return w;
       if (free > 0) { free--; return 'now'; }
       const left = remaining[slotWait++];
@@ -245,6 +264,8 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         mission: t.missionTitle ?? '(no mission)',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
         starts: starts[i],
+        // Only a row nothing else holds: one that waits says what it waits for.
+        ...(t.alongside && !waits[i] ? { alongside: alongsideWords(t.alongside, state) } : {}),
       })),
       held: heldTasks.map(t => {
         const w = heldWords(t, now);
