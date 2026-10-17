@@ -329,6 +329,8 @@ describe('runTop', () => {
     const t2 = fakeTerminal();
     const done2 = runTop({ socketPath: sock, terminal: t2.term, hostname: 'h', team: 'team two', palette: createPalette('night', 'none'), processHooks: false });
     await until(() => t2.screen().includes('t team: Team Two · w workspace: all'));
+    // The header draws before the first missions fetch lands; wait for it.
+    await until(() => t2.screen().includes('Quiet mission'));
     expect(t2.screen()).toContain('Quiet mission');
     t2.type('q');
     await done2;

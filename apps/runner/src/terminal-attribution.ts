@@ -23,6 +23,7 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
   actualModel?: string;
   inputTokens?: number;
   outputTokens?: number;
+  claudeLoginUsed?: ClaudeLoginUsed;
 } {
   const meta = worker.resultMeta;
   const reportedCost = meta?.totalCostUsd;
@@ -40,5 +41,30 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
     ...(worker.costBasis ? { costBasis: worker.costBasis } : {}),
     ...(tally && typeof tally.inputTokens === 'number' ? { inputTokens: tally.inputTokens } : {}),
     ...(tally && typeof tally.outputTokens === 'number' ? { outputTokens: tally.outputTokens } : {}),
+    // Which Claude login the run used: the server walls only this runner when
+    // it was the machine's own (spec "A runner", R-3, R-9).
+    ...(worker.claudeLoginUsed ? { claudeLoginUsed: worker.claudeLoginUsed } : {}),
   };
+}
+
+/** Which Claude login a run used, as the server's seat-wall decision reads it. */
+export type ClaudeLoginUsed = 'machine_login' | 'machine_token' | 'stored';
+
+/**
+ * The Claude login a run used, from the agent env the runner built for it.
+ * Undefined when the run used no subscription login at all (Codex, a cloud
+ * run, an API key, an endpoint): those walls are scoped by other rules.
+ */
+export function claudeLoginUsed(input: {
+  isCodexTask: boolean;
+  cloud: boolean;
+  machineLoginUsed?: boolean;
+  machineLogin: 'env' | 'login' | null;
+  injected: readonly string[];
+  claudeCredentialUsed: boolean;
+}): ClaudeLoginUsed | undefined {
+  if (input.isCodexTask || input.cloud) return undefined;
+  if (input.machineLoginUsed && input.machineLogin) return input.machineLogin === 'env' ? 'machine_token' : 'machine_login';
+  if (input.injected.includes('serverOauthToken') || input.claudeCredentialUsed) return 'stored';
+  return undefined;
 }

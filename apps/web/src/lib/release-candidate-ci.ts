@@ -6,7 +6,7 @@
  * metadata records, so the candidate stops being one: the workflow's identify
  * step refuses it and every check and approval must be redone. The fix lands on
  * the branch the candidate was cut from (`releaseConfig.candidate.sourceBranch`,
- * e.g. dev) as an ordinary PR, and once it merges a person amends the candidate
+ * e.g. dev) as an ordinary PR, and once it merges the candidate is amended (automatically, see lib/release/candidate-amend.ts)
  * through the Release workflow (`amend` input), which re-cuts it from the new
  * source SHA. See docs/specs/release-flow.md.
  *

@@ -27,6 +27,7 @@ mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: moc
 const { GET } = await import('./route');
 const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
 const { missionStatusNoteBody, MISSION_COMPLETED_MARKER } = await import('@/lib/mission-status-note');
+const { MAX_STAGE_MISSION_IDS } = await import('@/lib/mission-stage');
 const dialect = new PgDialect();
 
 const NOW = Date.now();
@@ -108,6 +109,21 @@ describe('GET /api/missions/recent', () => {
     expect(dialect.sqlToQuery(calls[0].where).params).toEqual(['ws-1', 'active', 'paused', 'budget_exhausted']);
     expect(dialect.sqlToQuery(calls[1].where).params).toContain('completed');
     expect(dialect.sqlToQuery(calls[1].where).params).not.toContain('active');
+  });
+
+  it('asks for at most MAX_STAGE_MISSION_IDS stages, the first listed, and still lists every mission', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
+    mockListReachable.mockResolvedValue(['ws-1']);
+    rows = Array.from({ length: MAX_STAGE_MISSION_IDS + 20 }, (_, i) => ({ id: `open-${i}`, workspaceId: 'ws-1', status: 'active', deliveredAt: null }));
+    stagesImpl = async (ids) => new Map(ids.map(id => [id, { step: 'building', waitingOn: null }]));
+    const body = await (await GET(req({ authorization: 'Bearer bld_x' }))).json();
+    expect(MAX_STAGE_MISSION_IDS).toBe(100);
+    expect(mockLoadMissionStages).toHaveBeenCalledTimes(1);
+    expect(mockLoadMissionStages.mock.calls[0]![0]).toEqual(rows.slice(0, MAX_STAGE_MISSION_IDS).map(r => r.id));
+    expect(body.missions).toHaveLength(MAX_STAGE_MISSION_IDS + 20);
+    expect(body.missions[MAX_STAGE_MISSION_IDS - 1].stage).toEqual({ step: 'building', waitingOn: null });
+    // Past the cap a mission is listed without a stage, never a fabricated one.
+    expect(body.missions[MAX_STAGE_MISSION_IDS].stage).toBeNull();
   });
 
   it('reads the delivered time from the latest transition into completed, not the first stamp', async () => {

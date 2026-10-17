@@ -358,6 +358,8 @@ export class BuilddClient {
      * when it is absent (docs/specs/real-and-virtual-cost.md).
      */
     costBasis?: 'real' | 'virtual' | 'unknown';
+    /** Which Claude login the run used; a machine login's wall holds only this runner. */
+    claudeLoginUsed?: 'machine_login' | 'machine_token' | 'stored';
     /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
