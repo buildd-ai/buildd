@@ -84,7 +84,7 @@ function server(o: Partial<CommandServerDeps> = {}, ledgerNow?: () => number) {
     host: () => 'control-plane',
     ledger,
     reaches: async () => true,
-    installationOf: async () => 1,
+    installationOf: async () => ({ installationId: 1 }),
     run: (async (op: string, input: unknown) => { ran.push({ op, input }); return { merged: true, outcome: 'merged' }; }) as CommandServerDeps['run'],
     deliveryAfter: async () => ({ id: DELIVERY, version: 9 }),
     sleep: async () => {},
@@ -480,20 +480,29 @@ describe('a reach check that cannot be made', () => {
   });
 });
 
-describe('the installation a command acts through is its workspace\'s own', () => {
+describe('the installation a command acts through is resolved from its workspace and repo', () => {
+  const OTHER_REPO = 'acme/mobile';
   it('every op whose input carries an installationId is resolved, and no other', () => {
     expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
   });
 
-  it('a matching installation runs as sent', async () => {
-    const s = server({ installationOf: async () => 1 });
-    const res = await s.call(await signed(body()));
-    expect(res.status).toBe(200);
+  it('the resolver is asked about the command\'s own workspace and repo', async () => {
+    const asked: unknown[] = [];
+    const s = server({ installationOf: async (ws, repo) => { asked.push([ws, repo]); return { installationId: 1 }; } });
+    expect((await s.call(await signed(body()))).status).toBe(200);
+    expect(asked).toEqual([[WS, 'acme/w']]);
     expect(s.ran).toEqual([{ op: 'land', input: landInput }]);
   });
 
+  it('a cross-repo PR under a second installation is accepted when that is the installation resolved for it', async () => {
+    const s = server({ installationOf: async (_ws, repo) => ({ installationId: repo === OTHER_REPO ? 2 : 1 }) });
+    const input = { ...landInput, repoFullName: OTHER_REPO, installationId: 2 };
+    expect((await s.call(await signed(body({ input })))).status).toBe(200);
+    expect(s.ran).toEqual([{ op: 'land', input }]);
+  });
+
   it('a mismatched installation is refused 403 and nothing runs', async () => {
-    const s = server({ installationOf: async () => 1 });
+    const s = server();
     const res = await s.call(await signed(body({ input: { ...landInput, installationId: 2 } })));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'installation_mismatch', applied: false });
@@ -501,16 +510,22 @@ describe('the installation a command acts through is its workspace\'s own', () =
     expect(s.ledger.rows.size).toBe(0);
   });
 
-  it('a missing installation is resolved from the workspace', async () => {
-    const s = server({ installationOf: async () => 42 });
+  it('a repo outside the workspace\'s scope is refused 403 and nothing runs', async () => {
+    const s = server({ installationOf: async () => ({ refused: 'repo_out_of_scope' }) });
+    const res = await s.call(await signed(body({ input: { ...landInput, repoFullName: 'someone/else' } })));
+    expect([res.status, (await res.json()).code]).toEqual([403, 'repo_out_of_scope']);
+    expect(s.ran).toEqual([]);
+  });
+
+  it('a missing installation is filled in with the resolved one', async () => {
+    const s = server({ installationOf: async () => ({ installationId: 42 }) });
     const { installationId: _, ...withoutInstallation } = landInput;
-    const res = await s.call(await signed(body({ input: withoutInstallation })));
-    expect(res.status).toBe(200);
+    expect((await s.call(await signed(body({ input: withoutInstallation })))).status).toBe(200);
     expect(s.ran).toEqual([{ op: 'land', input: { ...withoutInstallation, installationId: 42 } }]);
   });
 
-  it('a workspace with no installation refuses an op that needs one; a lookup that does not answer is 503, nothing run', async () => {
-    const none = server({ installationOf: async () => null });
+  it('no installation covers the repo: 403; the lookup does not answer: 503, nothing run', async () => {
+    const none = server({ installationOf: async () => ({ refused: 'no_installation' }) });
     const res = await none.call(await signed(body()));
     expect([res.status, (await res.json()).code]).toEqual([403, 'no_installation']);
     const down = server({ installationOf: async () => { throw new Error('db down'); } });
@@ -522,7 +537,7 @@ describe('the installation a command acts through is its workspace\'s own', () =
 
   it('an op without an installation never looks one up', async () => {
     let looked = 0;
-    const s = server({ installationOf: async () => { looked++; return 1; } });
+    const s = server({ installationOf: async () => { looked++; return { installationId: 1 }; } });
     const res = await s.call(await signed(body({ op: 'mission_scope', input: { workspaceId: WS, taskId: DELIVERY, actor: 'system:task_filed' }, principal: { kind: 'system', id: 'x' } })));
     expect(res.status).toBe(200);
     expect(looked).toBe(0);
@@ -534,7 +549,7 @@ describe('the installation a command acts through is its workspace\'s own', () =
     const gate = new Promise<void>((r) => { release = r; });
     const s = server({
       reaches: async () => { started.push('reach'); await gate; return true; },
-      installationOf: async () => { started.push('installation'); await gate; return 1; },
+      installationOf: async () => { started.push('installation'); await gate; return { installationId: 1 }; },
     });
     const pending = s.call(await signed(body()));
     await until(() => started.length === 2);
@@ -542,8 +557,11 @@ describe('the installation a command acts through is its workspace\'s own', () =
     expect((await pending).status).toBe(200);
   });
 
-  it('an installationId that is not a positive integer is malformed', () => {
+  it('an installation op needs an owner/name repo and a positive integer installationId', () => {
     expect(commandProblem(body({ input: { ...landInput, installationId: '1' } }))).toContain('installationId');
     expect(commandProblem(body({ input: { ...landInput, installationId: 0 } }))).toContain('installationId');
+    expect(commandProblem(body({ input: { ...landInput, repoFullName: 'https://github.com/acme/w' } }))).toContain('repoFullName');
+    const { repoFullName: _, ...noRepo } = landInput;
+    expect(commandProblem(body({ input: noRepo }))).toContain('repoFullName');
   });
 });
