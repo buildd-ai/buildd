@@ -20,9 +20,11 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
-import { prRowOfDeliverySql } from './pr-fact-scope';
+import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
 
 import type { MergeTaskTransition } from '@/lib/pr-merged-work';
+import type { ApplyDecision } from './commands';
+import { NON_RUNNER_EXECUTOR_IDS } from '@/lib/executor';
 
 const terminal = sql.join(TERMINAL_PR_LIFECYCLE.map((s) => sql`${s}::text`), sql`, `);
 
@@ -136,4 +138,121 @@ export function ownerAttemptEndOf(task: OwnerEndTask, worker: OwnerEndWorker, no
   const changed = ms(worker.updatedAt);
   if (changed == null || now - changed < OWNER_END_SETTLE_MS) return null;
   return end;
+}
+
+// ── AC-1 slice 3: the owner attempt's end projects onto its task ────────────
+
+/**
+ * The statuses an owner task holds while its attempt runs. The projection moves only these:
+ * a task some other writer already settled (completed, failed, a requeue to pending, a cancel)
+ * keeps what it has, so the projection can never undo a person's cancel, reopen a task T17
+ * completed, or fight a requeue. `in_progress` is legacy (nothing writes it any more).
+ */
+export const OWNER_OPEN_STATUSES = ['assigned', 'in_progress'] as const;
+
+/**
+ * What an owner end makes of its task: `success` completes it; `failed`, `lost` and `unproven`
+ * fail it. A requeue (the kernel's `WORKING` re-entry, `taskRetryBudgetLeft`) is no end: the
+ * task's own retry already put it back to pending, so it projects nothing.
+ */
+export function ownerEndTaskStatus(evidence: { outcome?: unknown; requeue?: unknown } | null | undefined): 'completed' | 'failed' | null {
+  if (!evidence || evidence.requeue === true) return null;
+  if (evidence.outcome === 'success') return 'completed';
+  if (evidence.outcome === 'failed' || evidence.outcome === 'lost' || evidence.outcome === 'unproven') return 'failed';
+  return null;
+}
+
+const open = sql.join(OWNER_OPEN_STATUSES.map((s) => sql`${s}::text`), sql`, `);
+const tkCols = { id: sql`tk.id`, workspaceId: sql`tk.workspace_id`, status: sql`tk.status` };
+
+/**
+ * The ending worker is the task's current attempt: no newer attempt row (`isAttemptRowSql`) on the
+ * task, and not older than the task's `claimed_at` (a claim stamps it from the database clock
+ * before inserting the new worker row, so an older row is the previous attempt's while a re-claim
+ * is in flight; same rule and skew as `ownerAttemptEndOf`).
+ * An end that lands late (a parked re-send, a slow door) after its task was requeued and claimed
+ * again belongs to the attempt before, so it must not settle the new one. Compared as text: a
+ * reaper end with no worker row names a synthetic id, which matches nothing.
+ */
+export function endingWorkerIsCurrentSql(workerId: string): SQL {
+  return sql`EXISTS (SELECT 1 FROM workers ew
+      WHERE ew.id::text = ${workerId}::text AND ew.task_id = tk.id
+        AND (tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
+        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id AND ${isAttemptRowSql('nw')}
+          AND (nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id))))`;
+}
+
+/**
+ * A worker row that is an attempt: one a claim made. Placeholder rows no runner executed
+ * (`NON_RUNNER_EXECUTOR_IDS`: the sibling row a second PR of a running worker gets in
+ * worker-pr-slot.ts, mission and review bookkeeping rows) are never the task's current attempt.
+ */
+export function isAttemptRowSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`(${a}.runner IS NULL OR ${a}.runner NOT IN (${sql.join(NON_RUNNER_EXECUTOR_IDS.map((r) => sql`${r}::text`), sql`, `)}))`;
+}
+
+/** The JS side of `isAttemptRowSql`, for a worker row already read. */
+export const isAttemptRow = (w: { runner?: string | null }): boolean => !w.runner || !NON_RUNNER_EXECUTOR_IDS.includes(w.runner);
+
+/** The worker an end names, from its idempotency key (`end:<workerId>`, reducer.ts). */
+const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ? key.slice(4) : null);
+
+/**
+ * The `t_attempt` CTE (workflow-kernel-library.md §9, AC-1): T4 for an owner sets the owner task
+ * in the transition's own statement. It reads the delivery CTE `d` (empty on a CAS miss), so a
+ * version miss writes nothing. Only an owner end has a task to project: the end of the attempt a
+ * `WORKING` delivery is bound to (a repair's end is FIXING/REPAIRING and its task is not the
+ * owner). Only for the task's current attempt (`endingWorkerIsCurrentSql`). Empty when the
+ * decision projects nothing.
+ */
+export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptEnded' || decision.fromState !== 'WORKING') return [];
+  const status = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
+  const workerId = endingWorkerOf(decision.idempotencyKey);
+  if (!status || !workerId) return [];
+  const a = sql.raw(d);
+  return [sql`t_attempt AS (
+  UPDATE tasks tk SET status = ${status}::text, updated_at = now()
+  FROM ${a} JOIN workflow_deliveries od ON od.id = ${a}.id
+  WHERE tk.id = od.owner_task_id
+    AND tk.status IN (${open})
+    AND ${endingWorkerIsCurrentSql(workerId)}
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same projection outside a transition, for an owner end that applied nothing: a duplicate
+ * (the ledger already has `end:<workerId>`), a stale end (the delivery moved past WORKING), an
+ * end the control plane could not take, or one an older control plane applied without projecting.
+ * The ledger's recorded end wins: a duplicate projects what the kernel recorded, not what was re-sent.
+ * With no recorded end it projects `fallback`, the end the caller sent, so the task cannot strand
+ * open. Same rules as `t_attempt`: only the delivery's owner task, only while it is still open,
+ * only for the task's current attempt, never over a kernel-merged completion. Returns the status written, or null when nothing moved.
+ */
+export function projectOwnerEndSql(p: { deliveryId: string; taskId: string; workerId: string; fallback: 'completed' | 'failed' | null }): SQL {
+  const key = `end:${p.workerId}`;
+  return sql`-- workflow:project_owner_end
+WITH rec AS (
+  SELECT evidence FROM workflow_transitions
+  WHERE delivery_id = ${p.deliveryId}::uuid AND idempotency_key = ${key}::text
+  LIMIT 1
+), o AS (
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM rec) THEN ${p.fallback}::text
+    WHEN (SELECT (evidence->>'requeue') = 'true' FROM rec) THEN NULL
+    WHEN (SELECT evidence->>'outcome' FROM rec) = 'success' THEN 'completed'
+    WHEN (SELECT evidence->>'outcome' FROM rec) IN ('failed', 'lost', 'unproven') THEN 'failed'
+    ELSE ${p.fallback}::text END AS status
+)
+UPDATE tasks tk SET status = o.status, updated_at = now()
+FROM o
+WHERE tk.id = ${p.taskId}::uuid AND o.status IS NOT NULL
+  AND tk.status IN (${open})
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${endingWorkerIsCurrentSql(p.workerId)}
+  AND ${notKernelMergedTaskSql(tkCols)}
+RETURNING tk.status`;
 }
