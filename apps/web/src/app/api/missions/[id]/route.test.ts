@@ -2484,6 +2484,17 @@ describe('PATCH /api/missions/[id] — goalCriteria cannot drop or change the ou
 });
 
 describe('GET /api/missions/[id] — response includes deliveries and scopeUpdates', () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReturnValue({
+      id: MISSION, teamId: 'team-1', title: 'Test Mission', workspaceId: 'ws-1', tasks: [],
+    });
+  });
+
   it('returns empty deliveries and scopeUpdates arrays when none exist', async () => {
     mock.module('@/lib/workflow/delivery-ship', () => ({
       missionEpochsOf: async () => [],
@@ -2494,6 +2505,7 @@ describe('GET /api/missions/[id] — response includes deliveries and scopeUpdat
       new NextRequest(`http://localhost/api/missions/${MISSION}`),
       { params: Promise.resolve({ id: MISSION }) }
     );
+    expect(res.status).toBe(200);
     const data = await res.json();
     expect(Array.isArray(data.deliveries)).toBe(true);
     expect(data.deliveries.length).toBe(0);
@@ -2519,7 +2531,7 @@ describe('GET /api/missions/[id] — response includes deliveries and scopeUpdat
       scopeAmendmentsOf: async () => [],
     }));
     // Mock the mission with a task that has the matching ID and a worker with prLifecycleStatus
-    mockMissionsFindFirst.mock.mockReturnValue({
+    mockMissionsFindFirst.mockReturnValue({
       id: MISSION,
       teamId: 'team-1',
       title: 'Test Mission',
@@ -2534,6 +2546,7 @@ describe('GET /api/missions/[id] — response includes deliveries and scopeUpdat
       new NextRequest(`http://localhost/api/missions/${MISSION}`),
       { params: Promise.resolve({ id: MISSION }) }
     );
+    expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.deliveries).toHaveLength(1);
     const delivery = data.deliveries[0];
