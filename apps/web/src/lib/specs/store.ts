@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
+import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
@@ -105,6 +105,8 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   duplicates?: DuplicateCheckDeps | false;
   /** Written by an import (§18, R-18, ./import.ts): revision 1 is this repo file, and the repo stays the source until confirmed. */
   imported?: SpecRevisionImport & { importedAt: string };
+  /** Written with the spec in the same insert (a copy's provenance, ./copy.ts). */
+  metadata?: SpecMetadataBlock;
 } = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow; duplicateCheck: DuplicateCheck | null } | SpecError> {
   const { workspaceId, title, parentSpecId } = input;
   const scope = (input.scope ?? 'feature') as SpecScope;
@@ -158,6 +160,7 @@ export async function createSpecDraft(caller: SpecCaller, input: {
   const [spec] = await db.insert(specs).values({
     workspaceId, title: title.trim(), scope, parentSpecId: (parentSpecId as string | null | undefined) ?? null,
     bodyArtifactId: art.id, headRevision: 1, createdBy: who.label,
+    metadata: opts.metadata ?? null,
     repoSource: opts.imported ? { state: 'imported', ...importOf(opts.imported), revision: 1, importedAt: opts.imported.importedAt } : null,
   }).returning();
   const [revision] = await db.insert(specRevisions).values({

@@ -2843,6 +2843,12 @@ export interface SpecMetadataBlock {
    * Cleared by a re-import that finds none.
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+  /**
+   * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
+   * source revision this spec's head is byte for byte, by hash. Server-written
+   * only (not a metadata field a change can set). It never carries approval.
+   */
+  copied_from?: { workspaceId: string; specId: string; revision: number; contentHash: string; copiedAt: string; copiedBy: string };
 }
 
 /**
