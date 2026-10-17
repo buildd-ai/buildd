@@ -17,7 +17,7 @@ import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  teamInstallationIdForRepo,
 } from '@/lib/workspace-installation';
 import { listDue, markDue, clearDue, reseedDue } from '@/lib/redis';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
@@ -84,7 +84,7 @@ export function checksFromSuites(
 export function createCiRedSweepDeps(): CiRedSweepDeps {
   type WorkspaceRow = NonNullable<Awaited<ReturnType<typeof loadWorkspace>>>;
   const workspaceCache = new Map<string, WorkspaceRow | null>();
-  const installationByRepo = new Map<string, number | null>();
+  const installationByRepo = new Map<string, { installationId: number | null; notTeamOwned?: true }>();
 
   async function loadWorkspace(id: string) {
     return db.query.workspaces.findFirst({
@@ -98,11 +98,13 @@ export function createCiRedSweepDeps(): CiRedSweepDeps {
     return workspaceCache.get(id) ?? null;
   }
 
-  async function installationFor(repo: string): Promise<number | null> {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
+  /** The team's installation covering `repo` (a PR acts only through its own team's installation). */
+  async function installationFor(repo: string, teamId: string) {
+    const key = `${teamId}:${repo}`;
+    if (!installationByRepo.has(key)) {
+      installationByRepo.set(key, await teamInstallationIdForRepo(repo, teamId).catch(() => ({ installationId: null })));
     }
-    return installationByRepo.get(repo) ?? null;
+    return installationByRepo.get(key) ?? { installationId: null };
   }
 
   return {
@@ -136,10 +138,10 @@ export function createCiRedSweepDeps(): CiRedSweepDeps {
       const identity = pickWorkspaceRepoIdentity(workspace);
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
       if (!repo) return { ok: false, skip: 'no_repo' };
-      const installationId =
-        (repo === identity.fullName ? identity.installationId : null)
-        ?? (await installationFor(repo))
-        ?? identity.installationId;
+      const own = repo === identity.fullName ? identity.installationId : null;
+      const forRepo = own ? null : await installationFor(repo, workspace.teamId);
+      if (forRepo?.notTeamOwned) return { ok: false, skip: 'installation_not_team_owned' };
+      const installationId = own ?? forRepo?.installationId ?? identity.installationId;
       if (!installationId) return { ok: false, skip: 'no_installation' };
 
       const target: CiRedTarget = {
