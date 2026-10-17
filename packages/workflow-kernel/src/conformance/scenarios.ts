@@ -22,7 +22,7 @@ import {
   RecordingRails, RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
-import { deriveDeliveryView } from '../projections';
+import { deliveryPrState, deriveDeliveryView } from '../projections';
 import { landingStatusOf, reviewGate } from '../landing-gate';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
@@ -1913,6 +1913,43 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       }
       eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'review_unavailable' }, 'after the retries, a person\'s, in words');
       eq((await s.latestRound()).status, 'failed', 'the round is closed, not left open');
+    },
+  },
+  {
+    name: '6900a317: the CI reading is per head: a failure outranks runs still going, a re-run withdraws it, green is recorded without a repair, and an old head says nothing',
+    async run(host) {
+      const s = await new Delivery(host, 77).open();
+      const reading = async () => deliveryPrState(await s.d());
+      const obs = (headSha: string, verdict: 'red' | 'green' | 'running', failing: string[] = [], complete = verdict === 'green') =>
+        s.submit({ type: 'CiObserved', actor: 'webhook', headSha, verdict, liveChecks: { complete, failing }, ...(verdict === 'green' ? { allPassing: true } : {}) });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed H1');
+      eq(await reading(), 'awaiting_ci', 'no reading on H1 yet: running');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 failed: a CI fix is filed');
+      eq(await reading(), 'ci_failed', 'repairing H1: red');
+      const fix = (await s.view()).attempts.find((x) => x.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: fix.id, revalidation: { live: s.live('H1'), approved: false, ciGreen: false } }), 'REPAIRING', 'the fix is claimed');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the fix pushed H2; review is owed on it');
+      eq(await reading(), 'awaiting_ci', 'H1\'s red does not carry to H2');
+      // One check fails on H2 while others still run. T10 defers to the fix still open,
+      // and before 6900a317 nothing else recorded the failure: the PR read "Checking".
+      notApplied(await s.ciRed('H2'), 'rejected', 'fix_in_flight', 'T10 defers to the open fix');
+      applied(await obs('H2', 'red', ['check']), 'AWAITING_REVIEW', 'the red on H2 is recorded with no state change');
+      eq(await reading(), 'ci_failed', 'failed outranks still running');
+      notApplied(await obs('H1', 'green'), 'stale', 'head_not_current', 'a late green for the old head');
+      eq(await reading(), 'ci_failed', 'H2 still red');
+      // The failed run is re-run: nothing failing, not finished.
+      applied(await obs('H2', 'running'), 'AWAITING_REVIEW', 'the re-run withdraws the red');
+      eq(await reading(), 'awaiting_ci', 'H2 is being checked again');
+      // A late webhook for the superseded failure reads nothing failing now.
+      notApplied(await obs('H2', 'red', []), 'rejected', 'ci_not_red', 'the superseded failure records nothing');
+      applied(await obs('H2', 'green'), 'AWAITING_REVIEW', 'green on H2 is recorded without a repair to end');
+      eq(await reading(), 'ci_passed', 'H2 passed');
+      notApplied(await obs('H2', 'green'), 'stale', 'already_recorded', 'the same green again');
+      // A new commit runs CI again: the last head's reading does not carry.
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new commit, H3');
+      eq(await reading(), 'awaiting_ci', 'H3 is running');
+      applied(await obs('H3', 'red', ['unit tests'], true), 'AWAITING_REVIEW', 'a second failure, on H3');
+      eq(await reading(), 'ci_failed', 'H3 failed');
     },
   },
   {

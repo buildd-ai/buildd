@@ -27,7 +27,7 @@ const CLOSED: Record<Exclude<ApprovalRequestView['state'], 'ready'>, { tone: 'in
  * a later one opens on the changes.
  */
 export default function SpecApprovalRequest({ specId, token, view }: { specId: string; token: string; view: ApprovalRequestView }) {
-  const approvedText = `Approved. Revision ${view.state === 'ready' ? view.revision : ''} is in force.`;
+  const approvedText = `Approved revision ${view.state === 'ready' ? view.revision : ''}.`;
   const { shown: result, retry, approve } = useOptimisticApprove(async () => {
     const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve/confirm`, {
       method: 'POST',
@@ -49,7 +49,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
       <div className="flex flex-col gap-4">
         {heading}
         <Notice tone={closed.tone} data-testid="spec-approval-state">
-          {view.state === 'approved' ? `Revision ${view.revision} is in force.` : closed.text}
+          {view.state === 'approved' ? `Revision ${view.revision} is approved.` : closed.text}
         </Notice>
       </div>
     );
@@ -59,7 +59,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
     <div className="flex flex-col gap-4">
       {heading}
       <Lede>
-        {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : `Nothing is approved yet. Approving puts revision ${view.revision} in force.`}
+        {view.replaces ? `Revision ${view.revision} replaces revision ${view.replaces}.` : 'Nothing is approved yet.'}
       </Lede>
       {result ? <Notice tone={result.tone} data-testid="spec-approval-result">{result.text}</Notice> : null}
       {!result || retry ? (
