@@ -77,8 +77,11 @@ describe('with a runner answering on its socket', () => {
     const a = await buildd('stop', '--abort', '--yes');
     expect(a.stdout).toBe('Stopped "name override".\nOn hold: nothing new starts until buildd resume.');
     expect(seen).toContain('POST /api/workers/w1/stop');
-    // The runner keeps the hold; the CLI wrote nothing itself.
-    expect(config()).toBeNull();
+    // The CLI persists the hold and stopped agent IDs so they survive a runner restart.
+    const cfg = config();
+    expect(cfg).not.toBeNull();
+    expect(cfg?.hold).toBeDefined();
+    expect(cfg?.stoppedAgentIds).toEqual(['w1']);
   }, 30_000);
 
   test('stop with no terminal and no --yes refuses and stops nothing', async () => {

@@ -430,4 +430,56 @@ describe('runStopCommand (R-36, AC-20, AC-22)', () => {
     expect(r.stdout).toBe('No runner is running on this machine, so no agent is running. Saved: the next start is on hold until buildd resume.');
     expect(readHoldFromConfig(configFile)).not.toBeNull();
   });
+
+  test('(a) stop keeps the hold in config', async () => {
+    const h = harness();
+    const r = await runStopCommand({ yes: true }, h.deps);
+    expect(r.code).toBe(0);
+    const savedHold = readHoldFromConfig(configFile);
+    expect(savedHold).not.toBeNull();
+    expect(savedHold?.since).toEqual(new Date(T0).toISOString());
+    expect(savedHold?.until).toEqual(null);
+  });
+
+  test('(b) stop then a runner hold write then resume continues only stopped agents, leaves hand-paused paused', async () => {
+    const h = harness();
+    // First, stop: pauses w1 and w2
+    const stopResult = await runStopCommand({ yes: true }, h.deps);
+    expect(stopResult.code).toBe(0);
+    const stoppedIds = new Set(['w1', 'w2']);
+
+    // Verify hold is saved
+    let savedHold = readHoldFromConfig(configFile);
+    expect(savedHold).not.toBeNull();
+
+    // Simulate runner's own hold write (line 118): write without stoppedAgentIds param.
+    // This should preserve stoppedAgentIds in config.
+    saveHoldToConfig(configFile, savedHold);
+
+    // Verify stoppedAgentIds are still there after the write
+    const { readStoppedAgentIdsFromConfig } = await import('../../src/runner-hold');
+    let preserved = readStoppedAgentIdsFromConfig(configFile);
+    expect(new Set(preserved)).toEqual(stoppedIds);
+
+    // Now simulate resume with agents: w1 (paused by stop), w2 (paused by stop), w3 (hand-paused before stop)
+    h.posts.length = 0; // Reset posts tracking
+    const resumeResult = await runHoldCommand({ kind: 'resume' }, {
+      configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
+      get: async () => ({ status: 200, body: { workers: [
+        { id: 'w1', taskTitle: 'was stopped', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+        { id: 'w2', taskTitle: 'was also stopped', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+        { id: 'w3', taskTitle: 'hand-paused', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+      ] } }),
+      post: async (path, body) => { h.posts.push(path); return { status: 200, body: { hold: null, wasHeld: true, running: 0 } }; },
+    });
+    expect(resumeResult.code).toBe(0);
+    // Should continue only w1 and w2 (the stopped ones), not w3
+    expect(h.posts).toEqual([
+      '/api/resume',
+      '/api/workers/w1/answer',
+      '/api/workers/w2/answer',
+    ]);
+    // Resume output should mention 1 agent (w3) still paused
+    expect(resumeResult.stdout).toContain('1 agent stays paused');
+  });
 });

@@ -63,6 +63,7 @@ export function readStoppedAgentIdsFromConfig(configFile: string): string[] {
  * Write `hold` into config.json (null removes it), keeping every other field.
  * Throws UnreadableConfigError, writing nothing, when the file exists but is
  * not a JSON object: it holds the API key, and overwriting it would lose that.
+ * When stoppedAgentIds is undefined, the existing list is preserved. Pass [] to clear it.
  */
 export function saveHoldToConfig(configFile: string, hold: RunnerHold | null, stoppedAgentIds?: string[]): void {
   let cfg: Record<string, unknown> = {};
@@ -73,8 +74,13 @@ export function saveHoldToConfig(configFile: string, hold: RunnerHold | null, st
   }
   if (hold === null) delete cfg.hold;
   else cfg.hold = hold;
-  if (!stoppedAgentIds || stoppedAgentIds.length === 0) delete cfg.stoppedAgentIds;
-  else cfg.stoppedAgentIds = stoppedAgentIds;
+  if (stoppedAgentIds === undefined) {
+    // Undefined: preserve existing stoppedAgentIds
+  } else if (stoppedAgentIds.length === 0) {
+    delete cfg.stoppedAgentIds;
+  } else {
+    cfg.stoppedAgentIds = stoppedAgentIds;
+  }
   writeSecretJsonFile(configFile, cfg);
 }
 
@@ -571,7 +577,8 @@ export async function runStopCommand(cmd: { yes: boolean; abort?: boolean }, dep
   // Save the IDs of agents we paused, so `buildd resume` knows which to continue (R-35).
   if (stoppedAgentIds.length > 0) {
     try {
-      saveHoldToConfig(deps.configFile, null, stoppedAgentIds);
+      const hold = parseRunnerHold((held.body as { hold?: unknown })?.hold) ?? { since: new Date((deps.now ?? Date.now)()).toISOString(), until: null };
+      saveHoldToConfig(deps.configFile, hold, stoppedAgentIds);
     } catch {
       // Non-fatal; we've held the runner and paused the agents; this just means
       // resume won't know to focus on those agents.
