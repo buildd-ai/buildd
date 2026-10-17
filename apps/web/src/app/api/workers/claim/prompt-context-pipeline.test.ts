@@ -70,6 +70,10 @@ mock.module('./context-injection', () => ({
   attachSubjectPriorWork: mockAttachSubjectPriorWork,
   attachDiscrepancyContext: mockAttachDiscrepancyContext,
   predictTaskAreas: mockPredictTaskAreas,
+  // The real strip, so the timeout tests below see a caller index removed.
+  stripCallerMemoryIndex: (workers: any[]) => {
+    for (const cw of workers) if (cw.task?.context) delete cw.task.context.memoryIndex;
+  },
 }));
 
 mock.module('./mission-handoff-injection', () => ({

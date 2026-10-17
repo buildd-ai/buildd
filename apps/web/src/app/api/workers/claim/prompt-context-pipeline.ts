@@ -26,7 +26,6 @@
  * rail in the fixed order in one synchronous pass.
  */
 import type { ClaimTasksResponse } from '@buildd/shared';
-import { MEMORY_INDEX_CONTEXT_KEY } from '@buildd/core/memory-claim-index';
 import { loadTaskAreaConfig, type TaskAreaPrediction } from '@buildd/core/task-area-prediction-source';
 import { assignTaskAreaArm, TASK_AREA_TREATMENT_ARM } from '@buildd/core/task-area-prediction';
 import {
@@ -35,6 +34,7 @@ import {
   attachKnowledgeContext,
   attachSubjectPriorWork,
   predictTaskAreas,
+  stripCallerMemoryIndex,
   type ContextBlockSink,
 } from './context-injection';
 import { attachMissionHandoff } from './mission-handoff-injection';
@@ -183,10 +183,7 @@ export async function runDependentContextInjections(
 ): Promise<ReadonlyMap<string, TaskAreaPrediction>> {
   // This metadata is server-authored. Strip a caller-supplied index even
   // when retrieval times out before attachKnowledgeContext gets to sanitize it.
-  for (const cw of claimedWorkers) {
-    const context = (cw.task as any)?.context;
-    if (context && typeof context === 'object') delete context[MEMORY_INDEX_CONTEXT_KEY];
-  }
+  stripCallerMemoryIndex(claimedWorkers);
   const detached = structuredClone(claimedWorkers);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const started = performance.now();

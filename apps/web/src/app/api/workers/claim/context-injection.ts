@@ -306,6 +306,15 @@ function taskAreaHint(prediction: TaskAreaPrediction | undefined): TaskAreaConte
   };
 }
 
+/** task.context is client-writable jsonb: drop a memoryIndex the caller put
+ * there, so only the one attachKnowledgeContext sets reaches the runner. */
+export function stripCallerMemoryIndex(claimedWorkers: readonly ClaimTasksResponse['workers'][number][]): void {
+  for (const cw of claimedWorkers) {
+    const ctxObj = (cw.task as any)?.context;
+    if (ctxObj && typeof ctxObj === 'object') delete ctxObj[MEMORY_INDEX_CONTEXT_KEY];
+  }
+}
+
 /**
  * Inject related prior work into the agent's prompt — the worker analog of the
  * orchestrator's plan-time injection.
