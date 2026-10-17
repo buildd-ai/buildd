@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { BudgetWalls, describeBudgetWalls, accountLimitRefusal, formatLiftTime } from './claim-limits';
+import { BudgetWalls, describeBudgetWalls, accountLimitRefusal, accountWorkerSlotLimit, formatLiftTime } from './claim-limits';
 
 const NOW = new Date('2026-10-09T18:00:00.000Z');
 const AT = '2026-10-09T20:00:00.000Z';
@@ -91,5 +91,18 @@ describe('accountLimitRefusal', () => {
     const r = accountLimitRefusal({ code: 'max_concurrent_workers', limit: 4, current: 5 });
     expect(r.limit).toBe(4);
     expect(r.current).toBe(5);
+  });
+});
+
+describe('accountWorkerSlotLimit', () => {
+  it('adds up the slots live runners report', () => {
+    expect(accountWorkerSlotLimit(3, [9, 5])).toBe(14);
+  });
+  it('falls back to the account limit when no runner reports', () => {
+    expect(accountWorkerSlotLimit(3, [])).toBe(3);
+  });
+  it('ignores a malformed report', () => {
+    expect(accountWorkerSlotLimit(3, [0, Number.NaN])).toBe(3);
+    expect(accountWorkerSlotLimit(3, [4, 0])).toBe(4);
   });
 });

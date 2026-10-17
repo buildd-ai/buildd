@@ -66,7 +66,8 @@ describe('AttemptStrip — expanded', () => {
   });
 
   it('shows which attempt is still running', () => {
-    expect(html).toContain('in_progress');
+    expect(html).toContain('· Running');
+    expect(html).not.toContain('in_progress');
   });
 });
 

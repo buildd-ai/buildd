@@ -1593,6 +1593,12 @@ export interface ClaimTasksInput {
   // ambiguous claim (the 2026-05-25 misroute class), which stays rejected.
   claimAcrossAccessible?: boolean;
   /**
+   * A person chose this named task for this runner (`c` in top, a task aimed
+   * at it). With a taskId, the account-wide worker count does not refuse it:
+   * the runner claims only into a free slot of its own.
+   */
+  requestedByPerson?: boolean;
+  /**
    * Protocol features this runner build implements, so the server does not send
    * a payload field an older runner would silently ignore.
    */

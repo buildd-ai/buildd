@@ -330,3 +330,20 @@ describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
     expect(summarySource).not.toContain('linkQuestionNote(');
   });
 });
+
+describe('diagnostics are a layer for admins and operators — tasks/[id]/page.tsx', () => {
+  it('decides the audience from the viewer role in the task team and the operator check', () => {
+    expect(pageSource).toContain('canSeeDiagnostics({ role: access.role, operator: isPlatformOperator(user) })');
+    expect(pageSource).toContain('<DiagnosticsAudienceProvider visible={diagnosticsVisible}>');
+  });
+
+  it('the force-start record and runner scheduling render only inside DiagnosticsDisclosure', () => {
+    const forced = pageSource.slice(pageSource.indexOf('const forced = lastForceStart'), pageSource.indexOf('{/* Blocked Banner'));
+    expect(forced).toContain('<DiagnosticsDisclosure');
+    const details = pageSource.slice(pageSource.indexOf('Details\n'), pageSource.indexOf('</aside>'));
+    const plain = details.slice(0, details.indexOf('<DiagnosticsDisclosure>'));
+    expect(plain).not.toContain('Claimed by');
+    expect(plain).not.toContain('runnerPreference');
+    expect(details.slice(details.indexOf('<DiagnosticsDisclosure>'))).toContain('runnerPreference');
+  });
+});

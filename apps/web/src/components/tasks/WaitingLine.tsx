@@ -4,6 +4,9 @@
  * WaitingLine: why a pending task is not running, in one compact line —
  * `{chip} Waiting on {blocker} · because {reason} · starts when {release}` —
  * with a "Why" drilldown for every reason, its overlap areas and the paths.
+ * Gate codes, override flags and where a reason was read from are layer-3
+ * diagnostics: they render only inside `DiagnosticsDisclosure`, so a member
+ * never sees them (design-system §5 rule 18).
  * Several coordination holds collapse into one headline that keeps declared
  * dependencies apart from incidental file-overlap ordering ("Waiting on
  * migration slot · 5 tasks also editing core/db"); paths are drilldown only.
@@ -14,6 +17,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
+import DiagnosticsDisclosure from '@/components/ui/DiagnosticsDisclosure';
 import { gateName, orderWaitingReasons, waitingChip, waitingSummary, type WaitingChip, type WaitingReason } from '@buildd/core/waiting-reason';
 
 const CHIP_LABEL: Record<WaitingChip, string> = {
@@ -73,7 +77,6 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
             <li key={`${r.kind}-${r.blocker?.id ?? i}`} data-testid="task-waiting-reason" data-kind={r.kind} className="space-y-1 font-mono text-eyebrow">
               <p className="font-medium text-text-primary">
                 {gateName(r.kind)}{r.strength === 'soft' ? ' (ordering only)' : ''}
-                {!r.action.force && r.strength === 'hard' ? <span className="ml-1.5 text-text-muted">· can't be forced</span> : null}
               </p>
               <p className="text-text-secondary [overflow-wrap:anywhere]"><BlockerLink r={r} />: {r.because}.</p>
               {r.overlap && r.overlap.areas.length > 0 && (
@@ -90,12 +93,22 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
                   </ul>
                 </Disclosure>
               )}
-              <p className="text-text-muted" title={r.provenance.derivedFrom}>
-                {r.provenance.source === 'ledger' ? 'From the claim log.' : 'Checked just now with the rules a runner claim uses.'}
-              </p>
             </li>
           ))}
         </ul>
+        <DiagnosticsDisclosure>
+          <ul data-testid="task-waiting-diagnostics" className="space-y-2">
+            {ordered.map((r, i) => (
+              <li key={`${r.kind}-${r.blocker?.id ?? i}`}>
+                <p>{r.kind} · {r.strength} · {r.action.force ? `override: ${r.action.force.scope} (${r.action.force.mechanism})` : 'no override'}</p>
+                <p>
+                  Source: {r.provenance.source === 'ledger' ? 'claim log' : r.provenance.source === 'probe' ? 'live claim check' : r.provenance.source} · {r.provenance.derivedFrom}
+                  {r.provenance.firstSeenAt ? ` · first seen ${r.provenance.firstSeenAt}` : ''}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </DiagnosticsDisclosure>
       </Disclosure>
       {children}
     </div>
