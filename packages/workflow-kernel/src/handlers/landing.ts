@@ -147,9 +147,10 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       let seen = d.version;
       for (let pass = 0; pass < 3; pass++) {
         // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
-        const shown = await Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(d.repoFullName, status.sha, c).catch(() => null) : null)));
-        if (shown.some((current) => !current || current.state !== status.state || current.description !== status.description)) {
-          await publish(status);
+        const want = status;
+        const shown = await Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(d.repoFullName, want.sha, c).catch(() => null) : null)));
+        if (shown.some((current) => !current || current.state !== want.state || current.description !== want.description)) {
+          await publish(want);
           wrote = true;
         }
         const again = await ports.store.loadView({ deliveryId: e.deliveryId });
