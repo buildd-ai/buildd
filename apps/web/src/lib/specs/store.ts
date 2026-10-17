@@ -274,7 +274,7 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
     SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up, body
     RETURNING id`);
-  const inserted = ((rows as { rows?: Array<{ id: string }> }).rows ?? [])[0];
+  const inserted = ((rows as { rows?: Array<Record<string, unknown>> }).rows ?? [])[0] as { id: string } | undefined;
   if (!inserted) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
     if (now?.version === spec.version && hash !== head.contentHash) {
