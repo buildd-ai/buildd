@@ -167,6 +167,7 @@ function RepoChecks({ specId }: { specId: string }) {
 }
 
 type ReviewPanes = SpecPanes & { version?: number };
+const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
 
 /**
  * What approving the waiting revision puts in force (R-7, R-8): from the
@@ -184,9 +185,9 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
         const b = (await res.json().catch(() => ({}))) as { review?: ReviewPanes; error?: string };
         if (!live) return;
         if (res.ok && b.review) setPanes(b.review);
-        else setError(b.error ?? 'The changes could not be read. Reload to try again.');
+        else setError(b.error ?? REVIEW_UNREAD);
       })
-      .catch(() => { if (live) setError('The changes could not be read. Reload to try again.'); });
+      .catch(() => { if (live) setError(REVIEW_UNREAD); });
     return () => { live = false; };
   }, [spec.id, initial]);
   const revision = panes?.revision ?? waiting;
