@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { setDecisionModelForKind } from '@buildd/core/decision-model-store';
-import { readDecisionModel, readDecisionModelOverrides, type DecisionModelRoute } from '@buildd/core/decision-model';
+import { DECISION_MODEL_KINDS, readDecisionModel, readDecisionModelOverrides, type DecisionModelRoute } from '@buildd/core/decision-model';
 import { calibrate, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { ModelComparisonInput, ModelComparisonOutcome } from '../prompt-evals/compare-run';
@@ -222,15 +222,37 @@ const CLEAR_WIN = [
 ];
 
 describe('sweepOutcomes', () => {
-  it('lists each kind with its reason, and a skipped team with why', () => {
+  const ran = (teamId: string, kinds: KindOutcome[], extra: object = {}) =>
+    ({ teamId, status: 'ran', runId: 'r', labelledRunId: null, problems: [], aborted: null, kinds, ...extra }) as never;
+
+  it('numbers teams by position and never carries a team id', () => {
     const out = sweepOutcomes({ teams: [
-      { teamId: 'abcdef012345', status: 'ran', runId: 'r', labelledRunId: null, problems: [], aborted: null, kinds: [{ kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' }] },
+      ran('abcdef012345', [{ kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' }]),
       { teamId: '12345678aaaa', status: 'skipped', reason: 'no cases' },
     ] });
-    expect(out).toEqual([
-      { team: 'abcdef01', kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' },
-      { team: '12345678', status: 'skipped', reason: 'no cases' },
-    ]);
+    expect(out.rows).toEqual([{ team: 2, status: 'skipped', reason: 'no cases' }, { team: 1, kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' }]);
+    expect(JSON.stringify(out)).not.toContain('abcdef');
+  });
+
+  it('cuts a long free-text reason', () => {
+    const out = sweepOutcomes({ teams: [ran('t', [{ kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected', why: 'x'.repeat(500) }])] });
+    expect((out.rows[0].why as string).length).toBe(40);
+  });
+
+  it('caps rows across teams and kinds, keeps decided kinds first, and counts what it dropped', () => {
+    const kinds: KindOutcome[] = [
+      ...Array.from({ length: 10 }, (_, i): KindOutcome => ({ kind: `e${i}`, action: 'keep', reason: 'no_cases', source: 'collected' })),
+      { kind: 'decided', action: 'keep', reason: 'within_margin', source: 'collected', n: 100 },
+    ];
+    const out = sweepOutcomes({ teams: [ran('a', kinds), ran('b', kinds)] }, 5);
+    expect(out.rows).toHaveLength(5);
+    expect(out.omitted).toBe(17);
+    expect(out.rows.filter(r => r.kind === 'decided')).toHaveLength(2);
+  });
+
+  it('says that a run was cut short, without its text', () => {
+    const out = sweepOutcomes({ teams: [ran('t', [], { problems: ['p1', 'p2'], aborted: { reason: 'call_cap' } })] });
+    expect(out.rows).toEqual([{ team: 1, aborted: true, problems: 2 }]);
   });
 });
 
@@ -302,6 +324,11 @@ describe('optimizeTeam', () => {
     expect(out.kinds.find(k => k.kind === KIND)!.score).toBeCloseTo(0.57, 6);
     // Kinds nothing was measured for still say why.
     expect(out.kinds.filter(k => k.kind !== KIND).every(k => k.action === 'keep' && k.reason === 'no_cases')).toBe(true);
+    // And the replay's own reason for an empty kind, when it gave one.
+    const other = DECISION_MODEL_KINDS.find(k => k !== KIND)!;
+    const w2 = world({ rows: [row(JEV_ID, 'openrouter', { coverage: 0.6, precision: 0.95 }), { ...row('x', 'openrouter', null), benchmarkSet: other, status: 'no_eval_set', model: null, metrics: { reason: 'no_outcome' } } as never] });
+    const out2 = await optimizeTeam(TEAM, {}, w2.deps);
+    expect(out2.status === 'ran' && out2.kinds.find(k => k.kind === other)).toMatchObject({ reason: 'no_cases', why: 'no_outcome' });
     expect(w.stored.value).toBeNull();
     expect(w.switches).toHaveLength(0);
     expect(w.written).toHaveLength(0);

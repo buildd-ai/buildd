@@ -329,6 +329,8 @@ export interface KindOutcome {
   minLabelled?: number | null;
   /** The best comparable model and its score, when one had a score. */
   best?: { model: string; score: number };
+  /** For no_cases: why the replay set had none (e.g. no_outcome, no_objective, no_replayable_decisions). */
+  why?: string;
 }
 
 export type TeamOptimizeResult =
@@ -440,7 +442,7 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
   const problems = [...out.problems];
   const plans = new Map<DecisionModelKind, { plan: KindPlan; run: ScoredRun }>();
   const collected: ScoredRun = { runId: out.runId, source: 'collected', origin: 'replay' };
-  const kindIds = [...new Set(out.rows.filter(r => r.caseSource === 'collected').map(r => r.benchmarkSet))].filter(isDecisionModelKind);
+  const kindIds = [...new Set(out.rows.filter(r => r.caseSource === 'collected' && r.status !== 'no_eval_set').map(r => r.benchmarkSet))].filter(isDecisionModelKind);
   for (const kind of kindIds) {
     const { results, minLabelled } = resultsFromRows(out.rows, kind, routes);
     plans.set(kind, { run: collected, plan: planKindSwitch({ kind, current: overrides[kind] ?? teamDefault, results, minLabelled: minLabelled ?? Infinity, pinned: pinned.has(kind) }) });
@@ -535,8 +537,16 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
     kinds.push({ kind, action: 'switch', source, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
   }
   // A kind nothing was measured for (no replayed decisions, no labelled set) still reports why.
+  const whyNone = new Map<string, string>();
+  for (const r of out.rows) {
+    const reason = (r.metrics as { reason?: unknown } | null)?.reason;
+    if (r.status === 'no_eval_set' && r.caseSource === 'collected' && typeof reason === 'string') whyNone.set(r.benchmarkSet, reason);
+  }
+  const allNone = whyNone.get('*');
   for (const kind of DECISION_MODEL_KINDS) {
-    if (!plans.has(kind)) kinds.push({ kind, action: 'keep', reason: pinned.has(kind) ? 'pinned' : 'no_cases', source: 'collected' });
+    if (plans.has(kind)) continue;
+    const why = whyNone.get(kind) ?? allNone;
+    kinds.push({ kind, action: 'keep', reason: pinned.has(kind) ? 'pinned' : 'no_cases', source: 'collected', ...(why ? { why } : {}) });
   }
   return { teamId, status: 'ran', runId: out.runId, labelledRunId, problems, aborted, kinds };
 }
@@ -717,13 +727,33 @@ export async function runOptimizerSweep(
   return { reverts, teams, deferred };
 }
 
-/** The sweep's per-kind outcomes, flat, for the recorded cron result. Teams are named by a short prefix. */
-export function sweepOutcomes(out: Pick<SweepResult, 'teams'>): Array<Record<string, unknown>> {
+/** At most this many outcome rows go into the recorded cron result; the rest are counted. */
+export const SWEEP_OUTCOME_CAP = 60;
+const WHY_MAX = 40;
+
+/**
+ * The sweep's per-kind outcomes, flat, for the recorded cron result. Teams are
+ * numbered by position in the run (never named), free text is cut short, and
+ * the list is capped across teams and kinds with the omitted count reported.
+ * Kinds that decided something (a switch, a measured keep) come before the
+ * empty ones, so the cap drops the least informative rows first.
+ */
+export function sweepOutcomes(out: Pick<SweepResult, 'teams'>, cap = SWEEP_OUTCOME_CAP): { rows: Array<Record<string, unknown>>; omitted: number } {
   const rows: Array<Record<string, unknown>> = [];
-  for (const t of out.teams) {
-    const team = t.teamId.slice(0, 8);
-    if (t.status === 'ran') for (const k of t.kinds) rows.push({ team, ...k });
-    else rows.push({ team, status: t.status, ...(t.status === 'skipped' ? { reason: t.reason } : {}) });
-  }
-  return rows;
+  const empty: Array<Record<string, unknown>> = [];
+  out.teams.forEach((t, i) => {
+    const team = i + 1;
+    if (t.status !== 'ran') {
+      rows.push({ team, status: t.status, ...(t.status === 'skipped' ? { reason: t.reason.slice(0, WHY_MAX) } : {}) });
+      return;
+    }
+    if (t.aborted || t.problems.length > 0) rows.push({ team, aborted: t.aborted ? true : false, problems: t.problems.length });
+    for (const k of t.kinds) {
+      const { why, ...rest } = k;
+      const row = { team, ...rest, ...(why ? { why: why.slice(0, WHY_MAX) } : {}) };
+      (k.reason === 'no_cases' ? empty : rows).push(row);
+    }
+  });
+  const all = [...rows, ...empty];
+  return { rows: all.slice(0, cap), omitted: Math.max(0, all.length - cap) };
 }

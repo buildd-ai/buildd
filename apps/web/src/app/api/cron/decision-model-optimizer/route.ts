@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
       // Per kind, so a run that switched nothing says why (cron_runs keeps this verbatim).
       result: {
         teams: out.teams.length, deferred: out.deferred.length, switched, reverted: out.reverts.reverted,
-        outcomes: sweepOutcomes(out),
+        ...(() => { const o = sweepOutcomes(out); return { outcomes: o.rows, outcomesOmitted: o.omitted }; })(),
       },
     });
     return NextResponse.json(out);
