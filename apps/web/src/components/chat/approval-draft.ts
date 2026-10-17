@@ -65,7 +65,7 @@ function missionPlan(input: Record<string, unknown>): string | null {
   if (input.orchestrationMode === 'manual') bits.push('Manual: you add the tasks');
   else bits.push('Plan first');
   if (input.executor === 'local') bits.push('runs in your local session');
-  if (input.startMode === 'held') bits.push('held until you arm it');
+  if (input.startMode === 'held') bits.push('not started until you start it');
   else if (str(input.startIn)) bits.push(`starts in ${str(input.startIn)}`);
   else if (str(input.startAt)) bits.push('starts later');
   else bits.push('starts now');
@@ -126,7 +126,7 @@ const LABELS: Record<string, string> = {
   'manage_workspaces:init': 'Set up workspace',
   create_task: 'New task',
   update_task: 'Change task',
-  hold_task: 'Hold task',
+  hold_task: 'Pause task',
   correct_task_result: 'Correct task result',
   approve_plan: 'Approve plan',
   reject_plan: 'Reject plan',

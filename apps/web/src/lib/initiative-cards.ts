@@ -108,6 +108,7 @@ export async function loadInitiativeCards(opts: {
       ask: list.ask,
       phases: list.phases,
       inlineQuestion: list.question,
+      startState: list.held?.startState ?? null,
     };
     const bucket = byInitiative.get(m.initiativeId) ?? [];
     bucket.push(input);

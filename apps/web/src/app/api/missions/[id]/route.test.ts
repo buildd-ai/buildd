@@ -2011,6 +2011,23 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(wakeTasksCalls).toEqual([]);
   });
 
+  // Not started vs Paused (lib/mission-start-state.ts) reads armedAt.
+  it('starting a never-started mission records its first release', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: true, armedAt: null, status: 'active' });
+    updatedSetData = null;
+    await send({ arm: true });
+    expect(updatedSetData?.armedAt).toBeInstanceOf(Date);
+  });
+
+  it('holding a mission that has run keeps a release, so it reads Paused', async () => {
+    const createdAt = new Date('2026-10-01T00:00:00Z');
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: false, armedAt: null, createdAt, status: 'active' });
+    updatedSetData = null;
+    await send({ startMode: 'held' });
+    expect(updatedSetData?.isHeld).toBe(true);
+    expect(updatedSetData?.armedAt).toEqual(createdAt);
+  });
+
   it('raising an exhausted budget wakes its pending tasks as budget.available', async () => {
     mockMissionsFindFirst.mockReturnValue({ ...base, status: 'budget_exhausted', costBudgetUsd: '10' });
     missionTasksToReturn = [{ id: 'task-1' }];

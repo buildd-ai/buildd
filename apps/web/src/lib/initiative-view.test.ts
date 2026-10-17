@@ -176,13 +176,13 @@ describe('what needs you comes from the missions', () => {
     expect(card.action).toMatchObject({ kind: 'answer', label: 'Merge', href: '/h' });
   });
 
-  it('a held open mission is a fact, and Arm is the action when nothing else is asked', () => {
+  it('a not-started open mission is a fact, and Start mission is the action when nothing else is asked', () => {
     const card = buildInitiativeCard(
       initiative({ missions: [mission('a'), mission('h', { kind: 'held', statusLabel: 'Held', tone: 'warning', done: 0, total: 3 })] }),
       { now: NOW },
     );
-    expect(card.facts.map((f) => f.text)).toEqual(['1 mission held']);
-    expect(card.action).toEqual({ kind: 'arm', label: 'Arm', href: '/app/missions/h', missionId: 'h' });
+    expect(card.facts.map((f) => f.text)).toEqual(['1 mission not started']);
+    expect(card.action).toEqual({ kind: 'arm', label: 'Start mission', href: '/app/missions/h', missionId: 'h' });
     expect(card.segments.find((s) => s.missionId === 'h')!.state).toBe('held');
     expect(card.missions.find((m) => m.id === 'h')!.held).toBe(true);
   });
