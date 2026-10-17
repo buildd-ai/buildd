@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
+import { statusPill } from '@/components/ui/states';
 
 /**
  * The attempt strip (U8): `●●○ 3 attempts · CI ×2 · reviewer ×1`, expanding in
@@ -89,7 +90,7 @@ export default function AttemptStrip({
                 {attempt.reason || 'attempt'}
               </Link>
               {attempt.actor && <span className="text-text-muted">· {attempt.actor}</span>}
-              <span className={statusClass(attempt.status)}>· {attempt.status}</span>
+              <span className={statusClass(attempt.status)}>· {statusPill(attempt.status).label}</span>
               {attempt.prLink && (
                 <a
                   href={attempt.prLink.href}
