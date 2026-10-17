@@ -1060,7 +1060,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   if (mergingTask) {
     mergingTask = await deliveryOwnerTask(mergingTask).catch(() => mergingTask) as typeof mergingTask;
   }
-  const missionGate = await (deps.guardMissionPrMerge ?? guardMissionPrMerge)(mergingTask);
+  const missionGate = deps.guardMissionPrMerge ? await deps.guardMissionPrMerge(mergingTask) : await guardMissionPrMerge(mergingTask);
   // A lasting hold (a refresh on a branch it was not filed for) never clears by waiting. On a
   // kernel-owned PR it goes to the kernel, whose merge-time rails refuse it as lasting and
   // escalate the delivery once (T16), so the sweep stops asking; it never reaches a legacy merge.
