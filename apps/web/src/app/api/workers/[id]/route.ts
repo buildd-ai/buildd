@@ -1875,8 +1875,13 @@ export async function PATCH(
     // runner-reported end-of-session completion has no agent turn left to read
     // a refusal, so it keeps the requeue-once contract guard further down.
     if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
+      // Absent or null structuredOutput (verdict only in the summary prose) is
+      // refused too: parseReviewerOutput rejects it, and the worker stays live.
+      // Only an explicit complete_task call is refused for omitting it: other
+      // interactive completions keep the server-side prose-verdict extraction.
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
-      if (submitted && typeof submitted === 'object' && submitted.verdict) {
+      const omitted = submitted === undefined || submitted === null;
+      if (!omitted || body.viaCompleteTask === true) {
         const parsed = parseReviewerOutput(submitted);
         if (!parsed.ok) {
           return NextResponse.json({
