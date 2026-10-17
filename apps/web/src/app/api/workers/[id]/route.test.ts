@@ -56,9 +56,9 @@ const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
-// Direct mock for hasCodexCredential — Bun 1.4.0+ uses per-file module registries
+// Direct mock for resolveCodexApiKey — Bun 1.4.0+ uses per-file module registries
 // so transitive @buildd/core/db mocks may not reach codex-credential.ts.
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
+const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 const mockDecrypt = mock((value: string) => value);
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
@@ -343,7 +343,7 @@ mock.module('@/lib/task-dependencies', () => ({
 }));
 
 mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mockHasCodexCredential,
+  resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
 // Handoff gate's dependents lookup. Mocked as its own question rather than
@@ -14280,7 +14280,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHoldTaskForCredential.mockClear();
       mockResolveCredentialIdentity.mockClear();
     });
@@ -14299,7 +14299,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // Codex credential present
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14338,7 +14338,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
       mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask({ backendPinned: true }));
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const res = await PATCH(createMockRequest({
         method: 'PATCH',
@@ -14366,7 +14366,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // No Codex credential (default is false, but be explicit)
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14449,7 +14449,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // Codex credential present — but error is not auth-related
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14490,7 +14490,7 @@ describe('PATCH /api/workers/[id]', () => {
       }));
 
       // Codex credential present — but guard must prevent re-flip
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',

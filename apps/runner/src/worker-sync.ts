@@ -13,6 +13,8 @@ import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { removeWorktreeIfUnowned } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS, isWorktreePathOwnedByOtherLiveWorker } from './worktree-utils';
 import { sessionLog } from './session-logger';
+import { decideRestore, fsResumeProbe, restartNewAttemptError, type ResumeProbe } from './restart-resume';
+import { PAUSED_ERROR, pausedWaitingFor } from './pause';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { reapSession, teardownSession } from './session-teardown';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
@@ -223,6 +225,8 @@ export interface WorkerSyncContext {
   onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
   /** The server says a person paused this run (PATCH response `pauseRequested`, pause.ts). */
   onPauseRequested?: (worker: LocalWorker) => void;
+  /** What a restart checks before continuing a worker in its own session (restart-resume.ts). Default: the filesystem. */
+  resumeProbe?: ResumeProbe;
 }
 
 /**
@@ -307,12 +311,21 @@ export class WorkerSync {
   }
 
   /**
-   * Restore workers from disk on startup.
-   * Workers with active status are marked as errored since we can't resume SDK sessions.
-   * Exception: 'waiting' workers keep their status for sendMessage()-based resume.
+   * Restore workers from disk on startup (R-37, R-38; restart-resume.ts).
+   *
+   * - A worker the process was running when it died (SIGKILL, power loss, an
+   *   update restart over it) is restored as PAUSED when its worktree and its
+   *   session are still on disk: `resumeOnStart: 'crash'`, and
+   *   WorkerManager.continueRestoredAgents continues it in that session.
+   * - A paused worker (by a person, or by a service stop) keeps waiting; one
+   *   whose worktree or session is gone cannot continue where it was, so it is
+   *   failed as a new attempt with a reason naming what was missing.
+   * - Anything else that was running is reported failed, "Process restarted",
+   *   with what was missing, and the task retries from its last pushed commit.
    */
   restoreWorkersFromDisk() {
     try {
+      const probe = this.ctx.resumeProbe ?? fsResumeProbe({ workspaceIsolationRoot: this.ctx.config?.workspaceIsolationRoot });
       const restored = loadAllWorkers();
       let skippedTerminal = 0;
       for (const worker of restored) {
@@ -338,12 +351,56 @@ export class WorkerSync {
         // silently skip the notification — stranding the server row at 'running'
         // until the reaper expired it. 'stale' still arrives unrewritten, and
         // 'working' is kept for any caller that hands us a pre-rewrite row.
-        if (worker.killedByRestart || worker.status === 'working' || worker.status === 'stale') {
+        const wasRunning = !!worker.killedByRestart || worker.status === 'working' || worker.status === 'stale';
+        const paused = worker.status === 'waiting' && worker.waitingFor?.type === 'pause';
+        let missing: string[] | null = null;
+        if (wasRunning || paused) {
+          const verdict = decideRestore(worker, probe);
+          if (verdict.kind === 'continue' && wasRunning) {
+            // R-37: the worktree and the session survived, so this is a pause,
+            // not a failure. The server hears it on the first report.
+            worker.status = 'waiting';
+            worker.error = PAUSED_ERROR;
+            worker.completedAt = undefined;
+            // A pause a person had asked for (still waiting on a tool when the
+            // process died) stays theirs: it waits for them, never auto-continues.
+            const byPerson = !!worker.pauseRequestedAt;
+            worker.pauseRequestedAt = undefined;
+            worker.waitingFor = pausedWaitingFor(byPerson ? 'person' : 'crash');
+            worker.currentAction = 'Paused';
+            worker.resumeOnStart = byPerson ? undefined : 'crash';
+            delete worker.killedByRestart;
+            sessionLog(worker.id, 'info', 'restart_paused', 'runner stopped with this worker running; worktree and session intact, restored as paused', worker.taskId);
+            storeSaveWorker(worker);
+          } else if (verdict.kind === 'new_attempt') {
+            missing = verdict.missing;
+          }
+        }
+        if (missing && paused) {
+          // R-38: a paused agent that cannot continue in its own session.
+          const error = restartNewAttemptError(missing);
           worker.status = 'error';
-          worker.error = 'Process restarted';
+          worker.error = error;
+          worker.completedAt = Date.now();
+          worker.currentAction = 'Could not continue after the restart';
+          worker.waitingFor = undefined;
+          worker.resumeOnStart = undefined;
+          sessionLog(worker.id, 'warn', 'restart_new_attempt', error, worker.taskId);
+          storeSaveWorker(worker);
+          this.ctx.buildd.updateWorker(worker.id, {
+            status: 'failed',
+            error,
+            crashReconciled: true,
+            ...buildTerminalAttributionPayload(worker),
+          }).catch(() => {});
+        } else if (missing && wasRunning) {
+          const error = restartNewAttemptError(missing);
+          worker.status = 'error';
+          worker.error = error;
           worker.completedAt = worker.completedAt || Date.now();
           worker.currentAction = 'Process restarted';
           delete worker.killedByRestart;
+          sessionLog(worker.id, 'warn', 'restart_new_attempt', error, worker.taskId);
 
           // Notify server so it doesn't stay "running" forever. Carries
           // whatever cost/token/turn numbers this session had accumulated
@@ -356,7 +413,7 @@ export class WorkerSync {
           // ordinary failure.
           this.ctx.buildd.updateWorker(worker.id, {
             status: 'failed',
-            error: 'Process restarted',
+            error,
             crashReconciled: true,
             ...buildTerminalAttributionPayload(worker),
             ...(typeof worker.resultMeta?.numTurns === 'number' && worker.resultMeta.numTurns > 0
@@ -615,6 +672,8 @@ export class WorkerSync {
               type: worker.waitingFor.type,
               prompt: worker.waitingFor.prompt,
               options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+              // A pause says since when (R-38: the dashboard shows "paused since").
+              ...(worker.waitingFor.since ? { since: worker.waitingFor.since } : {}),
             };
       }
       let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;

@@ -40,6 +40,14 @@ export const RUNNER_USAGE = [
   '  buildd env verify [--json] Check that the current repo is runnable',
   '  buildd name [<name>]       Name this runner on the dashboard (the hostname by default);',
   '                             with no name, print it and where it comes from. --clear removes it',
+  '  buildd hold [--for <time>] Stop this runner taking new work; running agents finish',
+  '                             (--for 2h or 30m resumes on its own; h in buildd top does the same)',
+  '  buildd resume              Let this runner take new work again',
+  '  buildd stop [--yes]        Pause every running agent and hold this runner (asks first);',
+  '                             buildd resume continues them. --abort ends them instead',
+  '  buildd slots [<n>]         How many agents run at once (+ and - in buildd top); with no n,',
+  '                             print it. Lowering lets the extras finish; --pause pauses the',
+  '                             newest extras instead, --abort ends them (asks first)',
   '  buildd web                 Open the runner on this machine in your browser',
   '  buildd help                Show this help',
   '',
@@ -64,22 +72,58 @@ const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan', '--at
 /** Positional subcommands the runner itself understands, as word sequences. */
 const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 
+/** What `buildd slots` does with the agents a lower N makes extra (runner-slots.ts). */
+export type ExtrasMode = 'finish' | 'pause' | 'abort';
+export type SlotsCommand = { kind: 'show' } | { kind: 'set'; raw: string; mode: ExtrasMode; yes: boolean };
+
+/** `buildd slots …` arguments, after `slots`. */
+export function classifySlotsArgs(args: string[]): SlotsCommand | { kind: 'unknown'; arg: string } {
+  let raw: string | null = null;
+  let mode: ExtrasMode = 'finish';
+  let yes = false;
+  for (const a of args) {
+    if (a === '--pause' || a === '--abort') {
+      if (mode !== 'finish') return { kind: 'unknown', arg: a };
+      mode = a === '--pause' ? 'pause' : 'abort';
+      continue;
+    }
+    if (a === '--yes' || a === '-y') { yes = true; continue; }
+    if (a.startsWith('-') || raw !== null) return { kind: 'unknown', arg: a };
+    raw = a;
+  }
+  if (raw === null) return mode === 'finish' && !yes ? { kind: 'show' } : { kind: 'unknown', arg: mode !== 'finish' ? `--${mode}` : '--yes' };
+  return { kind: 'set', raw, mode, yes };
+}
+
 export type CliDecision =
   | { kind: 'help' }
   /** `buildd name [<name>|--clear]` (runner-name.ts); `args` are the words after `name`. */
   | { kind: 'name'; args: string[] }
+  /** `buildd hold [--for <time>]` (runner-hold.ts); `forArg` is checked there. */
+  | { kind: 'hold'; forArg: string | null }
+  /** `buildd resume` (runner-hold.ts). */
+  | { kind: 'resume' }
+  /** `buildd stop [--abort] [--yes|-y]` (runner-hold.ts runStopCommand). */
+  | { kind: 'stop'; yes: boolean; abort: boolean }
+  /** `buildd slots [<n>] [--pause|--abort] [--yes]` (runner-slots.ts). */
+  | { kind: 'slots'; cmd: SlotsCommand }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
-  | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null }
+  | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null; frame?: { view: 'missions' | 'queue'; cols: number; rows: number } }
   | { kind: 'unknown'; arg: string };
 
 /** `buildd top [--mission <id>] [--workspace <name or id>] [--team <name>]`: its own small grammar, nothing else is accepted. */
 function classifyTop(args: string[]): CliDecision {
-  const values: Record<'--mission' | '--workspace' | '--team', string | null> = { '--mission': null, '--workspace': null, '--team': null };
+  const values: Record<'--mission' | '--workspace' | '--team' | '--cols' | '--rows', string | null> = { '--mission': null, '--workspace': null, '--team': null, '--cols': null, '--rows': null };
+  // Hidden: `--frame [--queue] [--cols N] [--rows N]` prints one frame and exits (top/frame.ts).
+  let frame = false;
+  let queue = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    const flag = (['--mission', '--workspace', '--team'] as const).find(f => a === f || a.startsWith(f + '='));
+    if (a === '--frame') { frame = true; continue; }
+    if (a === '--queue') { queue = true; continue; }
+    const flag = (['--mission', '--workspace', '--team', '--cols', '--rows'] as const).find(f => a === f || a.startsWith(f + '='));
     if (!flag) return { kind: 'unknown', arg: a };
     if (a === flag) {
       const v = args[i + 1];
@@ -92,7 +136,35 @@ function classifyTop(args: string[]): CliDecision {
     if (!v) return { kind: 'unknown', arg: a };
     values[flag] = v;
   }
-  return { kind: 'top', missionId: values['--mission'], workspace: values['--workspace'], team: values['--team'] };
+  const size = (v: string | null, fallback: number) => (v && /^\d+$/.test(v) ? Math.max(20, Math.min(400, Number(v))) : fallback);
+  if (!frame && (queue || values['--cols'] || values['--rows'])) return { kind: 'unknown', arg: queue ? '--queue' : values['--cols'] ? '--cols' : '--rows' };
+  return {
+    kind: 'top', missionId: values['--mission'], workspace: values['--workspace'], team: values['--team'],
+    ...(frame ? { frame: { view: queue ? 'queue' as const : 'missions' as const, cols: size(values['--cols'], 120), rows: size(values['--rows'], 40) } } : {}),
+  };
+}
+
+/** `buildd hold [--for <time>]`: nothing else is accepted. */
+function classifyHold(args: string[]): CliDecision {
+  let forArg: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--for') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      forArg = v;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--for=')) {
+      const v = a.slice('--for='.length);
+      if (!v) return { kind: 'unknown', arg: a };
+      forArg = v;
+      continue;
+    }
+    return { kind: 'unknown', arg: a };
+  }
+  return { kind: 'hold', forArg };
 }
 
 export function classifyCliArgs(argv: string[]): CliDecision {
@@ -104,6 +176,20 @@ export function classifyCliArgs(argv: string[]): CliDecision {
     const rest = args.slice(1);
     const flag = rest.find(a => a.startsWith('-') && a !== '--clear');
     return flag ? { kind: 'unknown', arg: flag } : { kind: 'name', args: rest };
+  }
+  if (args[0] === 'hold') return classifyHold(args.slice(1));
+  if (args[0] === 'resume') {
+    return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'resume' };
+  }
+  if (args[0] === 'stop') {
+    const rest = args.slice(1);
+    const bad = rest.find(a => a !== '--yes' && a !== '-y' && a !== '--abort');
+    if (bad !== undefined) return { kind: 'unknown', arg: bad };
+    return { kind: 'stop', yes: rest.includes('--yes') || rest.includes('-y'), abort: rest.includes('--abort') };
+  }
+  if (args[0] === 'slots') {
+    const c = classifySlotsArgs(args.slice(1));
+    return c.kind === 'unknown' ? c : { kind: 'slots', cmd: c };
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };

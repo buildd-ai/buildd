@@ -1,0 +1,71 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`the frame while held 80x24: "on hold" in place of "online", and the line under the header 1`] = `
+" buildd · laptop-1234                        2 of 3 busy · ● on hold · v0.340.0 
+ On hold since 09:12: nothing new starts, 2 running finish. h resumes.          
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ MISSIONS             │ Runner TUI                        3 running · 3 waiting 
+ ▸ Runner TUI     2/8 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ RUNNING                                                 
+   (no mission)   0/1 │›● name override    Builder     12m Edit config.ts       
+                      │ ? installer hint   Builder      9m asks: "Print the URL…
+                      │ ● single instance  Builder      4m bun run test __tests…
+                      │ WAITING                                                 
+                      │ ○ buildd top       Builder         runner is on hold    
+                      │ ○ docs page        Writer          runner is on hold    
+                      │ ○ heartbeat name   Builder         another runner has it
+                      │ DONE TODAY                                              
+                      │ ✓ spec draft                       done                 
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;
+
+exports[`the frame while held 120x40 1`] = `
+" buildd · laptop-1234                                                                2 of 3 busy · ● on hold · v0.340.0 
+ On hold since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                  
+ [ Missions ]  Queue   t team: all · w workspace: all                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MISSIONS                   │ Runner TUI                                                          3 running · 3 waiting 
+ ▸ Runner TUI           2/8 │───────────────────────────────────────────────────────────────────────────────────────────
+   Specs import         1/2 │ RUNNING                                                                                   
+   (no mission)         0/1 │›● name override               Builder     12m Edit config.ts                       41k tok
+                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
+                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
+                            │ WAITING                                                                                   
+                            │ ○ buildd top                  Builder         runner is on hold                           
+                            │ ○ docs page                   Writer          runner is on hold                           
+                            │ ○ heartbeat name              Builder         another runner has it                       
+                            │ DONE TODAY                                                                                
+                            │ ✓ spec draft                                  done                                        
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
+`;

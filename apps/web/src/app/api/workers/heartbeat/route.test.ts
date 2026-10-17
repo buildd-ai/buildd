@@ -291,6 +291,35 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedConflictSet.environment).toEqual(environment);
   });
 
+  // R-35: the runner's hold rides the stored environment, normalised; junk never reaches the table.
+  for (const [name, sent, stored] of [
+    ['a hold is stored as sent', { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' }, { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' }],
+    ['a lifted hold (null) is dropped from the stored environment', null, undefined],
+    ['a malformed hold is dropped', { since: 'yesterday' }, undefined],
+  ] as const) {
+    it(`hold: ${name}`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+      mockHeartbeatsFindFirst.mockResolvedValue(null);
+      let capturedValues: any = null;
+      let capturedConflictSet: any = null;
+      mockHeartbeatsInsert.mockReturnValue({
+        values: mock((vals: any) => {
+          capturedValues = vals;
+          return { onConflictDoUpdate: mock((opts: any) => { capturedConflictSet = opts.set; return Promise.resolve(); }) };
+        }),
+      });
+      const environment = { tools: [], envKeys: [], mcp: [], labels: { hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z', hold: sent };
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1, environment },
+      }));
+      expect(res.status).toBe(200);
+      expect(capturedValues.environment.hold).toEqual(stored);
+      expect(capturedConflictSet.environment.hold).toEqual(stored);
+      expect(capturedConflictSet.environment.labels).toEqual({ hostname: 'test' });
+    });
+  }
+
   it('sets environment to null when not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
@@ -1055,6 +1084,38 @@ describe('POST /api/workers/heartbeat — fleet identity of a --once run', () =>
     expect(capturedValues.environment).toEqual(sent);
   });
 
+  // Spec c7410e76 R-43: the runner's own slots (`buildd slots`, + / - in top)
+  // are what the dashboard's runner list shows for it.
+  it('a host runner that reports its slots is stored with them', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://atlas.local:8766', environment: env(), maxConcurrent: 9 },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(9);
+    expect(capturedConflictSet.maxConcurrentWorkers).toBe(9);
+  });
+
+  it('a malformed slots value falls back to the account default', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    for (const bad of [0, -2, 2.5, 'nine', 500]) {
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://atlas.local:8766', environment: env(), maxConcurrent: bad },
+      }));
+      expect(capturedValues.maxConcurrentWorkers).toBe(5);
+    }
+  });
+
+  it('a --once run stays one slot whatever slots it reports', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://container/once/task-9', environment: env(), maxConcurrent: 4 },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(1);
+  });
+
   it('a host runner cannot report itself ephemeral and shrink out of the fleet', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
     await POST(createMockRequest({
@@ -1160,7 +1221,7 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
   });
 
-  it('AC-5: stores api_key and the mode on insert and on update', async () => {
+  it('AC-5: stores api_key while ignoring an old runner mode', async () => {
     const captured = captureUpsert();
     const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1168,9 +1229,9 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     }));
     expect(res.status).toBe(200);
     expect(captured.values.modelAuthSource).toBe('api_key');
-    expect(captured.values.modelAuthMode).toBe('auto');
+    expect('modelAuthMode' in captured.values).toBe(false);
     expect(captured.set.modelAuthSource).toBe('api_key');
-    expect(captured.set.modelAuthMode).toBe('auto');
+    expect('modelAuthMode' in captured.set).toBe(false);
   });
 
   it('AC-5: a later beat without the fields leaves the stored values alone', async () => {
@@ -1183,7 +1244,7 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     expect('modelAuthSource' in captured.set).toBe(false);
     expect('modelAuthMode' in captured.set).toBe(false);
     expect(captured.values.modelAuthSource).toBeNull();
-    expect(captured.values.modelAuthMode).toBeNull();
+    expect('modelAuthMode' in captured.values).toBe(false);
   });
 
   it('AC-6: a token-shaped value is never stored and the beat still succeeds', async () => {

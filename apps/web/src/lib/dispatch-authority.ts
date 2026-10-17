@@ -98,10 +98,14 @@ export async function wakeTask(
   taskId: string,
   cause: DispatchCause,
   /** `metadata`: delivery hints and tracing only (e.g. a recovery action key), never task state. */
-  opts: { notBefore?: Date; targetLocalUiUrl?: string | null; metadata?: Record<string, unknown> } = {},
+  /** `byPerson`: a person aimed it at `targetLocalUiUrl`, so that runner runs it even on hold. */
+  opts: { notBefore?: Date; targetLocalUiUrl?: string | null; byPerson?: boolean; metadata?: Record<string, unknown> } = {},
 ): Promise<void> {
   try {
-    const metadata = { ...(opts.metadata ?? {}), ...(opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl } : {}) };
+    const metadata = {
+      ...(opts.metadata ?? {}),
+      ...(opts.targetLocalUiUrl ? { targetLocalUiUrl: opts.targetLocalUiUrl, ...(opts.byPerson ? { byPerson: true } : {}) } : {}),
+    };
     await enqueueTaskDispatch({
       taskId,
       cause,

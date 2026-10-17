@@ -26,7 +26,8 @@
  */
 import type { ProgressCell } from './progress';
 import { progressDone, progressTotal } from './progress';
-import { TERMINAL_TASK_STATUSES, type RecentMission, type RunnerQueueResponse } from '@buildd/shared';
+import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
+import { TERMINAL_TASK_STATUSES, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -57,8 +58,17 @@ export interface TopWorker {
   toolCalls?: TopToolCall[];
   prUrl?: string;
   error?: string | null;
-  waitingFor?: { type: 'question' | 'permission' | 'pause'; prompt: string; options?: Array<{ label: string }> };
+  waitingFor?: { type: 'question' | 'permission' | 'pause'; prompt: string; options?: Array<{ label: string }>; since?: string };
   tokenTally?: { inputTokens: number; outputTokens: number };
+  /** Which route the run reached its model by (run-route.ts); absent from older runners. */
+  route?: RunRoute | null;
+  costBasis?: string | null;
+  taskBackend?: string | null;
+  /** The model the run asked for. */
+  sessionModel?: string;
+  /** The run's dollars, when the summary worked them out (else derived from resultMeta). */
+  spend?: RunSpend | null;
+  resultMeta?: SpendResultMeta | null;
 }
 
 export interface TopTask {
@@ -127,6 +137,12 @@ export interface TopState {
     maxConcurrent: number;
     builddServer: string | null;
     online: boolean;
+    /** A person's hold (`buildd hold`, `h`): nothing new starts while set (R-33). */
+    hold: RunnerHold | null;
+    /** The routes this machine's own credentials give (R-39), from GET /api/config. */
+    routes: RunRoute[];
+    /** Routes that do not work right now, with where to fix them. */
+    routeProblems: RouteProblem[];
   };
   workers: Record<string, TopWorker>;
   tasks: TopTask[];
@@ -149,12 +165,27 @@ export interface TopState {
   view: 'missions' | 'queue';
   /** The server's queue for this runner (GET /api/workers/queue via the socket); null until read. */
   queue: RunnerQueueResponse | null;
+  /**
+   * Estimates (minutes) of tasks the queue has shown, kept after they start,
+   * so a full runner can say when its next slot frees (R-26).
+   */
+  estimates: Record<string, number>;
+  /** A broad claim is out right now ("Looking for work…"). */
+  lookingForWork: boolean;
+  /**
+   * Set right after `-` lowered the slots below the running count: `p` then
+   * pauses the newest extras instead of the selected row (R-45). Cleared by
+   * any other key.
+   */
+  slotOffer: { slots: number; extras: number } | null;
   /** The selected row in the Queue view, over its rows in drawn order. */
   queueCursor: number;
   focus: 'missions' | 'tasks';
   missionCursor: number;
   rowCursor: number;
   filter: string;
+  /** Fold rows (`fold:<team>`) a person opened with Enter (R-24); kept while top runs. */
+  unfolded: string[];
   mode: Mode;
   status: StatusLine | null;
 }
@@ -174,6 +205,10 @@ export interface ClaimOutcome {
   deferrals?: Record<string, number>;
   status?: number;
   refusal?: string;
+  /** A broad claim that took work: how many agents it started. */
+  started?: number;
+  /** The task a refused overlap waits for (claim-outcomes.ts). */
+  holderTaskId?: string;
   /**
    * The server's `updatedAt` for the task when top first saw it after this
    * outcome (for the broad claim: the newest `updatedAt` in the list), so
@@ -187,7 +222,7 @@ export const NO_MISSION = '(none)';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, hold: null, routes: [], routeProblems: [] },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -199,10 +234,14 @@ export function initialState(opts: { hostname: string; missionId?: string | null
     view: 'missions',
     queue: null,
     queueCursor: 0,
+    estimates: {},
+    lookingForWork: false,
+    slotOffer: null,
     focus: 'tasks',
     missionCursor: 0,
     rowCursor: 0,
     filter: '',
+    unfolded: [],
     mode: { kind: 'list' },
     status: null,
   };
@@ -212,7 +251,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
-  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null }
+  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[] }
   | { type: 'workers'; workers: TopWorker[] }
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
@@ -221,11 +260,22 @@ export type TopEvent =
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
-  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null } }
+  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null }; hold?: RunnerHold | null; lookingForWork?: boolean }
+  /** The runner's hold changed (`buildd hold`, `h`, or its `until` passed). */
+  | { type: 'runner_hold'; hold: RunnerHold | null }
   | { type: 'claim_outcome'; taskId?: string; outcome: ClaimOutcome }
+  /** A broad claim went out (`looking: true`); its claim_outcome frame says it came back. */
+  | { type: 'claim_loop'; looking: boolean }
+  /** The runner's slots changed (`buildd slots`, + / -; R-43). */
+  | { type: 'slots'; maxConcurrent: number }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
   | { type: string; [k: string]: unknown };
+
+function isRoute(r: unknown): r is RunRoute {
+  const x = r as RunRoute | null;
+  return !!x && typeof x.bucket === 'string' && typeof x.backend === 'string' && typeof x.provider === 'string' && typeof x.owner === 'string';
+}
 
 function mergeWorkers(prev: Record<string, TopWorker>, list: TopWorker[]): Record<string, TopWorker> {
   const next = { ...prev };
@@ -247,6 +297,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           ...state.runner,
           maxConcurrent: typeof e.maxConcurrent === 'number' && e.maxConcurrent > 0 ? e.maxConcurrent : state.runner.maxConcurrent,
           builddServer: e.builddServer ?? state.runner.builddServer,
+          // An older runner sends neither: keep what we had.
+          routes: Array.isArray(e.routes) ? e.routes.filter(isRoute) : state.runner.routes,
+          routeProblems: Array.isArray(e.routeProblems)
+            ? e.routeProblems.filter((p): p is RouteProblem => !!p && typeof p.text === 'string')
+            : state.runner.routeProblems,
         },
       };
     }
@@ -306,7 +361,17 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'queue': {
       const q = (event as any).queue;
       if (!q || !Array.isArray(q.teams)) return state;
-      return { ...state, queue: q };
+      const estimates = { ...state.estimates };
+      for (const tm of q.teams) for (const t of tm?.queue ?? []) {
+        if (t && typeof t.id === 'string' && typeof t.estimateMinutes === 'number') estimates[t.id] = t.estimateMinutes;
+      }
+      return { ...state, queue: q, estimates };
+    }
+    case 'claim_loop':
+      return { ...state, lookingForWork: !!(event as any).looking };
+    case 'slots': {
+      const n = (event as any).maxConcurrent;
+      return typeof n === 'number' && n > 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
     }
     case 'connection':
       return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
@@ -320,7 +385,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ? stampBroad(e.claimOutcomes.broad, next.tasks) : null } };
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
-      return { ...next, runner: { ...next.runner, online: true } };
+      // An older runner sends no `hold`: it cannot be held, so none.
+      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
+    }
+    case 'runner_hold': {
+      return { ...state, runner: { ...state.runner, hold: parseRunnerHold((event as any).hold) } };
     }
     case 'worker_update': {
       const w = (event as any).worker as TopWorker | undefined;
@@ -340,7 +409,8 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'claim_outcome': {
       const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
       if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
-      if (!e.taskId) return { ...state, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
+      // A broad outcome is the claim coming back: no longer looking.
+      if (!e.taskId) return { ...state, lookingForWork: false, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
       const tasks = { ...state.claimOutcomes.tasks };
       if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
       else tasks[e.taskId] = e.outcome;
@@ -358,7 +428,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
   // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
-  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
+  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome' || event.type === 'slots') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
     if (!w?.id) return false;
@@ -599,6 +669,17 @@ export interface MissionRow {
   held: boolean;
   /** Delivered: when, in ms; it is listed for 7 days after. */
   deliveredAt?: number;
+  /** Set on a team's "Delivered this week" row (R-24): how many it holds, and whether they are listed under it. */
+  fold?: { count: number; open: boolean };
+}
+
+/** The key of a team's "Delivered this week" row. */
+export function foldKey(team: string | null): string {
+  return `fold:${team ?? ''}`;
+}
+
+export function isFoldKey(key: string | null | undefined): boolean {
+  return !!key && key.startsWith('fold:');
 }
 
 /** Delivered missions stay listed this long (R-24). */
@@ -731,9 +812,44 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
   return rows;
 }
 
+/**
+ * The rows the missions pane lists (R-24): each team's open missions, then one
+ * "Delivered this week" row folding the ones delivered in the last 7 days.
+ * An opened fold lists them under it, newest first; so does a fold holding the
+ * selected mission (`--mission`, or the cursor). While `/` filters, missions
+ * whose title or a task's title matches are listed, delivered ones on their
+ * own rows, with no fold row.
+ */
+export function missionList(state: TopState, now: number = Date.now()): MissionRow[] {
+  const rows = missionRows(state, now);
+  if (state.filter) {
+    const withTask = new Set(relevantTasks(state, workerByTask(state)).filter(t => matchesFilter(t.title, state.filter)).map(t => t.missionId || NO_MISSION));
+    return rows.filter(r => r.key === NO_MISSION || matchesFilter(r.title, state.filter) || withTask.has(r.key));
+  }
+  const sel = state.selectedMission;
+  const isSelected = (r: MissionRow) => !!sel && (r.key === sel || r.key.startsWith(sel));
+  const out: MissionRow[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const team = rows[i].team;
+    const group: MissionRow[] = [];
+    // `(no mission)` closes the list on its own, never inside a team's fold.
+    while (i < rows.length && rows[i].team === team && rows[i].key !== NO_MISSION) group.push(rows[i++]);
+    if (group.length === 0) { out.push(rows[i++]); continue; }
+    const done = group.filter(r => r.deliveredAt !== undefined);
+    out.push(...group.filter(r => r.deliveredAt === undefined));
+    if (done.length === 0) continue;
+    const key = foldKey(team);
+    const open = state.unfolded.includes(key) || done.some(isSelected);
+    out.push({ ...emptyRow(key, 'Delivered this week'), team, fold: { count: done.length, open } });
+    if (open) out.push(...done);
+  }
+  return out;
+}
+
 /** The mission the right pane shows: the selection if it still exists, else the first. */
 export function currentMission(state: TopState, now: number = Date.now()): MissionRow {
-  const rows = missionRows(state, now);
+  const rows = missionList(state, now);
   if (state.selectedMission) {
     const hit = rows.find(r => r.key === state.selectedMission) ?? rows.find(r => r.key.startsWith(state.selectedMission!));
     if (hit) return hit;
@@ -760,6 +876,10 @@ export interface TaskRow {
   reason?: string;
   /** Running rows: tokens so far (cost on a seat is not money). */
   tokens?: number;
+  /** Running rows: backend and route in words, "Claude · API key (team)" (R-40). Absent when the runner did not record one. */
+  route?: string;
+  /** Running rows: "$0.08" billed or "~$0.08" estimated; never for a plan run (R-41). */
+  dollars?: string;
 }
 
 export function formatDuration(ms: number): string {
@@ -950,6 +1070,32 @@ export function providerHolds(state: TopState, now: number): ProviderHold[] {
   return [...out.values()];
 }
 
+/** The runner's hold, while it is in force at `now` (a lapsed `until` reads as none). */
+export function heldNow(state: TopState, now: number): RunnerHold | null {
+  const h = state.runner.hold;
+  return h && isRunnerHoldActive(h, now) ? h : null;
+}
+
+/** `N running finish`, or that nothing is running. */
+export function holdRunningWords(running: number): string {
+  return running === 0 ? 'nothing is running' : `${running} running finish${running === 1 ? 'es' : ''}`;
+}
+
+/**
+ * The line under the header while held (R-33): since when, what still runs,
+ * that h resumes, and when it resumes on its own (`--for`). Null when not held.
+ * "On hold since 09:12: nothing new starts, 3 running finish. h resumes."
+ */
+export function holdLine(state: TopState, now: number): string | null {
+  const h = heldNow(state, now);
+  if (!h) return null;
+  const until = h.until ? ` until ${localLiftTime(h.until, now)}` : '';
+  // R-33: what still runs, and what `buildd stop` paused.
+  const paused = Object.values(state.workers).filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause').length;
+  const pausedWords = paused > 0 ? `, ${paused} paused` : '';
+  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
+}
+
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
 export function providerHoldLine(h: ProviderHold, now: number): string {
   const head = `${h.provider} work waits for the ${h.word}`;
@@ -1109,6 +1255,7 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
     if (words) return words;
   }
+  if (heldNow(state, now)) return 'runner is on hold';
   if (task.mission?.isHeld) return 'mission is on hold';
   const deps = dependencyWords(task, state);
   if (deps) return deps;
@@ -1157,8 +1304,10 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   const done: TaskRow[] = [];
   const holds = providerHolds(state, now);
 
+  // A mission found by its own name lists all its work (R-24).
+  const missionHit = !!state.filter && mission.key !== NO_MISSION && !mission.fold && matchesFilter(mission.title, state.filter);
   for (const t of tasks) {
-    if (!matchesFilter(t.title, state.filter)) continue;
+    if (!missionHit && !matchesFilter(t.title, state.filter)) continue;
     const w = workers.get(t.id);
     const role = roleLabel(t.roleSlug);
     const base = { taskId: t.id, title: t.title || w?.taskTitle || t.id.slice(0, 8), role };
@@ -1166,13 +1315,18 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     if (w && (BUSY.includes(w.status) || w.status === 'waiting' || w.status === 'idle')) {
       const elapsedMs = now - (w.startedAt || now);
       const tokens = w.tokenTally ? w.tokenTally.inputTokens + w.tokenTally.outputTokens : undefined;
+      const route = w.route ? runWords(w.route.backend, w.route) : undefined;
+      const dollars = rowDollars(workerSpend(w)) ?? undefined;
+      const money = { ...(route ? { route } : {}), ...(dollars ? { dollars } : {}) };
       if (w.status === 'waiting' && w.waitingFor?.type === 'pause') {
-        running.push({ ...base, workerId: w.id, group: 'running', kind: 'paused', elapsedMs, reason: 'paused, a resumes it', tokens });
+        // R-38: paused with since when.
+        const since = w.waitingFor.since && Number.isFinite(Date.parse(w.waitingFor.since)) ? ` since ${localLiftTime(w.waitingFor.since, now)}` : '';
+        running.push({ ...base, workerId: w.id, group: 'running', kind: 'paused', elapsedMs, reason: `paused${since}, a resumes it`, tokens, ...money });
       } else if (w.status === 'waiting' && w.waitingFor) {
-        running.push({ ...base, workerId: w.id, group: 'running', kind: 'asking', elapsedMs, question: w.waitingFor.prompt, tokens });
+        running.push({ ...base, workerId: w.id, group: 'running', kind: 'asking', elapsedMs, question: w.waitingFor.prompt, tokens, ...money });
       } else {
         const action = w.currentAction || lastToolLabel(w) || 'starting';
-        running.push({ ...base, workerId: w.id, group: 'running', kind: 'running', elapsedMs, action, tokens });
+        running.push({ ...base, workerId: w.id, group: 'running', kind: 'running', elapsedMs, action, tokens, ...money });
       }
       continue;
     }
@@ -1245,4 +1399,96 @@ export function planOf(w: TopWorker | undefined): Array<{ content: string; statu
 
 export function workerForTask(state: TopState, taskId: string): TopWorker | undefined {
   return workerByTask(state).get(taskId);
+}
+
+// ── routes and dollars (R-39 to R-42) ──────────────────────────────────────
+
+function activeToday(w: TopWorker, now: number): boolean {
+  const at = w.completedAt ?? w.lastActivity ?? w.startedAt;
+  return typeof at === 'number' && new Date(at).toDateString() === new Date(now).toDateString();
+}
+
+/**
+ * The header's "Runs on:" line: this machine's own routes, plus the routes the
+ * claims delivered that runs used today (the team's key or endpoint). A plan
+ * whose login is expired is left out: routeProblemLines says it (AC-24).
+ */
+export function runsOn(state: TopState, now: number): string | null {
+  const expired = new Set(state.runner.routeProblems.map(p => p.backend));
+  const used = Object.values(state.workers)
+    .filter(w => w.route && activeToday(w, now))
+    .map(w => w.route as RunRoute)
+    .filter(r => !(r.bucket === 'plan' && expired.has(r.backend)));
+  const routes: RunRoute[] = [];
+  for (const r of [...state.runner.routes, ...used]) if (!routes.some(x => sameRoute(x, r))) routes.push(r);
+  return runsOnLine(routes);
+}
+
+/** Routes that do not work, each on its own line so a narrow terminal never cuts one off. */
+export function routeProblemLines(state: TopState): string[] {
+  return state.runner.routeProblems.map(p => p.text);
+}
+
+/** Today's totals on this runner per bucket (R-42), from the workers top holds. */
+export function spendToday(state: TopState, now: number): SpendTotals {
+  return todayTotals(Object.values(state.workers), now);
+}
+
+/** "Today: $2.10 billed, ~$0.40 estimated · plans covered about $41 at list price", or null. */
+export function spendTodayLine(state: TopState, now: number): string | null {
+  return todayLine(spendToday(state, now));
+}
+
+// ── The claim loop, in words (task 9e12f377 part 3) ─────────────────────────
+
+/** `14:02` today, else the local day and time. */
+function clockAt(ms: number, now: number): string {
+  return localLiftTime(new Date(ms).toISOString(), now);
+}
+
+const BROAD_REASON_WORDS: Record<string, string> = {
+  no_pending_tasks: 'nothing is waiting for this runner',
+  no_slots: "the account's worker limit is reached",
+  budget_exhausted: 'a plan or rate limit holds the work',
+  context_paused: 'claims are paused after repeated failures',
+  race_lost: 'another runner took the work first',
+  runner_held: 'this runner is on hold',
+};
+
+/** Why the last broad claim started nothing, in words. */
+export function broadNothingWords(o: ClaimOutcome): string {
+  if (o.reason === 'refused') {
+    const why = (o.refusal ?? '').replace(/\s+/g, ' ').trim();
+    return o.status === 429 ? "the account's worker limit is reached" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
+  }
+  if (o.reason === 'budget_exhausted' && o.summary) return o.summary.replace(/\.$/, '');
+  if (o.reason === 'all_candidates_deferred' || o.reason === 'budget_exhausted_partial') {
+    const top = Object.entries(o.deferrals ?? {}).sort((a, b) => b[1] - a[1])[0];
+    if (top) {
+      const words = EXCLUSION_WORDS[top[0]] ?? top[0].replace(/_/g, ' ');
+      const total = Object.values(o.deferrals ?? {}).reduce((n, v) => n + v, 0);
+      return total === top[1] ? `every waiting task is held (${words})` : `every waiting task is held (most: ${words})`;
+    }
+    return 'every waiting task is held';
+  }
+  return BROAD_REASON_WORDS[o.reason] ?? o.reason.replace(/_/g, ' ');
+}
+
+/**
+ * The line that says what the claim loop did (from the owner: after `buildd
+ * resume` nothing said what happens): "Looking for work…" while a claim is
+ * out, "Looked for work 14:02 · started 2", or "… · nothing to start: <why>".
+ * Null before the first claim, while held, and with every slot busy (the
+ * header says so).
+ */
+export function claimLoopLine(state: TopState, now: number): string | null {
+  if (heldNow(state, now)) return null;
+  if (state.lookingForWork) return 'Looking for work…';
+  const o = state.claimOutcomes.broad;
+  // Every slot busy: the header's "3 of 3 busy" already says why nothing starts.
+  if (busySlots(state) >= state.runner.maxConcurrent) return null;
+  if (!o) return null;
+  const at = `Looked for work ${clockAt(o.at, now)}`;
+  if (o.reason === 'claimed') return `${at} · started ${o.started ?? 1}`;
+  return `${at} · nothing to start: ${broadNothingWords(o)}`;
 }

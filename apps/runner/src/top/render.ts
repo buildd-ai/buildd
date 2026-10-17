@@ -3,14 +3,16 @@
  * 80x24 and 120x40 is snapshot-tested (top-render.test.ts).
  *
  * Every line is exactly `cols` wide. Rows never wrap: at narrow widths the
- * cost column goes first, then the role column, and text is cut with "…".
+ * cost column goes first, then the route words, then the role column (R-7,
+ * R-41), and text is cut with "…".
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
+import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
+import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
-  providerHoldLine, providerHolds, selectedRow,
+  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
   NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -73,10 +75,19 @@ const GLYPH: Record<RowKind, { ch: string; token: PaletteToken }> = {
 const ROLE_W = 10;
 const ELAPSED_W = 6;
 const COST_W = 9;
+/** "Codex · OpenRouter (team)" and a space. */
+const ROUTE_W = 26;
+/** The action column's floor when the route words take room from it. */
+const MIN_TAIL_W = 12;
 
-/** Which optional columns fit in a pane `width` wide. */
-export function columnsFor(width: number): { role: boolean; cost: boolean } {
-  return { cost: width >= 76, role: width >= 52 };
+/**
+ * Which optional columns fit in a pane `width` wide. The route words (R-40)
+ * only take a column when a running row has one; they go after cost and
+ * before role (R-41).
+ */
+export function columnsFor(width: number, withRoute = false): { role: boolean; cost: boolean; route: boolean } {
+  if (!withRoute) return { cost: width >= 76, role: width >= 52, route: false };
+  return { cost: width >= 88, route: width >= 72, role: width >= 52 };
 }
 
 function formatTokens(n: number | undefined): string {
@@ -86,22 +97,25 @@ function formatTokens(n: number | undefined): string {
   return `${(n / 1_000_000).toFixed(1)}M tok`;
 }
 
-function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): string {
-  const cols = columnsFor(width);
+function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, withRoute = false): string {
+  const cols = columnsFor(width, withRoute);
   const g = GLYPH[row.kind];
   // " ● " prefix = 3
   let rest = width - 3;
   const roleW = cols.role ? ROLE_W : 0;
   const elapsedW = ELAPSED_W;
   const costW = cols.cost ? COST_W : 0;
-  rest -= roleW + elapsedW + costW;
-  const titleW = Math.max(8, Math.min(28, Math.floor(rest * 0.45)));
+  const routeW = cols.route ? ROUTE_W : 0;
+  rest -= roleW + routeW + elapsedW + costW;
+  // With route words in the row the title keeps its room and the action gives way.
+  const titleW = Math.max(8, Math.min(28, cols.route ? rest - MIN_TAIL_W : Math.floor(rest * 0.45)));
   const tailW = Math.max(0, rest - titleW);
 
   // Title, role and status are separate columns (R-21): a cut title ends in
   // "…" and one space always follows it.
   const title = fit(row.title, titleW - 1) + ' ';
   const role = cols.role ? fit(row.role ?? '', ROLE_W - 1) + ' ' : '';
+  const route = cols.route ? fit(row.route ?? '', ROUTE_W - 1) + ' ' : '';
   const elapsed = row.elapsedMs !== undefined ? fit(formatDuration(row.elapsedMs), elapsedW - 1, 'right') + ' ' : ' '.repeat(elapsedW);
 
   let tail: string;
@@ -115,7 +129,8 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
   } else {
     tail = fit(row.reason ?? '', tailW);
   }
-  const cost = cols.cost ? fit(row.group === 'running' ? formatTokens(row.tokens) : '', COST_W, 'right') : '';
+  // Dollars on a per-token route (R-41); a plan run, or one with no result yet, shows its tokens.
+  const cost = cols.cost ? fit(row.group === 'running' ? row.dollars ?? formatTokens(row.tokens) : '', COST_W, 'right') : '';
 
   // The › marks the selection even with no colour at all (NO_COLOR). Primary
   // text is the terminal's own foreground (R-17); only the selected row, which
@@ -126,6 +141,7 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
     (selected ? p.fg('accent', '›') : ' ') + p.fg(g.token, g.ch) + ' ' +
     p.fg(primary, title) +
     p.fg('muted', role) +
+    (route ? p.fg('muted', route) : '') +
     p.fg('muted', elapsed) +
     p.fg(tailToken, tail) +
     p.fg('muted', cost);
@@ -134,17 +150,19 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
 
 // ── frame ───────────────────────────────────────────────────────────────────
 
-function header(state: TopState, cols: number, p: Palette): string {
+function header(state: TopState, cols: number, now: number, p: Palette): string {
   const host = state.runner.hostname;
   // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
   const served = workspaceSummary(state);
   const busy = busySlots(state);
-  const online = state.runner.online ? '● online' : '○ reconnecting';
+  // R-33: a held runner reads "on hold" where "online" would be.
+  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? '● on hold' : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version },
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version: '' },
+    // R-43: "3 of 6 busy".
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version },
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version: '' },
     { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
     { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
   ];
@@ -169,13 +187,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
-const HINTS_QUEUE = ['↑↓ move', 'c claim', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'tab queue', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
+const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -223,13 +241,21 @@ function leftWidth(cols: number): number {
   return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
 }
 
+/** A fold row's words: "Delivered this week · 4", or "Delivered · 4" where that does not fit. */
+function foldTitle(m: MissionRow, room: number): string {
+  const full = `${m.title} · ${m.fold!.count}`;
+  return textWidth(full) <= room ? full : `Delivered · ${m.fold!.count}`;
+}
+
 /**
  * The missions pane (R-24): a heading row per team, then that team's open
- * missions (building and verifying first, then on hold), then the ones
- * delivered in the last 7 days, dimmed. A second, dimmed line carries "local
- * session" or "delivered Oct 14"; when the pane is too short those lines go
- * first (except the selected mission's), then the pane scrolls to keep the
- * selected mission in view.
+ * missions (building and verifying first, then on hold), then one dimmed
+ * "Delivered this week · N" row. Opened, it lists the missions delivered in
+ * the last 7 days under it, dimmed, each with its day on its own row ("Oct
+ * 14"), so a full pane cannot drop the day. A second, dimmed line carries
+ * "local session"; when the pane is too short those lines go first (except
+ * the selected mission's), then the pane scrolls to keep the selected
+ * mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
   const hasTeams = missions.some(m => m.team !== null);
@@ -241,6 +267,12 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
         lines.push(m.team === null ? ' '.repeat(lw) : p.fg('muted', fit(' ' + m.team, lw)));
       }
       const isCurrent = m.key === current.key;
+      if (m.fold) {
+        const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', isCurrent ? '▸' : ' ')} ${p.fg('muted', fit(foldTitle(m, lw - 4), lw - 4))} `;
+        if (isCurrent) selected = lines.length;
+        lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+        return;
+      }
       const delivered = m.deliveredAt !== undefined;
       // Done over total always (R-31), with the stage word beside it (R-18).
       // The title gives way first; only when it would vanish does the stage
@@ -248,14 +280,15 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       const tally = m.key === NO_MISSION || m.total > 0 ? `${m.done}/${m.total}` : '';
       const stage = missionStageWord(m);
       const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? 'on hold' : '');
-      const count = delivered ? '' : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
+      const count = delivered ? deliveredDay(m.deliveredAt!) : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
       const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
       const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
       if (isCurrent) selected = lines.length;
       lines.push(isCurrent && focused ? p.selectedBg(line) : line);
-      const meta = missionMeta(m);
+      // A delivered mission's day is on its row already.
+      const meta = delivered ? null : missionMeta(m);
       if (meta && (withMeta || isCurrent)) lines.push(p.fg('muted', fit('   ' + meta, lw)));
     });
     // Without team headings the pane keeps its MISSIONS label.
@@ -275,7 +308,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
   const lw = leftWidth(cols);
   const rw = cols - lw - 1;
-  const missions = missionRows(state, now);
+  const missions = missionList(state, now);
   const mission = currentMission(state, now);
   const rows = taskRows(state, now);
   const sel = selectedRow(state, now);
@@ -293,7 +326,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const ws = currentWorkspace(state);
   const meta = missionMeta(mission);
   const status = mission.deliveredAt !== undefined && meta ? ` · ${meta}` : missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : meta ? ` · ${meta}` : '';
-  const heading = (ws ? `${ws.name} · ` : '') + mission.title + status + filterNote;
+  const heading = (ws ? `${ws.name} · ` : '') + (mission.fold ? `${mission.title} · ${mission.fold.count}` : mission.title + status) + filterNote;
   const titleW = rw - textWidth(counts) - 1;
   // One space always separates a cut heading from the counts (R-21).
   right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
@@ -308,17 +341,19 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
     { key: 'done', label: 'DONE TODAY' },
   ];
   const lines: Array<{ text: string; rowIndex?: number }> = [];
+  const withRoute = rows.some(r => !!r.route);
   for (const g of groups) {
     const inGroup = rows.map((r, i) => ({ r, i })).filter(x => x.r.group === g.key);
     if (inGroup.length === 0) continue;
     lines.push({ text: p.fg('muted', fit(' ' + g.label, rw)) });
     for (const { r, i } of inGroup) {
-      lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p), rowIndex: i });
+      lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p, withRoute), rowIndex: i });
     }
   }
   if (rows.length === 0) {
-    const empty = state.filter ? ' Nothing matches the filter.'
+    const empty = mission.fold ? ` Delivered in the last 7 days. ${mission.fold.open ? '⏎ or Esc folds them.' : '⏎ lists them.'}`
       : mission.deliveredAt !== undefined ? ` Delivered ${deliveredDay(mission.deliveredAt)}. Its finished work is not listed here.`
+      : state.filter ? ' Nothing matches the filter.'
       : mission.local ? ' A person runs this mission from their own session.'
       : ' Nothing here yet. Work this runner takes shows up as it happens.';
     lines.push({ text: p.fg('muted', fit(empty, rw)) });
@@ -376,6 +411,13 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
   const titleW = Math.max(8, cols - 3 - textWidth(meta) - 3);
   push(' ' + p.fg(g.token, g.ch) + ' ' + p.fg('text', fit(title, titleW)) + p.fg('muted', fit('   ' + meta, Math.max(0, cols - 3 - titleW))));
 
+  // Backend and route, and the run's dollars in the words that say how it is paid (R-40, R-41).
+  if (w?.route) {
+    const served = w.resultMeta?.actualModel && w.sessionModel && w.resultMeta.actualModel !== w.sessionModel
+      ? `served ${w.resultMeta.actualModel} (asked for ${w.sessionModel})` : null;
+    const dollars = detailDollars(workerSpend(w), w.resultMeta?.actualModel ?? w.sessionModel);
+    line('muted', ' ' + [runWords(w.route.backend, w.route), served, dollars].filter(Boolean).join(' · '));
+  }
   if (w?.prUrl) line('info', ` PR ${w.prUrl}`);
   if (row?.kind === 'asking' && row.question) {
     line('warning', ` asks: "${row.question}"`);
@@ -437,17 +479,18 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
 
 const HELP_KEYS: Array<[string, string]> = [
   ['↑↓ j k', 'move; ← → switch between missions and tasks'],
-  ['⏎', 'open a task: plan, milestones, tool calls'],
+  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them'],
   ['a', 'answer the question an agent is asking'],
   ['m', 'send a message to a running agent'],
   ['p', 'pause a running agent'],
   ['x', 'stop a running agent (asks first)'],
   ['c', 'claim a waiting task onto this runner'],
   ['tab', 'switch between Missions and Queue (what this runner takes next)'],
+  ['h', 'hold: running agents finish, nothing new starts; h again resumes'],
   ['o', 'open the task on buildd'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
-  ['/', 'filter by title; esc clears it'],
+  ['/', 'filter missions and tasks by title, delivered ones too; esc clears it'],
   ['q', 'quit (the runner keeps running)'],
 ];
 
@@ -474,9 +517,29 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const holdLines = providerHolds(state, now)
     .slice(0, 2)
     .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
+  // A person's hold (R-33): its own line straight under the header, in the
+  // accent: a choice the person made, not a fault.
+  const ownLine = holdLine(state, now);
+  // What the claim loop did last, or that it is looking now (task 9e12f377).
+  const ownHold = ownLine ? [p.fg('accent', fit(' ' + ownLine, cols))] : [];
+  // What the claim loop did last, or that it is looking now (task 9e12f377);
+  // not while held, and not when the provider line above already says why.
+  const loopText = ownLine ? null : claimLoopLine(state, now);
+  const loopLine = loopText && !(holdLines.length > 0 && state.claimOutcomes.broad?.reason === 'budget_exhausted')
+    ? [p.fg('muted', fit(' ' + loopText, cols))]
+    : [];
   // The line under the header: Missions | Queue (R-26), then what is shown and the keys that change it (R-23).
-  const filterRow = tabLine(state, cols, p);
-  const bodyH = Math.max(1, rows - 5 - holdLines.length);
+  const filterRow = tabLine(state, cols, now, p);
+  // R-39, R-42: the routes this runner runs on, then today's dollars per bucket.
+  // A route that does not work is a warning on its own line, with where to fix it.
+  const runsOnText = runsOn(state, now);
+  const todayText = spendTodayLine(state, now);
+  const routeLines = [
+    ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
+    ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
+    ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
+  ];
+  const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length - loopLine.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
@@ -484,21 +547,29 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
       : state.view === 'queue'
         ? queueBody(state, cols, bodyH, now, p)
         : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, p), filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, now, p), ...ownHold, ...routeLines, filterRow, ...holdLines, ...loopLine, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }
 
 // ── Queue view (R-26) ───────────────────────────────────────────────────────
 
 /** ` [ Missions ]  Queue` with the filter line beside it; the filter is cut, never the tabs. */
-function tabLine(state: TopState, cols: number, p: Palette): string {
+function tabLine(state: TopState, cols: number, now: number, p: Palette): string {
   const missions = state.view === 'missions' ? '[ Missions ]' : 'Missions';
   const queue = state.view === 'queue' ? '[ Queue ]' : 'Queue';
   const tabs = ` ${missions}  ${queue}`;
   const filter = filterLine(state);
-  const room = cols - textWidth(tabs) - 3;
+  // R-26: the Queue counts slots on its own line, with the keys that change them.
+  // Widest that leaves the filter whole: with the keys, then without, then only the free count.
+  const summary = slotsSummary(state, now);
+  const variants = state.view === 'queue'
+    ? [`${summary}   - fewer  + more `, `${summary} `, `${summary.replace(/ · \d+ running/, '')} `]
+    : [''];
+  const fits = (r: string) => textWidth(tabs) + 3 + textWidth(filter) + 2 + textWidth(r) <= cols;
+  const right = variants.find(fits) ?? (textWidth(tabs) + 3 + 12 + textWidth(variants[variants.length - 1]) <= cols ? variants[variants.length - 1] : '');
+  const room = cols - textWidth(tabs) - 3 - textWidth(right);
   const tail = room > 0 ? '   ' + fit(filter, room) : '';
   const paint = (label: string, active: boolean) => p.fg(active ? 'accent' : 'muted', label);
-  const line = ' ' + paint(missions, state.view === 'missions') + '  ' + paint(queue, state.view === 'queue') + p.fg('muted', tail);
+  const line = ' ' + paint(missions, state.view === 'missions') + '  ' + paint(queue, state.view === 'queue') + p.fg('muted', tail) + (right ? p.fg('muted', right) : '');
   return fitAnsi(line, cols, p);
 }
 
@@ -517,7 +588,8 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
   const mission = cols < 60 ? 12 : 17;
-  const starts = cols < 60 ? 10 : 13;
+  // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
+  const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
   const fixed = 1 + POS_W + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
@@ -540,8 +612,9 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
   const primary: PaletteToken = selected ? 'selectedText' : row.position === null ? 'muted' : 'text';
   // Every column is cut with "…" and followed by a space (R-21).
   const col = (s: string, w: number) => fit(s, w - 1) + ' ';
-  // A start held to a time stands out; "next" and "after N" do not.
-  const timed = (row.position !== null || row.held === true) && row.starts !== 'next' && !row.starts.startsWith('after') && row.starts !== '-';
+  // "now" is in the accent; a start held to a time stands out; a wait in words does not.
+  const now = row.position !== null && row.starts === 'now';
+  const timed = (row.position !== null || row.held === true) && /\d\d:\d\d/.test(row.starts);
   const line =
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
@@ -549,7 +622,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
-    p.fg(timed ? 'warning' : 'muted', fit(row.starts, c.starts));
+    p.fg(now ? 'accent' : timed ? 'warning' : 'muted', fit(row.starts, c.starts));
   return selected ? p.selectedBg(line) : line;
 }
 

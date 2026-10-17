@@ -23,6 +23,7 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
 let mockQueryError: Error | null = null; // Set to throw during query iteration
+const queryLog: any[] = []; // every query() call's options, in order
 let lastQueryOptions: any = null; // options passed to the most recent SDK query()
 
 // Mock pusher-js — real Pusher tries to open a network connection on
@@ -42,6 +43,7 @@ mock.module('pusher-js', () => {
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (_opts: any) => {
     lastQueryOptions = _opts?.options ?? null;
+    queryLog.push(lastQueryOptions);
     const msgs = [...mockMessages];
     const throwErr = mockQueryError;
     let idx = 0;
@@ -171,6 +173,11 @@ const { SESSION_BUDGET_CAP_ERROR } = await import('../../src/claim-budget-signal
 const { isBudgetExhaustionError } = await import('@buildd/core/budget-error-classifier');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Poll instead of a fixed sleep: a fixed 200ms is too short on a loaded host.
+async function waitFor(cond: () => boolean, timeoutMs = 5000) {
+  for (const start = Date.now(); !cond() && Date.now() - start < timeoutMs;) await new Promise(r => setTimeout(r, 25));
+}
 
 function makeConfig(overrides?: Partial<LocalUIConfig>): LocalUIConfig {
   return {
@@ -559,32 +566,36 @@ describe('Error Handling', () => {
         }
       });
 
-      async function runWithBudget(id: string) {
+      async function runWithBudget(id: string, credVar: string) {
         mockMessages = [
           { type: 'system', subtype: 'init', session_id: `sess-${id}` },
           { type: 'result', subtype: 'success', session_id: `sess-${id}`, result: 'ok' },
         ];
         mockClaimTask.mockImplementation(async () => ({ workers: [{ id, branch: `buildd/${id}`, task: makeTask() }] }));
         lastQueryOptions = null;
+        queryLog.length = 0;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
         // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
-        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
-        expect(lastQueryOptions).not.toBeNull();
-        return lastQueryOptions;
+        // A previous test's worker can restart late and query() first, so pick
+        // this session's call by the credential this test put in its env.
+        const mine = () => queryLog.find(o => o?.env?.[credVar]);
+        for (let i = 0; i < 100 && !mine(); i++) await new Promise(r => setTimeout(r, 50));
+        expect(mine()).toBeDefined();
+        return mine();
       }
 
       test('OAuth session: maxBudgetUsd is not passed to the SDK', async () => {
         delete process.env.ANTHROPIC_API_KEY;
         delete process.env.ANTHROPIC_AUTH_TOKEN;
         process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-test';
-        const opts = await runWithBudget('w-oauth-budget');
+        const opts = await runWithBudget('w-oauth-budget', 'CLAUDE_CODE_OAUTH_TOKEN');
         expect(opts.maxBudgetUsd).toBeUndefined();
       });
 
       test('API-key session: maxBudgetUsd is passed to the SDK', async () => {
         process.env.ANTHROPIC_API_KEY = 'sk-test';
-        const opts = await runWithBudget('w-apikey-budget');
+        const opts = await runWithBudget('w-apikey-budget', 'ANTHROPIC_API_KEY');
         expect(opts.maxBudgetUsd).toBe(5);
       });
     });
@@ -988,7 +999,8 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Completion runs async git (stats) off the event loop: wait for it.
+      for (let i = 0; i < 100 && !['done', 'error'].includes(manager.getWorker('w-obs-fail')?.status ?? ''); i++) await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-obs-fail');
       // Task should still be done, not error
@@ -1363,7 +1375,7 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => !!manager.getWorker('w-meta')?.resultMeta);
 
       const worker = manager.getWorker('w-meta');
       expect(worker?.resultMeta).toBeDefined();
@@ -1424,7 +1436,7 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => manager.getWorker('w-retry')?.status === 'error');
 
       let worker = manager.getWorker('w-retry');
       expect(worker?.status).toBe('error');
@@ -1442,7 +1454,7 @@ describe('Error Handling', () => {
 
       await manager.retry('w-retry');
       // Retry session runs async via .catch — wait longer for completion
-      await new Promise(r => setTimeout(r, 500));
+      await waitFor(() => manager.getWorker('w-retry')?.status === 'done');
 
       worker = manager.getWorker('w-retry');
       expect(worker?.status).toBe('done');

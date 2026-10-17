@@ -24,11 +24,13 @@ describe('Queue view (R-26)', () => {
     const lines = frame(queueState(), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines);
-    expect(stripAnsi(lines[1]).trim()).toBe('Missions  [ Queue ]   t team: all · w workspace: all');
+    expect(stripAnsi(lines[1]).trim()).toMatch(/^Missions  \[ Queue \]   t team: all · w workspace: all\s+3 slots · 1 free$/);
     expect(t).toContain('Team One · next for this runner');
     expect(t).toContain('Not for this runner');
     expect(t).toContain('Thu 00:00');
-    expect(t).toContain('after 1');
+    expect(t).toContain('now');
+    expect(t).toContain('after its dependency');
+    expect(t).not.toMatch(/\bnext\s*$/m);
     expect(t).toContain('local session');
     expect(t).toContain('another runner');
     expect(t).not.toContain('est.');
@@ -56,7 +58,9 @@ describe('Queue view (R-26)', () => {
     expect(t).not.toContain('workspace  ');
     expect(t).toContain('Thu 00:00');
     expect(queueColumnsFor(60, true)).toMatchObject({ est: false, workspace: false });
-    expect(queueColumnsFor(80, true)).toMatchObject({ est: false, workspace: true });
+    // 80 columns keeps the start words whole ("when #4 ends (same files)") and drops workspace.
+    expect(queueColumnsFor(80, true)).toMatchObject({ est: false, workspace: false, starts: 26 });
+    expect(queueColumnsFor(100, true)).toMatchObject({ workspace: true });
     expect(queueColumnsFor(120, true)).toMatchObject({ est: true, workspace: true });
   });
 

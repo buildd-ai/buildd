@@ -103,6 +103,8 @@ export async function postMissionFeedEvent(opts: {
   taskId?: string | null;
   collapseKey?: string;
   collapseWindowMs?: number;
+  /** Written to `collapse_key` without collapsing: a server-only tag readers can trust (post_note cannot set it). */
+  marker?: string;
 }): Promise<void> {
   const authorType: MissionNoteAuthorType = opts.actor.kind;
 
@@ -148,7 +150,7 @@ export async function postMissionFeedEvent(opts: {
     title: opts.title,
     body: opts.body ?? null,
     status: 'open',
-    collapseKey: opts.collapseKey ?? null,
+    collapseKey: opts.collapseKey ?? opts.marker ?? null,
     collapseCount: 1,
   }).returning();
 

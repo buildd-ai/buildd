@@ -49,9 +49,9 @@ describe('list view', () => {
   });
 
   test('cost goes first, then role, and rows still never wrap', () => {
-    expect(columnsFor(91)).toEqual({ role: true, cost: true });
-    expect(columnsFor(57)).toEqual({ role: true, cost: false });
-    expect(columnsFor(37)).toEqual({ role: false, cost: false });
+    expect(columnsFor(91)).toEqual({ role: true, cost: true, route: false });
+    expect(columnsFor(57)).toEqual({ role: true, cost: false, route: false });
+    expect(columnsFor(37)).toEqual({ role: false, cost: false, route: false });
     const t80 = text(frame(fixtureState(), 80, 24));
     expect(t80).not.toContain('tok');
     expect(t80).toContain('Builder');
@@ -102,6 +102,12 @@ describe('detail view (R-5)', () => {
 });
 
 describe('footer', () => {
+  test('80 columns keep navigation and filtering before rare agent actions', () => {
+    const footer = stripAnsi(frame(fixtureState(), 80, 24)[23]);
+    for (const hint of ['↑↓ move', '⏎ open', '/ filter', 'o web', '? help', 'q quit']) expect(footer).toContain(hint);
+    for (const hint of ['p pause', 'x stop']) expect(footer).not.toContain(hint);
+  });
+
   test('answer prompt', () => {
     const s: TopState = { ...fixtureState(), mode: { kind: 'input', purpose: 'answer', text: 'Print it', taskId: 't-hint', workerId: 'w-hint' } };
     expect(stripAnsi(frame(s, 80, 24)[23])).toMatch(/^ answer › Print it▏ +$/);

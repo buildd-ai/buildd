@@ -8,7 +8,7 @@
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { toTopWorkerSummaries, TOP_RECENT_TERMINAL_WORKERS } from '../../src/top-worker-summary';
+import { toTopWorkerSummaries, TOP_RECENT_TERMINAL_WORKERS, TOP_MAX_TERMINAL_WORKERS } from '../../src/top-worker-summary';
 import { toPublicWorkers } from '../../src/public-worker';
 import { describeToolCall, planOf } from '../../src/top/state';
 
@@ -57,6 +57,42 @@ describe('toTopWorkerSummaries', () => {
     // The newest ones.
     expect(terminal.map(w => w.id)).toContain(`d${TOP_RECENT_TERMINAL_WORKERS + 19}`);
     expect(terminal.map(w => w.id)).not.toContain('d0');
+  });
+
+  test('a heavy day: every worker that finished today is included, past the recent count', () => {
+    const now = new Date(2026, 9, 16, 18, 0, 0).getTime();
+    const midnight = new Date(2026, 9, 16, 0, 0, 0).getTime();
+    const today = Array.from({ length: TOP_RECENT_TERMINAL_WORKERS + 70 }, (_, i) =>
+      worker(`t${i}`, 'done', { completedAt: midnight + 60_000 * (i + 1) }));
+    const yesterday = Array.from({ length: 30 }, (_, i) =>
+      worker(`y${i}`, 'done', { completedAt: midnight - 60_000 * (i + 1) }));
+    const out = toTopWorkerSummaries([...yesterday, ...today], { now });
+    const ids = out.map(w => w.id);
+    expect(ids.filter(id => id.startsWith('t')).length).toBe(today.length);
+    // Yesterday's are not padded in once today already fills the recent count.
+    expect(ids.some(id => id.startsWith('y'))).toBe(false);
+  });
+
+  test('a quiet day still shows the most recent finished ones from before today', () => {
+    const now = new Date(2026, 9, 16, 9, 0, 0).getTime();
+    const midnight = new Date(2026, 9, 16, 0, 0, 0).getTime();
+    const today = [worker('t0', 'done', { completedAt: midnight + 1000 })];
+    const earlier = Array.from({ length: TOP_RECENT_TERMINAL_WORKERS + 10 }, (_, i) =>
+      worker(`e${i}`, 'error', { completedAt: midnight - 60_000 * (i + 1) }));
+    const out = toTopWorkerSummaries([...earlier, ...today], { now });
+    expect(out.length).toBe(TOP_RECENT_TERMINAL_WORKERS);
+    expect(out[0].id).toBe('t0');
+    expect(out.map(w => w.id)).toContain('e0');
+  });
+
+  test('still bounded: today past the ceiling is cut, newest kept', () => {
+    const now = new Date(2026, 9, 16, 23, 0, 0).getTime();
+    const midnight = new Date(2026, 9, 16, 0, 0, 0).getTime();
+    const today = Array.from({ length: TOP_MAX_TERMINAL_WORKERS + 25 }, (_, i) =>
+      worker(`t${i}`, 'done', { completedAt: midnight + 1000 * (i + 1) }));
+    const out = toTopWorkerSummaries(today, { now });
+    expect(out.length).toBe(TOP_MAX_TERMINAL_WORKERS);
+    expect(out[0].id).toBe(`t${TOP_MAX_TERMINAL_WORKERS + 24}`);
   });
 
   test('much smaller than the full projection the plain endpoint serves', () => {

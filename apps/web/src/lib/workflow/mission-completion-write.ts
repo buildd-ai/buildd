@@ -42,7 +42,13 @@ export async function readMissionEpochFingerprint(missionId: string): Promise<st
 
 export function completeMissionSql(missionId: string, epochFingerprint: string | null, completedAt: Date): SQL {
   const at = completedAt.toISOString();
-  return sql`UPDATE missions m SET status = 'completed', completed_at = ${at}::timestamptz, updated_at = ${at}::timestamptz
+  // A reopen followed by a re-completion with no task finished since moves nothing: the mission
+  // delivered nothing new, so "delivered" (GET /api/missions/recent) keeps its earlier date.
+  return sql`UPDATE missions m SET status = 'completed',
+  completed_at = CASE WHEN m.completed_at IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM tasks t WHERE t.mission_id = m.id AND t.status = 'completed' AND t.updated_at > m.completed_at
+  ) THEN m.completed_at ELSE ${at}::timestamptz END,
+  updated_at = ${at}::timestamptz
 WHERE m.id = ${missionId}::uuid AND m.status = 'active'
   AND ${missionEpochFingerprintSql(sql`m.id`)} IS NOT DISTINCT FROM ${epochFingerprint}::text
   AND m.xmin::text = (SELECT xmin::text FROM missions WHERE id = ${missionId}::uuid)

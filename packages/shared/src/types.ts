@@ -1,5 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
+import type { RunnerHold } from './runner-hold';
 import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
@@ -1351,6 +1352,13 @@ export interface WorkerEnvironment {
    * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
    */
   scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
+  /**
+   * A person's hold on this runner (`buildd hold`, ./runner-hold): nothing new
+   * starts while it is in force; running work finishes. Null or absent = not
+   * held. The claim route gives a held runner's broad claim nothing, and the
+   * dashboard shows it as on hold instead of idle.
+   */
+  hold?: RunnerHold | null;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1418,16 +1426,8 @@ export interface RunnerUpdateSnapshot {
 export const RUNNER_MODEL_AUTH_SOURCES = ['machine_token', 'machine_login', 'api_key', 'none'] as const;
 export type RunnerModelAuthSource = (typeof RUNNER_MODEL_AUTH_SOURCES)[number];
 
-/** The runner's configured preference for the machine login, sent as `modelAuthMode`. */
-export const RUNNER_MODEL_AUTH_MODES = ['auto', 'prefer', 'off'] as const;
-export type RunnerModelAuthMode = (typeof RUNNER_MODEL_AUTH_MODES)[number];
-
 export function isRunnerModelAuthSource(value: unknown): value is RunnerModelAuthSource {
   return typeof value === 'string' && (RUNNER_MODEL_AUTH_SOURCES as readonly string[]).includes(value);
-}
-
-export function isRunnerModelAuthMode(value: unknown): value is RunnerModelAuthMode {
-  return typeof value === 'string' && (RUNNER_MODEL_AUTH_MODES as readonly string[]).includes(value);
 }
 
 /**
@@ -1445,7 +1445,6 @@ export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAut
 /** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
 export interface RunnerModelAuthHeartbeatFields {
   modelAuthSource?: RunnerModelAuthSource;
-  modelAuthMode?: RunnerModelAuthMode;
   codexAuthSource?: RunnerCodexAuthSource;
 }
 
@@ -1672,7 +1671,9 @@ export type ClaimDiagnosticReason =
   | 'context_paused'
   | 'path_overlap_blocked'
   /** An interactive session's explicit claim of this task came too soon after its last one. */
-  | 'rate_limited';
+  | 'rate_limited'
+  /** A broad claim from a runner a person put on hold (`buildd hold`); a named task still claims. */
+  | 'runner_held';
 
 /**
  * Which gate excluded an explicitly requested task (claim with `taskId`). The
@@ -1736,7 +1737,13 @@ export interface ClaimTaskExclusion {
    * names in prose, so a caller (`buildd top`) can show it in local time
    * without parsing the sentence. Absent when there is no known end.
    */
-  until?: string;
+  until?: string;  /**
+   * The task this one waits for, on an overlap (`soft_overlap`, or a
+   * `path_overlap` behind another task's active claim): the same task `detail`
+   * names in prose, so `buildd top` can say "when #3 ends (same files)" or name
+   * it by title (spec c7410e76 R-26). Absent for any other code.
+   */
+  holderTaskId?: string;
 }
 
 export interface ClaimDiagnostics {
@@ -1957,7 +1964,7 @@ export interface ClaimCredentialDecision {
   scope: 'personal' | 'team' | 'none';
   /** Provider of the personal key, when `scope` is `personal`. */
   provider?: string;
-  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  /** May the runner's own machine credentials (machine login, llmProvider) take precedence? */
   runnerLocalAllowed: boolean;
 }
 
@@ -3258,7 +3265,8 @@ export interface MissionProgressCell {
 /**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
- * reachable workspaces. `completedAt` is set only on a finished mission.
+ * reachable workspaces. All open missions are included; only recent deliveries
+ * are capped. `completedAt` is set only on a finished mission.
  */
 export interface RecentMission {
   id: string;
@@ -4052,6 +4060,8 @@ export interface FleetRunner {
   /** Heartbeat id, or a synthetic key for workers on an unknown runner. */
   id: string;
   name: string;
+  /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
+  hold?: RunnerHold | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;

@@ -44,7 +44,7 @@ const _originalFetch = (globalThis as any).fetch;
 afterAll(() => { (globalThis as any).fetch = _originalFetch; });
 
 mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mock(() => Promise.resolve(false)),
+  resolveCodexApiKey: mock(() => Promise.resolve(null)),
 }));
 
 import { checkConnectorRouting, findAlternativeRole } from './connector-gate';

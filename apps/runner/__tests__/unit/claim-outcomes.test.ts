@@ -41,6 +41,26 @@ describe('outcomeFromDiagnostics', () => {
   });
 });
 
+// Spec c7410e76 R-26/AC-30: the Queue names what an overlap waits for.
+describe('the task an overlap waits for', () => {
+  const soft = 'Its declared scope overlaps in-flight task 0a1b2c3d-feed on apps/runner/src/a.ts, and the hold/start decision said HOLD. It starts when that task finishes or a START is decided. An admin can claim it anyway with claim_task force: true.';
+  test('from the server\'s field', () => {
+    const o = outcomeFromDiagnostics({ reason: 'all_candidates_deferred', taskExclusion: { code: 'soft_overlap', detail: soft, holderTaskId: 'beef-0001' } } as any, NOW);
+    expect(o.holderTaskId).toBe('beef-0001');
+  });
+  test('from the sentence, on a server from before the field', () => {
+    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', taskExclusion: { code: 'soft_overlap', detail: soft } } as any, NOW).holderTaskId).toBe('0a1b2c3d-feed');
+    const path = 'Its files overlap an active claim held by task 9f8e7d6c-ab. An admin can claim it anyway with claim_task force: true.';
+    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', taskExclusion: { code: 'path_overlap', detail: path } } as any, NOW).holderTaskId).toBe('9f8e7d6c-ab');
+  });
+  test('never from a word, an unknown holder, or another code', () => {
+    const unknown = 'Its declared scope overlaps in-flight task (unknown), and the hold/start decision said HOLD. It starts when that task finishes or a START is decided.';
+    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', taskExclusion: { code: 'soft_overlap', detail: unknown } } as any, NOW).holderTaskId).toBeUndefined();
+    expect(outcomeFromDiagnostics({ reason: 'all_candidates_deferred', taskExclusion: { code: 'path_overlap', detail: 'Its files overlap open PR #12.' } } as any, NOW).holderTaskId).toBeUndefined();
+    expect(outcomeFromDiagnostics({ reason: 'no_pending_tasks', taskExclusion: { code: 'mission_held', detail: soft } } as any, NOW).holderTaskId).toBeUndefined();
+  });
+});
+
 describe('ClaimOutcomeStore', () => {
   test('keeps the latest per task and the latest broad, and forgets a task once claimed', () => {
     const store = new ClaimOutcomeStore();

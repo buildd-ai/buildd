@@ -114,6 +114,20 @@ export interface WorkspaceResolver {
   cachedGitRepos?(): GitRepoInfo[];
   /** Make sure the snapshot is no older than `maxAgeMs` (default the TTL); async. */
   warmGitCache?(opts?: { maxAgeMs?: number }): Promise<void>;
+  /**
+   * Wait for the first scan only: resolves at once when any snapshot exists
+   * (stale or not), and otherwise awaits the one in flight (or starts it). For
+   * resolve() callers that may run in the first seconds after start (a retry, a
+   * follow-up), so they never fall into the cold synchronous scan.
+   */
+  whenScanned?(): Promise<void>;
+  /**
+   * resolve(), for the claim: warms the snapshot to `maxAgeMs` first, and when
+   * the repo is not in it, rescans once (unless the snapshot was just taken)
+   * before falling through to auto-clone. A repo cloned by hand moments before
+   * the claim is found instead of cloned a second time.
+   */
+  resolveAsync?(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null, opts?: { maxAgeMs?: number }): Promise<string | null>;
   getProjectRoots(): string[];
 }
 
@@ -347,7 +361,12 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return new Map(snapshot.map(r => [r.path, r.remoteUrl]));
   };
 
-  const attemptResolve = (workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
+  const attemptResolve = (
+    workspace: ResolveWorkspace,
+    taskContext?: Record<string, unknown> | null,
+    /** false: stop before auto-clone (a miss returns null). */
+    opts: { autoClone?: boolean } = {},
+  ): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
 
     // Cross-repo override from task context (e.g., conflict-retry on cross-repo PR).
@@ -493,7 +512,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     }
 
     // Auto-clone: workspace has a repo URL but no local clone exists
-    if (workspace.repo && roots.length > 0) {
+    if (opts.autoClone !== false && workspace.repo && roots.length > 0) {
       const repoName = workspace.repo.split('/').pop()?.replace('.git', '');
       if (repoName) {
         const clonePath = join(roots[0], repoName);
@@ -548,7 +567,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return [...new Set(allDirs)]; // Dedupe
   };
 
-  return {
+  const resolver: WorkspaceResolver = {
     resolve(workspace, taskContext) {
       const { path } = attemptResolve(workspace, taskContext);
       if (!path) {
@@ -612,8 +631,29 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       await scanAsync(opts?.maxAgeMs ?? REPO_SCAN_TTL_MS);
     },
 
+    async whenScanned() {
+      await scanAsync(Number.POSITIVE_INFINITY);
+    },
+
+    async resolveAsync(workspace, taskContext, opts) {
+      const startedAt = Date.now();
+      try { await scanAsync(opts?.maxAgeMs ?? REPO_SCAN_TTL_MS); } catch { /* resolve() falls back */ }
+      const matchesByRemote = !!(workspace.repo || (taskContext && typeof taskContext.prRepoUrl === 'string'));
+      if (matchesByRemote) {
+        const probe = attemptResolve(workspace, taskContext, { autoClone: false });
+        if (probe.path) return probe.path;
+        // Not in a snapshot taken before this call: look at the disk once more
+        // before cloning a repo that may already be here.
+        if (snapshotAt < startedAt) {
+          try { await scanAsync(0); } catch { /* resolve() falls back */ }
+        }
+      }
+      return resolver.resolve(workspace, taskContext);
+    },
+
     getProjectRoots() {
       return [...roots];
     },
   };
+  return resolver;
 }

@@ -14,9 +14,10 @@ import { asc, desc } from 'drizzle-orm';
 
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 
-const { buildRunnerQueueQuery, buildBroadClaimWhere, classifyRunnerQueueRow, groupRunnerQueue, loadRunnerQueue, runnerQueueGates, runnerQueueWhere, RUNNER_QUEUE_LIMIT } = await import('./claim-order-queue');
+const { buildRunnerQueueQuery, classifyRunnerQueueRow, groupRunnerQueue, loadRunnerQueue, runnerQueueGates, runnerQueueWhere, RUNNER_QUEUE_LIMIT } = await import('./claim-order-queue');
 const { claimOrderBy, compareClaimOrder, activeWorkerGate, runnerCooldownGate } = await import('./claim-order');
 const { missionNotLocal, taskNotReserved } = await import('@/app/api/workers/claim/held-gate');
+const claimWhereMod = await import('./claim-candidate-where');
 const { roleSlugGate } = await import('@/app/api/workers/claim/role-gate');
 const { tasks } = await import('@buildd/core/db/schema');
 
@@ -57,9 +58,9 @@ describe('the read, rendered', () => {
     for (const clause of roleSlugGate(['builder'])) expect(s).toContain(render(clause));
   });
 
-  it('covers every gate the claim route pushes into its WHERE', () => {
-    const route = readFileSync(join(import.meta.dir, '../app/api/workers/claim/route.ts'), 'utf8');
-    const names = [...new Set([...route.matchAll(/explicitTaskGates\.([a-zA-Z]+) =/g)].map(m => m[1]))];
+  it('covers every gate the shared claim WHERE builds into its WHERE', () => {
+    const route = readFileSync(join(import.meta.dir, './claim-candidate-where.ts'), 'utf8');
+    const names = [...new Set([...route.matchAll(/gates\.([a-zA-Z]+) =/g)].map(m => m[1]))];
     expect(names.length).toBeGreaterThan(10);
     for (const n of names) expect(Object.keys(gates)).toContain(n);
   });
@@ -196,29 +197,51 @@ describe('loadRunnerQueue', () => {
   });
 });
 
-describe('buildBroadClaimWhere', () => {
-  it('renders as a valid SQL WHERE list through PgDialect', () => {
-    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
-    expect(conditions.length).toBeGreaterThan(0);
-    // Ensure each condition renders as valid SQL.
-    for (const cond of conditions) {
-      const { sql } = dialect.sqlToQuery(cond);
-      expect(sql).toBeTruthy();
+describe('the claim route and the queue share one candidate WHERE', () => {
+  const { claimCandidateWhere } = claimWhereMod;
+  const input = { workspaceIds: ['ws-a', 'ws-b'], now: NOW, accountType: 'service', runner: 'http://localhost:8766', availableSkills: ['builder'], executor: 'host' as const };
+
+  it('the route builds its candidate conditions through claimCandidateWhere', () => {
+    const route = readFileSync(join(import.meta.dir, '../app/api/workers/claim/route.ts'), 'utf8');
+    expect(route).toContain("from '@/lib/claim-candidate-where'");
+    expect(route).toMatch(/claimCandidateWhere\(\{/);
+    // No second hand-built copy of the gates in the route.
+    expect(route).not.toMatch(/claimableConditions\.push\(/);
+  });
+
+  it('the queue gates are the very predicates the route pushes into its WHERE', () => {
+    const { conditions, gates } = claimCandidateWhere(input);
+    const queueGates = runnerQueueGates(caller, NOW);
+    const rendered = conditions.map(render);
+    for (const [name, predicate] of Object.entries(queueGates)) {
+      expect(rendered).toContain(render(predicate!));
+      expect(render(gates[name as keyof typeof gates]!)).toBe(render(predicate!));
     }
+    expect(Object.keys(queueGates).sort()).toEqual(Object.keys(gates).sort());
   });
 
-  it('includes workspace and status predicates first', () => {
-    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
-    const rendered = conditions.slice(0, 2).map(c => render(c));
-    expect(rendered[0]).toContain('workspace_id');
-    expect(rendered[1]).toContain('status');
+  it('scopes to the workspaces and pending status, then every gate', () => {
+    const { conditions, gates } = claimCandidateWhere(input);
+    expect(render(conditions[0])).toContain('"workspace_id" in');
+    expect(render(conditions[1])).toContain('"status" =');
+    expect(conditions.length).toBe(2 + Object.keys(gates).length);
   });
 
-  it('includes gate predicates from the claim route', () => {
-    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
-    const rendered = conditions.map(c => render(c)).join('\n');
-    // Should include key gates the claim route checks.
-    expect(rendered).toMatch(/claimFree|expires_at/i); // claimFree or expiresAt
-    expect(rendered).toMatch(/mission_id|local/i); // missionLocal-related
+  it('an admin force claim lifts the gates the route lifts', () => {
+    const { gates } = claimCandidateWhere({ ...input, forceClaim: true, taskId: 't-1' });
+    for (const lifted of ['startAt', 'missionHeld', 'missionLocal', 'subject', 'deps', 'workspaceCap', 'workspaceExecutor', 'workspacePaused'] as const) {
+      expect(gates[lifted]).toBeUndefined();
+    }
+    expect(gates.activeWorker).toBeDefined();
+    expect(gates.taskHeld).toBeDefined();
+  });
+
+  it('an interactive explicit claim skips the local, cooldown, role and paused gates but keeps held', () => {
+    const { gates } = claimCandidateWhere({ ...input, taskId: 't-1', interactiveSession: true, accountId: 'acct', availableSkills: ['designer'] });
+    expect(gates.missionLocal).toBeUndefined();
+    expect(gates.runnerCooldown).toBeUndefined();
+    expect(gates.role).toBeUndefined();
+    expect(gates.workspacePaused).toBeUndefined();
+    expect(gates.missionHeld).toBeDefined();
   });
 });

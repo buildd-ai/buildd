@@ -240,14 +240,22 @@ export async function storeCodexCredential(scope: CodexScope, authJson: CodexAut
  */
 export async function resolveCodexApiKey(opts: {
   teamId: string;
-  accountId?: string | null;
+  /**
+   * `'any'` ignores account scoping: "could ANY runner in this team be handed
+   * an API key?". Read-only readiness reporting (backend failover) asks that
+   * form; a claim always passes its own account.
+   */
+  accountId?: string | null | 'any';
   workspaceId?: string | null;
 }): Promise<{ apiKey: string } | null> {
+  const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
     where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
-      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
+      ...(anyAccount
+        ? []
+        : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     )),
     columns: { encryptedValue: true, accountId: true, workspaceId: true, healthStatus: true },
@@ -272,37 +280,6 @@ export async function resolveCodexApiKey(opts: {
     if (typeof blob.api_key === 'string' && blob.api_key.length > 0) return { apiKey: blob.api_key };
   }
   return null;
-}
-
-/** True when a live (non-revoked) Codex credential exists for this task scope. Does not decrypt token values. */
-export async function hasCodexCredential(opts: {
-  teamId: string;
-  /**
-   * The account that would use the credential, or `'any'` to ignore account
-   * scoping entirely — "could ANY runner in this team run Codex?". Read-only
-   * reporting (backend readiness, the queue-stall watchdog) asks the `'any'`
-   * form: it has no claiming account in hand, and treating an account-scoped
-   * credential as absent would report a working team as stranded.
-   */
-  accountId?: string | null | 'any';
-  workspaceId?: string | null;
-}): Promise<boolean> {
-  const anyAccount = opts.accountId === 'any';
-  const rows = await db.query.secrets.findMany({
-    where: sqlWhere(and(
-      eq(secrets.teamId, opts.teamId),
-      eq(secrets.purpose, PURPOSE),
-      ...(anyAccount
-        ? []
-        : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
-      or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    )),
-    columns: { tokenExpiresAt: true, healthStatus: true },
-  });
-  // Readiness reporting only: the claim asks resolveCodexApiKey, since it
-  // delivers no stored login. Revoked credentials cannot be refreshed (the
-  // refresh_token family was invalidated by the provider), so they never count.
-  return rows.some((r) => (r.healthStatus as string) !== 'revoked');
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */

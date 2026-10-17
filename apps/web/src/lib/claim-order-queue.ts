@@ -16,25 +16,18 @@
  * limits, path overlap, mission pacing) are not visible to a read: the runner
  * adds them from its last claim outcome for the task (R-25).
  */
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { db } from '@buildd/core/db';
 import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
-import { depsGate } from '@/app/api/workers/claim/deps-gate';
-import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved } from '@/app/api/workers/claim/held-gate';
-import { subjectLivenessCondition } from '@/app/api/workers/claim/subject-gate';
-import { workspaceCapGate } from '@/app/api/workers/claim/workspace-cap-gate';
-import { workspaceExecutorGate } from '@/app/api/workers/claim/workspace-executor-gate';
-import { workspaceNotPausedGate } from '@/app/api/workers/claim/workspace-paused-gate';
-import { CLAIM_COOLDOWN_MS, activeWorkerGate, claimOrderBy, roleSlugGate, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
+import { claimOrderBy } from '@/lib/claim-order';
+import { claimCandidateWhere, type ClaimCandidateInput, type ClaimGateName } from '@/lib/claim-candidate-where';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
 
-export type QueueGateName =
-  | 'claimFree' | 'activeWorker' | 'runnerPreference' | 'missionLocal' | 'taskReserved' | 'role' | 'workspaceExecutor' | 'subject'
-  | 'startAt' | 'taskHeld' | 'missionHeld' | 'deps' | 'workspacePaused' | 'workspaceCap' | 'runnerCooldown';
+export type QueueGateName = ClaimGateName;
 
 export interface RunnerQueueCaller {
   /** accounts.type; a 'user' account is not held by runnerPreference, as in the claim route. */
@@ -52,25 +45,19 @@ export interface RunnerQueueCaller {
  * no force, no interactive session).
  */
 export function runnerQueueGates(caller: RunnerQueueCaller, now: Date): Partial<Record<QueueGateName, SQL>> {
-  const gates: Partial<Record<QueueGateName, SQL>> = {
-    claimFree: or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now))!,
-    activeWorker: activeWorkerGate(),
-    missionLocal: missionNotLocal(),
-    taskReserved: taskNotReserved(),
-    workspaceExecutor: workspaceExecutorGate(caller.executor),
-    subject: subjectLivenessCondition(),
-    startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
-    taskHeld: taskNotHeld(),
-    missionHeld: missionNotHeld(),
-    deps: depsGate(),
-    workspacePaused: workspaceNotPausedGate(now),
-    workspaceCap: workspaceCapGate(),
+  return claimCandidateWhere(callerInput(caller, now, [])).gates;
+}
+
+/** A runner's broad claim (no taskId, no force, no interactive session), as the claim route's candidate WHERE input. */
+function callerInput(caller: RunnerQueueCaller, now: Date, workspaceIds: string[]): ClaimCandidateInput {
+  return {
+    workspaceIds,
+    now,
+    accountType: caller.accountType,
+    runner: caller.runner,
+    availableSkills: caller.availableSkills,
+    executor: caller.executor,
   };
-  if (caller.accountType !== 'user') gates.runnerPreference = runnerPreferenceGate(caller.accountType);
-  const role = roleSlugGate(caller.availableSkills);
-  if (role.length > 0) gates.role = and(...role)!;
-  if (caller.runner) gates.runnerCooldown = runnerCooldownGate(caller.runner, new Date(now.getTime() - CLAIM_COOLDOWN_MS));
-  return gates;
 }
 
 /** The rows a queue read covers: waiting tasks in the caller's claimable workspaces, nothing else. */
@@ -258,44 +245,15 @@ async function readEstimates(teamId: string, taskIds: string[]): Promise<Estimat
     .orderBy(desc(taskEstimates.createdAt));
 }
 
-/** Build WHERE conditions for a typical claim (no force, no taskId, not interactive). */
-export function buildBroadClaimWhere(
-  caller: RunnerQueueCaller,
-  now: Date,
-  workspaceIds: string[],
-): SQL[] {
-  const conditions: SQL[] = [
-    inArray(tasks.workspaceId, workspaceIds),
-    eq(tasks.status, 'pending'),
-  ];
-
-  const gates = runnerQueueGates(caller, now);
-  // Add each gate that the route would include for a typical broad claim
-  if (gates.claimFree) conditions.push(gates.claimFree);
-  if (gates.startAt) conditions.push(gates.startAt);
-  if (gates.runnerPreference) conditions.push(gates.runnerPreference);
-  if (gates.activeWorker) conditions.push(gates.activeWorker);
-  if (gates.missionLocal) conditions.push(gates.missionLocal);
-  if (gates.missionHeld) conditions.push(gates.missionHeld);
-  if (gates.taskHeld) conditions.push(gates.taskHeld);
-  if (gates.taskReserved) conditions.push(gates.taskReserved);
-  if (gates.subject) conditions.push(gates.subject);
-  if (gates.deps) conditions.push(gates.deps);
-  if (gates.workspaceCap) conditions.push(gates.workspaceCap);
-  if (gates.workspaceExecutor) conditions.push(gates.workspaceExecutor);
-  if (gates.workspacePaused) conditions.push(gates.workspacePaused);
-  if (gates.runnerCooldown) conditions.push(gates.runnerCooldown);
-  if (gates.role) conditions.push(gates.role);
-
-  return conditions;
-}
-
-/** Fetch candidate task IDs the way the claim route does, for test verification. */
+/**
+ * Candidate task ids for a runner's broad claim: the route's own WHERE
+ * (claimCandidateWhere) and ORDER BY (claimOrderBy), for test verification.
+ */
 export async function fetchBroadClaimCandidateIds(
   builder: { select: typeof db.select },
   opts: { workspaceIds: string[]; caller: RunnerQueueCaller; now: Date },
 ): Promise<string[]> {
-  const conditions = buildBroadClaimWhere(opts.caller, opts.now, opts.workspaceIds);
+  const { conditions } = claimCandidateWhere(callerInput(opts.caller, opts.now, opts.workspaceIds));
   const rows = await builder
     .select({ id: tasks.id })
     .from(tasks)

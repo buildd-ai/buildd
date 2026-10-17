@@ -553,7 +553,7 @@ the web host.
   submits a command THEN the door answers with a retryable error naming the
   control plane, and applies nothing itself (`kernel-client.test.ts`,
   `kernel-command-host.test.ts`).
-- AC-13 (failure): GIVEN `EXECUTION_MODE=own` and a control plane slow to
+- AC-30 (failure): GIVEN `EXECUTION_MODE=own` and a control plane slow to
   answer WHEN a sweep makes door calls and inline drains one after another
   THEN the pass waits on the control plane no longer than its budget, the
   calls past it are refused unsent and retryable, and the pass reports each
@@ -563,6 +563,10 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
+
+Criterion numbering note: the sweep-budget and command-lease criterion in §3
+was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
+keeps AC-13; evidence tables below reference criteria rather than define them.
 
 ## 4. One landing authority
 
@@ -802,8 +806,8 @@ push, refresh, completion or owner change can make it disappear.
   calls an open reviewer a review, never "Fix 0 of 3".
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
-  proof is §9's "L unknown" rule (the head moved off the bound head and
-  descends from it), only when nothing local can be lost: a completed end or
+  proof is §9's "L unknown" rule (the head moved off the bound head; a
+  rebase and force-push does not descend from it, so ancestry is not asked), only when nothing local can be lost: a completed end or
   one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
   round (T27, re-queued twice with a backoff, then `review_unavailable`)
   instead of leaving it open with nobody on it.
@@ -973,10 +977,10 @@ later work and nothing refreshes or re-ships a branch that already landed.
 
 | AC | Test |
 | --- | --- |
-| AC-20 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-20 / scenario 1 and 3"; `apps/web/tests/db/mission-epochs.test.ts` › "AC-20", "scenario 2" |
-| AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
-| AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
-| AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Criterion AC-20 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-20 / scenario 1 and 3"; `apps/web/tests/db/mission-epochs.test.ts` › "AC-20", "scenario 2" |
+| Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
+| Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
@@ -1020,9 +1024,9 @@ as a candidate whatever its worker row says.
 
 | AC | Test |
 | --- | --- |
-| AC-24 | `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/app/api/github/pr/route.test.ts` › "review rounds and standing from the delivery" |
-| AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
-| AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
+| Criterion AC-24 | `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/app/api/github/pr/route.test.ts` › "review rounds and standing from the delivery" |
+| Criterion AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
+| Criterion AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 
 ## 8. Order of work
@@ -1035,7 +1039,7 @@ Each slice is one or more reviewed PRs to trunk, built locally (mission
 | S0 | this spec, with #4693's amendments to `workflow-state-kernel.md` and `mission-task-lifecycle.md` | — | ed50e3b2, #4693 |
 | S1 | package with the pure modules, boundary test, in-memory store, conformance suite on the pure core; apps/web imports from it | AC-5, AC-6, AC-8 | — |
 | S2 | ports for store, GitHub, clock, work, notify, policy, decide; effect handlers move into the package; Postgres adapter runs the suite | AC-7, AC-27–AC-29 | — |
-| S3 | single host: command endpoint, drain and floor on the control plane, Vercel doors submit commands; every merge door through the gate on review verdict, head and CI; release doors pinned; `buildd/landing` status | AC-9–AC-12, AC-14–AC-16 | cc59da33, 30a47173 |
+| S3 | single host: command endpoint, drain and floor on the control plane, Vercel doors submit commands; every merge door through the gate on review verdict, head and CI; release doors pinned; `buildd/landing` status | AC-9–AC-12, AC-14–AC-16, AC-30 | cc59da33, 30a47173 |
 | S4 | one writer: lifecycle columns written only by kernel transitions; write-site guard; render write-through retired | AC-1–AC-4 | 459b58ed (projections half) |
 | S5 | findings model and pinned repair builders; the gate and status read open findings | AC-13, AC-17–AC-19 | 7d68f57d, 459b58ed |
 | S6 | mission deliveries, epochs, refresh as an effect, settlement | AC-20–AC-23 | f3bda4e1, a11abc4b |

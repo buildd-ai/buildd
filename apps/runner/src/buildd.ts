@@ -1088,12 +1088,18 @@ export class BuilddClient {
      */
     claimHandoff?: ClaimHandoffSnapshot,
     /**
-     * Which kind of model credential this runner's agents use, and the
-     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource), plus the
+     * Which kind of model credential this runner's agents use: the
+     * machine login label (host-seat.ts detectModelAuthSource), plus the
      * Codex label (detectCodexAuthSource). Labels, never a value. Omitted by older callers; the server keeps the stored
      * label when the field is absent.
      */
     modelAuth?: HeartbeatModelAuth | null,
+    /**
+     * This runner's slots: how many agents it runs at once (`buildd slots`,
+     * spec c7410e76 R-43). The dashboard's runner list shows it. Omitted by
+     * older callers; the server then keeps the account's default.
+     */
+    maxConcurrent?: number,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number; claimsReleased?: number }> {
     const payload: Record<string, unknown> = {
       localUiUrl,
@@ -1135,9 +1141,9 @@ export class BuilddClient {
     }
     if (modelAuth) {
       payload.modelAuthSource = modelAuth.source;
-      payload.modelAuthMode = modelAuth.mode;
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
+    if (typeof maxConcurrent === 'number' && Number.isInteger(maxConcurrent) && maxConcurrent > 0) payload.maxConcurrent = maxConcurrent;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),

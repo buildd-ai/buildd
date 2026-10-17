@@ -660,11 +660,44 @@ esac
 
 [ "$CLIENT_ONLY" = "1" ] && client_only_runner
 
-# Run with restart loop (exit code 75 = update applied, restart)
+# Run with restart loop (exit code 75 = update applied, restart).
+#
+# Under a service manager (no terminal on stdin) its stop signal reaches this
+# launcher, not the runner. The runner is started in the background and the
+# signal is handed to it, so it can pause its running agents before it exits
+# (it exits on its own within its grace); the launcher waits for that. In a
+# terminal the runner stays in the foreground: Ctrl-C reaches it directly.
+RUNNER_PID=""
+forward_signal() {
+  [ -n "$RUNNER_PID" ] && kill -s "$1" "$RUNNER_PID" 2>/dev/null
+}
 while true; do
   ensure_packages
-  bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
-  EXIT_CODE=$?
+  if [ -t 0 ]; then
+    bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
+    EXIT_CODE=$?
+  else
+    trap 'forward_signal TERM' TERM
+    trap 'forward_signal INT' INT
+    trap 'forward_signal HUP' HUP
+    bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@" &
+    RUNNER_PID=$!
+    # `wait` returns early when a trapped signal arrives; wait again until the
+    # runner itself has exited, and take its exit code.
+    wait "$RUNNER_PID"
+    EXIT_CODE=$?
+    while kill -0 "$RUNNER_PID" 2>/dev/null; do
+      wait "$RUNNER_PID"
+      EXIT_CODE=$?
+    done
+    # Once more, after it is gone: bash keeps an exited child's status, so this
+    # returns the runner's own code (75 = restart) even when the runner exited
+    # between an interrupted wait (128+signal) and the kill -0 above.
+    wait "$RUNNER_PID" 2>/dev/null
+    EXIT_CODE=$?
+    RUNNER_PID=""
+    trap - TERM INT HUP
+  fi
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."
   # The runner opens its debug page in a browser on the first start only.

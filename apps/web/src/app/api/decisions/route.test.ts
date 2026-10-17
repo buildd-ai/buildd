@@ -20,6 +20,12 @@ mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: w
 const healthRows = mock(async (..._args: any[]) => ({ rows: [] as any[], outcomes: [] as any[], truncated: false }));
 mock.module('@buildd/core/decision-ledger', () => ({ readDecisionLedgerPage: ledger, readDecisionHealthRows: healthRows, summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }) }));
 
+// The real lookup pulls in the kind modules, which need the whole ledger module; the wiring is what is under test.
+const triageObjective = { source: 'post_session_analysis', score: (o: { label: string }, a: string) => (o.label === 'actionable' ? a === 'analyse' : o.label === 'not_actionable' ? a === 'skip' : null) };
+mock.module('@/lib/decision-health-objectives', () => ({
+  healthObjectiveLookup: async () => (c: string) => (c === 'buildd.post_session_triage' ? triageObjective : undefined),
+}));
+
 const orchRead = mock(async (..._args: any[]) => ({ rows: [{ id: 'o1', capability: 'orchestration_claim', appliedAnswer: 'START', createdAt: new Date('2026-01-01T00:00:00Z') }] as any[], truncated: false }));
 mock.module('@buildd/core/orchestration-decision-ledger', () => ({
   isOrchestrationCapability: (c?: string) => !!c && c.startsWith('orchestration_'),
@@ -229,4 +235,29 @@ it('features=1 gives one readout per capability over the window, quiet features 
     ['task_role_shadow', 'not_collecting'],
   ]);
   expect(body.features[0].health.graded).toMatchObject({ n: 1, right: 1 });
+});
+
+it('features=1 and the per-capability read agree on the automatic labels, and both score them', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  const rows = [
+    { id: 'a', capability: 'buildd.post_session_triage', status: 'applied', applied: true, verdict: 'analyse', reason: null, latencyMs: 30, costUsd: 0.001, overridden: false },
+    { id: 'b', capability: 'buildd.post_session_triage', status: 'applied', applied: true, verdict: 'skip', reason: null, latencyMs: 30, costUsd: 0.001, overridden: false },
+    { id: 'c', capability: 'buildd.post_session_triage', status: 'applied', applied: true, verdict: 'skip', reason: null, latencyMs: 30, costUsd: 0.001, overridden: false },
+  ];
+  const outcomes = [
+    { decisionRecordId: 'a', source: 'post_session_analysis', label: 'actionable', value: null },
+    { decisionRecordId: 'b', source: 'post_session_analysis', label: 'actionable', value: null },
+  ];
+  healthRows.mockImplementationOnce(async () => ({ rows, outcomes, truncated: false }));
+  const all = (await (await GET(req('?workspaceId=ws&features=1'))).json()).features[0].health;
+
+  ledger.mockImplementationOnce(async () => ({
+    rows: rows.map(r => ({ ...r, createdAt: new Date('2026-01-01T00:00:00Z'), overriddenAt: null })), outcomes, truncated: false,
+  }));
+  const one = (await (await GET(req('?workspaceId=ws&capability=buildd.post_session_triage'))).json()).health;
+
+  expect(all.coverage.labelled.n).toBe(2);
+  expect(all.coverage.labelled).toEqual(one.coverage.labelled);
+  expect(all.outcomeGraded).toMatchObject({ n: 2, right: 1, wrong: 1 });
+  expect(all.outcomeGraded).toEqual(one.outcomeGraded);
 });

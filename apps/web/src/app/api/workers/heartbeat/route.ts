@@ -6,8 +6,8 @@ import {
   WORKER_LEASE_TTL_MS,
   runnerFleetIdentity,
   storedHeartbeatEnvironment,
+  withNormalizedRunnerHold,
   isRunnerModelAuthSource,
-  isRunnerModelAuthMode,
   isRunnerCodexAuthSource,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -27,6 +27,9 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * /api/* endpoints. The dashboard retrieves this token via /api/workers/active
  * and passes it to the browser so it can fetch live data directly.
  */
+/** The most slots a runner may report (the runner's own `buildd slots` bound). */
+const MAX_RUNNER_SLOTS = 50;
+
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -88,13 +91,18 @@ export async function POST(req: NextRequest) {
        * mistake) is dropped here so it never reaches the table, and the beat
        * still succeeds.
        */
+      // Old runners may still send a mode; it is ignored.
       modelAuthSource: rawModelAuthSource = undefined,
-      modelAuthMode: rawModelAuthMode = undefined,
       /** The runner's Codex login label (same spec, R-12), under the same rules. */
       codexAuthSource: rawCodexAuthSource = undefined,
+      /**
+       * The runner's own slots: how many agents it runs at once (`buildd
+       * slots`, + / - in top; spec c7410e76 R-43). Absent from older runners,
+       * which keep the account's default here.
+       */
+      maxConcurrent: rawMaxConcurrent = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
-    const modelAuthMode = isRunnerModelAuthMode(rawModelAuthMode) ? rawModelAuthMode : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
@@ -120,8 +128,13 @@ export async function POST(req: NextRequest) {
     // long-lived runner's environment is stored exactly as sent, minus any
     // `fleet` it claims (it cannot report itself out of the fleet).
     const fleet = runnerFleetIdentity({ localUiUrl: String(localUiUrl), environment });
-    const storedEnvironment = storedHeartbeatEnvironment(environment, fleet);
-    const maxConcurrentWorkers = fleet.ephemeral ? 1 : account.maxConcurrentWorkers;
+    // `hold` (a person's `buildd hold`, R-35) is kept only as a valid
+    // { since, until }; a lifted (null) or malformed one is dropped.
+    const storedEnvironment = withNormalizedRunnerHold(storedHeartbeatEnvironment(environment, fleet));
+    const reportedSlots = typeof rawMaxConcurrent === 'number' && Number.isInteger(rawMaxConcurrent) && rawMaxConcurrent >= 1 && rawMaxConcurrent <= MAX_RUNNER_SLOTS
+      ? rawMaxConcurrent
+      : null;
+    const maxConcurrentWorkers = fleet.ephemeral ? 1 : (reportedSlots ?? account.maxConcurrentWorkers);
 
     const now = new Date();
 
@@ -182,7 +195,6 @@ export async function POST(req: NextRequest) {
         updateDrain: storedUpdateDrain,
         trackedBranch: (trackedBranch ?? null) as string | null,
         modelAuthSource,
-        modelAuthMode,
         codexAuthSource,
         lastHeartbeatAt: now,
       })
@@ -212,7 +224,6 @@ export async function POST(req: NextRequest) {
           // Omitted when not sent (or not a listed label), so an older runner
           // or a garbled beat keeps the last good value — runnerVersion's rule.
           ...(modelAuthSource !== null ? { modelAuthSource } : {}),
-          ...(modelAuthMode !== null ? { modelAuthMode } : {}),
           ...(codexAuthSource !== null ? { codexAuthSource } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,

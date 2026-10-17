@@ -147,7 +147,7 @@ export class UpdateDrain {
       this.phase = 'applying';
       this.logger.warn(
         `[update-drain] drain ended: timeout — ${input.busy} worker(s) still running after ${fmt(waitedMs)}; ` +
-        'restarting anyway (their sessions are reported as "Process restarted" on the next boot and their worktrees are kept)',
+        'restarting anyway (they are paused first and continue in their own sessions after the restart; their worktrees are kept)',
       );
       return { action: 'apply', reason: 'timeout', inFlight: input.busy, waitedMs };
     }

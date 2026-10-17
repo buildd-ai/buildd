@@ -128,10 +128,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
   // The open and recently delivered missions of the runner's workspaces (R-24):
-  // at most once a minute, whoever asks (the timer, a snapshot, a queue event).
+  // Event-triggered reads are throttled; the minute timer is its own cadence.
   let missionsAt = 0;
-  const refreshMissions = async () => {
-    if (Date.now() - missionsAt < MISSION_REFRESH_MS) return;
+  const refreshMissions = async (timerTick = false) => {
+    if (!timerTick && Date.now() - missionsAt < MISSION_REFRESH_MS) return;
     missionsAt = Date.now();
     try {
       const r = await client.get<{ missions?: any[] }>('/api/missions/recent');
@@ -146,10 +146,23 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       else if (state.view === 'queue' && r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the queue: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
+  // Capacity, and the routes this machine's credentials give (R-39). Local
+  // only (the runner answers from memory), so a finished run re-reads it: a
+  // login that just failed shows as expired in the header.
+  const configEvent = (body: any): TopEvent => ({
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems,
+  });
+  const refreshConfig = async () => {
+    try {
+      const r = await client.get('/api/config');
+      if (r.status === 200 && r.body) dispatch(configEvent(r.body));
+    } catch { /* the stream's reconnect reports a dead socket */ }
+  };
   const queueChanged = () => {
     if (queueTimer) return;
     queueTimer = setTimeout(() => {
       queueTimer = null;
+      void refreshConfig();
       if (state.view === 'missions') {
         void refreshTasks();
         void refreshMissions();
@@ -170,7 +183,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     ]);
     if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
-    if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
+    if (config?.body) dispatch(configEvent(config.body));
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
     await Promise.all([refreshTasks(), refreshMissions()]);
   };
@@ -208,7 +221,21 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
     let result: { status: number; body: unknown };
     try {
-      if (effect.type === 'claim') {
+      if (effect.type === 'hold') {
+        result = await client.post(effect.on ? '/api/hold' : '/api/resume', {});
+        // The header changes now, not only when the runner's frame arrives (AC-17).
+        const b = result.body as { hold?: unknown } | null;
+        if (result.status >= 200 && result.status < 300 && b && typeof b === 'object' && 'hold' in b) {
+          dispatch({ type: 'runner_hold', hold: (b.hold ?? null) as any });
+        }
+      } else if (effect.type === 'slots') {
+        result = await client.post('/api/slots', effect.extras ? { slots: effect.slots, extras: effect.extras } : { slots: effect.slots });
+        const b = result.body as { slots?: unknown } | null;
+        if (result.status >= 200 && result.status < 300 && typeof b?.slots === 'number') dispatch({ type: 'slots', maxConcurrent: b.slots });
+        // A lower that left extras running keeps its own line: it offers p (R-45).
+        if (result.status >= 200 && result.status < 300 && !effect.extras && state.slotOffer?.slots === effect.slots) { queueChanged(); return; }
+        if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know slots yet (update it)' } };
+      } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
         const body = effect.message !== undefined ? { message: effect.message } : {};
@@ -218,7 +245,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       result = { status: 0, body: { error: `the runner did not answer (${err?.message ?? err})` } };
     }
     dispatch({ type: 'status', status: actionResultText(effect, result) });
-    if (effect.type === 'claim') queueChanged();
+    if (effect.type === 'claim' || effect.type === 'hold' || effect.type === 'slots') queueChanged();
   };
 
   // ── terminal ────────────────────────────────────────────────────────────
@@ -301,7 +328,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
   timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
-  timers.push(setInterval(() => void refreshMissions(), MISSION_REFRESH_MS));
+  timers.push(setInterval(() => void refreshMissions(true), MISSION_REFRESH_MS));
   timers.push(setInterval(() => { if (state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
