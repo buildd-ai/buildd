@@ -1737,7 +1737,13 @@ export interface ClaimTaskExclusion {
    * names in prose, so a caller (`buildd top`) can show it in local time
    * without parsing the sentence. Absent when there is no known end.
    */
-  until?: string;
+  until?: string;  /**
+   * The task this one waits for, on an overlap (`soft_overlap`, or a
+   * `path_overlap` behind another task's active claim): the same task `detail`
+   * names in prose, so `buildd top` can say "when #3 ends (same files)" or name
+   * it by title (spec c7410e76 R-26). Absent for any other code.
+   */
+  holderTaskId?: string;
 }
 
 export interface ClaimDiagnostics {

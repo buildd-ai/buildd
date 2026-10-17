@@ -1084,6 +1084,38 @@ describe('POST /api/workers/heartbeat — fleet identity of a --once run', () =>
     expect(capturedValues.environment).toEqual(sent);
   });
 
+  // Spec c7410e76 R-43: the runner's own slots (`buildd slots`, + / - in top)
+  // are what the dashboard's runner list shows for it.
+  it('a host runner that reports its slots is stored with them', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://atlas.local:8766', environment: env(), maxConcurrent: 9 },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(9);
+    expect(capturedConflictSet.maxConcurrentWorkers).toBe(9);
+  });
+
+  it('a malformed slots value falls back to the account default', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    for (const bad of [0, -2, 2.5, 'nine', 500]) {
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://atlas.local:8766', environment: env(), maxConcurrent: bad },
+      }));
+      expect(capturedValues.maxConcurrentWorkers).toBe(5);
+    }
+  });
+
+  it('a --once run stays one slot whatever slots it reports', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://container/once/task-9', environment: env(), maxConcurrent: 4 },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(1);
+  });
+
   it('a host runner cannot report itself ephemeral and shrink out of the fleet', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
     await POST(createMockRequest({
