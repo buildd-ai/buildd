@@ -93,6 +93,31 @@ describe('transitions → timeline', () => {
   });
 });
 
+describe('295486ba: fix numbering after a skipped attempt', () => {
+  const row = (id: string, no: number, status: AttemptSnapshot['status'], reason: string): AttemptSnapshot => ({
+    id, family: 'review_fix', attemptNo: no, mode: 'agent', boundHeadSha: 'H1', triggerReason: reason, taskId: `t${id}`, status, outcome: null, maxAttempts: 3, reportedShas: [],
+  } as AttemptSnapshot);
+  // attempt_no 1 never started, so the dispatched ones are 2 and 3 (places 1 and 2).
+  const rows = [row('s1', 1, 'skipped', 'r0'), row('d2', 2, 'ended', 'r1'), row('d3', 3, 'ended', 'r2')];
+  const rds = [{ id: 'r1', round: 1 }, { id: 'r2', round: 2 }] as RoundSnapshot[];
+
+  test('fix_started counts dispatched attempts, never the raw attempt_no', () => {
+    const ts: ActivityTransition[] = [
+      { command: 'FixClaimed', fromState: 'CHANGES_REQUESTED', toState: 'FIXING', toVersion: 1, evidence: { attemptId: 'd3' }, createdAt: '2026-10-06T10:00:00.000Z' },
+    ];
+    const e = transitionsToActivityEntries(ts, rds, rows)[0];
+    expect({ iteration: e.iteration, maxIterations: e.maxIterations }).toEqual({ iteration: 2, maxIterations: 3 });
+  });
+
+  test('review_changes_requested names the next fix by its place, not attempt_no', () => {
+    const ts: ActivityTransition[] = [
+      { command: 'ReviewVerdictRecorded', fromState: 'AWAITING_REVIEW', toState: 'CHANGES_REQUESTED', toVersion: 1, evidence: { roundId: 'r2' }, createdAt: '2026-10-06T10:00:00.000Z' },
+    ];
+    const e = transitionsToActivityEntries(ts, rds, rows)[0];
+    expect({ iteration: e.iteration, maxIterations: e.maxIterations }).toEqual({ iteration: 2, maxIterations: 3 });
+  });
+});
+
 describe('renderDeliveryActivity (S26)', () => {
   const view = (d: Partial<DeliverySnapshot>): KernelView => ({ delivery: D(d), rounds, attempts });
 
