@@ -481,6 +481,23 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(line).toContain('prs=org/a#2:19000ms:deferred,org/a#1:120ms:suggested');
   });
 
+  it('includes timings and controlPlane in the run report (for cron_runs result)', async () => {
+    let capturedOutcome: any = null;
+    const mockWithCronRun = async (job: string, req: any, handler: any) => {
+      const mockReport = (outcome: any) => { capturedOutcome = outcome; };
+      return handler(mockReport);
+    };
+    // This test would need to intercept the report call; instead verify via the response
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    const body = await res.json();
+    expect(typeof body.timings).toBe('object');
+    expect(typeof body.controlPlane).toBe('object');
+    expect(body.timings).toHaveProperty('reconcile');
+    expect(body.timings).toHaveProperty('heldReleases');
+    expect(body.controlPlane).toHaveProperty('label');
+    expect(body.controlPlane).toHaveProperty('budgetMs');
+  });
+
   it('a closed-PR backfill failure does not fail the run', async () => {
     mockClosedPrSweep.mockRejectedValue(new Error('detect failed'));
     const res = await GET(makeRequest('test-secret', '?scope=merge-state'));

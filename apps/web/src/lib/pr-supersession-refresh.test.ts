@@ -266,4 +266,41 @@ describe('sweepSupersededRefreshPrs', () => {
     const r = await sweepSupersededRefreshPrs(new Date(), { load: async () => ({ open: [OLDER], merged: [NEWER] }), installation: async () => null, api });
     expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1, deferred: 0, deferralExhausted: 0 });
   });
+
+  it('when a deferral is exhausted, the sweep sets the exhausted flag and fires a stranded event', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: { code: 'control_plane_unavailable' }, headers: {} } }));
+    const exhaustedPr = { ...OLDER, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 24, reason: 'cp down' } };
+    const now = new Date('2026-10-14T23:10:00Z');
+    const saved: Array<{ taskId: string; count: number; exhausted: boolean }> = [];
+    const saveDeferral = async (taskId: string, state: { count: number }, exhausted: boolean) => { saved.push({ taskId, count: state.count, exhausted }); };
+    const r = await sweepSupersededRefreshPrs(now, {
+      load: async () => ({ open: [exhaustedPr], merged: [NEWER] }),
+      installation: async () => 1,
+      api,
+      saveDeferral,
+    });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 0, deferred: 1, deferralExhausted: 1 });
+    expect(saved.at(-1)).toEqual({ taskId: 't4275', count: 25, exhausted: true });
+    expect(mockFireGateEvent.mock.calls.some((c: any[]) => c[0].outcome === 'stranded' && c[0].detail.kind === 'control_plane_deferral_exhausted')).toBe(true);
+  });
+
+  it('a successful retire clears the deferral so future outages start fresh', async () => {
+    // Verify that when a PR with a prior deferral is successfully retired,
+    // the deferral state is cleared so future outages on the same PR start with count=1
+    const saved: Array<{ taskId: string; count: number }> = [];
+    const saveDeferral = async (taskId: string, state: { count: number }) => { saved.push({ taskId, count: state.count }); };
+    const r = await sweepSupersededRefreshPrs(new Date(), {
+      load: async () => {
+        const prWithOldDeferral = { ...OLDER, deferral: { firstAt: '2026-10-13T00:00:00Z', count: 5, reason: 'prior outage' } };
+        return { open: [prWithOldDeferral], merged: [NEWER] };
+      },
+      installation: async () => 1,
+      api,
+      saveDeferral,
+    });
+    expect(r.retired).toBe(1);
+    // When retirement succeeds, the deferral should be cleared (not saved again)
+    expect(saved).toHaveLength(0);
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+  });
 });

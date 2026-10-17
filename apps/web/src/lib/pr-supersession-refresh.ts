@@ -240,6 +240,8 @@ export async function retireSupersededRefreshPr(opts: {
     }
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);
+    // Clear the deferral on successful record, so future outages start fresh
+    if (older.taskId) await clearRefreshDeferral(older.taskId).catch((err) => console.error(`[pr-supersession-refresh] #${older.prNumber}: could not clear its deferral:`, err));
   } catch (err) {
     const reason = `retire failed: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[pr-supersession-refresh] #${older.prNumber}: ${reason}`);
@@ -387,4 +389,9 @@ export async function sweepSupersededRefreshPrs(
 async function saveRefreshDeferral(taskId: string, state: DeferralState, exhausted: boolean): Promise<void> {
   const patch = JSON.stringify({ [REFRESH_DEFERRAL_KEY]: state, ...(exhausted ? { [REFRESH_DEFERRAL_EXHAUSTED_KEY]: true } : {}) });
   await db.update(tasks).set({ context: sql`coalesce(${tasks.context}, '{}'::jsonb) || ${patch}::jsonb` }).where(eq(tasks.id, taskId));
+}
+
+/** Clear the refresh deferral when a tick succeeds, so future outages start fresh. */
+async function clearRefreshDeferral(taskId: string): Promise<void> {
+  await db.update(tasks).set({ context: sql`coalesce(${tasks.context}, '{}'::jsonb) - ${REFRESH_DEFERRAL_KEY}` }).where(eq(tasks.id, taskId));
 }
