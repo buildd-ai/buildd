@@ -586,6 +586,8 @@ describe('renderManifestGuidance', () => {
     expect(section).toContain('- apps/web/src/lib/reviewer.ts');
     expect(section).toContain('- packages/core/path-overlap.ts');
     expect(doctrine).toContain('Every file in pathManifest must be present in the diff');
+    expect(doctrine).toContain('OUT-OF-MANIFEST FILES ARE A NOTE');
+    expect(doctrine).toContain('docs/specs/INDEX.md');
   });
 
   it('renders the advisory form for the repo-wide sentinel', () => {
