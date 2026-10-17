@@ -5727,6 +5727,35 @@ export const workflowCommands = pgTable('workflow_commands', {
 
 export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 
+// §3 of docs/specs/workflow-kernel-library.md — a door command the control plane
+// never answered, kept by its idempotency key so the kernel floor re-submits it
+// (the same key, so the ledger above applies it once) until it is answered.
+// Only ops with no other re-sender are kept (command-outbox.ts `PARK_ON_UNAVAILABLE`).
+export const workflowCommandOutbox = pgTable('workflow_command_outbox', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  /** The principal the door vouched for, as sent: the control plane re-checks its reach on every re-submission. */
+  principal: jsonb('principal').$type<Record<string, unknown>>().notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'done' | 'dead'>(),
+  /** A submission may have reached the control plane: never run on the web host without the ledger's word. */
+  priorUnknown: boolean('prior_unknown').default(false).notNull(),
+  /** What the answer said: the kernel's result (applied, duplicate, stale, rejected), `replayed`, or why it was given up. */
+  outcome: text('outcome'),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, (t) => ({
+  dueIdx: index('workflow_command_outbox_due_idx').on(t.notBefore).where(sql`${t.status} = 'pending'`),
+  createdIdx: index('workflow_command_outbox_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandOutboxRow = typeof workflowCommandOutbox.$inferSelect;
+
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
 export const workflowEffects = pgTable('workflow_effects', {
