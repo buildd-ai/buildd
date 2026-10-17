@@ -64,6 +64,11 @@ export interface EscalationSubject {
   handoffReason?: string | null;
   /** The escalation's own words (reviewer reason, kernel detail), as a person would read them. */
   detail?: string | null;
+  /**
+   * What the review rounds actually did, for `review_exhausted`: the delivery projection's own
+   * headline (`reviewExhaustedCopy` in @buildd/workflow-kernel), passed through, never re-derived.
+   */
+  reviewHistory?: string | null;
   /** The PR's migration number collides with another open PR's. */
   migrationCollision?: boolean;
   /** Landing gave up for now because the base kept moving under the approved PR. */
@@ -309,7 +314,9 @@ export function buildEscalationGateState(s: EscalationSubject): Record<string, u
   return {
     pr: {
       title: s.title,
-      why: WHY_WORDS[s.why],
+      why: s.why === 'review_exhausted' && s.reviewHistory
+        ? `review rounds ran out (${s.reviewHistory.charAt(0).toLowerCase()}${s.reviewHistory.slice(1)})`
+        : WHY_WORDS[s.why],
       detail: s.detail ?? null,
       landingStopped: s.handoffReason ?? null,
       checks: s.ci,
