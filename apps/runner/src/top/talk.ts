@@ -13,7 +13,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { NO_MISSION, missionRows, taskRows, type TopState } from './state';
+import { NO_MISSION, isLooseKey, missionRows, taskRows, type TopState } from './state';
 
 export const NOT_LOGGED_IN = "Claude isn't logged in on this machine: run claude login";
 
@@ -203,7 +203,7 @@ export function talkContext(state: TopState, target: TalkTarget, payload: Pick<T
   const missionKey = target.kind === 'mission' ? target.id : (task?.missionId || NO_MISSION);
   // taskRows lists the selected mission's tasks, which is the target's mission here.
   const rows = taskRows(state, now).filter(r => r.kind !== 'done' && r.kind !== 'cancelled');
-  const onMission = missionKey === NO_MISSION ? [] : rows;
+  const onMission = isLooseKey(missionKey) ? [] : rows;
   const grading: Array<{ label?: string; verdict?: string }> = mission?.goalCriteriaState?.criteria ?? [];
   const goals = Array.isArray(mission?.goalCriteria)
     ? mission.goalCriteria.map((g: any, i: number) => ({

@@ -117,7 +117,7 @@ describe('teams (R-23)', () => {
     expect(taskRows(all, NOW).map(r => r.title)).toEqual(['a work']);
     const b = state({ selectedTeam: 'Team B' }, RECENT, tasks);
     expect(taskRows(b, NOW).map(r => r.title)).toEqual(['b work']);
-    expect(missionRows(b, NOW).map(r => r.title)).toEqual(['Other team mission', 'Other tasks']);
+    expect(missionRows(b, NOW).map(r => r.title)).toEqual(['Other team mission']);
   });
 
   test('one team, or none named: t has nothing to switch to', () => {
@@ -141,7 +141,6 @@ describe('missions pane (R-24)', () => {
       ['Team A', 'Delivered newer'],
       ['Team A', 'Delivered one'],
       ['Team B', 'Other team mission'],
-      [null, 'Other tasks'],
     ]);
   });
 
@@ -179,7 +178,7 @@ describe('missions pane (R-24)', () => {
     const tasks: TopTask[] = [
       { id: 'a1', title: 'a work', status: 'pending', workspaceId: 'ws-1', missionId: 'm-x', mission: { id: 'm-x', title: 'From tasks' } },
     ];
-    expect(missionRows(state({}, null, tasks), NOW).map(r => r.title)).toEqual(['From tasks', 'Other tasks']);
+    expect(missionRows(state({}, null, tasks), NOW).map(r => r.title)).toEqual(['From tasks']);
   });
 
   test('the selection moves with the order and picks a mission with no tasks', () => {

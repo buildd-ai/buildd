@@ -249,7 +249,7 @@ describe('workspaces (R-19, AC-8)', () => {
     s = cycleWorkspace(cycleWorkspace(cycleWorkspace(s))); // charlie
     expect(missionRows(s).map(r => [r.title, r.total])).toEqual([['Charlie mission', 1], ['Other tasks', 1]]);
     s = cycleWorkspace(cycleWorkspace(s)); // all, then alpha
-    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Other tasks']);
+    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission']);
     expect(taskRows(s, NOW).map(r => r.title)).toEqual(['alpha work']);
   });
 
