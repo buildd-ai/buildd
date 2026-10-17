@@ -237,6 +237,19 @@ it('features=1 gives one readout per capability over the window, quiet features 
   expect(body.features[0].health.graded).toMatchObject({ n: 1, right: 1 });
 });
 
+it('features=1 says in words when its counts are a sample of the window, and not when they are not', async () => {
+  user.mockResolvedValue({ id: 'user' });
+  const row = { id: 'a', capability: 'task_role_shadow', status: 'fallback', applied: false, verdict: null, reason: 'x', latencyMs: null, costUsd: null, overridden: false };
+  healthRows.mockImplementationOnce(async () => ({ rows: [row], outcomes: [], truncated: true }));
+  const cut = await (await GET(req('?workspaceId=ws&features=1'))).json();
+  expect(cut.truncated).toBe(true);
+  expect(cut.sample).toMatchObject({ complete: false, rows: 1 });
+  expect(cut.sample.note).toContain('newest 1 decisions');
+  healthRows.mockImplementationOnce(async () => ({ rows: [row], outcomes: [], truncated: false }));
+  const whole = await (await GET(req('?workspaceId=ws&features=1'))).json();
+  expect(whole.sample).toEqual({ complete: true, rows: 1, note: null });
+});
+
 it('features=1 and the per-capability read agree on the automatic labels, and both score them', async () => {
   user.mockResolvedValue({ id: 'user' });
   const rows = [
