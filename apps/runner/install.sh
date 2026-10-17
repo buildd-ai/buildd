@@ -114,10 +114,12 @@ if ! command -v bun &> /dev/null; then
   echo -e "${YELLOW}Bun not found. Installing...${NC}"
   # bun.sh is a single host; retry a transient connect failure, and never carry
   # on without bun (the `buildd` launcher execs it, so a bunless install is broken).
+  set +e  # Temporarily disable set -e for the retry loop
   for attempt in 1 2 3 4; do
     curl -fsSL --connect-timeout 15 https://bun.sh/install | bash && break
     [ "$attempt" -lt 4 ] && sleep $((attempt * 5))
   done
+  set -e  # Re-enable set -e
   # bun's installer honours BUN_INSTALL; look where it actually put the binary.
   export PATH="${BUN_INSTALL:-$HOME/.bun}/bin:$PATH"
   if ! command -v bun &> /dev/null; then
