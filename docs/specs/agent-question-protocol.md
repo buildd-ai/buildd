@@ -2,12 +2,12 @@
 title: Agent Question Protocol
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 domain: tasks
-surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts]
+surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [human-answer-delivery, worker-reclamation]
-verified_by: [apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
+verified_by: [apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
 assertions:
   - id: "question-gate-check"
     type: "route"
@@ -88,6 +88,32 @@ assertions:
   alone cannot revive an ended worker. Completed, failed and cancelled tasks
   show past questions collapsed, with the recorded reply or "Not answered".
   `deriveTaskPhase` preserves a terminal outcome over any retained question.
+- **A question whose session ended is a wait, not a running agent.** A
+  `waiting_input` worker carrying the `needs_input:` error marker
+  (`questionSessionEnded`, `packages/shared/src/status.ts`) holds no runner
+  slot: the claim route's account cap (pre-check and the atomic predicate),
+  `GET /api/workers/active` and the runner's heartbeat count
+  (`holdsRunnerSlot` with no live session) all leave it out, as the runner's
+  own claim loop already did. Health draws its bar only up to the worker's last
+  write and does not count it live; the ask itself shows in Needs you. A
+  question asked inside a live session (`inputAsRetry === false`) still holds
+  its slot. Waiting has no arbitrary timeout beyond the existing 4h/24h one.
+- **Cancelling or deleting the task closes its question.** A live worker with
+  no session to report its own end (a session-ended question, a pause, a
+  parked run) is settled by the server in the same request
+  (`lib/sessionless-worker-settle.ts`): compare-and-swap to `failed`,
+  `exitCause: 'task_cancelled'`, `waitingFor: null`, `completedAt` stamped,
+  then the seat, a `worker:failed` event and a capacity wake, once per row
+  moved. The row and its milestones stay as history. A worker with a live
+  session gets the abort push and reports its own end. Delete settles before
+  the row goes, since it sets `workers.task_id` to NULL. A late `/respond` is
+  refused (no `waitingFor`), and the waiting-input timeout never fails a
+  terminal task or files a retry of it. `/api/cron/waiting-input-sweep` first
+  settles any such row left behind (task deleted or terminal), whatever its age.
+- **The runner never forgets a parked question by mistake.** Its reconcile
+  reads `null` from `getWorkerRemote` as "deleted on the server". Only a 404
+  body means that; a worker row whose own `error` column carries
+  `needs_input:` is a parked question, not a 404.
 - **A task's open question is one card on every surface.** The task page,
   the mission task sheet, the Board and the timeline all answer with
   `TaskQuestion` (`apps/web/src/components/tasks/TaskQuestion.tsx`), which
@@ -285,6 +311,18 @@ assertions:
   rails, stage 0 — with no model call, and a recoverable blocker files or
   reuses its repair task and is stored `recovered`, nobody notified. A
   sensitive workspace keeps the disposition fields and drops the prose.
+- AC-52: GIVEN a `waiting_input` worker whose session ended
+  (`needs_input:` marker) WHEN the account cap is checked at claim THEN it
+  does not count; GIVEN a question inside a live session THEN it does.
+- AC-53: GIVEN a task with a session-ended question WHEN it is cancelled or
+  deleted THEN the worker is `failed` with `exitCause: 'task_cancelled'`,
+  `waitingFor: null` and `completedAt` set, its seat is released once, and a
+  repeat moves nothing. GIVEN such a row left from before THEN the waiting-input
+  sweep settles it before its timeout runs, and the timeout never fails a
+  cancelled task or files a retry of it.
+- AC-54: GIVEN the runner's reconcile reads a parked worker whose row carries
+  `error: 'needs_input: …'` THEN `getWorkerRemote` returns the row, not `null`,
+  and the local worker stays parked.
 - AC-45: GIVEN an agent or outside caller posts a `question` note
   (`post_note`) WHEN the notes route stores it
   (`apps/web/src/lib/note-question-disposition.ts`) THEN it carries

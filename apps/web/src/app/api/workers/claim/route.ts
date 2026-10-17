@@ -8,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -402,7 +402,9 @@ export async function POST(req: NextRequest) {
   // cap on the person (task 69f5b7cd). A verified interactive session is not
   // limited by it, and its workers (runner 'mcp') do not occupy a runner slot.
   // Only the verified marker counts: 'mcp-unverified' is an ordinary runner.
-  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER);
+  // A paused or parked worker, or a question whose session ended, holds no
+  // slot (workerHoldsRunnerSlot, the same rule the runner's heartbeat counts by).
+  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER && workerHoldsRunnerSlot(w));
 
   if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
@@ -2895,6 +2897,11 @@ export async function POST(req: NextRequest) {
           WHERE account_id = ${account.id}
           AND status IN ('idle', 'running', 'starting', 'waiting_input')
           AND runner IS DISTINCT FROM ${INTERACTIVE_RUNNER}
+          AND parked_until IS NULL
+          AND NOT (status = 'waiting_input' AND (
+            coalesce(error, '') LIKE ${NEEDS_INPUT_ERROR_PREFIX + '%'}
+            OR waiting_for->>'type' = 'pause'
+          ))
         ) < ${account.maxConcurrentWorkers}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),

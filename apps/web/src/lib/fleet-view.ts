@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -96,6 +96,14 @@ export const FLEET_ONLINE_WINDOW_MS = RUNNER_LIVE_WINDOW_MS;
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const ms = (d: DateLike) => (d == null ? NaN : new Date(d).getTime());
+
+/**
+ * A run still going: live, and not a question whose session ended. That one
+ * is a wait for a person (Needs you), not a running agent: its bar ends where
+ * the session did (its last write), and it holds no slot and no live count
+ * (`questionSessionEnded`, the rule the claim cap counts by).
+ */
+const runsNow = (w: Pick<FleetWorkerRow, 'status' | 'error'>) => LIVE.has(w.status) && !questionSessionEnded(w);
 
 // Runner naming is shared with the Board, Lanes and task page.
 export { runnerIdentity, runnerNameFromUrl } from './runner-display';
@@ -215,7 +223,7 @@ export function buildFleetSnapshot(
       }),
       href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
     });
-    if (LIVE.has(w.status)) {
+    if (runsNow(w)) {
       live++;
       slot.worker = {
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
@@ -237,7 +245,7 @@ export function buildFleetSnapshot(
       // Only what is running now: a finished run's container is gone, so it
       // is neither a slot nor a runner (its heartbeat may still be fresh).
       const running = g.workers
-        .filter(w => LIVE.has(w.status))
+        .filter(runsNow)
         .map(w => ({ w, start: Number.isFinite(ms(w.startedAt)) ? ms(w.startedAt) : now }))
         .sort((a, b) => a.start - b.start || a.w.id.localeCompare(b.w.id));
       if (running.length === 0) continue;
@@ -256,7 +264,7 @@ export function buildFleetSnapshot(
       });
       continue;
     }
-    const liveHere = g.workers.filter(w => LIVE.has(w.status));
+    const liveHere = g.workers.filter(runsNow);
     // A runner we have no heartbeat for is shown only while it holds live work.
     if (!g.hb && liveHere.length === 0) continue;
     const online = !!g.hb && now - ms(g.hb.lastHeartbeatAt) <= onlineMs;
@@ -266,7 +274,7 @@ export function buildFleetSnapshot(
       .map(w => ({
         id: w.id,
         start: ms(w.startedAt),
-        end: LIVE.has(w.status) ? null : (Number.isFinite(ms(w.completedAt)) ? ms(w.completedAt) : ms(w.updatedAt)) || ms(w.startedAt),
+        end: runsNow(w) ? null : (Number.isFinite(ms(w.completedAt)) ? ms(w.completedAt) : ms(w.updatedAt)) || ms(w.startedAt),
       }));
     const assigned = assignSlots(intervals);
     const cap = Math.max(g.hb?.maxConcurrentWorkers ?? 0, assigned.slots, 1);

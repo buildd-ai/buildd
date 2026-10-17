@@ -71,16 +71,36 @@ export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
  * container is gone) hold none; the runner's own heartbeat count already
  * excludes them (apps/runner/src/pause.ts holdsRunnerSlot), so the server's
  * count must too, or the two disagree. A question waiting in a live session
- * still holds its slot.
+ * still holds its slot; a question whose session ended does not
+ * (`questionSessionEnded`): nothing runs until a person answers.
  */
 export function workerHoldsRunnerSlot(w: {
   status: string;
   waitingFor?: { type?: string } | null;
   parkedUntil?: Date | string | null;
+  error?: string | null;
 }): boolean {
   if (!(LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)) return false;
   if (w.parkedUntil) return false;
+  if (questionSessionEnded(w)) return false;
   return !(w.status === 'waiting_input' && w.waitingFor?.type === 'pause');
+}
+
+/**
+ * The error marker a runner writes when it ends the session to park a
+ * question (apps/runner/src/workers.ts parkNeedsInputAbort, the default
+ * `inputAsRetry` mode). A live-session question never carries it.
+ */
+export const NEEDS_INPUT_ERROR_PREFIX = 'needs_input';
+
+/**
+ * A `waiting_input` worker whose session the runner ended to wait for an
+ * answer (docs/specs/agent-question-protocol.md: `waiting_input` does not
+ * imply a live session). It is a durable wait, not a running agent: no slot,
+ * no running time. The answer resumes it (answered-question-resume.md).
+ */
+export function questionSessionEnded(w: { status: string; error?: string | null }): boolean {
+  return w.status === 'waiting_input' && !!w.error?.startsWith(NEEDS_INPUT_ERROR_PREFIX);
 }
 
 /**

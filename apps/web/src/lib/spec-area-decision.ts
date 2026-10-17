@@ -6,6 +6,7 @@ import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdic
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
 import { tfidfRank, type SpecCard } from '@/lib/specs/card';
+import { specAreaObjective } from '@/lib/spec-decision-gold';
 import { overrideActorId } from '@/lib/spec-duplicate-decision';
 import type { AreaClassification, AreaClassifyInput, AreaInfo } from '@/lib/specs/areas';
 
@@ -192,6 +193,8 @@ export const SPEC_AREA_BINDING: BuilddDecisionKindBinding = {
   capability: SPEC_AREA_CAPABILITY,
   mode: 'live',
   measuredModels: SPEC_AREA_MEASURED_MODELS,
+  // Graded by later events, not a person (lib/spec-decision-gold.ts), so outcomeGraded has a denominator.
+  readout: { objective: specAreaObjective },
 };
 
 export const specAreaKind = defineBuilddDecisionKind(SPEC_AREA_CONFIG, SPEC_AREA_BINDING);

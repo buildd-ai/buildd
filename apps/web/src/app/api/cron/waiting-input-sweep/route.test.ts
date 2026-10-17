@@ -51,6 +51,9 @@ mock.module('@/lib/stale-workers', () => ({
   cleanupUnreadInteractiveAnswers: mockCleanupUnreadInteractiveAnswers,
 }));
 
+const mockSettleOrphans = mock((_accountId?: string) => Promise.resolve(0));
+mock.module('@/lib/sessionless-worker-settle', () => ({ settleOrphanedSessionlessWorkers: mockSettleOrphans }));
+
 const { POST } = await import('./route');
 
 const CRON_SECRET = 'test-cron-secret';
@@ -75,6 +78,33 @@ beforeEach(() => {
   mockCleanupUnreadInteractiveAnswers.mockResolvedValue({ degraded: 0 });
   mockCleanupStuckWaitingInput.mockClear();
   mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
+  mockSettleOrphans.mockReset();
+  mockSettleOrphans.mockResolvedValue(0);
+});
+
+describe('waiting-input-sweep cron — orphaned questions', () => {
+  it('settles questions parked on cancelled or deleted tasks, whatever their age, before the timeout', async () => {
+    mockSettleOrphans.mockResolvedValue(1);
+    const order: string[] = [];
+    mockSettleOrphans.mockImplementation(async () => { order.push('orphans'); return 1; });
+    mockCleanupStuckWaitingInput.mockImplementation(async () => { order.push('timeout'); return { failedWorkers: 0, retriedTasks: 0 }; });
+    candidateWorkers = [{ accountId: 'account-1', updatedAt: hoursAgo(30) }];
+
+    const data = await (await POST(makeRequest())).json();
+
+    expect(data.orphansSettled).toBe(1);
+    expect(order).toEqual(['orphans', 'timeout']);
+  });
+
+  it('still runs the timeout sweep when the orphan settle throws', async () => {
+    mockSettleOrphans.mockRejectedValue(new Error('db down'));
+    candidateWorkers = [{ accountId: 'account-1', updatedAt: hoursAgo(30) }];
+
+    const data = await (await POST(makeRequest())).json();
+
+    expect(data.errors).toBe(1);
+    expect(mockCleanupStuckWaitingInput).toHaveBeenCalledWith('account-1');
+  });
 });
 
 describe('waiting-input-sweep cron — auth', () => {
