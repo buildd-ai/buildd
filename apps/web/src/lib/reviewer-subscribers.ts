@@ -246,10 +246,10 @@ async function maybeDispatchReviewer(
         });
       }
       void notifyTeamOf({ workspaceId: workspace.id, prNumber: pr.number }, 'needsAttention', {
-        title: `PR #${pr.number} escalated`,
+        title: 'A PR was escalated for human review',
         message: reason,
         url: pr.html_url,
-        urlTitle: 'View PR',
+        urlTitle: `PR #${pr.number}`,
       });
       await appendPrActivity({
         installationId,
