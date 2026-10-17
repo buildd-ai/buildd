@@ -107,7 +107,9 @@ export function defaultMacKeychainStamp(): string | null {
 }
 
 let keychainHasLoginRefreshTimeout: NodeJS.Timeout | undefined;
+let keychainHasLoginInFlight: Promise<boolean> | undefined;
 let keychainStampRefreshTimeout: NodeJS.Timeout | undefined;
+let keychainStampInFlight: Promise<string | null> | undefined;
 
 /**
  * Async version: spawn without blocking the event loop. Never blocks on a sync call.
@@ -121,31 +123,42 @@ export async function defaultMacKeychainHasLoginAsync(): Promise<boolean> {
   // Cache is still fresh, return it
   if (cached) return keychainCache!.value;
 
-  // Cache expired; start a background refresh if not already running
-  if (!keychainHasLoginRefreshTimeout) {
-    keychainHasLoginRefreshTimeout = setTimeout(() => {
-      keychainHasLoginRefreshTimeout = undefined;
-      defaultMacKeychainHasLoginAsync().catch(() => {
-        // Ignore errors from background refresh
-      });
-    }, 0);
-  }
-
-  // Return stale cached value immediately, or false if no cache yet
-  if (keychainCache) return keychainCache.value;
-
   // First call ever: block once to get initial value
-  let value = false;
-  try {
-    await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
-      timeout: 3000,
-    });
-    value = true;
-  } catch {
-    value = false;
+  if (!keychainCache) {
+    let value = false;
+    try {
+      await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+        timeout: 3000,
+      });
+      value = true;
+    } catch {
+      value = false;
+    }
+    keychainCache = { at: now, value };
+    return value;
   }
-  keychainCache = { at: now, value };
-  return value;
+
+  // Cache expired; start a background refresh if not already running
+  if (!keychainHasLoginInFlight) {
+    keychainHasLoginInFlight = (async () => {
+      let value = false;
+      try {
+        await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+          timeout: 3000,
+        });
+        value = true;
+      } catch {
+        value = false;
+      }
+      keychainCache = { at: Date.now(), value };
+      return value;
+    })().finally(() => {
+      keychainHasLoginInFlight = undefined;
+    });
+  }
+
+  // Return stale cached value immediately while refresh happens in background
+  return keychainCache!.value;
 }
 
 /**
@@ -160,32 +173,44 @@ export async function defaultMacKeychainStampAsync(): Promise<string | null> {
   // Cache is still fresh, return it
   if (cached) return keychainStampCache!.value;
 
-  // Cache expired; start a background refresh if not already running
-  if (!keychainStampRefreshTimeout) {
-    keychainStampRefreshTimeout = setTimeout(() => {
-      keychainStampRefreshTimeout = undefined;
-      defaultMacKeychainStampAsync().catch(() => {
-        // Ignore errors from background refresh
-      });
-    }, 0);
-  }
-
-  // Return stale cached value immediately, or null if no cache yet
-  if (keychainStampCache) return keychainStampCache.value;
-
   // First call ever: block once to get initial value
-  let value: string | null = null;
-  try {
-    const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
-      timeout: 3000,
-      encoding: 'utf-8' as const,
-    });
-    if (r && r.stdout) value = parseKeychainMdat(String(r.stdout));
-  } catch {
-    value = null;
+  if (!keychainStampCache) {
+    let value: string | null = null;
+    try {
+      const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+        timeout: 3000,
+        encoding: 'utf-8' as const,
+      });
+      if (r && r.stdout) value = parseKeychainMdat(String(r.stdout));
+    } catch {
+      value = null;
+    }
+    keychainStampCache = { at: now, value };
+    return value;
   }
-  keychainStampCache = { at: now, value };
-  return value;
+
+  // Cache expired; start a background refresh if not already running
+  if (!keychainStampInFlight) {
+    keychainStampInFlight = (async () => {
+      let value: string | null = null;
+      try {
+        const r = await execFileAsync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+          timeout: 3000,
+          encoding: 'utf-8' as const,
+        });
+        if (r && r.stdout) value = parseKeychainMdat(String(r.stdout));
+      } catch {
+        value = null;
+      }
+      keychainStampCache = { at: Date.now(), value };
+      return value;
+    })().finally(() => {
+      keychainStampInFlight = undefined;
+    });
+  }
+
+  // Return stale cached value immediately while refresh happens in background
+  return keychainStampCache!.value;
 }
 
 /** The `"mdat"<timedate>=... "20261016093000Z\000"` attribute line's date, or null. */
@@ -214,6 +239,20 @@ export function machineLoginStamp(
   const file = mtimeOf(join(home, '.claude', '.credentials.json'));
   const platform = probe.platform ?? process.platform;
   const keychain = platform === 'darwin' ? (probe.macKeychainStamp ?? defaultMacKeychainStamp)() : null;
+  return file === null && keychain === null ? null : `${file ?? '-'}|${keychain ?? '-'}`;
+}
+
+/** Async version: never blocks on sync keychain checks. */
+export async function machineLoginStampAsync(
+  backend: 'claude' | 'codex',
+  probe: { env?: Record<string, string | undefined>; home?: string; platform?: NodeJS.Platform; macKeychainStampAsync?: () => Promise<string | null> } = {},
+): Promise<string | null> {
+  const env = probe.env ?? process.env;
+  const home = probe.home ?? homedir();
+  if (backend === 'codex') return mtimeOf(join(resolveLocalCodexHome(env, home), 'auth.json'));
+  const file = mtimeOf(join(home, '.claude', '.credentials.json'));
+  const platform = probe.platform ?? process.platform;
+  const keychain = platform === 'darwin' ? await (probe.macKeychainStampAsync ?? defaultMacKeychainStampAsync)() : null;
   return file === null && keychain === null ? null : `${file ?? '-'}|${keychain ?? '-'}`;
 }
 

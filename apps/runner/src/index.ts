@@ -1542,11 +1542,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
       const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, codexAuthSource: undefined };
-      const routeStatus = workerManager ? (async () => {
+      let resolvedRouteStatus: Record<string, any> = {};
+      if (workerManager) {
         const { routes, problems } = await workerManager.getRouteStatusAsync();
-        return { routes, routeProblems: problems, spendToday: todayTotals(workerManager.getWorkers(), Date.now()) };
-      })() : {};
-      const resolvedRouteStatus = routeStatus instanceof Promise ? await routeStatus : routeStatus;
+        resolvedRouteStatus = { routes, routeProblems: problems, spendToday: todayTotals(workerManager.getWorkers(), Date.now()) };
+      }
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,

@@ -475,6 +475,20 @@ export function clearRedoneLogins(failures: LoginFailures, stamp: (backend: Rout
   return next;
 }
 
+/** Async version: never blocks on keychain checks. */
+export async function clearRedoneLoginsAsync(failures: LoginFailures, stamp: (backend: RouteBackend) => Promise<string | null>): Promise<LoginFailures> {
+  let next = failures;
+  for (const backend of ['claude', 'codex'] as const) {
+    const f = failures[backend];
+    if (!f || f.owner !== 'machine' || f.stamp === undefined || f.stamp === null) continue;
+    if (await stamp(backend) !== f.stamp) {
+      if (next === failures) next = { ...failures };
+      delete next[backend];
+    }
+  }
+  return next;
+}
+
 export interface MachineRoutesInput {
   /** The runner's own env (the agent env inherits its model variables). */
   env: Record<string, string | undefined>;
