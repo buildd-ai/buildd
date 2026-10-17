@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  callerSeatKeys,
-  claudeLoginSeatKey,
   isMachineLoginWallError,
-  parseClaudeLoginId,
   resolveRunnerSeatWallKey,
   runnerSeatKey,
   type RunnerSeatWallDeps,
@@ -163,45 +160,6 @@ describe('resolveRunnerSeatWallKey', () => {
         deps({ heartbeatModelAuthSource: boom, teamClaudeCredentialVisible: boom, teamEndpointWins: boom }),
       );
       expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
-    });
-  });
-
-  // Two runners on one Claude login (two processes reading one ~/.claude) share
-  // that login's limit. The runner reports a one-way hash of the login's
-  // account id; the wall is keyed on it so the first runner's wall holds both.
-  describe('the login identity the run reports', () => {
-    const LOGIN = 'a'.repeat(32);
-    it('keys a machine-login wall on the login, not the runner', async () => {
-      const a = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: LOGIN }), deps());
-      const b = await resolveRunnerSeatWallKey(input({ runner: 'headless://box-b', loginUsed: 'machine_login', loginId: LOGIN }), deps());
-      expect(a.seatKey).toBe(claudeLoginSeatKey(LOGIN));
-      expect(b.seatKey).toBe(a.seatKey);
-      const other = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_login', loginId: 'b'.repeat(32) }), deps());
-      expect(other.seatKey).not.toBe(a.seatKey);
-    });
-
-    it('falls back to the runner key when the login identity is unknown', async () => {
-      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'machine_token', loginId: null }), deps());
-      expect(out.seatKey).toBe(runnerSeatKey('headless://box-a'));
-    });
-
-    it('ignores a login identity on a stored-credential run, which stays shared', async () => {
-      const out = await resolveRunnerSeatWallKey(input({ loginUsed: 'stored', loginId: LOGIN }), deps());
-      expect(out.seatKey).toBeNull();
-    });
-
-    it('accepts only the 32-hex-character hash shape', () => {
-      expect(parseClaudeLoginId(LOGIN)).toBe(LOGIN);
-      for (const bad of [undefined, null, '', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(64), '00000000-0000-4000-8000-000000000000', 42]) {
-        expect(parseClaudeLoginId(bad)).toBeNull();
-      }
-    });
-
-    it("gives a claim both its login's key and its runner's key, login first", () => {
-      expect(callerSeatKeys('headless://box-a', LOGIN)).toEqual([claudeLoginSeatKey(LOGIN), runnerSeatKey('headless://box-a')]);
-      expect(callerSeatKeys('headless://box-a', null)).toEqual([runnerSeatKey('headless://box-a')]);
-      // A caller that is no named runner reads every wall, whatever it reports.
-      expect(callerSeatKeys('runner', LOGIN)).toBeNull();
     });
   });
 });

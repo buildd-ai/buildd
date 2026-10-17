@@ -271,25 +271,6 @@ describe('seat-scoped pauses', () => {
     expect(q.params).toContain('runner:mine');
   });
 
-  // A runner on a login another runner shares answers to both its login's key
-  // and its own runner key (lib/runner-seat-wall.ts callerSeatKeys).
-  it('holds a reader with several seat keys on a wall under any of them, and no other', async () => {
-    const keys = ['login:shared', 'runner:mine'];
-    for (const seatKey of keys) {
-      mockBackendPausesFindMany.mockResolvedValue([
-        { backend: 'claude', resetsAt: soon(), reason: 'budget', seatKey },
-      ]);
-      expect((await getActiveBackendPauses({ ...scope, seatKey: keys })).get('claude')?.seatKey).toBe(seatKey);
-    }
-    mockBackendPausesFindMany.mockResolvedValue([
-      { backend: 'claude', resetsAt: soon(), reason: 'budget', seatKey: 'login:other' },
-    ]);
-    expect((await getActiveBackendPauses({ ...scope, seatKey: keys })).has('claude')).toBe(false);
-    const q = renderedWhere();
-    expect(q.sql).toContain('"seat_key" is null');
-    expect(q.params).toEqual(expect.arrayContaining(keys));
-  });
-
   // Fail-safe: a reader that cannot say which login it runs on is held by
   // every wall, seat-scoped or not.
   it('reads every wall, seat-scoped ones included, for a reader with no seat key', async () => {

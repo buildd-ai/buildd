@@ -546,8 +546,6 @@ mock.module('@/lib/runner-seat-wall', () => ({
   resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
   runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
   isMachineLoginWallError: () => true,
-  parseRunLoginUsed: (v: unknown) => (v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null),
-  parseClaudeLoginId: (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null),
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -7667,26 +7665,6 @@ describe('PATCH /api/workers/[id]', () => {
         expect(requeue.backend).toBeUndefined();
         expect(requeue.context?.budgetExhausted).toBeUndefined();
         expect(wakeCausesFor('task-1')).toContain('task.requeued');
-      });
-
-      it("passes the run's reported login identity to the decision, and drops a malformed one", async () => {
-        setup();
-        await PATCH(createMockRequest({
-          method: 'PATCH',
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginUsed: 'machine_login', claudeLoginId: 'a'.repeat(32) },
-        }), { params: mockParams });
-        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
-          loginUsed: 'machine_login', loginId: 'a'.repeat(32),
-        }));
-
-        setup();
-        await PATCH(createMockRequest({
-          method: 'PATCH',
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginId: 'not-a-hash' },
-        }), { params: mockParams });
-        expect(mockResolveRunnerSeatWallKey).toHaveBeenLastCalledWith(expect.objectContaining({ loginId: null }));
       });
 
       it('keeps the account-wide wall when the login identity is unknown', async () => {
