@@ -44,7 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { ownerAttemptEndOf } from './task-projection';
+import { ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
 import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
@@ -281,6 +281,23 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
  */
 export function reviewOwedWhileOwnerRuns(task: { kind?: string | null }, live: LivePr | null): boolean {
   return task.kind === 'coordination' && !!live && live.state === 'open' && !live.merged && !live.draft;
+}
+
+/**
+ * AC-1 slice 3 (task-projection.ts `projectOwnerEndSql`): project an owner attempt's end onto its
+ * task outside a transition. The seam runs it after every owner end; the worker PATCH runs it
+ * after handing the end to the kernel, so a control plane that is down, or one too old to
+ * project, still leaves the task settled. Moves only an open owner task. Answers the status
+ * written, or null when nothing moved.
+ */
+export async function projectOwnerEnd(
+  p: { deliveryId: string; taskId: string; workerId: string; status: 'completed' | 'failed' | 'lost' | 'unproven' },
+  exec: Exec = seamExec,
+): Promise<'completed' | 'failed' | null> {
+  const fallback = p.status === 'completed' ? 'completed' : 'failed';
+  const rows = ((await exec(projectOwnerEndSql({ deliveryId: p.deliveryId, taskId: p.taskId, workerId: p.workerId, fallback }))).rows ?? []) as Array<{ status?: string }>;
+  const s = rows[0]?.status;
+  return s === 'completed' || s === 'failed' ? s : null;
 }
 
 /**
@@ -586,6 +603,13 @@ export async function attemptEnded(p: {
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+  }
+  // AC-1 slice 3: an applied owner end set the task in its own statement (`t_attempt`). One that
+  // applied nothing (a duplicate, a stale end) still projects, from the ledger's recorded end, so
+  // the task never strands open. A no-op once the task is settled; a requeue (the task's own
+  // retry is queued) is no end to project.
+  if (attemptKind === 'owner' && !p.taskRetryBudgetLeft) {
+    await projectOwnerEnd({ deliveryId, taskId: p.task.id, workerId: p.workerId, status: p.status }, deps.exec);
   }
   if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
     await applyCommand(

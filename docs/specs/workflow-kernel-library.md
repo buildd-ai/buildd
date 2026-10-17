@@ -1303,12 +1303,31 @@ column outside the kernel; S3 and S4 remove or route each one.
   PATCH writes the worker's terminal status before it decides on a retry
   requeue, so an end read in between is not sent. A terminal task's end
   counts at once.
+  The owner attempt's end projects onto its task: T4 for an owner (an end
+  of the attempt a `WORKING` delivery is bound to) sets the owner task in
+  its own statement (`t_attempt`, task-projection.ts), reading the delivery
+  CTE, so a version miss writes nothing. `success` completes it; `failed`,
+  `lost` and `unproven` fail it; a requeue (`taskRetryBudgetLeft`) projects
+  nothing. It moves only an open task (`assigned`, legacy `in_progress`), so a
+  cancel, a requeue to `pending`, or a status another writer already settled
+  is kept, and it carries `notKernelMergedTaskSql`. An owner end that applies
+  nothing (a duplicate, a stale end) still projects (`projectOwnerEnd`): the
+  ledger's recorded `end:<workerId>` wins, else the end that was sent. The
+  floor's re-sent end therefore settles a task that stranded `assigned`.
+  The worker PATCH is the first family behind it: for the plain end of a
+  kernel owner attempt (no retry or loop hold, no contract or loop failure)
+  its completion statement writes result, loop and context but not status.
+  It sends the end before anything in the same request reads the status
+  (the mission release, the terminal evidence record, dependency resolution,
+  mission completion), then runs `projectOwnerEnd` itself, so a control plane
+  that is down or too old to project, a delivery the kill switch released, or
+  a release held for CI (no end is sent) still leaves the task settled. A
+  release that fails still writes `failed` itself.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
-  live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
-  interactive detach, credential and repo-access recovery, the recovery hold,
-  conflict and CI retries, loop exits) still set the owner task's status
-  directly, because there is no attempt-to-task projection to replace them
-  yet (an AttemptEnded that sets the owner task in its own statement);
+  live, the other attempt writers (the worker PATCH's requeues and failure
+  overrides, claim, cleanup, the reaper, interactive detach, credential and
+  repo-access recovery, the recovery hold, conflict and CI retries, loop
+  exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
