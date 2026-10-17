@@ -72,7 +72,7 @@ export interface CiRedTarget extends CiRedRef {
   owner: CiRedOwner;
 }
 
-export type CiRedResolveSkip = 'no_open_worker' | 'owner_stopped' | 'no_repo' | 'no_installation';
+export type CiRedResolveSkip = 'no_open_worker' | 'owner_stopped' | 'no_repo' | 'no_installation' | 'installation_not_team_owned';
 
 export type CiRedResolution = { ok: true; target: CiRedTarget } | { ok: false; skip: CiRedResolveSkip };
 

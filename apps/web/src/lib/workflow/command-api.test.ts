@@ -517,6 +517,13 @@ describe('the installation a command acts through is resolved from its workspace
     expect(s.ran).toEqual([]);
   });
 
+  it('a repo whose installation is not one of the workspace\'s team\'s is refused 403 and nothing runs', async () => {
+    const s = server({ installationOf: async () => ({ refused: 'installation_not_team_owned' }) });
+    const res = await s.call(await signed(body({ input: { ...landInput, repoFullName: 'other/mobile' } })));
+    expect([res.status, (await res.json()).code]).toEqual([403, 'installation_not_team_owned']);
+    expect(s.ran).toEqual([]);
+  });
+
   it('a missing installation is filled in with the resolved one', async () => {
     const s = server({ installationOf: async () => ({ installationId: 42 }) });
     const { installationId: _, ...withoutInstallation } = landInput;

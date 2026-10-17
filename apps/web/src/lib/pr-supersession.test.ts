@@ -7,6 +7,8 @@ const updates: Array<{ set: any }> = [];
 const githubCalls: string[] = [];
 let githubResponse: (path: string) => any = () => ({ merged: true, html_url: 'https://github.com/org/repo/pull/2' });
 let installationForRepo: Record<string, number> = {};
+/** Installations owned by the workspace's team (`team-1`); every one unless a test narrows it. */
+let teamOwned: number[] | null = null;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -27,7 +29,12 @@ mock.module('@/lib/github', () => ({
   }),
 }));
 mock.module('@/lib/workspace-installation', () => ({
-  installationIdForRepo: mock((repo: string) => Promise.resolve(installationForRepo[repo.toLowerCase()] ?? null)),
+  teamInstallationIdForRepo: mock((repo: string, teamId: string) => {
+    const id = installationForRepo[repo.toLowerCase()] ?? null;
+    if (id === null) return Promise.resolve({ installationId: null });
+    const owned = teamId === 'team-1' && (teamOwned === null || teamOwned.includes(id));
+    return Promise.resolve(owned ? { installationId: id } : { installationId: null, notTeamOwned: true });
+  }),
 }));
 /** The workflow kernel's answer for a kernel-owned PR; `{ handled: false }` = legacy PR. */
 let kernelAnswer: any = { handled: false };
@@ -48,7 +55,7 @@ function closedWorker(over: Record<string, unknown> = {}) {
     mergedAt: null,
     prLifecycleStatus: 'closed',
     supersededByPrNumber: null,
-    workspace: { githubRepo: { fullName: 'org/kb', installation: { installationId: 11 } } },
+    workspace: { teamId: 'team-1', githubRepo: { fullName: 'org/kb', installation: { installationId: 11 } } },
     ...over,
   };
 }
@@ -60,6 +67,7 @@ beforeEach(() => {
   updates.length = 0;
   githubCalls.length = 0;
   installationForRepo = { 'org/buildd': 22, 'org/kb': 11 };
+  teamOwned = null;
   kernelAnswer = { handled: false };
   kernelCalls.length = 0;
   githubResponse = (path: string) => ({ merged: true, html_url: `https://github.com${path.replace('/repos', '').replace('/pulls/', '/pull/')}` });
@@ -105,6 +113,19 @@ describe('recordPrSupersession — cross-repo target', () => {
       workerId: 'w-1', supersedingPrNumber: 6, supersedingRepo: 'org/buildd', reason: 'same number, other repo', recordedBy: 'me',
     });
     expect(r.ok).toBe(true);
+  });
+
+  it('refuses a target in scope whose installation belongs to another team, without asking GitHub', async () => {
+    missionSiblings = [{ id: 't-2', workspace: { repo: null, githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
+    teamOwned = [11];
+    const r = await recordPrSupersession({
+      caller: 'system',
+      workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'docs moved', recordedBy: 'me',
+    });
+    expect(r).toMatchObject({ ok: false, status: 403 });
+    expect((r as { error: string }).error).toContain("not one of this workspace's team's installations");
+    expect(githubCalls).toHaveLength(0);
+    expect(updates).toHaveLength(0);
   });
 
   it('refuses a repo outside the workspace and mission, without asking GitHub', async () => {
