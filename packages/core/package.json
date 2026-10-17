@@ -341,7 +341,7 @@
     "@neondatabase/serverless": "^1.0.0",
     "@openai/codex-sdk": "^0.163.0",
     "@opentelemetry/api": "^1.9.0",
-    "@typesafe-ai/sdk": "0.6.0",
+    "@typesafe-ai/sdk": "0.7.0",
     "dotenv": "^18.0.0",
     "drizzle-orm": "1.0.0-rc.4",
     "server-only": "^0.0.1",
