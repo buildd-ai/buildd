@@ -12,7 +12,7 @@
  *   - lifted only by `buildd resume`, `h` in `buildd top`, or its own `until`
  *     (a timer here clears it and tells the runner to claim again, AC-19).
  *
- * It stops the runner CHOOSING work: the broad claim poll and broadcast
+ * It stops the runner CHOOSING work: the broad claim poll, background ingest/scout/probe polls and broadcast
  * assignments. A claim a person makes (`c` in top, POST /api/claim on the
  * socket, Start on the dashboard aimed at this runner) still runs (R-34).
  */

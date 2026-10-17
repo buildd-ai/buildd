@@ -197,3 +197,47 @@ describe('KnowledgeIngestPoller', () => {
     expect(await poller.poll()).toBe('error');
   });
 });
+
+describe('backfill does not starve the event loop', () => {
+  test('a whole-repo backfill over many files keeps a timer ticking', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { createGitRepoReader, runFullIngestJob } = await import('@buildd/core/knowledge-store/full-ingest');
+
+    const dir = mkdtempSync(join(tmpdir(), 'ki-lag-'));
+    try {
+      const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' });
+      git('init', '-q');
+      git('config', 'user.email', 't@example.com');
+      git('config', 'user.name', 'T');
+      mkdirSync(join(dir, 'src'));
+      for (let i = 0; i < 400; i++) writeFileSync(join(dir, 'src', `f${i}.ts`), `export const v${i} = ${i};\n`);
+      git('add', '.');
+      git('commit', '-q', '-m', 'init');
+
+      const { api } = fakeApi(null);
+      const job = { id: 'j', workspaceId: 'w', repo: 'o/r', trigger: 'backfill', sha: null } as unknown as FullIngestJob;
+
+      let maxLag = 0;
+      let last = performance.now();
+      const timer = setInterval(() => {
+        const now = performance.now();
+        maxLag = Math.max(maxLag, now - last - 10);
+        last = now;
+      }, 10);
+      try {
+        const reader = await createGitRepoReader(dir, null);
+        const res = await runFullIngestJob(job, reader, api);
+        expect(res.status).toBe('done');
+      } finally {
+        clearInterval(timer);
+      }
+      // Sync git per file made this seconds; async keeps single stalls small.
+      expect(maxLag).toBeLessThan(250);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
