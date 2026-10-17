@@ -769,7 +769,7 @@ export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 
       isNotNull(tasks.missionId),
       inArray(tasks.status, ['completed']),
     ))
-    .orderBy(sql`greatest(${workers.supersessionScannedAt}::text, ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
+    .orderBy(sql`greatest(to_char(${workers.supersessionScannedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
     .limit(limit);
 }
 

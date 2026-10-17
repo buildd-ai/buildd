@@ -53,7 +53,7 @@ describe('closedPrSweepQueue', () => {
     expect(rows.map(r => Number(r.prUrl!.split('/').pop()) - base)).toEqual([2, 3, 1]);
   });
 
-  test('a malformed lastAttemptAt in supersessionScan does not crash the query', async () => {
+  test('a malformed lastAttemptAt in supersessionScan does not crash the query, and ranks as if NULL', async () => {
     // Insert a row with a malformed lastAttemptAt that would fail if cast to timestamptz.
     const n = base + 100;
     await q(sql`
@@ -61,8 +61,25 @@ describe('closedPrSweepQueue', () => {
       VALUES (${workspaceId}::uuid, ${taskId}::uuid, 'w', 'test', ${`b-${n}`}, ${`https://github.com/o/r/pull/${n}`}, ${n}, 'closed',
         ${{ scannedAt: '', candidatesChecked: 0, suggestion: null, lastAttemptAt: '2026-13-40T00:00:00Z' }}::jsonb, ${now.toISOString()}::timestamptz)`);
 
-    // The query should complete without error, treating the malformed value as NULL.
+    // The query should complete without error, treating the malformed value as NULL (nulls first).
     const rows = await closedPrSweepQueue(now, 10_000);
     expect(rows).toBeDefined();
+
+    // The malformed row should be returned.
+    const malformedUrl = `https://github.com/o/r/pull/${n}`;
+    const malformedRow = rows.find(r => r.prUrl === malformedUrl);
+    expect(malformedRow).toBeDefined();
+
+    // Since lastAttemptAt is malformed (treated as NULL), and the row has no scannedAt,
+    // it should rank as a never-tried row (nulls first).
+    const ours = new Set([1, 2, 3, 4, 100].map(o => `https://github.com/o/r/pull/${base + o}`));
+    const allRows = rows.filter(r => r.prUrl && ours.has(r.prUrl));
+    const indices = allRows.map(r => Number(r.prUrl!.split('/').pop()) - base);
+    // Malformed row (100) should rank as never-tried, ahead of #1 (has lastAttemptAt from timeout).
+    expect(indices).toEqual([100, 2, 3, 1]);
+
+    // Verify the existing ordering test still passes.
+    const withoutMalformed = indices.filter(i => i !== 100);
+    expect(withoutMalformed).toEqual([2, 3, 1]);
   });
 });
