@@ -808,9 +808,19 @@ const fixMap: Record<string, (check: CheckResult) => FixResult> = {
 
 // --- Main doctor function ---
 
-export function runDiagnostics(opts: { isolation?: RunnerIsolationRecord } = {}): DoctorReport {
+export function runDiagnostics(opts: {
+  isolation?: RunnerIsolationRecord;
+  /**
+   * The runner-process line, when the caller knows better than a `ps` match:
+   * the runner itself (is its socket answering, runner-socket.ts
+   * socketHealthCheck) or `--doctor` (did the socket probe find a runner). The
+   * ps pattern misses a runner started by launchd or systemd, so on its own it
+   * reported a running runner as missing.
+   */
+  runnerProcess?: CheckResult;
+} = {}): DoctorReport {
   const checks = [
-    checkRunnerProcess(),
+    opts.runnerProcess ?? checkRunnerProcess(),
     checkConfig(),
     checkGitState(),
     checkGitDirty(),
