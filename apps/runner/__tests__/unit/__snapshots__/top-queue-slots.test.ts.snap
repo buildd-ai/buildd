@@ -6,14 +6,14 @@ exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row'
  Looked for work 14:58 · started 3                                              
 ────────────────────────────────────────────────────────────────────────────────
  Buildd · next for this runner       mission          starts                    
-› 1 feat(runner): top says why noth… -                now                       
-  2 feat: recovery page, impact-ran… -                now                       
-  3 test: operator recovery end to … -                now                       
+› 1 feat(runner): top says why noth… (no mission)     now                       
+  2 feat: recovery page, impact-ran… (no mission)     now                       
+  3 test: operator recovery end to … (no mission)     now                       
   4 fix(runner): hold --for ceiling  Runner terminal  when #1 ends (same files) 
   5 refactor(schema): drop incident… Root causes      after its dependency      
-  6 feat(insights): estimation dash… -                now                       
- Not yet                                                                        
-    fix(ci): dev is red              -                Wed 17:00 · rechecks its …
+  6 feat(insights): estimation dash… (no mission)     now                       
+ Held, each on its own                                                          
+    fix(ci): dev is red              rechecks the re… Wed 17:00                 
                                                                                 
                                                                                 
                                                                                 
@@ -33,14 +33,14 @@ exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row
  Looked for work 14:58 · started 3                                                                                      
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Buildd · next for this runner                  workspace    mission          est.  starts                              
-› 1 feat(runner): top says why nothing started  buildd       -                13m   now                                 
-  2 feat: recovery page, impact-ranked queue    acme-portal  -                -     now                                 
-  3 test: operator recovery end to end          acme-portal  -                -     now                                 
+› 1 feat(runner): top says why nothing started  buildd       (no mission)     13m   now                                 
+  2 feat: recovery page, impact-ranked queue    acme-portal  (no mission)     -     now                                 
+  3 test: operator recovery end to end          acme-portal  (no mission)     -     now                                 
   4 fix(runner): hold --for ceiling             buildd       Runner terminal  9m    when #1 ends (same files)           
   5 refactor(schema): drop incident tables      buildd       Root causes      14m   after its dependency                
-  6 feat(insights): estimation dashboard        acme-portal  -                7m    now                                 
- Not yet                                                                                                                
-    fix(ci): dev is red                         buildd       -                -     Wed 17:00 · rechecks its login      
+  6 feat(insights): estimation dashboard        acme-portal  (no mission)     7m    now                                 
+ Held, each on its own                                                                                                  
+    fix(ci): dev is red                         buildd       rechecks the re… -     Wed 17:00                           
                                                                                                                         
                                                                                                                         
                                                                                                                         

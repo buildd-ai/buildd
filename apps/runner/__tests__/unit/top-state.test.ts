@@ -57,15 +57,13 @@ describe('reducer', () => {
 });
 
 describe('missions pane (R-2)', () => {
-  test('missions with work, done/total, Other tasks last; a mission managed from a local session is listed too, marked local', () => {
+  test('missions with work, done/total, (no mission) last; a person-run mission is left out', () => {
     const rows = missionRows(fixtureState());
     expect(rows.map(r => [r.title, `${r.done}/${r.total}`])).toEqual([
       ['Runner TUI', '2/8'],
-      ['Local only', '0/1'],
       ['Specs import', '1/2'],
-      ['Other tasks', '0/1'],
+      ['(no mission)', '0/1'],
     ]);
-    expect(rows.find(r => r.title === 'Local only')).toMatchObject({ local: true });
   });
 
   test('done/total comes from the server count, so work finished outside the list window still counts', () => {
@@ -105,7 +103,7 @@ describe('missions pane (R-2)', () => {
     expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
   });
 
-  test('Other tasks is there even with no loose tasks', () => {
+  test('(no mission) is there even with no loose tasks', () => {
     const s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.filter(t => t.missionId) });
     expect(missionRows(s).at(-1)).toMatchObject({ key: NO_MISSION, total: 0 });
   });
@@ -123,10 +121,9 @@ describe('rows (R-3)', () => {
       ['running', 'running', 'name override'],
       ['running', 'asking', 'installer hint'],
       ['running', 'running', 'single instance'],
-      // Another runner's: running, so the mission shows all its live work.
-      ['running', 'running', 'heartbeat name'],
       ['waiting', 'waiting', 'buildd top'],
       ['waiting', 'waiting', 'docs page'],
+      ['waiting', 'waiting', 'heartbeat name'],
       ['done', 'done', 'spec draft'],
     ]);
   });
@@ -146,8 +143,7 @@ describe('rows (R-3)', () => {
     const r = rowsByTitle(fixtureState());
     expect(r['buildd top'].reason).toBe('waits on: name override');
     expect(r['docs page'].reason).toBe('starts in 2h');
-    expect(r['heartbeat name']).toMatchObject({ group: 'running', elsewhere: 'runner', action: 'running on another runner' });
-    expect(r['heartbeat name'].workerId).toBeUndefined();
+    expect(r['heartbeat name'].reason).toBe('another runner has it');
     const spec = { ...fixtureState(), selectedMission: 'm-spec-0000-0000' };
     expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is on hold');
   });
@@ -245,11 +241,11 @@ describe('workspaces (R-19, AC-8)', () => {
 
   test('the missions pane shows only the selected workspace', () => {
     let s = wsState();
-    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Bravo mission', 'Charlie mission', 'Other tasks']);
+    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Bravo mission', 'Charlie mission', '(no mission)']);
     s = cycleWorkspace(cycleWorkspace(cycleWorkspace(s))); // charlie
-    expect(missionRows(s).map(r => [r.title, r.total])).toEqual([['Charlie mission', 1], ['Other tasks', 1]]);
+    expect(missionRows(s).map(r => [r.title, r.total])).toEqual([['Charlie mission', 1], ['(no mission)', 1]]);
     s = cycleWorkspace(cycleWorkspace(s)); // all, then alpha
-    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', 'Other tasks']);
+    expect(missionRows(s).map(r => r.title)).toEqual(['Alpha mission', '(no mission)']);
     expect(taskRows(s, NOW).map(r => r.title)).toEqual(['alpha work']);
   });
 

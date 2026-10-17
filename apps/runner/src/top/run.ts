@@ -187,8 +187,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       if (r.status === 200 && Array.isArray(r.body?.missions)) dispatch({ type: 'missions', missions: r.body.missions });
     } catch { /* the pane keeps the missions the task list names */ }
   };
-  // The claim order for this runner (R-26): the Queue view, and the waiting
-  // work the Missions view lists that the windowed task list leaves out.
+  // The claim order for this runner (R-26), read only while the Queue view is open.
   const refreshQueue = async () => {
     try {
       const r = await client.get<{ teams?: any[]; truncated?: boolean; error?: string }>('/api/queue');
@@ -236,8 +235,6 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
     if (config?.body) dispatch(configEvent(config.body));
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
-    // The queue is not waited for: the first frame never holds for it.
-    void refreshQueue();
     await Promise.all([refreshTasks(), refreshMissions()]);
   };
 
@@ -265,11 +262,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (effect.type === 'quit') { finish(0); return; }
     if (effect.type === 'refreshQueue') { await refreshQueue(); return; }
     if (effect.type === 'talk') { await talk(effect); return; }
-    if (effect.type === 'open' || effect.type === 'openMission' || effect.type === 'openRunner') {
+    if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
       // The runner's page is where its workspaces are set (R-20).
-      const path = effect.type === 'open' ? `/app/tasks/${effect.taskId}` : effect.type === 'openMission' ? `/app/missions/${effect.missionId}` : '/app/settings/runners';
-      const url = `${server.replace(/\/$/, '')}${path}`;
+      const url = `${server.replace(/\/$/, '')}${effect.type === 'open' ? `/app/tasks/${effect.taskId}` : '/app/settings/runners'}`;
       openUrl(url);
       dispatch({ type: 'status', status: { text: `Opened ${url}`, tone: 'ok' } });
       return;
