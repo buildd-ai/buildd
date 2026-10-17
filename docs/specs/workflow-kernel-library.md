@@ -527,10 +527,10 @@ the control plane, authenticated as the caller).
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
 
-**Switching over** (owner/operator steps, NOT DONE yet). Merging and
-releasing this code changes nothing on its own: without the secret the web
-host keeps applying commands and draining exactly as before. The order
-matters: the control plane first, then the web host.
+**Switching over** (owner/operator steps, DONE; see the record after the
+steps). Merging and releasing this code changed nothing on its own: without the
+secret the web host keeps applying commands and draining exactly as before. The
+order matters: the control plane first, then the web host.
 
 1. Set `KERNEL_COMMAND_SECRET` on the control plane Worker (a Worker secret),
    and run `wrangler triggers deploy` for it from an account login so its cron
@@ -541,6 +541,15 @@ matters: the control plane first, then the web host.
 3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
    their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
    `workflow_transitions` rows from doors carry `host = control-plane`.
+
+**Record (2026-10-17, S8 and the follow-up check).** The switch is made.
+Confirmed from outside: the control plane's health reports `mode: own, kernel:
+own`, and `/api/deploy-identity` reports the control plane in mode `own` with
+`lockstep: true`, on the release then in production (v0.362.0). Not confirmed
+(S8 had no database read): the `kernel-floor` cron runs naming the control plane
+as host, `/api/cron/pr-reconcile` reporting `kernelSkipped`, and `host =
+control-plane` on new `workflow_transitions` rows. Step 3 above stays the check
+for those until someone with a read of the table records it.
 
 The other order is safe but does nothing yet: a web host with the secret
 follows the Worker's health `kernel` field, which reads `own` only when the
@@ -1181,7 +1190,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   own statement; a terminal fact (merged, closed) from any of these callers
   carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
   takes only what its delivery already says. Their non-terminal facts
-  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  (`pr_open`, CI, conflict, unresolvable) stay unscoped: S4a and S4b did not take them and no open slice owns them. "Delivery-owned" has
   one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
   on, owns the row's PR), shared by the funnel and the render read-through. A
   merge the kernel saw but could not apply (its live read failed, a render
