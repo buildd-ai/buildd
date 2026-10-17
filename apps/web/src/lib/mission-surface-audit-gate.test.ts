@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let waiverNotes: Array<{ authorType: string; body: string | null; actorLabel?: string | null; createdAt?: Date }> = [];
 let repoRow: any = { githubRepo: { fullName: 'acme/app', installation: { installationId: 7 } } };
+let deliveryRows: Array<Record<string, unknown>> = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -9,12 +10,27 @@ mock.module('@buildd/core/db', () => ({
       missionNotes: { findMany: async () => waiverNotes },
       workspaces: { findFirst: async () => repoRow },
       tasks: { findMany: async () => [] },
+      workflowDeliveries: { findMany: async () => deliveryRows },
     },
   },
 }));
 
 const mockGithubApi = mock(async (_installationId: number, _path: string): Promise<unknown> => []);
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+
+// An in-memory stand-in for the Upstash cache, so a second evaluation can be observed hitting it.
+const prFilesCache = new Map<string, unknown>();
+let cacheFails = false;
+mock.module('@/lib/redis', () => ({
+  getCachedPrUiFiles: async (key: string) => {
+    if (cacheFails) throw new Error('redis down');
+    return prFilesCache.has(key) ? prFilesCache.get(key) : null;
+  },
+  setCachedPrUiFiles: async (key: string, files: unknown) => {
+    if (cacheFails) throw new Error('redis down');
+    prFilesCache.set(key, files);
+  },
+}));
 
 const { evaluateSurfaceAuditGate, loadSurfaceAuditWaiver } = await import('./mission-surface-audit-gate');
 
@@ -303,5 +319,110 @@ describe('loadSurfaceAuditWaiver', () => {
   it('is null when no person waived it', async () => {
     waiverNotes = [{ authorType: 'system', body: 'x', actorLabel: 'system', createdAt: new Date() }];
     expect(await loadSurfaceAuditWaiver('m1')).toBeNull();
+  });
+});
+
+// task 87c8f5c3: the gate ran on every mission-page and Home render, reading
+// each PR's file list from GitHub one PR after another, with nothing cached.
+describe('evaluateSurfaceAuditGate — PR file cache', () => {
+  const RENDERING = [{ filename: UI_FILE, patch: '+<div className="x" />' }, { filename: 'packages/core/x.ts', patch: '+x' }];
+
+  beforeEach(() => {
+    waiverNotes = [];
+    deliveryRows = [];
+    cacheFails = false;
+    prFilesCache.clear();
+    repoRow = { githubRepo: { fullName: 'acme/app', installation: { installationId: 7 } } };
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async () => RENDERING);
+  });
+
+  it('a second evaluation for the same head makes zero GitHub calls', async () => {
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'a'.repeat(40), mergedAt: null }];
+    const first = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(first).toMatchObject({ required: true, source: 'diff', uiPaths: [UI_FILE] });
+    const callsAfterFirst = mockGithubApi.mock.calls.length;
+    expect(callsAfterFirst).toBe(1);
+
+    const second = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(second).toEqual(first);
+    expect(mockGithubApi.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('caches only the rendered-surface files, keyed by repo, PR and head', async () => {
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'b'.repeat(40), mergedAt: null }];
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    const keys = [...prFilesCache.keys()];
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toContain('acme/app');
+    expect(keys[0]).toContain('10');
+    expect(keys[0]).toContain('b'.repeat(40));
+    expect(prFilesCache.get(keys[0])).toEqual([{ path: UI_FILE, patch: '+<div className="x" />' }]);
+  });
+
+  it('a new head is a new key: a push re-reads the diff', async () => {
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'c'.repeat(40), mergedAt: null }];
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'd'.repeat(40), mergedAt: null }];
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    expect(mockGithubApi.mock.calls.length).toBe(2);
+  });
+
+  it('a merged PR is cached even with no recorded head, and is never re-read', async () => {
+    const merged = builder(11, { workers: [{ prNumber: 11, mergedAt: new Date('2026-10-01T00:00:00Z') }] });
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [merged]);
+    expect(mockGithubApi.mock.calls.length).toBe(1);
+    for (let i = 0; i < 3; i++) await evaluateSurfaceAuditGate({ id: 'm1' }, [merged]);
+    expect(mockGithubApi.mock.calls.length).toBe(1);
+  });
+
+  it('an open PR with no known head is read every time (nothing to key it on)', async () => {
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(12)]);
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(12)]);
+    expect(mockGithubApi.mock.calls.length).toBe(2);
+    expect(prFilesCache.size).toBe(0);
+  });
+
+  it('a cache error fails open to a GitHub read', async () => {
+    cacheFails = true;
+    deliveryRows = [{ workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'e'.repeat(40), mergedAt: null }];
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+      expect(gate).toMatchObject({ required: true, source: 'diff', uiPaths: [UI_FILE] });
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it('cache misses are fetched concurrently, with a bound', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    mockGithubApi.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise(r => setTimeout(r, 15));
+      inFlight--;
+      return [];
+    });
+    const builders = Array.from({ length: 12 }, (_, i) => builder(100 + i, { id: `t-${i}` }));
+    await evaluateSurfaceAuditGate({ id: 'm1' }, builders);
+    expect(mockGithubApi.mock.calls.length).toBe(12);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(6);
+  });
+
+  it('does not fetch patches it already has cached for one PR while reading another', async () => {
+    deliveryRows = [
+      { workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 10, currentHeadSha: 'f'.repeat(40), mergedAt: null },
+      { workspaceId: 'ws-1', repoFullName: 'acme/app', prNumber: 13, currentHeadSha: '1'.repeat(40), mergedAt: null },
+    ];
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10)]);
+    mockGithubApi.mockClear();
+    await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(10), builder(13, { id: 't-13' })]);
+    const read = mockGithubApi.mock.calls.map(c => c[1]);
+    expect(read).toHaveLength(1);
+    expect(read[0]).toContain('/pulls/13/files');
   });
 });

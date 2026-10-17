@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq } from 'drizzle-orm';
+import { missionNotes, tasks, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -19,6 +19,7 @@ import {
   type VisualImpactAssessment,
 } from './workflow/visual-review-impact';
 import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
+import { getCachedPrUiFiles, setCachedPrUiFiles } from './redis';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -34,6 +35,10 @@ import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
 
 /** Cap on PR diffs fetched per check; a mission this large is audited by hand. */
 const MAX_PRS_CHECKED = 25;
+/** PR file lists read from GitHub at once on a cache miss. */
+const FETCH_CONCURRENCY = 4;
+/** A cached entry larger than this is not stored (GitHub already truncates huge patches). */
+const MAX_CACHED_BYTES = 256 * 1024;
 
 export interface SurfaceAuditGateTask {
   id: string;
@@ -45,7 +50,7 @@ export interface SurfaceAuditGateTask {
   pathManifest?: string[] | null;
   /** Read only to recognise a trunk-refresh task (`isTrunkRefreshTask`). */
   context?: unknown;
-  workers?: Array<{ prNumber?: number | null }>;
+  workers?: Array<{ prNumber?: number | null; mergedAt?: Date | string | null }>;
 }
 
 export type SurfaceAuditGate =
@@ -159,6 +164,89 @@ async function changedFiles(installationId: number, fullName: string, prNumber: 
   return out;
 }
 
+/** What is known about a PR's head without asking GitHub: the delivery's observed head, and whether it merged. */
+interface PrHead { headSha: string | null; merged: boolean }
+
+/**
+ * The heads the workflow kernel has observed for these PRs, keyed `${workspaceId}#${repo}#${prNumber}`.
+ * Empty on a read error: an unknown head only means the PR is read from GitHub uncached.
+ */
+async function loadPrHeads(prs: Map<number, string>): Promise<Map<string, PrHead>> {
+  const out = new Map<string, PrHead>();
+  if (prs.size === 0) return out;
+  try {
+    const rows = await db.query.workflowDeliveries.findMany({
+      where: sqlWhere(and(
+        inArray(workflowDeliveries.workspaceId, [...new Set(prs.values())]),
+        inArray(workflowDeliveries.prNumber, [...prs.keys()]),
+      )),
+      columns: { workspaceId: true, repoFullName: true, prNumber: true, currentHeadSha: true, mergedAt: true },
+    });
+    for (const r of rows) {
+      if (r.prNumber == null) continue;
+      out.set(`${r.workspaceId}#${(r.repoFullName ?? '').toLowerCase()}#${r.prNumber}`, { headSha: r.currentHeadSha ?? null, merged: !!r.mergedAt });
+    }
+  } catch (err) {
+    console.error('[surface-audit-gate] could not read PR heads (reading diffs uncached):', err);
+  }
+  return out;
+}
+
+/**
+ * The cache key for a PR's file list, or null when it cannot be keyed. A PR's
+ * files at one head never change, and a merged PR's never change at all, so
+ * either is cached for good; an open PR with no observed head is not cached.
+ */
+function prFilesCacheKey(fullName: string, prNumber: number, head: PrHead): string | null {
+  if (head.headSha) return `${fullName}#${prNumber}@${head.headSha}`;
+  if (head.merged) return `${fullName}#${prNumber}@merged`;
+  return null;
+}
+
+/**
+ * The PR's rendered-surface files (the only ones the gate reads), from the
+ * cache when the PR's head is known, else from GitHub. A cache error falls
+ * through to GitHub; a GitHub error propagates (the caller fails open).
+ */
+async function renderedSurfaceFiles(
+  repo: { installationId: number; fullName: string },
+  prNumber: number,
+  head: PrHead,
+): Promise<ImpactFile[]> {
+  const key = prFilesCacheKey(repo.fullName, prNumber, head);
+  if (key) {
+    try {
+      const hit = await getCachedPrUiFiles<ImpactFile[]>(key);
+      if (Array.isArray(hit)) return hit;
+    } catch (err) {
+      console.error(`[surface-audit-gate] PR file cache read failed for #${prNumber} (reading GitHub):`, err);
+    }
+  }
+  const files = (await changedFiles(repo.installationId, repo.fullName, prNumber)).filter(f => isRenderedSurfaceChange(f.path));
+  if (key && JSON.stringify(files).length <= MAX_CACHED_BYTES) {
+    try {
+      await setCachedPrUiFiles(key, files);
+    } catch (err) {
+      console.error(`[surface-audit-gate] PR file cache write failed for #${prNumber}:`, err);
+    }
+  }
+  return files;
+}
+
+/** `fn` over `items`, at most `limit` at a time, results in input order. */
+async function mapBounded<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 /**
  * Whether the mission still owes a surface audit, and under which Visual
  * Review policy. Cheapest evidence first: the policy, a completed audit and a
@@ -197,29 +285,48 @@ export async function evaluateSurfaceAuditGate(
   if (policy.waiverAllowed && await hasWaiver(mission.id)) return { required: false, why: 'waived' };
 
   const prs = new Map<number, string>();
+  const mergedByWorker = new Set<number>();
   for (const t of builders) {
-    const n = t.workers?.[0]?.prNumber;
+    const w = t.workers?.[0];
+    const n = w?.prNumber;
     if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, t.workspaceId);
+    if (typeof n === 'number' && w?.mergedAt) mergedByWorker.add(n);
   }
 
-  const repos = new Map<string, { installationId: number; fullName: string } | null>();
+  // Each PR's files come from the cache when its head is known (a merged PR's
+  // never change); only misses read GitHub, a few at a time.
+  const checked = [...prs].slice(0, MAX_PRS_CHECKED);
+  const workspaceIds = [...new Set(checked.map(([, ws]) => ws))];
+  const [repoList, heads] = await Promise.all([
+    Promise.all(workspaceIds.map(ws => repoFor(ws).catch(err => {
+      console.error('[surface-audit-gate] could not read the linked repo (not blocking on it):', err);
+      return null;
+    }))),
+    loadPrHeads(new Map(checked)),
+  ]);
+  const repos = new Map(workspaceIds.map((ws, i) => [ws, repoList[i]] as const));
+
   const read = new Set<number>();
   const diffFiles: ImpactFile[] = [];
   let unreadable = false;
-  for (const [prNumber, workspaceId] of [...prs].slice(0, MAX_PRS_CHECKED)) {
+  const results = await mapBounded(checked, FETCH_CONCURRENCY, async ([prNumber, workspaceId]) => {
+    const repo = repos.get(workspaceId);
+    if (!repo) return null;
+    const observed = heads.get(`${workspaceId}#${repo.fullName.toLowerCase()}#${prNumber}`) ?? heads.get(`${workspaceId}##${prNumber}`);
+    const head: PrHead = { headSha: observed?.headSha ?? null, merged: !!observed?.merged || mergedByWorker.has(prNumber) };
     try {
-      if (!repos.has(workspaceId)) repos.set(workspaceId, await repoFor(workspaceId));
-      const repo = repos.get(workspaceId);
-      if (!repo) { unreadable = true; continue; }
-      for (const f of await changedFiles(repo.installationId, repo.fullName, prNumber)) {
-        if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
-      }
-      read.add(prNumber);
+      return await renderedSurfaceFiles(repo, prNumber, head);
     } catch (err) {
-      unreadable = true;
       console.error(`[surface-audit-gate] could not read PR #${prNumber} files (not blocking on it):`, err);
+      return null;
     }
-  }
+  });
+  checked.forEach(([prNumber], i) => {
+    const files = results[i];
+    if (!files) { unreadable = true; return; }
+    diffFiles.push(...files);
+    read.add(prNumber);
+  });
   if (prs.size > MAX_PRS_CHECKED) unreadable = true;
 
   // A builder whose PR was read is answered by its diff; the rest by what they declared.
@@ -260,7 +367,7 @@ export async function loadSurfaceAuditGateTasks(missionId: string): Promise<Surf
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true, context: true },
     with: {
-      workers: { columns: { prNumber: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
+      workers: { columns: { prNumber: true, mergedAt: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
     },
   });
 }

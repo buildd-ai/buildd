@@ -15,6 +15,7 @@ import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surf
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
+import type { VisualReviewModel } from '@buildd/shared';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
@@ -47,7 +48,13 @@ export async function loadMissionAuditLedger(missionId: string): Promise<Schedul
 
 export async function getMissionVisualReviewState(
   missionId: string,
-  opts: { uiChange?: VisualReviewStateInput['uiChange'] } = {},
+  opts: {
+    uiChange?: VisualReviewStateInput['uiChange'];
+    /** The caller's own read of the waiver, so a page that already loads it does not read it twice. */
+    waiver?: Promise<VisualReviewStateInput['waiver']>;
+    /** The caller's own `loadVisualReview` result; null/absent loads it here. */
+    model?: VisualReviewModel | null;
+  } = {},
 ): Promise<MissionVisualReviewState | null> {
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
@@ -60,7 +67,7 @@ export async function getMissionVisualReviewState(
       ? db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)), columns: { gitConfig: true, githubRepoId: true } })
       : Promise.resolve(undefined),
     loadSurfaceAuditGateTasks(missionId),
-    loadSurfaceAuditWaiver(missionId),
+    opts.waiver ?? loadSurfaceAuditWaiver(missionId),
   ]);
   const gitConfig = (ws?.gitConfig ?? null) as { defaultBranch?: string } | null;
   const policy = resolveVisualReviewPolicy({
@@ -68,8 +75,10 @@ export async function getMissionVisualReviewState(
     mission: { autoSurfaceAudit: mission.autoSurfaceAudit },
   });
 
-  const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId });
-  const gate = await evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null);
+  const [model, gate] = await Promise.all([
+    opts.model ?? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId }),
+    evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null),
+  ]);
   const gateUiChange: VisualReviewStateInput['uiChange'] =
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
     : gate && (gate.why === 'no_ui_change' || gate.why === 'no_render_impact') ? { state: 'no', source: null, uiFiles: 0 }
