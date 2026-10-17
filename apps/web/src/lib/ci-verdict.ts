@@ -93,7 +93,18 @@ export function listAllCommitStatuses<T extends { context?: string; state?: stri
   return readPaged<T>(api, installationId, `/repos/${repoFullName}/commits/${sha}/status`, 'statuses');
 }
 
-function isNewer(a: { name: string; id?: number; started_at?: string | null }, b: { name: string; id?: number; started_at?: string | null }): boolean | null {
+export interface CheckRunState {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  /** GitHub check-run id; monotonically increasing, so a higher id is a later run. */
+  id?: number;
+  started_at?: string | null;
+  /** When the run finished (ISO). The landing clock reads green from here. */
+  completed_at?: string | null;
+}
+
+function isNewer(a: CheckRunState, b: CheckRunState): boolean | null {
   if (typeof a.id === 'number' && typeof b.id === 'number') return a.id > b.id;
   if (a.started_at && b.started_at) return Date.parse(a.started_at) > Date.parse(b.started_at);
   return null;
@@ -107,7 +118,7 @@ function isNewer(a: { name: string; id?: number; started_at?: string | null }, b
  * Fails closed: two same-name runs with nothing to order them by are both
  * kept, so an unorderable failure still blocks.
  */
-export function latestRunPerName<T extends { name: string; id?: number; started_at?: string | null }>(checkRuns: T[]): T[] {
+export function latestRunPerName<T extends CheckRunState>(checkRuns: T[]): T[] {
   const kept: T[] = [];
   for (const run of checkRuns) {
     const i = kept.findIndex((k) => k.name === run.name);

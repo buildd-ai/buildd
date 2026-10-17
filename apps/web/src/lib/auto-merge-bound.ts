@@ -39,16 +39,8 @@ export const BUILD_PROOF_CHECK_TOKENS = ['typecheck', 'build', 'test'] as const;
 
 export type BoundVerdict = { permitted: true } | { permitted: false; reason: string };
 
-export interface CheckRunState {
-  name: string;
-  status: string;
-  conclusion: string | null;
-  /** GitHub check-run id; monotonically increasing, so a higher id is a later run. */
-  id?: number;
-  started_at?: string | null;
-  /** When the run finished (ISO). The landing clock reads green from here. */
-  completed_at?: string | null;
-}
+export type { CheckRunState } from '@/lib/ci-verdict';
+import type { CheckRunState } from '@/lib/ci-verdict';
 
 export { latestRunPerName } from '@/lib/ci-verdict';
 
