@@ -36,7 +36,7 @@ import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
-import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
+import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
@@ -133,7 +133,10 @@ if (process.argv.includes('--doctor')) {
   const doctor = await import('./doctor');
   const doFix = process.argv.includes('--fix');
 
-  const report = doctor.runDiagnostics();
+  // Find the runner the way `buildd top` does: through its socket.
+  const { probeRunnerSocket: probe, runnerSocketPath: socketPathFor, runnerProcessFromProbe } = await import('./runner-socket');
+  const socketPath = socketPathFor(BUILDD_DIR);
+  const report = doctor.runDiagnostics({ runnerProcess: runnerProcessFromProbe(await probe(socketPath), socketPath) });
 
   const RED = '\x1b[31m';
   const GREEN = '\x1b[32m';
@@ -1078,13 +1081,10 @@ const sseClients = new Set<ReadableStreamDefaultController>();
 // Broadcast to all SSE clients
 function broadcast(event: any) {
   // Never serialise credential material — see public-worker.ts.
-  const data = `data: ${JSON.stringify(toPublicEvent(event))}\n\n`;
+  const data = new TextEncoder().encode(`data: ${JSON.stringify(toPublicEvent(event))}\n\n`);
   for (const controller of sseClients) {
-    try {
-      controller.enqueue(new TextEncoder().encode(data));
-    } catch {
-      sseClients.delete(controller);
-    }
+    // A reader that stopped reading is closed, not queued for forever (runner-socket.ts).
+    if (!enqueueEvent(controller, data)) sseClients.delete(controller);
   }
 }
 
@@ -2942,16 +2942,16 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/doctor' && req.method === 'GET') {
       const { runDiagnostics } = await import('./doctor');
       // This process's own isolation record, the one its heartbeat carries.
-      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
+      const report = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json(report, { headers: corsHeaders });
     }
 
     if (path === '/api/doctor/fix' && req.method === 'POST') {
       const { runDiagnostics, autoFix } = await import('./doctor');
-      const report = runDiagnostics();
+      const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
       const fixes = autoFix(report);
       // Re-run diagnostics after fixes
-      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord() }));
+      const afterReport = withClaimHealthCheck(runDiagnostics({ isolation: getIsolationRecord(), runnerProcess: ownRunnerProcessCheck() }));
       return Response.json({ fixes, report: afterReport }, { headers: corsHeaders });
     }
 
@@ -2999,6 +2999,19 @@ const server = DEBUG_MODE ? Bun.serve({
 // The runner socket (bound at startup, above) now answers everything the
 // --debug server does, in headless mode too.
 socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: true });
+
+// Socket watchdog: the runner asks its own socket for /health every minute. A
+// socket that accepts and never answers cuts `buildd top`, `hold` and `stop`
+// off from a runner that is otherwise working, so a miss is logged with the
+// requests still open, and two in a row rebind the socket.
+const socketWatchdog = runnerSocket ? createSocketWatchdog({
+  server: runnerSocket,
+  log: (m) => console.log(m),
+  warn: (m) => console.error(m),
+}) : null;
+if (socketWatchdog) setInterval(() => { void socketWatchdog.tick(); }, SOCKET_WATCHDOG_INTERVAL_MS);
+/** The doctor's runner-process line, run by this runner on itself. */
+const ownRunnerProcessCheck = () => socketHealthCheck(socketWatchdog?.state() ?? null);
 
 const localUrl = `http://localhost:${PORT}`;
 
@@ -3407,7 +3420,8 @@ setInterval(async () => {
 
   try {
     const { runDiagnostics, autoFix } = await import('./doctor');
-    const report = runDiagnostics();
+    // This process is the runner: its line is whether its socket answers, not a ps match.
+    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
     const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
     if (fixable.length > 0) {
       console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
