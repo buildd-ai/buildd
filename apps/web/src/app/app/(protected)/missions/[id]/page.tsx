@@ -28,7 +28,7 @@ import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
-import MissionRecoveryNotice from '@/components/incidents/MissionRecoveryNotice';
+import MissionRecoveryNotice from '@/components/recovery/MissionRecoveryNotice';
 import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';

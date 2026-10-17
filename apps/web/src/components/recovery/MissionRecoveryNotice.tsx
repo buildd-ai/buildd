@@ -7,10 +7,9 @@ export interface MissionRecoveryNoticeProps {
 }
 
 /**
- * Mission tasks held by a failure incident's recovery (failure-incident-recovery
- * §16.4, §17.2): each says what Buildd is doing and links its incident, so a
- * running mission never hides a blocked audit. Only tasks whose recovery is
- * not finished are listed; the incident page keeps the history.
+ * Mission tasks held by automatic repair (failure-incident-recovery §16.4,
+ * §17.2): each says what Buildd is doing, so a running mission never hides a
+ * blocked audit. Only tasks whose repair is not finished are listed.
  */
 export default function MissionRecoveryNotice({ items }: MissionRecoveryNoticeProps) {
   if (items.length === 0) return null;
@@ -27,7 +26,7 @@ export default function MissionRecoveryNotice({ items }: MissionRecoveryNoticePr
               <Link href={`/app/tasks/${taskId}`} className="min-w-0 truncate text-body text-text-primary hover:underline">{title}</Link>
             </div>
             <p className="text-meta text-text-secondary">
-              {view.sentence} <Link href={view.href} className="underline hover:text-text-primary">Open incident</Link>
+              {view.sentence}
             </p>
           </li>
         ))}

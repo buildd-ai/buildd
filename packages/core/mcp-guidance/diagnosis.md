@@ -42,8 +42,6 @@ read reached the data: a `forbidden` or 401 is not an empty result.
 - `errorPrefix` rolls up a family whose tail varies (for example
   `needs_input:`). `family: "gate"` lists server refusals and bypasses instead
   of worker failures.
-- `buildd action=list_incidents` shows systemic patterns already being
-  tracked.
 
 ## Report friction
 

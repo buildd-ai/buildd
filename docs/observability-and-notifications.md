@@ -178,22 +178,18 @@ collect bounded facts (worker failures, gate events, retry lineage, …)
   → actOnIncidentResults()        triage (rule floor, optionally raised by a model) →
                                    at most one deduped fix task per incident →
                                    page candidates on transition only (never per occurrence),
-                                   through the escalation gate
+                                   handed to a sender that delivers nothing
 ```
 
-- **Who is paged: the escalation gate** (`apps/web/src/lib/failure-incident-escalation.ts`),
-  the same one that decides PR escalations. Critical and high incidents are page
-  candidates; medium and low stay on the ledger. Rules first:
-  a critical incident is the owner's even while a fix task runs; any other
-  incident whose fix task is still open is Buildd's and pages nobody; a high
-  incident nothing is fixing goes to the owner. The verdict is stored in the
-  decision ledger (subject `incident:<id>`), and only an owner verdict sends a
-  push (the team's `needsAttention` notification, priority 1 for critical),
-  linking to the incident page `/app/incidents/<id>`. Home's Needs You lists
-  every unresolved incident whose stored verdict is the owner's; the page path
-  reads the ledger and never calls a model. A push that fails is not recorded,
-  so the next replay of that state pages again. A critical floor is decided by
-  rule and can never be downgraded by the model triage step: it is not even consulted.
+- **Who is paged: nobody, from the open product.** Critical and high patterns
+  are page candidates and the claim is recorded on the row, but
+  `defaultIncidentSender` (`apps/web/src/lib/failure-incident-actions.ts`)
+  delivers nothing and no verdict is stored. Operator tooling reads root causes
+  through the platform-owner API (`apps/web/src/app/api/admin/root-causes/route.ts`)
+  and does its own paging. Teams see the effect on their work as service status
+  (`apps/web/src/lib/service-status.ts`), never as an incident. A critical floor
+  is decided by rule and can never be downgraded by the model triage step: it is
+  not even consulted.
 - **Re-alerting** is transition-based: a severity increase, the affected scope
   crossing an impact tier, or a resolved incident recurring. Anything else —
   including the same pattern simply accumulating more occurrences — updates
@@ -210,31 +206,21 @@ collect bounded facts (worker failures, gate events, retry lineage, …)
   never resolves. Resolution keeps the row, evidence and counts; a fresh
   occurrence reopens it. These incidents are Buildd's below critical: a task
   waiting on an overlapping PR is the claim loop's to wake, and a decision on
-  the blocking PR is that PR's own card, so Home's Needs You never lists one.
+  the blocking PR is that PR's own card.
   The full recovery assessment (per-blocker episodes, wakes, cycles, spurious
   overlap) is the draft spec `failure-incident-recovery.md`, being built on its mission branch.
 - Noisy transient/infra and budget-exhaustion patterns (matched deterministically
   on the failure signature) stay ledger-only: no fix task is auto-filed for them
   unless a confident model answer names an actual platform defect.
 
-### Reading the ledger
+### Reading root causes
 
-The same table is exposed read-only, API-first:
-
-- **`GET /api/health/incidents`** (`apps/web/src/app/api/health/incidents/route.ts`) —
-  team/workspace-scoped list with `status`/`severity`/`rule`/`signature` filters.
-  Each row carries severity, rule + reasonCode, first/last seen, occurrence and
-  recurrence counts, impact, representative task/worker/PR refs, alert state
-  (`lastAlertedAt`/`lastAlertSeverity`), any linked fix task, and
-  acknowledged/resolved state. `counts.bySeverity` gives the "open incidents by
-  severity" overview regardless of the row-level filters.
-- **MCP `list_incidents`** (`buildd` tool, analytics group) — same data, formatted
-  for an agent loop. Check this before filing a `[friction]` task or a manual bug
-  report for something that looks systemic; it may already be tracked, paged and
-  linked to a fix task.
-
-There is no second query implementation — both read paths select directly from
-`failure_incidents`, the same table `failure-incident-store.ts` writes.
+The open product has no incident list, page or MCP action. Detected causes are
+written to the root-cause record (`apps/web/src/lib/root-cause-record.ts`) and
+read by operator tooling through the platform-owner route
+`apps/web/src/app/api/admin/root-causes/route.ts`, which refuses team keys and
+sessions. Before filing a `[friction]` task, `get_failure_analytics` says
+whether the failure is already a known pattern.
 
 ## Diagnostic plane (dashboard, not phone)
 
