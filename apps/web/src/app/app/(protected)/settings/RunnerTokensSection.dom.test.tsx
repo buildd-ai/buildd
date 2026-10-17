@@ -44,6 +44,18 @@ async function expandToken() {
 }
 
 describe('RunnerTokensSection token details', () => {
+  it('says what an unlinked token cannot do in the words of whoever is reading', async () => {
+    await mount({ accountWorkspaces: [], canManageHostRunner: true });
+    await expandToken();
+    expect(host.textContent).toContain("No workspace linked. This token can't claim or create tasks.");
+
+    act(() => root.unmount()); host.remove();
+    await mount({ accountWorkspaces: [], canManageHostRunner: false });
+    await expandToken();
+    expect(host.textContent).toContain("No workspace linked. This runner can't start or create tasks.");
+    expect(host.textContent).not.toMatch(/\bclaim/);
+  });
+
   it('links token creation to the creation page from populated and empty states', async () => {
     await mount({});
     const newToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('+ New token'));

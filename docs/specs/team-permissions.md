@@ -544,6 +544,7 @@ makes the decision.
 | `apps/web/src/app/api/tasks/[id]/messages/route.ts` (`GET`) | UI: may send steering message | owner, admin | admin (`workers:admin`) | `steer_workers` |
 | `apps/web/src/app/api/tasks/[id]/reassign/route.ts` (`POST`) | force-reassign a task | owner, admin | any key with workspace access (oddity 2) | `force_reassign_task` |
 | `apps/web/src/app/api/workers/[id]/release-slot/route.ts` (`POST`) | release an interactive worker's slot | owner, admin | — | `force_reassign_task` |
+| `apps/web/src/lib/diagnostics-audience.ts` (`canSeeDiagnostics`) | UI: the Diagnostics disclosure on the task page (gate codes, runner scheduling, overrides, exact timings); a platform operator sees it too | owner, admin | — | `view_work_diagnostics` |
 | `apps/web/src/app/api/releases/trigger/route.ts` (`resolveAuth`) | trigger a release | owner, admin, personal team | admin | `manage_releases` |
 | `apps/web/src/app/api/releases/status/route.ts` (`resolveAdminTeamIds`) | release preflight | owner, admin, personal team | admin | `manage_releases` |
 | `apps/web/src/lib/specs/approval.ts` (`specApprover`) | `specApprover`: submit and approve a Living Spec revision | owner, admin, or a delegated approver (`gitConfig.livingSpecs.approverUserIds`) | — (a person only; an OAuth session counts as its person) | `approve_specs` |

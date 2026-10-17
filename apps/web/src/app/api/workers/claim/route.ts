@@ -5,11 +5,11 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
-import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -99,7 +99,7 @@ import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/l
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
-import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
+import { BudgetWalls, accountLimitRefusal, accountWorkerSlotLimit, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -422,9 +422,30 @@ export async function POST(req: NextRequest) {
   // slot (workerHoldsRunnerSlot, the same rule the runner's heartbeat counts by).
   const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER && workerHoldsRunnerSlot(w));
 
-  if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
+  // The limit is the slots the account's live runners report, added up; the
+  // account's own number only when none reports (accountWorkerSlotLimit). A
+  // failed read keeps the account's number, which is what applied before.
+  const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
+    where: sqlWhere(and(
+      eq(workerHeartbeats.accountId, account.id),
+      gte(workerHeartbeats.lastHeartbeatAt, new Date(Date.now() - RUNNER_LIVE_WINDOW_MS)),
+    )),
+    columns: { maxConcurrentWorkers: true },
+  }).then(rows => rows.map(r => r.maxConcurrentWorkers)).catch((err) => {
+    console.warn('[claim] could not read live runner slots, using the account limit:', err);
+    return [] as number[];
+  });
+  const workerSlotLimit = accountWorkerSlotLimit(account.maxConcurrentWorkers, liveRunnerSlots);
+
+  // A person chose this named task for this runner (`c` in top): the runner
+  // claims only into a free slot of its own, so another runner's busy workers
+  // never refuse it (task 69f5b7cd's rule, for the runner path).
+  const personRequested = body.requestedByPerson === true && !!taskId;
+  const slotLimitApplies = !interactiveSession && !personRequested;
+
+  if (slotLimitApplies && runnerSlotWorkers.length >= workerSlotLimit) {
     return NextResponse.json(
-      accountLimitRefusal({ code: 'max_concurrent_workers', limit: account.maxConcurrentWorkers, current: runnerSlotWorkers.length }),
+      accountLimitRefusal({ code: 'max_concurrent_workers', limit: workerSlotLimit, current: runnerSlotWorkers.length }),
       { status: 429 }
     );
   }
@@ -523,16 +544,16 @@ export async function POST(req: NextRequest) {
   const accountBudgetExhausted = account.authType === 'oauth'
     && isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt);
 
-  const availableSlots = interactiveSession
+  const availableSlots = !slotLimitApplies
     ? maxTasks
-    : Math.min(maxTasks, account.maxConcurrentWorkers - runnerSlotWorkers.length);
+    : Math.min(maxTasks, workerSlotLimit - runnerSlotWorkers.length);
 
   if (availableSlots === 0) {
     return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
         activeWorkers: runnerSlotWorkers.length,
-        maxConcurrent: account.maxConcurrentWorkers,
+        maxConcurrent: workerSlotLimit,
       } satisfies ClaimDiagnostics,
     });
   }
@@ -1018,7 +1039,7 @@ export async function POST(req: NextRequest) {
         });
 
         oauthPressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
-        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: account.maxConcurrentWorkers });
+        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: workerSlotLimit });
         if (seatCap !== null) {
           oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
         }
@@ -2945,9 +2966,9 @@ export async function POST(req: NextRequest) {
     // account, so this is what keeps one member's agent off another's claim.
     // NULL for a bld_ key.
     const claimedByUserId = claimingUserId(account);
-    // Same rule as the pre-check: a session is not limited, and a runner's
-    // count leaves the person's own sessions out.
-    const accountSlotPredicate = interactiveSession
+    // Same rule as the pre-check: a session or a person's named pick is not
+    // limited, and a runner's count leaves the person's own sessions out.
+    const accountSlotPredicate = !slotLimitApplies
       ? sql`TRUE`
       : sql`(
           SELECT count(*) FROM ${workers}
@@ -2959,7 +2980,7 @@ export async function POST(req: NextRequest) {
             coalesce(error, '') LIKE ${NEEDS_INPUT_ERROR_PREFIX + '%'}
             OR waiting_for->>'type' = 'pause'
           ))
-        ) < ${account.maxConcurrentWorkers}`;
+        ) < ${workerSlotLimit}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
@@ -3018,7 +3039,7 @@ export async function POST(req: NextRequest) {
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
-          detail: `This account reached its limit of ${account.maxConcurrentWorkers} concurrent workers while the claim ran. Finish or release one, then retry.`,
+          detail: `This account reached its limit of ${workerSlotLimit} concurrent workers while the claim ran. Finish or release one, then retry.`,
         };
       }
       break;

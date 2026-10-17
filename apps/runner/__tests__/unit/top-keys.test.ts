@@ -375,3 +375,32 @@ describe('an unterminated terminal string never eats the keyboard', () => {
     expect(OSC_ABANDON_MS).toBe(100);
   });
 });
+
+describe('s talks to a mission or steers a task', () => {
+  test('in the missions pane it targets the selected mission', () => {
+    const { effects } = press(fixtureState(), '\x1b[D', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'mission', id: 'm-tui-0000-0000', title: 'Runner TUI' }]);
+  });
+
+  test('in the task list it targets the selected task', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+  });
+
+  test('in a task\'s detail it targets that task', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', '\r', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+  });
+
+  test('the loose-task row is not a mission to talk to', () => {
+    let s = fixtureState();
+    for (let i = 0; i < 10; i++) s = press(s, '\x1b[B').s;
+    const { s: after, effects } = press(s, ch('s'));
+    if (effects.length === 0) expect(after.status?.tone).toBe('error');
+  });
+
+  test('typing s into a prompt types an s', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', ch('a'), ch('s'));
+    expect(effects).toEqual([]);
+  });
+});
