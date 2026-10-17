@@ -10,6 +10,21 @@ related: [usage-and-cost-accounting]
 keywords: [insights, shipped, rolling window, calendar week, weekday, partial day, median, p90, start to production, failed or abandoned]
 verified_by: [apps/web/src/lib/insights-metric-grammar.test.ts, apps/web/src/components/insights/insights-summary.test.ts, apps/web/src/components/insights/ShippedChart.test.ts]
 supersedes: []
+assertions:
+  - id: flow-series
+    type: symbol
+    path: apps/web/src/lib/insights-flow.ts
+    name: buildFlowSeries
+  - id: comparison-caption
+    type: symbol
+    path: apps/web/src/components/insights/insights-summary.ts
+    name: comparisonCaption
+  - id: metric-grammar-tests
+    type: test_file
+    path: apps/web/src/lib/insights-metric-grammar.test.ts
+  - id: summary-tests
+    type: test_file
+    path: apps/web/src/components/insights/insights-summary.test.ts
 ---
 
 # Insights Shipping Metrics
