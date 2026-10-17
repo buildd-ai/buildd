@@ -27,7 +27,7 @@ export default function CloudRunnerRow({ teamId, canManage = true }: { teamId: s
       </div>
       {loaded && canManage && (
         <a href="#cloudflare" className="btn shrink-0">
-          {state.kind === 'empty' ? 'Set up' : state.next}
+          {state.kind === 'empty' ? 'Set up' : state.next ?? 'Open'}
         </a>
       )}
     </li>

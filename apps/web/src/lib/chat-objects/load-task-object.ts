@@ -13,7 +13,8 @@ import { findTaskRole } from '@/app/app/(protected)/tasks/[id]/role-lookup';
 import { deriveNow, type Milestone } from '@/app/app/(protected)/tasks/[id]/task-activity';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
-import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const epoch = (v: Date | string | null | undefined): number | null => {
@@ -68,7 +69,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   });
   if (!task) return null;
 
-  const [access, latest, role, runs, deliveries] = await Promise.all([
+  const [access, latest, role, runs, deliveries, deliveryViews] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findFirst({
       where: sqlWhere(eq(workers.taskId, taskId)),
@@ -83,11 +84,14 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
     db.select({ n: count() }).from(workers).where(eq(workers.taskId, taskId)).then(r => Number(r[0]?.n ?? 0)).catch(() => null),
     // §17.5: a kernel-owned delivery's reading, not the worker's PR columns.
     getOwnerDeliveryDisplays([taskId]),
+    getDeliveryViewsForTasks([taskId]).catch(() => new Map()),
   ]);
   if (!access) return null;
 
   const { scope, label } = boardTaskLabel({ title: task.title, label: (task as { label?: string | null }).label ?? null });
   const renderedAt = Date.now();
+  // The worker's merged/closed columns say what the delivery says when the kernel owns one.
+  const life = prLifecycleFor(latest, deliveryViews.get(taskId), taskId);
   const now = latest ? taskNowState({
     ...latest,
     outputRequirement: task.outputRequirement,
@@ -119,8 +123,8 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       waiting: !!latest.waitingFor,
       prNumber: latest.prNumber ?? null,
       prUrl: latest.prUrl ?? null,
-      mergedAt: epoch(latest.mergedAt),
-      prLifecycleStatus: latest.prLifecycleStatus ?? null,
+      mergedAt: epoch(life.mergedAt as Date | string | null),
+      prLifecycleStatus: life.prLifecycleStatus,
       turns: latest.turns,
       updatedAt: epoch(latest.updatedAt),
     } : null,

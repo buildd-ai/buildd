@@ -2,13 +2,13 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-17
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult, release candidate, release/v]
-verified_by: [packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
+verified_by: [apps/web/src/lib/release-candidate-ci.test.ts, apps/web/src/lib/ci-failure-retry.release-candidate.test.ts, apps/web/src/lib/release/record.test.ts, packages/core/__tests__/release-strategy.test.ts, packages/core/__tests__/release-compose.test.ts, apps/web/src/lib/release/compose-actions.test.ts, scripts/release-candidate.test.ts, packages/core/__tests__/release-candidate.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/release-executor.test.ts]
 assertions:
   - id: trigger-release-route
     type: route
@@ -183,6 +183,17 @@ path escalation or the migration inspector.
 - The stale-row heal searches merged PRs into `prodBranch` whose head is a
   candidate branch (or the legacy head), since a candidate's head is not
   `ref`.
+- A red candidate is never repaired on its branch. The CI doors (check-suite
+  webhook, red-PR sweep, manual Fix CI) ask `classifyCiRedReleasePr` before
+  any CI fix and before the kernel door. A trusted candidate at its recorded
+  head gets one fix task per head, based on `sourceBranch` and bound to no PR;
+  the candidate is then amended through the release workflow once that fix
+  merges. A candidate-shaped PR that is not provably one gets nothing filed.
+  The manual Fix CI is refused for both.
+- `trigger_release` dedupes a dispatch against an in-flight release for the
+  same source commit, except an amendment (`amend` or `exclude` input set):
+  a plain dispatch leaves an open candidate unchanged, so an amendment is
+  never a repeat of it.
 
 **Acceptance criteria**:
 - AC-12: GIVEN `candidate.branches = ['release/v*']` WHEN `github-actions[bot]`
@@ -197,9 +208,23 @@ path escalation or the migration inspector.
   reviewer is dispatched; a migration still meets the migration inspector at
   merge.
 
+- AC-19: GIVEN a trusted candidate whose CI is red at its recorded head WHEN
+  the check-suite webhook or the red-PR sweep reports it THEN one fix task is
+  filed with `baseBranch = sourceBranch` and no PR binding, the gate records
+  `release_candidate`, and no head-branch CI attempt or kernel observation
+  happens; a second report on the same head files nothing.
+- AC-20: GIVEN an in-flight release row for dev commit X WHEN `trigger_release`
+  is called for X with `inputs.amend` (or `inputs.exclude`) set THEN the
+  workflow is dispatched and the row re-armed, not reported as deduped.
+
 **Code surface**:
 - Policy and classifier: `packages/core/release-candidate.ts`:
   `classifyReleasePr()`, `releaseCandidatePolicy()`, `hasReleasePrShape()`
+- Red candidate CI: `apps/web/src/lib/release-candidate-ci.ts`:
+  `classifyCiRedReleasePr()`, `buildReleaseCandidateFixTask()`; doors
+  `apps/web/src/lib/ci-failure-retry.ts`,
+  `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.ts`
+- Amendment dedup: `apps/web/src/lib/release/record.ts`: `isAmendmentDispatch()`
 - Composition: `apps/web/src/lib/workflow/review-composition.ts`:
   `compositionConstituentBase()`; write site `review-effects.ts`
 - Merge gate: `apps/web/src/lib/auto-merge.ts`
