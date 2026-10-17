@@ -291,37 +291,6 @@ export interface CodexMcpConfig {
     url: string;
     bearerTokenEnvVar: string;
   }>;
-  /**
-   * Extra directories the `workspace-write` sandbox may write, emitted as
-   * `sandbox_workspace_write.writable_roots`. A linked worktree keeps its index,
-   * HEAD and FETCH_HEAD under the parent clone's `.git/worktrees/<id>` and new
-   * objects and refs under the common `.git`, both outside the worktree, so
-   * `git fetch`/`add`/`commit` fail without them.
-   */
-  writableRoots?: string[];
-}
-
-/**
- * The git metadata directories a linked worktree writes to: its own gitdir
- * (from the `.git` file) and the common dir it points at. Empty for a plain
- * clone (`.git` is a directory inside the writable root) or when unreadable.
- */
-export function worktreeGitWritableRoots(worktreePath: string): string[] {
-  try {
-    const dotGit = join(worktreePath, '.git');
-    if (!fs.statSync(dotGit).isFile()) return [];
-    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
-    if (!m) return [];
-    const gitDir = resolve(worktreePath, m[1]);
-    const roots = [gitDir];
-    try {
-      const common = fs.readFileSync(join(gitDir, 'commondir'), 'utf-8').trim();
-      if (common) roots.push(resolve(gitDir, common));
-    } catch { /* no commondir: gitdir alone */ }
-    return roots;
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -381,7 +350,6 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
     // `--strict-config` (CLI prints "network access enabled").
     '[sandbox_workspace_write]',
     'network_access = true',
-    ...(config.writableRoots?.length ? [`writable_roots = [${config.writableRoots.map(tomlString).join(', ')}]`] : []),
     '',
   ].join('\n');
   fs.writeFileSync(join(codexHome, 'config.toml'), content);

@@ -54,7 +54,7 @@ export async function frameOnce(opts: FrameOnceOptions): Promise<string[]> {
   const get = (path: string) => client.get(path).catch(() => null);
   const [runner, config, workers, workspaces, tasks, missions, queue, init] = await Promise.all([
     get('/api/runner'), get('/api/config'), get('/api/workers?view=top'), get('/api/workspaces'),
-    get('/api/tasks'), get('/api/missions/recent'), get('/api/queue'),
+    get('/api/tasks'), get('/api/missions/recent'), opts.view === 'queue' ? get('/api/queue') : Promise.resolve(null),
     firstInit(client, opts.initTimeoutMs ?? 5_000),
   ]);
   if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) apply({ type: 'workspaces', workspaces: workspaces.body.workspaces });

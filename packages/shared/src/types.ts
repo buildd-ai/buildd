@@ -1599,13 +1599,6 @@ export interface ClaimTasksInput {
    */
   requestedByPerson?: boolean;
   /**
-   * Which Claude login this runner's agents run on, when it is the machine's
-   * own `claude login`: a one-way hash of the CLI profile's account id (32 hex
-   * characters, never a credential). A limit another runner on the same login
-   * hit holds this runner too (apps/web/src/lib/runner-seat-wall.ts).
-   */
-  claudeLoginId?: string;
-  /**
    * Protocol features this runner build implements, so the server does not send
    * a payload field an older runner would silently ignore.
    */

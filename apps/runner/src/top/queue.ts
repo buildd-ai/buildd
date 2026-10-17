@@ -33,24 +33,15 @@ export interface QueueRow {
   /** 1-based place in this team's queue; null on a "Not for this runner" row. */
   position: number | null;
   title: string;
-  /** The task's mission, so the Missions view can list queued work the task list did not send. */
-  missionId: string | null;
-  roleSlug?: string | null;
   workspace: string;
-  /** The mission's title, or "-" for a task outside any mission. */
+  /** The mission's title, "(no mission)", or on a "Not for this runner" row, the reason. */
   mission: string;
   /** The estimate in words, "-" with none; null when the team has estimates off. */
   est: string | null;
-  /**
-   * When it starts: "now", what holds it ("when #4 ends (same files)", a local
-   * time), "in ~15m (next free slot)", "on hold"; on a held row the time then
-   * why ("18:26 · retries after failures"); on a "Not for this runner" row, why.
-   */
+  /** When it starts: "now", what holds it ("when #4 ends (same files)", a local time), "in ~15m (next free slot)", "on hold", or "-". */
   starts: string;
   /** Set on a row this runner never takes, or one held on its own. */
   reason?: string;
-  /** Set on a "Not for this runner" row: the server's reason code. */
-  exclusion?: RunnerQueueExclusion;
   /** Set on a row held on its own: it is listed after the queue and can still be picked. */
   held?: boolean;
   /** "starts alongside #n (same files, merges at the end)" when it shares only mergeable files with other work. */
@@ -69,11 +60,11 @@ export interface QueueSection {
 }
 
 const EXCLUSION_WORDS: Record<RunnerQueueExclusion, string> = {
-  local_session: 'runs in a local session',
-  another_runner: 'another runner takes it',
-  role_missing: 'needs a role this runner lacks',
-  runner_type: 'for another kind of runner',
-  workspace_executor: 'its workspace runs work elsewhere',
+  local_session: 'local session',
+  another_runner: 'another runner',
+  role_missing: 'a role it lacks',
+  runner_type: 'another runner type',
+  workspace_executor: 'runs elsewhere',
   subject_dead: 'its PR is closed',
 };
 
@@ -126,19 +117,16 @@ function heldOnItsOwn(t: RunnerQueueTask, now: number): boolean {
   return t.holds.includes('deferred') && future(t.holdUntil, now);
 }
 
-/**
- * Why a held row waits, in the R-25 words ("retries after failures, Oct 22
- * 14:07"), and its starts column: the time first, so a narrow column keeps it.
- */
+/** The reason a held row waits, in the R-25 words ("retries after failures, Oct 22 14:07"). */
 function heldWords(t: RunnerQueueTask, now: number): { reason: string; starts: string } {
-  if (t.holds.includes('task_held')) return { reason: 'held by a person', starts: 'on hold · held by a person' };
-  if (t.holds.includes('mission_held')) return { reason: 'mission is on hold', starts: 'on hold · mission is on hold' };
+  if (t.holds.includes('task_held')) return { reason: 'held by a person', starts: 'on hold' };
+  if (t.holds.includes('mission_held')) return { reason: 'mission is on hold', starts: 'on hold' };
   const at = localLiftTime(t.holdUntil!, now);
   const cause = t.holdCause === 'retry_after_failures' ? 'retries after failures'
-    : t.holdCause === 'usage_limit_reset' ? 'after the usage limit resets'
-    : t.holdCause === 'credential_probe' ? 'rechecks its login'
-    : 'scheduled';
-  return { reason: `${cause}, ${at}`, starts: `${at} · ${cause}` };
+    : t.holdCause === 'usage_limit_reset' ? 'retries when the usage limit resets'
+    : t.holdCause === 'credential_probe' ? 'rechecks the rejected login'
+    : 'starts at its set time';
+  return { reason: `${cause}, ${at}`, starts: at };
 }
 
 const OVERLAP_CODES = new Set(['soft_overlap', 'path_overlap', 'advisory_manifest', 'ordered_behind']);
@@ -272,10 +260,8 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         taskId: t.id,
         position: i + 1,
         title: t.title,
-        missionId: t.missionId,
-        roleSlug: t.roleSlug,
         workspace: t.workspaceName,
-        mission: t.missionTitle ?? '-',
+        mission: t.missionTitle ?? '(no mission)',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
         starts: starts[i],
         // Only a row nothing else holds: one that waits says what it waits for.
@@ -287,10 +273,8 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
           taskId: t.id,
           position: null,
           title: t.title,
-          missionId: t.missionId,
-          roleSlug: t.roleSlug,
           workspace: t.workspaceName,
-          mission: t.missionTitle ?? '-',
+          mission: w.reason,
           est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
           starts: w.starts,
           reason: w.reason,
@@ -301,14 +285,11 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         taskId: t.id,
         position: null,
         title: t.title,
-        missionId: t.missionId,
-        roleSlug: t.roleSlug,
         workspace: t.workspaceName,
-        mission: t.missionTitle ?? '-',
+        mission: exclusionWords(t),
         est: tm.estimatesOn ? '-' : null,
-        starts: exclusionWords(t),
+        starts: '-',
         reason: exclusionWords(t),
-        exclusion: t.reason,
       })),
     });
   }

@@ -24,7 +24,6 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
   inputTokens?: number;
   outputTokens?: number;
   claudeLoginUsed?: ClaudeLoginUsed;
-  claudeLoginId?: string;
 } {
   const meta = worker.resultMeta;
   const reportedCost = meta?.totalCostUsd;
@@ -45,9 +44,6 @@ export function buildTerminalAttributionPayload(worker: LocalWorker): {
     // Which Claude login the run used: the server walls only this runner when
     // it was the machine's own (spec "A runner", R-3, R-9).
     ...(worker.claudeLoginUsed ? { claudeLoginUsed: worker.claudeLoginUsed } : {}),
-    // Which login that was (host-seat.ts claudeLoginIdentity, a one-way
-    // hash), so the wall holds every runner on it, not only this one.
-    ...(worker.claudeLoginId ? { claudeLoginId: worker.claudeLoginId } : {}),
   };
 }
 

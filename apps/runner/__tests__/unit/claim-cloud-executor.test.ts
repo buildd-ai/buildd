@@ -131,18 +131,3 @@ describe('agent model endpoint on the claim (docs/design/agent-model-endpoint.md
     expect(sentBodies[0].runnerFeatures).toContain(PERSONAL_CREDENTIAL_RUNNER_FEATURE);
   });
 });
-
-// The login identity (host-seat.ts claudeLoginIdentity) rides on every claim so
-// a wall another runner on the same Claude login recorded holds this one too.
-describe('claimTask login identity', () => {
-  beforeEach(() => { sentBodies = []; });
-  afterEach(() => { globalThis.fetch = realFetch; });
-
-  test('sends claudeLoginId when given, and omits it otherwise', async () => {
-    respond([]);
-    await makeClient().claimTask(1, undefined, 'r', undefined, undefined, true, undefined, { claudeLoginId: 'a'.repeat(32) });
-    await makeClient().claimTask(1, undefined, 'r');
-    expect(sentBodies[0].claudeLoginId).toBe('a'.repeat(32));
-    expect('claudeLoginId' in sentBodies[1]).toBe(false);
-  });
-});

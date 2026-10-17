@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  currentTeam, currentWorkspace, currentMission, cycleTeam, cycleWorkspace, filterLine, initialState, missionMeta, missionRowStage, missionRows, reduce, taskRows, teamList,
+  currentTeam, currentWorkspace, currentMission, cycleTeam, cycleWorkspace, filterLine, initialState, missionMeta, missionRows, reduce, taskRows, teamList,
   type TopState, type TopTask,
 } from '../../src/top/state';
 import { NOW } from './top-fixture';
@@ -117,7 +117,7 @@ describe('teams (R-23)', () => {
     expect(taskRows(all, NOW).map(r => r.title)).toEqual(['a work']);
     const b = state({ selectedTeam: 'Team B' }, RECENT, tasks);
     expect(taskRows(b, NOW).map(r => r.title)).toEqual(['b work']);
-    expect(missionRows(b, NOW).map(r => r.title)).toEqual(['Other team mission', 'Other tasks']);
+    expect(missionRows(b, NOW).map(r => r.title)).toEqual(['Other team mission', '(no mission)']);
   });
 
   test('one team, or none named: t has nothing to switch to', () => {
@@ -141,7 +141,7 @@ describe('missions pane (R-24)', () => {
       ['Team A', 'Delivered newer'],
       ['Team A', 'Delivered one'],
       ['Team B', 'Other team mission'],
-      [null, 'Other tasks'],
+      [null, '(no mission)'],
     ]);
   });
 
@@ -153,15 +153,14 @@ describe('missions pane (R-24)', () => {
     expect(later).not.toContain('Delivered newer');
   });
 
-  test('a delivered mission carries its day; one managed from a local session says so in its stage words, not on a line of its own', () => {
+  test('a delivered mission carries its day, and a person-run one says so', () => {
     const rows = missionRows(state(), NOW);
     const done = rows.find(r => r.key === 'm-done')!;
     expect(done.deliveredAt).toBe(NOW - 2 * DAY);
     expect(missionMeta(done)).toMatch(/^delivered [A-Z][a-z]{2} \d{1,2}$/);
     const local = rows.find(r => r.key === 'm-local')!;
     expect(local.local).toBe(true);
-    expect(missionMeta(local)).toBeNull();
-    expect(missionRowStage(local)).toMatch(/locally$|^local$/);
+    expect(missionMeta(local)).toBe('local session');
     expect(missionMeta(rows.find(r => r.key === 'm-build')!)).toBeNull();
   });
 
@@ -179,7 +178,7 @@ describe('missions pane (R-24)', () => {
     const tasks: TopTask[] = [
       { id: 'a1', title: 'a work', status: 'pending', workspaceId: 'ws-1', missionId: 'm-x', mission: { id: 'm-x', title: 'From tasks' } },
     ];
-    expect(missionRows(state({}, null, tasks), NOW).map(r => r.title)).toEqual(['From tasks', 'Other tasks']);
+    expect(missionRows(state({}, null, tasks), NOW).map(r => r.title)).toEqual(['From tasks', '(no mission)']);
   });
 
   test('the selection moves with the order and picks a mission with no tasks', () => {

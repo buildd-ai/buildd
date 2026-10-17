@@ -8,7 +8,6 @@ import {
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
-import { claimRefusalWords } from './claim-refusal';
 
 export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
@@ -152,8 +151,6 @@ export type Effect =
   | { type: 'open'; taskId: string }
   /** `s`: an interactive `claude` session about this mission or task, on this machine (talk.ts). */
   | { type: 'talk'; kind: 'mission' | 'task'; id: string; title: string }
-  /** `o` on a mission with no task picked: its page on buildd. */
-  | { type: 'openMission'; missionId: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
   /** `h`: hold this runner (`on`) or resume it (R-33). */
@@ -222,28 +219,10 @@ function moveRow(state: TopState, delta: number, now: number): TopState {
   return { ...state, rowCursor: Math.max(0, Math.min(n - 1, cur + delta)) };
 }
 
-/** `c` on a task of a mission managed from a local session: no runner takes it, and where that changes. */
-export const LOCAL_CLAIM_WORDS = 'Its mission is managed from a local session, so no runner takes it. o opens it on buildd, where the mission can go to runners.';
-
-/** The mission a key opens when no task is picked; null for loose tasks and the fold row. */
-function openableMission(state: TopState, now: number): string | null {
-  const m = currentMission(state, now);
-  return m.key === NO_MISSION || m.fold ? null : m.key;
-}
-
 function actOnRow(state: TopState, ch: string, now: number): KeyResult {
   const row = targetRow(state, now);
   const none = { state: refuse(state, 'Pick a task first (→ moves to the task list).'), effects: [] };
-  if (!row) {
-    // `o` with no task picked opens the mission itself.
-    const missionId = ch === 'o' ? openableMission(state, now) : null;
-    if (missionId) return { state: info(state, `Opening "${currentMission(state, now).title}" on buildd…`), effects: [{ type: 'openMission', missionId }] };
-    return none;
-  }
-  if (row.elsewhere && 'ampx'.includes(ch)) {
-    const where = row.elsewhere === 'local' ? 'in a local session' : 'on another runner';
-    return { state: refuse(state, `"${row.title}" runs ${where}; top acts only on this runner's agents. o opens it on buildd.`), effects: [] };
-  }
+  if (!row) return none;
 
   switch (ch) {
     case 'a': {
@@ -271,7 +250,6 @@ function actOnRow(state: TopState, ch: string, now: number): KeyResult {
       return { state: refuse(state, `No agent is running on "${row.title}".`), effects: [] };
     }
     case 'c': {
-      if (row.elsewhere === 'local') return { state: refuse(state, LOCAL_CLAIM_WORDS), effects: [] };
       if (row.kind === 'waiting') {
         return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
       }
@@ -445,9 +423,7 @@ function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
     const row = selectedQueueRow(state, now);
     if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
     if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
-    if (row.position === null && !row.held) {
-      return { state: refuse(state, row.exclusion === 'local_session' ? LOCAL_CLAIM_WORDS : `Not for this runner: ${row.reason}.`), effects: [] };
-    }
+    if (row.position === null && !row.held) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
     return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
   }
   if ('ampx'.includes(key.ch)) return { state: info(state, 'Tab back to Missions to act on running work.'), effects: [] };
@@ -513,7 +489,6 @@ export function actionResultText(effect: Effect, result: { status: number; body:
   const verb: Record<string, string> = { answer: 'Answer', message: 'Message', pause: 'Pause', stop: 'Stop', claim: 'Claim' };
   const kind = effect.type === 'action' ? effect.action : effect.type;
   if (ok) return { text: done[kind] ?? 'Done.', tone: 'ok' };
-  if (kind === 'claim') return { text: `Not claimed: ${claimRefusalWords(result.body, result.status)}.`, tone: 'error' };
   return { text: `${verb[kind] ?? 'Action'} refused: ${refusalReason(result)}`, tone: 'error' };
 }
 
