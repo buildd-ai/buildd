@@ -312,33 +312,9 @@ function ImportedBatch({ group, actions, canConfirm }: { group: ImportedGroup; a
   );
 }
 
-const waitWords = (n: number, yours: boolean) => `${n} ${n === 1 ? 'waits' : 'wait'} for ${yours ? 'your ' : ''}approval.`;
-
-/** What waits for this reader's approval, first on the page: each with the one link that opens it for review. */
-function WaitingCard({ rows }: { rows: IndexRow[] }) {
-  return (
-    <section data-level="3" className="card-decision flex flex-col gap-3 px-4 py-4" aria-labelledby="spec-index-waiting-heading" data-testid="spec-index-waiting-card">
-      <h2 id="spec-index-waiting-heading" className="text-title font-semibold text-text-primary">Waiting for your approval</h2>
-      <ul className="flex flex-col divide-y divide-[var(--line-soft)]">
-        {rows.map((r) => (
-          <li key={r.id} className="flex flex-col gap-2 py-2 first:pt-0 last:pb-0 md:flex-row md:items-center md:justify-between">
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <Link href={`/app/specs/${r.id}`} className="text-body font-medium text-text-primary hover:underline [overflow-wrap:anywhere]">{r.title}</Link>
-              <span className="text-meta text-text-muted">{r.standing}</span>
-            </span>
-            <Link href={`/app/specs/${r.id}?review=1`} className="btn btn-ink h-11 shrink-0 md:h-8" data-testid="spec-index-review">
-              Review revision {r.waiting}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 /**
  * A workspace's spec index (living-specs.md §19): what waits for the
- * reader's approval first, one line of counts, then one card per area
+ * one line of counts, then one card per area
  * holding its own specs (masonry columns: one on a phone, two at md, three
  * at xl), possible areas as dashed cards holding theirs, Unfiled last.
  */
@@ -371,18 +347,15 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
 
   const proposes = view.areaCount === 0 && view.possible.length
     ? ` buildd proposes ${view.possible.length === 1 ? 'an area' : `${view.possible.length} areas`} for them.` : '';
-  const waits = view.waiting.length ? ` ${waitWords(view.waiting.length, canConfirm)}` : '';
   const states = MIX_STATES.filter((st) => view.areas.some((a) => a.mix[st] > 0) || [...view.rowsById.values()].some((r) => r.state === st));
 
   return (
     <div className="flex flex-col gap-5" data-testid="spec-index">
-      {canConfirm && view.waiting.length ? <WaitingCard rows={view.waiting} /> : null}
-
       <div className="flex flex-col gap-1.5">
         <p className="text-body text-text-secondary" data-testid="spec-index-line">
           {view.line.text}
           {view.line.href ? <> · <Link href={view.line.href} className="underline hover:text-text-primary">See the proposed areas</Link></> : null}
-          .{proposes}{waits}
+          .{proposes}
         </p>
         {view.areaCount >= MIN_AREAS_FOR_MAP ? (
           <SpecClusterMap areas={view.areas} unfiledCount={view.unfiled.length} selected={focus} onSelect={setFocus} />
