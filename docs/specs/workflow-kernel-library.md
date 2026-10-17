@@ -829,12 +829,19 @@ push, refresh, completion or owner change can make it disappear.
   while the owner works, a repair holds or trunk is red, and the kernel has
   asked no reviewer of its own, it is kept as a decided round and the
   hand-off applies it. It is never posted to GitHub as a review. The kept
-  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  round is a round like any other: it uses one of the delivery's `maxRounds`
+  (unless it re-checks a head after an approval, which spends none:
+  workflow-state-kernel.md §8.2, c1d66a6a).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
+- A push after an escalation that touches a finding's path marks the finding
+  `addressed` (AC-17's interim disposition), held deliveries included. No
+  review is queued for it while the hold stands, but the person sees it: the
+  review line reads "2 open findings, 1 with a fix waiting for a re-review" and
+  the escalation detail says how many have a fix waiting (c1d66a6a).
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
   proof is §9's "L unknown" rule (the head moved off the bound head; a

@@ -2347,6 +2347,57 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    // Task c1d66a6a, the #4948 sequence: two requests for changes, an approval, a re-check that approved,
+    // then a re-check that asked for changes. It escalated review_exhausted on a PR approved twice.
+    name: 'c1d66a6a: re-checks after an approval spend no review budget; a re-check asking for changes gets one repair cycle, then the budget is final again',
+    async run(host) {
+      const s = await new Delivery(host, 119).open({ maxRounds: 3 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 1 asks for changes');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the fix');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 2 asks for changes');
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'the second fix');
+      applied(await s.verdict('approve'), 'APPROVED', 'round 3 approves');
+      applied(await s.push('H4'), 'AWAITING_REVIEW', 'a repair changes the approved head');
+      applied(await s.verdict('approve'), 'APPROVED', 'round 4 re-checks it and approves');
+      applied(await s.push('H5'), 'AWAITING_REVIEW', 'another repair');
+      // Round 5 is past maxRounds by number, but rounds 4 and 5 are re-checks: it gets a repair cycle.
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 5 re-checks and asks for changes');
+      eq(pick(await s.d(), ['currentRound', 'stateReason']), { currentRound: 5, stateReason: null }, 'not escalated');
+      eq(await s.count('dispatch_fix'), 3, 'a fix for it, like rounds 1 and 2');
+      eq(await s.count('escalate_exhaustion'), 0, 'nobody is told the budget is spent');
+      // The repair's review counts: asking for changes again is the person's, and final (2ded4e88).
+      applied(await s.push('H6'), 'AWAITING_REVIEW', 'the fix of round 5');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'scope.ts', title: 'out of scope' }, { path: 'other.ts', title: 'also wrong' }] }), 'ESCALATED', 'round 6 asks for changes again');
+      eq((await s.d()).stateReason, 'review_exhausted', 'the budget is spent');
+      // A fix pushed after the escalation that rewrites a finding's file marks it addressed (AC-17), so a
+      // person can see a fix waiting for a re-review. No review is queued for it: the hold is final.
+      applied(await s.push('H7', { changedPaths: ['scope.ts'] }), 'ESCALATED', 'a push after it');
+      eq(await s.findingStates(), { 'scope.ts': 'addressed', 'other.ts': 'open', 'the review asked for changes': 'open' }, 'the touched finding is addressed; the others (one with no path) stay open');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 6, dispatched: 6 }, 'no new round: the hold is final');
+      // Review of #5017: the head is put back to round 5's (a re-check whose free cycle was used), CI
+      // goes red there and its repair turns out not needed. Re-entering round 5's request for changes
+      // is the person's again, never a second free fix and through it a reviewer.
+      applied(await s.push('H5'), 'ESCALATED', 'a force-push back to the re-check\'s head');
+      applied(await s.ciRed('H5'), 'REPAIRING', 'CI red there');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the repair carries the hold');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.submit({ type: 'RepairNotNeeded', actor: 'kernel', attemptId: ci.id, reason: 'ci_green' }), 'ESCALATED', 'the repair was not needed');
+      eq(pick(await s.d(), ['stateReason', 'resumeState']), { stateReason: 'review_exhausted', resumeState: null }, 'a person\'s, the budget still spent');
+      eq({ fixes: await s.count('dispatch_fix'), reviews: await s.count('dispatch_review') }, { fixes: 3, reviews: 6 }, 'no second free fix, no reviewer');
+
+      // Without an approval nothing changes: the third request for changes escalates.
+      const n = await new Delivery(host, 120).open({ maxRounds: 3 });
+      applied(await n.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (no approval)');
+      applied(await n.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 1');
+      applied(await n.push('H2'), 'AWAITING_REVIEW', 'fix 1');
+      applied(await n.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 2');
+      applied(await n.push('H3'), 'AWAITING_REVIEW', 'fix 2');
+      applied(await n.verdict('request_changes'), 'ESCALATED', 'round 3 escalates');
+      eq((await n.d()).stateReason, 'review_exhausted', 'as before');
+    },
+  },
+  {
     // Task b6cfdbb9 (audit case: a PR closed while its review repair was still queued): the close
     // cancelled the ledger row, but its effect left the task to a legacy path that skips kernel PRs,
     // so the repair stayed pending on a closed PR.
