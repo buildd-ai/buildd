@@ -131,6 +131,9 @@ export interface HealthOutcome {
   decisionRecordId: string;
   source: string;
   label: string;
+  /** Carried so a kind's objective can score it; an audit grade needs neither. */
+  value?: number | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface Accuracy {
@@ -159,6 +162,13 @@ export interface FeatureHealth {
   costUsd: number;
   /** Agent-graded accuracy of the model's answer (`agent_audit`). */
   graded: Accuracy;
+  /**
+   * The same accuracy from the labels the feature's own adapter writes
+   * (post-session analysis, strand follow-up, ...), scored by the kind's
+   * objective. A separate number: never mixed into `graded`. Empty (n 0) for a
+   * feature with no objective; its labels then count as coverage only.
+   */
+  outcomeGraded: Accuracy;
   /** The rule's accuracy on the same sample (`agent_audit_rule`). */
   rule: Accuracy;
   /** Human corrections of an acted answer; rate over acted. */
@@ -197,6 +207,38 @@ function accuracyOf(rowIds: ReadonlySet<string>, outcomes: readonly HealthOutcom
   return { n, right, wrong, unsure, accuracy: n > 0 ? right / n : null, interval: wilsonInterval(right, n) };
 }
 
+const emptyAccuracy = (): Accuracy => ({ n: 0, right: 0, wrong: 0, unsure: 0, accuracy: null, interval: wilsonInterval(0, 0) });
+
+/**
+ * Score each row's model answer through the kind's objective, on the first
+ * label from the objective's source. A label the objective cannot score is
+ * `unsure`; a row the model never answered has nothing to score.
+ */
+function outcomeAccuracyOf(rows: readonly HealthRow[], outcomes: readonly HealthOutcome[], objective: DecisionObjective | undefined): Accuracy {
+  if (!objective) return emptyAccuracy();
+  const answers = new Map<string, string>();
+  for (const r of rows) if (r.verdict != null) answers.set(r.id, r.verdict);
+  const seen = new Set<string>();
+  let right = 0, wrong = 0, unsure = 0;
+  for (const o of outcomes) {
+    const answer = answers.get(o.decisionRecordId);
+    if (answer === undefined || seen.has(o.decisionRecordId)) continue;
+    if (objective.source && o.source !== objective.source) continue;
+    seen.add(o.decisionRecordId);
+    let s: boolean | null = null;
+    try {
+      s = objective.score({ label: o.label, value: o.value ?? null, metadata: o.metadata ?? null }, answer);
+    } catch {
+      s = null;
+    }
+    if (s === true) right++;
+    else if (s === false) wrong++;
+    else unsure++;
+  }
+  const n = right + wrong;
+  return { n, right, wrong, unsure, accuracy: n > 0 ? right / n : null, interval: wilsonInterval(right, n) };
+}
+
 function collectionOf(rows: readonly HealthRow[], graded: Accuracy, byReason: FeatureHealth['fallback']['byReason'], minGraded: number): FeatureHealth['collection'] {
   if (rows.length === 0) {
     return { state: 'not_collecting', reason: 'no_records', sentence: 'Not deciding: nothing asked it a question in this window.' };
@@ -221,7 +263,7 @@ function collectionOf(rows: readonly HealthRow[], graded: Accuracy, byReason: Fe
 export function computeFeatureHealth(
   rows: readonly HealthRow[],
   outcomes: readonly HealthOutcome[],
-  opts: { minGraded?: number } = {},
+  opts: { minGraded?: number; objective?: DecisionObjective } = {},
 ): FeatureHealth {
   const minGraded = opts.minGraded ?? MIN_GRADED;
   const calls = rows.length;
@@ -243,6 +285,7 @@ export function computeFeatureHealth(
   const ids = new Set(rows.map(r => r.id));
   const graded = accuracyOf(ids, outcomes, AGENT_AUDIT_SOURCE);
   const rule = accuracyOf(ids, outcomes, AGENT_AUDIT_RULE_SOURCE);
+  const outcomeGraded = outcomeAccuracyOf(rows, outcomes, opts.objective);
   const overridden = rows.filter(r => r.applied && r.overridden).length;
 
   const labelledIds = new Set<string>();
@@ -258,13 +301,15 @@ export function computeFeatureHealth(
   const replayed = rows.filter(r => r.replayed === true).length;
 
   return {
-    collection: collectionOf(rows, graded, byReason, minGraded),
+    // An audit sample is the evidence when there is one; otherwise the adapter's labels are.
+    collection: collectionOf(rows, graded.n > 0 ? graded : outcomeGraded, byReason, minGraded),
     calls,
     acted: { n: acted, pct: pct(acted, calls) },
     fallback: { n: fallbacks.length, pct: pct(fallbacks.length, calls), byReason },
     latencyMs: { p50: nearestRank(latencies, 0.5), p95: nearestRank(latencies, 0.95) },
     costUsd: Math.round(costUsd * 1e6) / 1e6,
     graded,
+    outcomeGraded,
     rule,
     overrides: { n: overridden, rate: acted > 0 ? overridden / acted : null },
     coverage: {
@@ -278,7 +323,7 @@ export function computeFeatureHealth(
 export function featureHealthByCapability(
   rows: ReadonlyArray<HealthRow & { capability: string }>,
   outcomes: readonly HealthOutcome[],
-  opts: { minGraded?: number } = {},
+  opts: { minGraded?: number; objectiveFor?: (capability: string) => DecisionObjective | undefined } = {},
 ): Map<string, FeatureHealth> {
   const byCapability = new Map<string, HealthRow[]>();
   for (const r of rows) {
@@ -286,7 +331,7 @@ export function featureHealthByCapability(
     list.push(r);
     byCapability.set(r.capability, list);
   }
-  return new Map([...byCapability].sort((a, b) => a[0].localeCompare(b[0])).map(([id, list]) => [id, computeFeatureHealth(list, outcomes, opts)]));
+  return new Map([...byCapability].sort((a, b) => a[0].localeCompare(b[0])).map(([id, list]) => [id, computeFeatureHealth(list, outcomes, { minGraded: opts.minGraded, objective: opts.objectiveFor?.(id) })]));
 }
 
 /** True when the feature was asked but never got a model answer: what Home raises. */

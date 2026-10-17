@@ -114,6 +114,14 @@ role may, and a team owner or admin key is refused
 decision is not found. Reading the ledger itself (`GET /api/decisions`) stays
 open to the team's own members and keys: it is the team's own data.
 
+A feature's own adapter writes labels too (post-session analysis, strand
+follow-up, ...). The health readout scores them through the kind's objective
+(the same one the prompt evals and the model optimizer use) as `outcomeGraded`,
+beside `graded` and never mixed into it; with no audit sample it is what the
+"enough evidence" sentence counts. A feature with no objective reports its
+labels as coverage only. The all-features read loads labels from every source,
+so it agrees with the per-capability read.
+
 A feature that was asked over the last 24 hours and never once got a model
 answer raises one Home card for the platform operator (pulled, never pushed).
 
