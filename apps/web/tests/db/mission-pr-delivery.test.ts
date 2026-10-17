@@ -117,4 +117,26 @@ describe('opening the mission integration PR', () => {
     const rows = await q(sql`SELECT id FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid`);
     expect(rows).toHaveLength(1);
   });
+
+  test('AC-13: a request for changes on the mission PR refuses the merge at the door, and nothing is merged', async () => {
+    w = await world();
+    off = w.gh.onWebhook(toRoute);
+    const { missionId, branch } = await seedShippableMission(w, { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } });
+    const opened = await openMissionIntegrationPr(missionId);
+    if (!opened.ok) throw new Error(`mission PR did not open: ${JSON.stringify(opened)}`);
+    await w.deliver();
+    const found = await kernelDeliveryOfPr({ workspaceId: w.workspaceId, prNumber: opened.prNumber });
+    const [d] = await q<{ owner_task_id: string }>(sql`SELECT owner_task_id FROM workflow_deliveries WHERE id = ${found!.deliveryId}::uuid`);
+    const head = w.gh.pr(w.repo, opened.prNumber).headSha;
+    const [wk] = await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, last_commit_sha, pr_number, commit_count)
+      VALUES (${w.workspaceId}::uuid, ${d.owner_task_id}::uuid, 'w', 'test', ${branch}, 'running', ${head}, ${opened.prNumber}, 1) RETURNING id`);
+    const pr = { prNumber: opened.prNumber, branch, base: 'dev', ownerTaskId: d.owner_task_id, workerId: wk.id, deliveryId: found!.deliveryId, head };
+
+    await w.handOn(pr);
+    expect(await w.verdict(pr, await w.reviewer(pr), 'request_changes', head)).toMatchObject({ handled: true, toState: 'CHANGES_REQUESTED' });
+
+    expect(await w.land(pr, head)).toMatchObject({ merged: false });
+    expect(w.mergeCalls(pr).filter((c) => c.status < 300)).toHaveLength(0);
+    expect(w.gh.pr(w.repo, opened.prNumber).state).toBe('open');
+  });
 });

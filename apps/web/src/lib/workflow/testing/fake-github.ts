@@ -942,15 +942,6 @@ export class FakeGithub {
         const n = this.openPr(repo.fullName, { head: b.head, base: b.base, title: b.title, body: b.body, draft: b.draft, user: this.appLogin });
         return { status: 201, body: this.prJson(repo, this.pullOf(repo, n), false) };
       }
-      if (!b1 && method === 'POST') {
-        // POST /pulls: the PR a caller opens through the API (the mission PR), as `openPr` makes it.
-        if (typeof b.head !== 'string' || !repo.branches.has(b.head)) throw new HttpError(422, 'Validation Failed');
-        if ([...repo.pulls.values()].some((p) => p.state === 'open' && p.headRef === b.head && p.baseRef === (b.base ?? repo.defaultBranch))) {
-          throw new HttpError(422, 'Validation Failed: A pull request already exists');
-        }
-        const n = this.openPr(repo.fullName, { head: b.head, base: b.base, title: b.title, body: b.body, draft: b.draft, user: this.appLogin });
-        return { status: 201, body: this.prJson(repo, this.pullOf(repo, n), false) };
-      }
       const pr = this.pullOf(repo, Number(b1));
       if (!c && method === 'GET') {
         if (pr.frozen === 'missing') throw notFound();
