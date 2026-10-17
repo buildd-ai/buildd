@@ -383,6 +383,14 @@ describe('async keychain checks: never block on event loop', () => {
       const p1Result = await p1;
       expect(p1Result).toBe(true);
 
+      // The background refresh is not awaited by callers: wait for its spawn to land in the
+      // log, then give a would-be timer loop time to fire again before counting.
+      const deadline = Date.now() + 2000;
+      while (readInvocationLog(invocationLog).length <= initialCount && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      await new Promise(r => setTimeout(r, 200));
+
       // Total invocations: should be initialCount + 1 (just the one background refresh, not repeated)
       const finalCount = readInvocationLog(invocationLog).length;
       expect(finalCount).toBe(initialCount + 1);
