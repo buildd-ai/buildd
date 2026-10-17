@@ -2502,7 +2502,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const first = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
       notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: first.id, revalidation: { live: s.live('H1'), approved: true } }), 'rejected', 'fix_not_needed', 'skipped at claim');
       eq((await s.view()).attempts.find((a) => a.id === first.id)!.status, 'skipped', 'the first review fix spent nothing');
-      eq((await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix'))).outcome, 'ok', 'the next review fix is filed');
+      eq(await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix')), { outcome: 'ok' }, 'the next review fix is filed');
       const fixes = f.work.filed.filter((w) => w.role === 'fix');
       const second = (await s.view()).attempts.find((a) => a.family === 'review_fix' && a.status === 'queued')!;
       eq({ row: second.attemptNo, title: fixes.at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1, as the checks list counts it');
