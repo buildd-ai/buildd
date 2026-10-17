@@ -29,6 +29,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { notifyTeamOf } from '@/lib/notify';
 import { recordAndDispatchRelease } from '@/lib/release/record';
+import { amendCandidateOnFixMerge } from '@/lib/release/candidate-amend';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, hasOpenReleasePr, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
@@ -75,6 +76,16 @@ function recordProdMerge(e: EventOf<'pr.merged'>): void {
   }).catch(err =>
     console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, err),
   );
+}
+
+/** The dev-side fix for a red frozen candidate merged: amend the candidate (lib/release/candidate-amend.ts). */
+async function amendCandidateOnFix(e: EventOf<'pr.merged'>): Promise<void> {
+  const d = e.delivery;
+  if (!d || d.installationId == null) return;
+  const out = await amendCandidateOnFixMerge({
+    repoFullName: e.repoFullName, prNumber: e.prNumber, baseRef: d.baseRef, installationId: d.installationId,
+  });
+  if (out.kind === 'dispatch_failed') console.error(`[release-amend] PR #${e.prNumber} on ${e.repoFullName}: ${out.error}`);
 }
 
 async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void> {
@@ -569,6 +580,7 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
 
 export const releaseSubscribers: readonly AnySubscriber[] = [
   subscriber('releases', 'pr.merged', 'release-record-prod-merge', recordProdMerge),
+  subscriber('releases', 'pr.merged', 'release-candidate-amend-on-fix', amendCandidateOnFix),
   subscriber('releases', 'task.pr_merged', 'release-path-b-trigger', releaseOnTaskPrMerge),
   subscriber('releases', 'workflow_run.completed', 'release-workflow-run-readback', readBackWorkflowRun),
 ];

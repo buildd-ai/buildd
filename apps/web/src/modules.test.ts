@@ -71,7 +71,7 @@ describe('composition root', () => {
     // A trunk merge refreshes no mission branch; a mission task starting does.
     expect(byEvent('tasks.claimed')).toEqual(['missions:refresh-mission-branches-before-start']);
     expect(byEvent('pr.merged')).toEqual([
-      'releases:release-record-prod-merge', 'notifications:ledger-pr-merged',
+      'releases:release-record-prod-merge', 'releases:release-candidate-amend-on-fix', 'notifications:ledger-pr-merged',
     ]);
     expect(byEvent('task.pr_merge_delivered')).toEqual([
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
