@@ -29,7 +29,8 @@ export type CopyRuleId =
   | 'object-pays'
   | 'conditional-policy'
   | 'trailing-filler'
-  | 'em-dash';
+  | 'em-dash'
+  | 'failed-to';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -184,6 +185,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'An em dash joins two thoughts the copy should have split or cut. Use a full stop or a colon, or render nothing for an unknown value.',
     bad: 'Runners \u2014 tokens and cloud.',
     good: 'Manage runner tokens and the cloud runner.',
+  },
+  {
+    id: 'failed-to',
+    name: 'Error says "Failed to" or "Something went wrong"',
+    test: re(/^failed to\b|^something went wrong\.?$/i),
+    why: 'An error names what could not be done and what to do next, in the voice of the rest of the app. "Failed to ..." is a log line and a bare "Something went wrong" says nothing.',
+    bad: 'Failed to update mission',
+    good: 'Could not save the mission. Try again.',
   },
   {
     id: 'duplicate-explanation',

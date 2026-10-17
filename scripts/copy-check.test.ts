@@ -73,6 +73,11 @@ describe('copy rules', () => {
     expect(ids('Runners: tokens and cloud.')).not.toContain('em-dash');
   });
 
+  it('flags "Failed to" and a bare "Something went wrong"', () => {
+    for (const t of ['Failed to save', 'Failed to update mission', 'Something went wrong', 'Something went wrong.']) expect(ids(t)).toContain('failed-to');
+    for (const t of ['Could not save the mission. Try again.', 'Something went wrong loading this page.']) expect(ids(t)).not.toContain('failed-to');
+  });
+
   it('holds a Settings description to one short fact', () => {
     expect(settingsDescriptionProblems('Manage your personal API keys.')).toEqual([]);
     expect(settingsDescriptionProblems('Configure team agents, models and tools.')).toEqual([]);

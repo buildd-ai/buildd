@@ -88,7 +88,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
   const release = () => post(
     `/api/workers/${workerId}/release-slot`,
     { reason: taskTerminal ? 'task already ended' : 'released from the task page' },
-    'Failed to release slot',
+    'Could not release the slot. Try again.',
   );
 
   if (isLocal) {
