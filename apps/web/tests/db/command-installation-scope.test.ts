@@ -65,59 +65,73 @@ async function workerWithPr(workspaceId: string, taskId: string, prUrl: string) 
 }
 
 describe('the repo scope of a workspace', () => {
-  test('a repo a worker of the workspace has a PR in is in scope (any casing); an unrelated repo is not', async () => {
+  test('scope comes from the team\'s own repo links: a PR URL a worker recorded for another repo adds nothing', async () => {
     const org = `org${uniq()}`;
     const inst = await installation(org);
     const w = await linkedWorkspace(`${org}/web`, inst);
+    await repo(inst, `${org}/mobile`);
     const task = await seedTask(w.workspaceId);
     await workerWithPr(w.workspaceId, task, `https://github.com/${org}/Mobile/pull/1`);
-    expect(await repoInScope(w.workspaceId, `${org}/mobile`)).toBe(true);
-    expect(await repoInScope(w.workspaceId, `${org}/mobile-legacy`)).toBe(false);
+    expect(await repoInScope(w.workspaceId, `${org}/mobile`)).toBe(false);
+    expect(await expectedInstallation(w.workspaceId, `${org}/mobile`)).toEqual({ refused: 'repo_out_of_scope' });
     expect(await repoInScope(w.workspaceId, `someone${uniq()}/else`)).toBe(false);
   }, 30_000);
 
-  test('a repo of a sibling task in one of the workspace\'s missions is in scope: its workspace\'s repo or a PR its worker opened', async () => {
+  test('a sibling workspace\'s linked repo in one of the workspace\'s missions is in scope (any casing); a PR its worker recorded elsewhere is not', async () => {
     const org = `org${uniq()}`;
     const inst = await installation(org);
     const w = await linkedWorkspace(`${org}/web`, inst);
-    const sibling = await linkedWorkspace(`${org}/api`, inst);
+    const sibling = await linkedWorkspace(`${org}/Api`, inst);
     const missionId = await seedMission(w.teamId, w.workspaceId);
     await seedTask(w.workspaceId, { missionId });
     const siblingTask = await seedTask(sibling.workspaceId, { missionId });
     await workerWithPr(sibling.workspaceId, siblingTask, `https://github.com/${org}/docs/pull/4`);
     expect(await repoInScope(w.workspaceId, `${org}/api`)).toBe(true);
-    expect(await repoInScope(w.workspaceId, `${org}/docs`)).toBe(true);
+    expect(await repoInScope(w.workspaceId, `${org}/api-legacy`)).toBe(false);
+    expect(await repoInScope(w.workspaceId, `${org}/docs`)).toBe(false);
     // A workspace outside that mission does not reach them.
     const stranger = await linkedWorkspace(null);
     expect(await repoInScope(stranger.workspaceId, `${org}/api`)).toBe(false);
   }, 30_000);
+
+  test('a sibling workspace naming the repo only in its free-text repo column does not put it in scope', async () => {
+    const org = `org${uniq()}`;
+    const inst = await installation(org);
+    const w = await linkedWorkspace(`${org}/web`, inst);
+    const sibling = await linkedWorkspace(null);
+    await q(sql`UPDATE workspaces SET repo = ${`https://github.com/${org}/api`} WHERE id = ${sibling.workspaceId}::uuid`);
+    const missionId = await seedMission(w.teamId, w.workspaceId);
+    await seedTask(w.workspaceId, { missionId });
+    await seedTask(sibling.workspaceId, { missionId });
+    expect(await repoInScope(w.workspaceId, `${org}/api`)).toBe(false);
+  }, 30_000);
 });
 
 describe('the installation resolved for a command', () => {
-  test('own repo: the workspace\'s; a cross-repo PR under a second installation: that one; outside scope: refused', async () => {
+  test('own repo: the workspace\'s; a mission sibling\'s repo under a second installation: that one; outside scope: refused', async () => {
     const org = `org${uniq()}`;
     const other = `other${uniq()}`;
     const instA = await installation(org);
     const instB = await installation(other);
     const w = await linkedWorkspace(`${org}/web`, instA);
-    await teamWorkspace(w.teamId, `${other}/mobile-app`, instB);
-    await repo(instB, `${other}/mobile`);
-    const task = await seedTask(w.workspaceId);
-    await workerWithPr(w.workspaceId, task, `https://github.com/${other}/mobile/pull/9`);
+    const sibling = await teamWorkspace(w.teamId, `${other}/mobile`, instB);
+    const missionId = await seedMission(w.teamId, w.workspaceId);
+    await seedTask(w.workspaceId, { missionId });
+    await seedTask(sibling.workspaceId, { missionId });
     expect(await expectedInstallation(w.workspaceId, `${org}/web`)).toEqual({ installationId: instA.installationId });
     expect(await expectedInstallation(w.workspaceId, `${other}/mobile`)).toEqual({ installationId: instB.installationId });
     await repo(instB, `${other}/private`);
     expect(await expectedInstallation(w.workspaceId, `${other}/private`)).toEqual({ refused: 'repo_out_of_scope' });
   }, 30_000);
 
-  test('a workspace with no linked repo resolves a cross-repo command through the PR\'s repo', async () => {
+  test('a workspace with no linked repo does not reach a repo through a PR URL its worker recorded', async () => {
     const org = `org${uniq()}`;
     const w = await linkedWorkspace(null);
     const inst = await installation(org, { installedBy: await member(w.teamId) });
     await repo(inst, `${org}/app`);
     const task = await seedTask(w.workspaceId);
     await workerWithPr(w.workspaceId, task, `https://github.com/${org}/app/pull/2`);
-    expect(await expectedInstallation(w.workspaceId, `${org}/app`)).toEqual({ installationId: inst.installationId });
+    expect(await expectedInstallation(w.workspaceId, `${org}/app`)).toEqual({ refused: 'repo_out_of_scope' });
   }, 30_000);
 });
 
@@ -136,7 +150,7 @@ describe('each command acts only through its own team\'s installation', () => {
     expect(await teamInstallationIdForRepo(`${other}/api`, w.teamId)).toEqual({ installationId: instB.installationId });
   }, 30_000);
 
-  test('a repo in scope whose installation belongs to another team is refused', async () => {
+  test('another team\'s repo is refused: a recorded PR URL does not reach it, and its installation is not this team\'s', async () => {
     const org = `org${uniq()}`;
     const foreign = `foreign${uniq()}`;
     const instA = await installation(org);
@@ -149,8 +163,8 @@ describe('each command acts only through its own team\'s installation', () => {
       WHERE w.id = ${otherTeam.workspaceId}::uuid`);
     const task = await seedTask(w.workspaceId);
     await workerWithPr(w.workspaceId, task, `https://github.com/${foreign}/web/pull/3`);
-    expect(await repoInScope(w.workspaceId, `${foreign}/web`)).toBe(true);
-    expect(await expectedInstallation(w.workspaceId, `${foreign}/web`)).toEqual({ refused: 'installation_not_team_owned' });
+    expect(await repoInScope(w.workspaceId, `${foreign}/web`)).toBe(false);
+    expect(await expectedInstallation(w.workspaceId, `${foreign}/web`)).toEqual({ refused: 'repo_out_of_scope' });
     expect(await teamInstallationIdForRepo(`${foreign}/web`, w.teamId)).toEqual({ installationId: null, notTeamOwned: true });
     // The other team still acts through it.
     expect(await expectedInstallation(otherTeam.workspaceId, `${foreign}/web`)).toEqual({ installationId: Number(foreignInst) });
