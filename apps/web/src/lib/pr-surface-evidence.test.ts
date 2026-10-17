@@ -61,3 +61,32 @@ it('rejects truncated evidence rather than proving no UI change', async () => {
   expect(await loadPrSurfaceFiles(repo, 1)).toBeNull();
   expect(rows.size).toBe(0);
 });
+it('a stale cached head cannot hide a UI file the current head added', async () => {
+  // Evidence cached at head a (no UI); the PR has since moved to b, which adds a UI file.
+  expect(await loadPrSurfaceFiles(repo, 1)).toEqual([]);
+  head = 'b'; files = [{ filename: UI, patch: '+<div />' }];
+  expect(await loadPrSurfaceFiles(repo, 1)).toEqual([{ path: UI, patch: '+<div />' }]);
+  // The head is GitHub's, read on every open evaluation, never a recorded one.
+  expect(githubApi.mock.calls.filter(c => !c[1].includes('/files?')).length).toBeGreaterThanOrEqual(3);
+});
+it('a known-merged render makes no GitHub call at all, cold or failing', async () => {
+  merged = true;
+  expect(await loadPrSurfaceFiles(repo, 1, true)).toBeNull();
+  failDb = true;
+  expect(await loadPrSurfaceFiles(repo, 1, true)).toBeNull();
+  expect(githubApi).not.toHaveBeenCalled();
+});
+it('records merged evidence only for a merged PR at the reported merged head', async () => {
+  files = [{ filename: UI }];
+  await persistMergedSurfaceEvidence(repo, 1);
+  expect(rows.size).toBe(0);
+  merged = true; head = 'b';
+  const warn = console.warn; console.warn = () => {};
+  try { await persistMergedSurfaceEvidence(repo, 1, 'a'); } finally { console.warn = warn; }
+  expect(rows.size).toBe(0);
+  await persistMergedSurfaceEvidence(repo, 1, 'B');
+  expect(rows.size).toBe(1);
+  githubApi.mockClear();
+  await persistMergedSurfaceEvidence(repo, 1, 'b');
+  expect(githubApi).not.toHaveBeenCalled();
+});

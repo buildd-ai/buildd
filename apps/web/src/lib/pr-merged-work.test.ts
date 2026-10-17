@@ -95,4 +95,13 @@ describe('runMergedPrWork completion', () => {
     expect(events().some((e) => e.type === 'task.completed')).toBe(false);
     expect(events().find((e) => e.type === 'task.pr_merged').transition).toBe('already_completed');
   });
+
+  // The surface-audit evidence writer (visual-qa:surface-evidence-on-merge) reads the merged PR from
+  // this one event, so it must name the repo, installation and merged head on both callers' path.
+  it('emits pr.closed with what the merged surface-evidence writer needs', async () => {
+    await runMergedPrWork({ ...input('runner-1', 'flipped'), installationId: 7 });
+    expect(events().find((e) => e.type === 'pr.closed')).toMatchObject({
+      merged: true, prNumber: 1, repoFullName: 'o/r', installationId: 7, headSha: 's',
+    });
+  });
 });

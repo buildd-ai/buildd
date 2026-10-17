@@ -763,6 +763,8 @@ export async function canCompleteMission(
   const surfaceGate = await evaluateSurfaceAuditGate(
     mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
     allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
+    // A deciding caller may record a merged PR's missing file evidence; a display read never does.
+    { fillMergedEvidence: opts.evaluateCriteria !== false },
   ).catch(err => {
     console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
     return null;

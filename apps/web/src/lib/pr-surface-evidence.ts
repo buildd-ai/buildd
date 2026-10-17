@@ -73,12 +73,21 @@ export async function loadPrSurfaceFiles(repo: Repo, pr: number, knownMerged = f
   return files;
 }
 
-/** Idempotent merge-event writer. Kept outside every rendering/read path. */
-export async function persistMergedSurfaceEvidence(repo: Repo, pr: number): Promise<void> {
+/**
+ * Idempotent merge-event writer (the `pr.closed` subscriber, and a completion decision that finds
+ * a merged PR recorded before this existed). Kept outside every rendering path. The merged key is
+ * not head-bound, so it is written only once GitHub itself reports the PR merged (its head can no
+ * longer move) and, when the caller knows the merged head, only for that head.
+ */
+export async function persistMergedSurfaceEvidence(repo: Repo, pr: number, expectedHeadSha?: string | null): Promise<void> {
   const key = keyFor(repo, pr, 'merged');
   if (await read(key)) return;
   const state = await current(repo, pr);
   if (!state.merged) return;
+  if (expectedHeadSha && state.head.sha.toLowerCase() !== expectedHeadSha.toLowerCase()) {
+    console.warn(`[surface-evidence] PR #${pr} merged head ${state.head.sha.slice(0, 8)} is not the reported ${expectedHeadSha.slice(0, 8)}; not recorded`);
+    return;
+  }
   const files = await changedFiles(repo, pr);
   if (!files) return;
   await write(key, { headSha: state.head.sha, files }, true);

@@ -526,7 +526,7 @@ export async function PATCH(
       // same request or already on the mission. Archiving is not gated — it
       // also means "abandoned", and claims nothing shipped.
       if (status === 'completed' && !wasAlreadyClosed && !surfaceWaiverReason) {
-        const gate = await evaluateSurfaceAuditGate(existing, await loadSurfaceAuditGateTasks(id)).catch(err => {
+        const gate = await evaluateSurfaceAuditGate(existing, await loadSurfaceAuditGateTasks(id), { fillMergedEvidence: true }).catch(err => {
           console.error(`[missions] surface-audit gate check failed for ${id.slice(0, 8)} (not blocking):`, err);
           return null;
         });
