@@ -141,7 +141,8 @@ async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<
     columns: { id: true, commitCount: true },
     orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
-  const { attemptEnded } = await import('@/lib/workflow/seam');
+  // Through the client: the control plane applies it in own mode (AC-9).
+  const { attemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
   await attemptEnded({
     task: { id: task.id, workspaceId, deliveryId: task.deliveryId, deliveryRole: task.deliveryRole ?? null, context: task.context },
     workerId: worker?.id ?? `cancel:${taskId}`,
@@ -154,7 +155,7 @@ async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<
     // Rounds the platform itself superseded are no longer current, so the
     // kernel treats this end as stale for them.
     ...(task.deliveryRole === 'review' ? { reviewFailure: 'human_takeover' as const } : {}),
-  });
+  }, { principal: systemPrincipal('system:task_cancel') });
 }
 
 /**

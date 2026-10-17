@@ -81,7 +81,6 @@ WORKDIR /opt/buildd
 # @buildd/dispatch-contract, @buildd/spec-contract), not the
 # web app's.
 COPY package.json bun.lock bunfig.toml ./
-COPY patches ./patches
 COPY apps/runner/package.json apps/runner/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/responder/package.json apps/responder/package.json

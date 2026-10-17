@@ -46,7 +46,7 @@ export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'> & { canA
   const waits = other ? `Revision ${other} waits for ${v.canApprove ? 'your ' : ''}approval.` : '';
   if (v.reading.approved) return waits || null;
   if (approved == null) return `Nothing is approved yet.${waits ? ` ${waits}` : ''}`;
-  return `This is revision ${n}. Revision ${approved} is the approved one.${waits ? ` ${waits}` : ''}`;
+  return `You're reading revision ${n}. Revision ${approved} is approved.${waits ? ` ${waits}` : ''}`;
 }
 
 /**
@@ -85,7 +85,7 @@ function ActionDock({ children }: { children: ReactNode }) {
 
 function Approve({ specId, revision, expectedVersion }: { specId: string; revision: number; expectedVersion: number }) {
   const router = useRouter();
-  const approvedText = `Approved. Revision ${revision} is in force.`;
+  const approvedText = `Approved revision ${revision}.`;
   const { shown, retry, approve } = useOptimisticApprove(async () => {
     const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/approve`, {
       method: 'POST',
@@ -120,7 +120,7 @@ function PublishAnyway({ specId }: { specId: string }) {
     const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/publish`, { method: 'POST' });
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     setBusy(false);
-    if (res.ok) { setResult({ tone: 'ok', text: 'Publishing it: the repo copy is on its way.' }); router.refresh(); return; }
+    if (res.ok) { setResult({ tone: 'ok', text: 'Adding it to the repo.' }); router.refresh(); return; }
     setResult({ tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Could not publish it. Try again.' });
   };
   return (
@@ -128,8 +128,8 @@ function PublishAnyway({ specId }: { specId: string }) {
       {result ? <Notice tone={result.tone} data-testid="spec-page-publish-result">{result.text}</Notice> : null}
       {result?.tone === 'ok' ? null : (
         <div>
-          <button type="button" className="btn btn-sm h-11 md:h-8" onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
-            Publish anyway
+          <button type="button" className="btn btn-quiet btn-sm h-11 md:h-8" onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
+            Add to repo
           </button>
         </div>
       )}
@@ -174,11 +174,11 @@ function RepoChecks({ specId }: { specId: string }) {
   if (got === 'loading') {
     return (
       <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-repo-checks-loading">
-        <Spinner size="xs" aria-label="Running the repo checks" /> Running the repo checks on the repo copy…
+        <Spinner size="xs" aria-label="Running the repo checks" /> Running the repo checks…
       </p>
     );
   }
-  if (got === 'unread') return <p className="text-meta text-text-muted" data-testid="spec-repo-checks-unread">The repo checks could not be run just now. You can still approve; the copy&apos;s PR runs them.</p>;
+  if (got === 'unread') return <p className="text-meta text-text-muted" data-testid="spec-repo-checks-unread">Couldn&apos;t run the repo checks. You can still approve; the PR runs them.</p>;
   return <SpecRepoChecks preflight={got.preflight} />;
 }
 
@@ -345,7 +345,7 @@ export default function SpecPage({ view }: { view: Ok }) {
         ) : null}
         {view.parent && (view.siblings ?? []).length > 0 ? (
           <div data-testid="spec-page-siblings">
-            <Sub>Alongside it under {view.parent.title}</Sub>
+            <Sub>Also under {view.parent.title}</Sub>
             <ul className="mt-1 flex flex-col">
               {(view.siblings ?? []).map((c) => (
                 <li key={c.id}>
@@ -369,7 +369,7 @@ export default function SpecPage({ view }: { view: Ok }) {
         ) : null}
         {view.nearby.length ? (
           <div data-testid="spec-page-nearby">
-            <Sub>Nearby, from their text and their work</Sub>
+            <Sub>Related</Sub>
             <ul className="mt-1 flex flex-col">
               {view.nearby.map((n) => (
                 <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
@@ -447,7 +447,7 @@ export default function SpecPage({ view }: { view: Ok }) {
                 >
                   Revision {r.revision}
                 </Link>
-                {r.revision === spec.approvedRevision ? <span className="text-meta font-medium text-status-success">in force</span> : null}
+                {r.revision === spec.approvedRevision ? <span className="text-meta font-medium text-status-success">approved</span> : null}
                 {r.revision === view.waiting ? <span className="text-meta font-medium text-status-warning">waiting</span> : null}
                 <span className="text-meta text-text-muted">
                   by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
@@ -495,7 +495,11 @@ export default function SpecPage({ view }: { view: Ok }) {
         </Link>
         <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
         <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
-        {view.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
+        {view.source?.path ? (
+          <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
+            {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
+          </p>
+        ) : view.source?.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       </header>
 
       {view.retirement ? <SpecRetire specId={spec.id} retirement={view.retirement} canRetire={!!view.canRetire} /> : null}

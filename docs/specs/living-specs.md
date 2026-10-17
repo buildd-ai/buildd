@@ -1309,9 +1309,9 @@ at any time.
 **Invariants**:
 - R-12: Opt-in is per workspace (`gitConfig.livingSpecs`), off by default.
   Off, nothing in this section runs.
-- R-13: The spec page names the one source: "Source: buildd, repo copy at
-  <path>", "Source: repo <path> at <sha>, imported, awaiting confirmation",
-  or "Source: repo".
+- R-13: The spec page names the one source only where it is not buildd
+  alone: a landed repo copy shows its path, linked to the file; an
+  unconfirmed import shows "Imported from <path>@<sha>".
 - R-14: Approved text and metadata are separate. The revision's body is the
   intent and the criteria, plus the frontmatter fields that state intent
   (`title`, `summary`, `related`, `keywords`, `supersedes`); only it is
@@ -1428,8 +1428,7 @@ at any time.
 - AC-78: GIVEN a workspace that has not opted in WHEN a spec is approved THEN
   no PR is filed (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-79: GIVEN a generated PR with a red check THEN it stays open, the
-  approval is unchanged and the spec page says the repo copy is behind,
-  naming the check (`apps/web/tests/db/spec-repo-copy.test.ts`).
+  approval is unchanged and the spec page names the PR and the check (`apps/web/tests/db/spec-repo-copy.test.ts`).
 
 **Code surface**:
 - `packages/spec-contract/src/repo-copy.ts` — `renderRepoCopy`, `verifyRepoCopy`, `specShortId`: the copy's layout and both hashes
@@ -1866,9 +1865,11 @@ production-data scan and the decision have both cleared the exact text.
   offline eval of a workspace's own specs, labelled by a person, sets it, the
   bar is unmeasured and nothing the rules leave open is published.
 - R-57: A revision kept private gets no copy and no GitHub write. The spec
-  page says why in one sentence, naming the rule or the policy line, and a
-  person who may approve specs here can publish it anyway, which labels the
-  decision as a human override. Publish anyway never passes a
+  page shows no explanation: a person who may approve specs here gets an
+  Add to repo button, which publishes it anyway and labels the decision as
+  a human override; a production-data hit shows only the hit and the fix.
+  The stored decision keeps one sentence naming the rule or the policy
+  line, for the audit trail and MCP. Add to repo never passes a
   production-data hit, a missing policy or a private mark. An earlier copy
   PR of a spec now kept private never lands under the generated-copy
   exception.

@@ -279,7 +279,7 @@ export type SpecPageView =
     /** With `review`: what approving the head would put in force, for an approver only. */
     review: SpecPanes | null;
     /** The one source (§18, R-13) and how the repo copy stands (AC-79); absent when the workspace has not opted in. */
-    source?: { source: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
+    source?: { source: string | null; path?: string; href?: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
     /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
     canPublishAnyway?: boolean;
     /** An imported spec's criteria the parser could not read, in words ("N criteria could not be read; ..."); null when none. */
@@ -509,7 +509,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   ];
   const approver = !!approverId;
   const native = nativeSourceOn(ws?.gitConfig);
-  const source = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
+  const source: (ReturnType<typeof repoCopyLine> & { href?: string }) | null = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
+  if (source?.path) {
+    const fullName = await linkedRepoFullName(spec.workspaceId);
+    if (fullName) source.href = `https://github.com/${fullName}/blob/HEAD/${source.path.split('/').map(encodeURIComponent).join('/')}`;
+  }
 
   return {
     state: 'ok',

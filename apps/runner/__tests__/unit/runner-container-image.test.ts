@@ -30,6 +30,18 @@ function envKeys(src: string): Record<string, string> {
 describe('runner --once container image', () => {
   const env = envKeys(dockerfile);
 
+  it('copies only paths that exist in the repo', () => {
+    // A COPY of a deleted path (patches/, removed with the drizzle v1 cutover)
+    // fails the image build with "not found", which no other unit test sees.
+    const sources = dockerfile
+      .split('\n')
+      .filter(l => /^COPY\s/.test(l))
+      .map(l => l.replace(/^COPY\s+/, '').split(/\s+/).filter(t => !t.startsWith('--')))
+      .flatMap(tokens => tokens.slice(0, -1));
+    expect(sources.length).toBeGreaterThan(10);
+    for (const src of sources) expect(existsSync(join(ROOT, src)), `COPY ${src}`).toBe(true);
+  });
+
   it('copies every workspace manifest, so --frozen-lockfile matches bun.lock', () => {
     // bun checks the lockfile against all workspaces; a new apps/* or packages/*
     // entry without a COPY here fails the image build, not this repo's CI.

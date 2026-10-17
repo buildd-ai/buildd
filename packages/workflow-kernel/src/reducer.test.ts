@@ -870,6 +870,68 @@ describe('T23 HumanResolve(apply_recommendation) → T8 with trigger=human (§5.
   });
 });
 
+describe('CiObserved: the CI reading on the current head, recorded without moving the delivery (6900a317)', () => {
+  const obs = (v: KernelView, o: Partial<Extract<Command, { type: 'CiObserved' }>> = {}) =>
+    run(v, { type: 'CiObserved', actor: 'webhook', headSha: 'H1', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true, ...o });
+  test('a green head with no repair is recorded, so the Tests row stops reading Checking', () => {
+    const dec = applied(obs(V(D({ state: 'AWAITING_REVIEW' }))));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ ci: 'green', ciHeadSha: 'H1' });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.rounds).toEqual([]);
+    expect(applied(obs(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })))).toState).toBe('APPROVED');
+  });
+  test('a red head the repair path did not act on is recorded: failed outranks still running', () => {
+    // A CI fix still open (it pushed this head and has not ended) defers T10; the fact still lands.
+    const v = V(D({ state: 'AWAITING_REVIEW' }), [], [A({ family: 'ci', status: 'running', boundHeadSha: 'H0' })]);
+    const dec = applied(obs(v, { verdict: 'red', liveChecks: { complete: false, failing: ['check'] }, allPassing: false }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ ci: 'red', ciHeadSha: 'H1' });
+    expect(dec.effects.map((e) => e.kind)).not.toContain('dispatch_ci_fix');
+    expect(applied(obs(V(D({ state: 'WORKING' })), { verdict: 'red', liveChecks: { complete: true, failing: ['build'] } })).toState).toBe('WORKING');
+  });
+  test('an older head, or a hint the live read contradicts, records nothing', () => {
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { verdict: 'red', liveChecks: { complete: true, failing: [] } }), 'rejected', 'ci_not_red');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { liveChecks: { complete: false, failing: [] } }), 'rejected', 'ci_not_green');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { liveChecks: { complete: true, failing: ['check'] } }), 'rejected', 'ci_not_green');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), { allPassing: false }), 'rejected', 'ci_not_green');
+  });
+  test('the same reading twice is stale; a flip on the same head (a re-run) is recorded', () => {
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' }))), 'stale', 'already_recorded');
+    const flip = applied(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' }))));
+    expect(flip.patch).toMatchObject({ ci: 'green', ciHeadSha: 'H1' });
+    // A green on a new head replaces the old head's red.
+    expect(applied(obs(V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', ci: 'red', ciHeadSha: 'H1' })), { headSha: 'H2' })).patch).toMatchObject({ ci: 'green', ciHeadSha: 'H2' });
+  });
+  test('a failed run re-run on the same head withdraws the red: the head is being checked again', () => {
+    const running = { verdict: 'running' as const, liveChecks: { complete: false, failing: [] }, allPassing: false };
+    const dec = applied(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' })), running));
+    expect(dec.patch).toMatchObject({ ci: null, ciHeadSha: null });
+    // Nothing red on this head: nothing to withdraw, and a still-failing run is not "running".
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW' })), running), 'stale', 'already_recorded');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'green', ciHeadSha: 'H1' })), running), 'stale', 'already_recorded');
+    expectResult(obs(V(D({ state: 'AWAITING_REVIEW', ci: 'red', ciHeadSha: 'H1' })), { ...running, liveChecks: { complete: false, failing: ['check'] } }), 'rejected', 'ci_not_running');
+  });
+  test('a CI repair, a merge in flight and a finished delivery are left to their own commands', () => {
+    expectResult(obs(V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1' }), [], [A({ id: 'c1', family: 'ci', status: 'running' })])), 'stale', 'ci_repair_owns_head');
+    expectResult(obs(V(D({ state: 'LANDING' }))), 'stale', 'state_not_allowed');
+    expectResult(obs(V(D({ state: 'MERGED' }))), 'stale', 'state_not_allowed');
+    expectResult(obs(V(D({ state: 'CLOSED_UNMERGED' }))), 'stale', 'state_not_allowed');
+  });
+  test('the key carries head, verdict and version, so a replay is a duplicate and a later flip is not', () => {
+    const cmd: Command = { type: 'CiObserved', actor: 'webhook', headSha: 'H1', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true };
+    expect(applied(run(V(D({ state: 'AWAITING_REVIEW' })), cmd)).idempotencyKey).toBe('cifact:d1:H1:green@v5');
+    expect(stableIdempotencyKey(cmd, D({ state: 'AWAITING_REVIEW' }))).toBe('cifact:d1:H1:green@v5');
+  });
+  test('a spent review budget is never re-entered by recording a reading', () => {
+    const dec = applied(obs(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' }))));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch.stateReason).toBeUndefined();
+    expect(dec.effects.map((e) => e.kind)).not.toContain('dispatch_review');
+  });
+});
+
 describe('T10 CiFailedObserved (S23, S28)', () => {
   const ci = (v: KernelView, o: Partial<Extract<Command, { type: 'CiFailedObserved' }>> = {}) =>
     run(v, { type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'sig', maxAttempts: 3, ...o });
@@ -2355,5 +2417,36 @@ describe('79649a80: closing and reopening a PR does not reset a spent review bud
   test('superseding or abandoning the closed delivery drops the marker', () => {
     const ab = applied(run(V(closed(), [decided3]), { type: 'Abandon', actor: 'human:u', reason: 'not needed' }));
     expect({ to: ab.toState, resume: ab.patch.resumeState }).toEqual({ to: 'ABANDONED', resume: null });
+  });
+});
+
+describe('b6cfdbb9: a close or a merge names the queued work it makes moot', () => {
+  const closeCmd: Command = { type: 'PrClosedUnmerged', actor: 'webhook', live: live('H1', { state: 'closed', updatedAt: 'u1' }), closeCause: 'manual' };
+  const cancelPayload = (dec: ApplyDecision) => dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload;
+
+  test('closed with a queued review repair: the cancel effect names that task, and says why', () => {
+    const dec = applied(run(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC], [A({ taskId: 'ft1' })]), closeCmd));
+    expect(dec.toState).toBe('CLOSED_UNMERGED');
+    expect(cancelPayload(dec)).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: ['ft1'] });
+  });
+
+  test('every open repair family is named, ended rows are not, and a queued reviewer goes with them', () => {
+    const view = V(D({ state: 'REPAIRING', currentRound: 1 }), [R({ id: 'r2', round: 2, status: 'queued', reviewerTaskId: 'rv2' })], [
+      A({ id: 'a1', family: 'ci', taskId: 'ci1', status: 'queued' }),
+      A({ id: 'a2', family: 'conflict', taskId: 'cf1', status: 'running' }),
+      A({ id: 'a3', family: 'review_fix', taskId: 'old', status: 'ended', outcome: 'delivered' }),
+    ]);
+    expect(cancelPayload(applied(run(view, closeCmd)))).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: ['ci1', 'cf1', 'rv2'] });
+  });
+
+  test('an open repair not yet linked to its task falls back to its role, never silently', () => {
+    const dec = applied(run(V(D({ state: 'REPAIRING' }), [], [A({ family: 'ci', taskId: null })]), closeCmd));
+    expect(cancelPayload(dec)).toEqual({ closeCause: 'manual', reason: 'closed', taskIds: [], unlinkedRoles: ['ci_fix'] });
+  });
+
+  test('a merge names them the same way', () => {
+    const merged = live('H1', { state: 'closed', merged: true, mergedAt: '2026-10-06T01:00:00Z', mergeCommitSha: 'M1' });
+    const dec = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'] }), [], [A({ family: 'ci', taskId: 'ci1' })]), { type: 'PrMerged', actor: 'webhook', live: merged }));
+    expect(cancelPayload(dec)).toEqual({ mergeCommitSha: 'M1', reason: 'merged', taskIds: ['ci1'] });
   });
 });

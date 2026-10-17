@@ -83,7 +83,14 @@ function withIsolationProbe(endpoint: string, options: RequestInit): RequestInit
   if (!body || typeof body !== 'object' || body.environment) return options;
   const now = new Date().toISOString();
   const enforced = { mechanism: 'bwrap', scope: ['read', 'write', 'network', 'env'] };
+  // A complete WorkerEnvironment, as the runner's scan sends: empty tools/envKeys/mcp keep the
+  // derived capabilities empty, so tests behave as they did before the probe was added.
   const environment = {
+    tools: [],
+    envKeys: [],
+    mcp: [],
+    labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'integration-test' },
+    scannedAt: now,
     isolation: {
       platform: 'linux',
       evidence: ['process.platform=linux'],

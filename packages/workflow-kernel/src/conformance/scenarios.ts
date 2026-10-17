@@ -22,7 +22,7 @@ import {
   RecordingRails, RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
-import { deriveDeliveryView } from '../projections';
+import { deliveryPrState, deriveDeliveryView } from '../projections';
 import { landingStatusOf, reviewGate } from '../landing-gate';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
@@ -1113,7 +1113,9 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: moved },
         { role: 'ci_fix', reason: moved }, { role: 'conflict_fix', reason: moved }, { role: 'fix', reason: moved }, { role: 'fix', reason: moved },
       ], 'each family cancels its own pending tasks; no family named is the review fix');
-      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged' })), { outcome: 'skipped:legacy_owns' }, 'a merge\'s cancellation is legacy\'s');
+      // b6cfdbb9: a merge's or a close's cancellation is the kernel's too; it names its tasks.
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged', taskIds: [] })), { outcome: 'ok:cancelled_0' }, 'a merge\'s cancellation');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', {})), { outcome: 'skipped:no_reason' }, 'a row from before b6cfdbb9 names nothing');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'ok' }, 'a conflict family\'s exhaustion');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'ok' }, 'a review family\'s exhaustion');
       // Each through its own family's path: the conflict path would hand the review family over in its own words.
@@ -1914,6 +1916,43 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '6900a317: the CI reading is per head: a failure outranks runs still going, a re-run withdraws it, green is recorded without a repair, and an old head says nothing',
+    async run(host) {
+      const s = await new Delivery(host, 77).open();
+      const reading = async () => deliveryPrState(await s.d());
+      const obs = (headSha: string, verdict: 'red' | 'green' | 'running', failing: string[] = [], complete = verdict === 'green') =>
+        s.submit({ type: 'CiObserved', actor: 'webhook', headSha, verdict, liveChecks: { complete, failing }, ...(verdict === 'green' ? { allPassing: true } : {}) });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed H1');
+      eq(await reading(), 'awaiting_ci', 'no reading on H1 yet: running');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 failed: a CI fix is filed');
+      eq(await reading(), 'ci_failed', 'repairing H1: red');
+      const fix = (await s.view()).attempts.find((x) => x.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: fix.id, revalidation: { live: s.live('H1'), approved: false, ciGreen: false } }), 'REPAIRING', 'the fix is claimed');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the fix pushed H2; review is owed on it');
+      eq(await reading(), 'awaiting_ci', 'H1\'s red does not carry to H2');
+      // One check fails on H2 while others still run. T10 defers to the fix still open,
+      // and before 6900a317 nothing else recorded the failure: the PR read "Checking".
+      notApplied(await s.ciRed('H2'), 'rejected', 'fix_in_flight', 'T10 defers to the open fix');
+      applied(await obs('H2', 'red', ['check']), 'AWAITING_REVIEW', 'the red on H2 is recorded with no state change');
+      eq(await reading(), 'ci_failed', 'failed outranks still running');
+      notApplied(await obs('H1', 'green'), 'stale', 'head_not_current', 'a late green for the old head');
+      eq(await reading(), 'ci_failed', 'H2 still red');
+      // The failed run is re-run: nothing failing, not finished.
+      applied(await obs('H2', 'running'), 'AWAITING_REVIEW', 'the re-run withdraws the red');
+      eq(await reading(), 'awaiting_ci', 'H2 is being checked again');
+      // A late webhook for the superseded failure reads nothing failing now.
+      notApplied(await obs('H2', 'red', []), 'rejected', 'ci_not_red', 'the superseded failure records nothing');
+      applied(await obs('H2', 'green'), 'AWAITING_REVIEW', 'green on H2 is recorded without a repair to end');
+      eq(await reading(), 'ci_passed', 'H2 passed');
+      notApplied(await obs('H2', 'green'), 'stale', 'already_recorded', 'the same green again');
+      // A new commit runs CI again: the last head's reading does not carry.
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new commit, H3');
+      eq(await reading(), 'awaiting_ci', 'H3 is running');
+      applied(await obs('H3', 'red', ['unit tests'], true), 'AWAITING_REVIEW', 'a second failure, on H3');
+      eq(await reading(), 'ci_failed', 'H3 failed');
+    },
+  },
+  {
     name: '38442d17: an infrastructure CI failure files a CI repair; a green re-run on the same head cancels it and returns the approved PR to APPROVED, spending nothing',
     async run(host) {
       const s = await new Delivery(host, 75).open();
@@ -2331,6 +2370,39 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await n.submit({ type: 'PrReopened', actor: 'webhook', live: n.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'AWAITING_REVIEW', 'reopened (fresh)');
       eq(await n.count('dispatch_review'), 2, 'the reopen dispatches a reviewer');
       eq(await n.count('escalate_exhaustion'), 0, 'and tells nobody it is theirs');
+    },
+  },
+  {
+    // Task b6cfdbb9 (audit case: a PR closed while its review repair was still queued): the close
+    // cancelled the ledger row, but its effect left the task to a legacy path that skips kernel PRs,
+    // so the repair stayed pending on a closed PR.
+    name: 'b6cfdbb9: closing a PR unmerged cancels its queued repair task; a merge cancels a queued CI fix',
+    async run(host) {
+      const s = await new Delivery(host, 118).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const fixTask = (await s.view()).attempts.find((a) => a.family === 'review_fix')?.taskId;
+      ok(fixTask, 'the review fix was filed and linked');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      eq((await s.view()).attempts.filter((a) => a.family === 'review_fix').map((a) => a.status), ['cancelled'], 'the ledger row is cancelled');
+      await drainKernel(host, s, f.ports);
+      eq(f.work.cancelled.map((x) => x.taskId), [fixTask], 'and so is its task');
+      eq(await outcomesOf(host, s, 'cancel_open_attempts'), ['ok:cancelled_1'], 'the close owns the cancel, not legacy');
+
+      const m = await new Delivery(host, 119).open();
+      await m.approvedAt('H1');
+      await m.ciRed('H1');
+      const g = fakePorts(host);
+      g.github.setPr(m.repo, m.prNumber, m.live('H1'));
+      await drainKernel(host, m, g.ports);
+      const ciTask = (await m.view()).attempts.find((a) => a.family === 'ci')?.taskId;
+      ok(ciTask, 'the CI fix was filed and linked');
+      applied(await m.merged('H1'), 'MERGED', 'merged');
+      await drainKernel(host, m, g.ports);
+      eq(g.work.cancelled.map((x) => x.taskId), [ciTask], 'the merge cancels the CI fix nobody started');
     },
   },
   {
