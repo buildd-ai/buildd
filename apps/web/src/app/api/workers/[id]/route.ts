@@ -42,7 +42,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -3066,6 +3066,9 @@ export async function PATCH(
       // Which Claude login this run used, as its runner reports it (newer
       // runners): a machine login walls only that runner.
       loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
+      // The login's identity (a one-way hash), so the wall holds every runner
+      // on the same login, not only this one.
+      loginId: parseClaudeLoginId(body.claudeLoginId),
     });
     const runnerSeatWall = seatWall.seatKey;
     if (runnerSeatWall) {
