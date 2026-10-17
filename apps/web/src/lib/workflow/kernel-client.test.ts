@@ -595,6 +595,135 @@ describe('a green head from the check_suite webhook is a door too (AC-9): CiGree
   });
 });
 
+describe('AC-35: a door command the control plane never answered is parked for the floor, under its own key', () => {
+  const end = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } },
+    workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+  /** A clock the door's backoff moves, so a door that never gets an answer runs out its budget at once. */
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } }; };
+  const parker = () => {
+    const parked: Array<Record<string, unknown>> = [];
+    return { parked, park: async (p: Record<string, unknown>) => { parked.push(p); return true; } };
+  };
+
+  it('an attempt end that never got an answer is parked with the door\'s key, op, input and principal, and the door still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const l = local();
+    const k = parker();
+    const err = await attemptEnded(end, { principal: runner, idempotencyKey: 'attempt_ended:k-park-1', deps: { ...l.deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toEqual([{ key: 'attempt_ended:k-park-1', op: 'attempt_ended', input: { ...end, workspaceId: WS }, principal: runner, priorUnknown: false, why: err.why }]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('an unknown outcome is parked as such, so the floor never runs it on the web host without the ledger\'s word', async () => {
+    const { observeCiGreen, systemPrincipal } = await import('./kernel-client');
+    const k = parker();
+    let t = 0;
+    const timeout = (async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch;
+    const green = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' };
+    const err = await observeCiGreen(green, {
+      principal: systemPrincipal('system:webhook:check_suite'),
+      deps: { ...local().deps, env: OWN, fetch: timeout, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: k.park as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('unknown');
+    expect(k.parked).toHaveLength(1);
+    expect(k.parked[0]).toMatchObject({ op: 'observe_ci_green', priorUnknown: true, key: err.idempotencyKey });
+  });
+
+  it('only ops nothing else re-sends: a landing that got no answer is the caller\'s to retry, and is not parked', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const k = parker();
+    const err = await landThroughKernel(input, { principal, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(false);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('an answer is never parked: a refusal, the command\'s own failure, or a skew fallback', async () => {
+    const { attemptEnded, KernelCommandFailedError } = await import('./kernel-client');
+    const answers: Array<[() => Response, unknown]> = [
+      [() => Response.json({ v: 1, code: 'forbidden', error: 'no reach' }, { status: 403 }), KernelCommandRefusedError],
+      [() => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 }), KernelCommandFailedError],
+    ];
+    for (const [reply, kind] of answers) {
+      const k = parker();
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, env: OWN, fetch: (async () => reply()) as unknown as typeof fetch, park: k.park as never } }).catch((e) => e);
+      expect(err).toBeInstanceOf(kind as never);
+      expect(k.parked).toEqual([]);
+    }
+    const k = parker();
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_ended"' }, { status: 400 })) as unknown as typeof fetch;
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      await attemptEnded(end, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older, park: k.park as never } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['attempt_ended']);
+    expect(k.parked).toEqual([]);
+  });
+
+  it('a door with no principal is never parked (it is refused before sending), and a park that fails still answers unavailable', async () => {
+    const { attemptEnded } = await import('./kernel-client');
+    const k = parker();
+    const refused = await attemptEnded(end, { principal: null, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(refused).toBeInstanceOf(KernelCommandRefusedError);
+    expect(k.parked).toEqual([]);
+    const realError = console.error;
+    const logged: string[] = [];
+    console.error = (...a: unknown[]) => { logged.push(a.join(' ')); };
+    try {
+      const err = await attemptEnded(end, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: async () => { throw new Error('db down'); } } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.parked).toBe(false);
+    } finally {
+      console.error = realError;
+    }
+    expect(logged.join('\n')).toContain('could not be parked');
+  });
+
+  it('a reviewer\'s verdict that got no answer is parked; a fix claim never is (its claim is rolled back and claimed afresh)', async () => {
+    const { recordReviewVerdict, claimFix } = await import('./kernel-client');
+    const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+    const k = parker();
+    const err = await recordReviewVerdict(verdict, { principal: runner, idempotencyKey: 'record_review_verdict:k-park-3', deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toMatchObject([{ key: 'record_review_verdict:k-park-3', op: 'record_review_verdict', input: verdict }]);
+
+    const c = parker();
+    const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+    const claimErr = await claimFix(fixTask, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: c.park as never } }).catch((e) => e);
+    expect(claimErr).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(claimErr.parked).toBe(false);
+    expect(c.parked).toEqual([]);
+  });
+
+  it('every op is classified, and the doors without another re-sender are the parked ones', async () => {
+    const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
+    const { KERNEL_OPS } = await import('./command-api');
+    expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'observe_ci_green', 'record_review_verdict']);
+    // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
+    expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
+  });
+
+  it('the door\'s 503 says it was parked', async () => {
+    const { doorErrorAnswer } = await import('./kernel-client');
+    const e = new ControlPlaneUnavailableError('unreachable', 'not_applied', 'attempt_ended:k-park-2');
+    expect(doorErrorAnswer(e).body.parked).toBeUndefined();
+    e.parked = true;
+    expect(doorErrorAnswer(e).body).toMatchObject({ parked: true, idempotencyKey: 'attempt_ended:k-park-2', retryable: true });
+  });
+});
+
 describe('T6 and T9 are doors too (AC-9): a review verdict (recorded or adopted) and a fix claim from the web host', () => {
   const OTHER = '44444444-4444-4444-8444-444444444444';
   const runner = { kind: 'account' as const, id: USER, grant: null };
