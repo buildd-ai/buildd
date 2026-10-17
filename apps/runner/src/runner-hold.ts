@@ -284,7 +284,7 @@ export function holdLine(hold: RunnerHold, running: number, now: number): string
 export function resumeLine(wasHeld: boolean, running: number, stillPaused?: number): string {
   const paused = stillPaused ? ` ${stillPaused} agent${stillPaused === 1 ? ' stays' : 's stay'} paused.` : '';
   return wasHeld
-    ? `Resumed: this runner takes new work again. ${agents(running, 'running')}${paused}`
+    ? `Resumed: looking for work now. ${agents(running, 'running')}${paused}`
     : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}${paused}`;
 }
 
