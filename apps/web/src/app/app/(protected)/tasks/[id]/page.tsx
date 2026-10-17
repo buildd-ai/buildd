@@ -1102,7 +1102,7 @@ export default async function TaskDetailPage({
               )}
               {origin.shipped && (
                 <div data-testid="task-origin-shipped" className="text-text-secondary">
-                  Shipped in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
+                  Released in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
                 </div>
               )}
             </div>
@@ -1700,7 +1700,7 @@ export default async function TaskDetailPage({
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
-              is on hold. Raise the mission budget to release them, or force-start this task.
+              waits for more budget. Raise the mission budget to start them, or force-start this task.
             </p>
           </div>
         )}

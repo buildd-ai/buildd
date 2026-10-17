@@ -10,7 +10,7 @@ import Link from 'next/link';
 import type { ChatWatchNotice } from './chat-contract';
 
 const TONE: Record<ChatWatchNotice['tone'], { dot: string; word: string; cls: string }> = {
-  ok: { dot: 'bg-[var(--mood-landed)]', word: 'Landed', cls: 'text-[var(--mood-landed)]' },
+  ok: { dot: 'bg-[var(--mood-landed)]', word: 'Done', cls: 'text-[var(--mood-landed)]' },
   attention: { dot: 'bg-[var(--mood-needs)]', word: 'Waiting on you', cls: 'text-[var(--mood-needs)]' },
   bad: { dot: 'bg-status-error', word: 'Failed', cls: 'text-status-error' },
 };

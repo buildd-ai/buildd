@@ -1,5 +1,6 @@
-/** Home's "Landed this week": missions that finished in the last seven days, newest first. */
+/** Home's "Done this week" (`total.done_this_week`): missions that finished in the last seven days, newest first. */
 import Link from 'next/link';
+import { TERMS } from '@buildd/shared';
 
 export interface LandedMission {
   id: string;
@@ -17,7 +18,7 @@ export function LandedThisWeek({ missions, timeZone, idPrefix = 'home' }: { miss
   if (missions.length === 0) return null;
   return (
     <section data-testid="home-landed" aria-labelledby={`${idPrefix}-landed-h`} style={{ gridArea: 'landed' }} className="min-w-0">
-      <h2 id={`${idPrefix}-landed-h`} className="section-label mb-3">Landed this week</h2>
+      <h2 id={`${idPrefix}-landed-h`} className="section-label mb-3">{TERMS['total.done_this_week'].word}</h2>
       <ul className="divide-y divide-border-default border-t border-border-default">
         {missions.map(m => (
           <li key={m.id}>

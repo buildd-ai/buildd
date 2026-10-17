@@ -25,7 +25,7 @@ import { displayTaskTitle } from '@/lib/task-title';
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
-import type { VisualReviewModel } from '@buildd/shared';
+import { TERMS, type VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { BOARD_LANDED, boardNeedsYouCount, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
@@ -298,7 +298,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
           />
         ) : (
           <>
-            <SectionLabel>Landed</SectionLabel>
+            <SectionLabel>{TERMS['pr.merged'].word}</SectionLabel>
             {model.landed.total > 0 ? (
               <>
                 <Big n={model.landed.done} small={`of ${model.landed.total}`} />

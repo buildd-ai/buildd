@@ -3,6 +3,7 @@
  * effects run.ts carries out (a socket action, opening a URL, quitting).
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
+import { TERMS } from '@buildd/shared';
 import {
   NO_MISSION, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
@@ -491,7 +492,7 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     if (!ok) return { text: `${effect.on ? 'Hold' : 'Resume'} refused: ${refusalReason(result)}`, tone: 'error' };
     const running = typeof (result.body as any)?.running === 'number' ? (result.body as any).running : 0;
     return effect.on
-      ? { text: `On hold: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
+      ? { text: `${TERMS['runner.paused'].word}: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
       : { text: 'Resumed: looking for work now.', tone: 'ok' };
   }
   if (effect.type === 'slots') {

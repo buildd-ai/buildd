@@ -41,6 +41,11 @@ describe('NeedsYouStack shipped card', () => {
     expect(html).toContain('href="/app/missions/m1?from=home#what-shipped"');
   });
 
+  it('says Done at the finish time, never Shipped', () => {
+    expect(text()).toMatch(/Done at\s+14:00/);
+    expect(text()).not.toContain('Shipped');
+  });
+
   it('keeps auto-fixes when there were some', () => {
     expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
   });
@@ -157,5 +162,16 @@ describe('ActivityTicker — a quiet gap reads as a gap', () => {
     expect(html.match(/data-testid="ticker-gap"/g)?.length).toBe(1);
     expect(html.indexOf('data-testid="ticker-gap"')).toBeGreaterThan(html.indexOf('>db<'));
     expect(html).toContain('6h earlier');
+  });
+});
+
+describe('LandedThisWeek', () => {
+  it('is headed with the catalog word: Done this week', async () => {
+    const { LandedThisWeek } = await import('./LandedThisWeek');
+    const html = renderToStaticMarkup(
+      <LandedThisWeek missions={[{ id: 'm1', title: 'Example mission', href: '/app/missions/m1', completedAt: '2026-01-10T14:00:00.000Z', prs: 2 }]} timeZone="UTC" />,
+    );
+    expect(html).toContain('>Done this week</h2>');
+    expect(html).not.toMatch(/landed this week/i);
   });
 });

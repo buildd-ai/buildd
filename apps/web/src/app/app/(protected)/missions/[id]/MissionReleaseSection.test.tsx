@@ -126,7 +126,7 @@ describe('missionReleaseRow: the release status beside the Shipped step (spec f7
 
   it('shows a deploy in flight even though the Shipped step is hidden', () => {
     const row = missionReleaseRow(null, 'deploying')!;
-    expect(row.text).toBe('Deploying');
+    expect(row.text).toBe('Releasing');
     expect(row.state).toBe('partial');
   });
 
@@ -139,6 +139,7 @@ describe('missionReleaseRow: the release status beside the Shipped step (spec f7
   it('shows a failed deploy as a hold', () => {
     const row = missionReleaseRow(null, 'failed')!;
     expect(row.text).toBe('Deploy failed');
+    expect(row.detail).toBe('Not released until a deploy is healthy.');
     expect(row.state).toBe('blocked');
   });
 

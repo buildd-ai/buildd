@@ -222,6 +222,12 @@ describe('stage track and repair badge', () => {
     expect(repairBadge(0)).toBe('');
     expect(repairBadge(2)).toBe('↻2');
   });
+  it('the PR kinds read the catalog words: Merged, Merging, Closed without merging', () => {
+    expect(DELIVERY_KIND.landed.label).toBe('Merged');
+    expect(DELIVERY_KIND.landing.label).toBe('Merging');
+    expect(DELIVERY_KIND.notlanded.label).toBe('Closed without merging');
+    expect(DELIVERY_KIND.held.label).toBe('Not started');
+  });
   it('every kind carries a glyph and a word', () => {
     for (const k of Object.values(DELIVERY_KIND)) {
       expect(k.glyph.length).toBeGreaterThan(0);

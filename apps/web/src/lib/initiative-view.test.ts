@@ -119,7 +119,7 @@ describe('progress: one definition, and the bar agrees with it', () => {
 describe('status is the one a person set', () => {
   it('labels every status in Linear style', () => {
     expect(INITIATIVE_STATUS_LABEL).toEqual({
-      planned: 'Planned', active: 'Active', paused: 'Paused', completed: 'Completed', archived: 'Archived',
+      planned: 'Planned', active: 'Active', paused: 'Paused', completed: 'Done', archived: 'Archived',
     });
   });
 
@@ -260,7 +260,7 @@ describe('grouping and headline', () => {
       ['paused', ['pause']],
       ['completed', ['done']],
     ]);
-    expect(groups.map((g) => g.label)).toEqual(['Waiting on you', 'Active', 'Planned', 'Paused', 'Completed']);
+    expect(groups.map((g) => g.label)).toEqual(['Waiting on you', 'Active', 'Planned', 'Paused', 'Done']);
   });
 
   it('drops empty groups', () => {
@@ -270,8 +270,8 @@ describe('grouping and headline', () => {
 
   it('count line leads with what needs you, then each group', () => {
     const g = (section: string, n: number, label: string) => ({ section, label, cards: Array(n).fill({}) }) as any;
-    expect(initiativesCountLine([g('needs_you', 2, 'Waiting on you'), g('active', 3, 'Active'), g('completed', 6, 'Completed')]))
-      .toEqual([{ text: '2 waiting on you', needsYou: true }, { text: '3 active', needsYou: false }, { text: '6 completed', needsYou: false }]);
+    expect(initiativesCountLine([g('needs_you', 2, 'Waiting on you'), g('active', 3, 'Active'), g('completed', 6, 'Done')]))
+      .toEqual([{ text: '2 waiting on you', needsYou: true }, { text: '3 active', needsYou: false }, { text: '6 done', needsYou: false }]);
     expect(initiativesCountLine([g('needs_you', 1, 'Waiting on you')])).toEqual([{ text: '1 waiting on you', needsYou: true }]);
     expect(initiativesCountLine([])).toEqual([]);
   });

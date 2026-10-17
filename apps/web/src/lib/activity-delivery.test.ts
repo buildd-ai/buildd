@@ -184,6 +184,13 @@ describe('Activity History', () => {
     expect(e.steps.map(s => s.text)).toEqual(['Build started', 'Finished; nothing to merge']);
   });
 
+  it('a merged PR reads Merged; a task that stopped with no PR says it had no change to merge', () => {
+    const m = buildActivityHistory({ tasks: [merged()], missions: [], rules })[0];
+    expect(m.steps.at(-1)!.text).toBe('Merged');
+    const f = buildActivityHistory({ tasks: [task({ status: 'failed', updatedAt: ago(3) })], missions: [], rules })[0];
+    expect(f.steps.at(-1)!.text).toBe('Stopped without a change to merge');
+  });
+
   it('filters by missions vs standalone tasks, retries, landed and exceptions', () => {
     const inMission = merged({ missionId: 'm', missionTitle: 'M' });
     const standalone = merged();

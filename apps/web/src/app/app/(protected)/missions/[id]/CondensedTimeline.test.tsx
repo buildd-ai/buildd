@@ -363,7 +363,8 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
         allTasksCount={1}
       />,
     );
-    expect(desktopTree(html)).toContain('landed as');
+    expect(desktopTree(html)).toContain('merged in');
+    expect(desktopTree(html)).not.toContain('landed as');
     expect(desktopTree(html)).toContain('#2293');
     expect(desktopTree(html)).not.toContain('closed · not merged');
   });
@@ -395,7 +396,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
       />,
     );
     expect(desktopTree(html)).toContain('closed · not merged');
-    expect(desktopTree(html)).not.toContain('landed as');
+    expect(desktopTree(html)).not.toContain('merged in');
   });
 
   it('renders Changes Requested verdict fully expanded (not collapsed)', () => {

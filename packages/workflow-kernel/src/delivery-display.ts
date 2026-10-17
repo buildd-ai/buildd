@@ -79,7 +79,7 @@ export function replacedFailedTaskIds(views: ReadonlyMap<string, DeliveryView>, 
   return out;
 }
 
-/** Shipped: merged, or its work landed under another PR. */
+/** Merged, or its change merged in another PR. */
 export function deliveryShipped(d: Pick<DeliveryDisplay, 'state'>): boolean {
   return d.state === 'MERGED' || d.state === 'SUPERSEDED';
 }
@@ -131,7 +131,10 @@ const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['act
  * An approved PR needs you only when the owner is a person (the policy leaves
  * the merge to them): it is the Merge card Home shows and reads "Ready to
  * merge", never "in review". When the landing path merges it, it reads live. A repair reads the kernel's headline
- * ("Conflict fix stalled", "Fixing CI"). Only a FAILED delivery is failed; a
+ * ("Conflict fix stalled", "Fixing CI"). Labels are the terms catalog's words
+ * (packages/shared/src/terms.ts); the kernel imports nothing of buildd, so they
+ * are literals here and apps/web/src/lib/workflow/delivery-display.test.ts
+ * holds them equal to the catalog. Only a FAILED delivery is failed; a
  * stalled conflict fix or a CI fix in flight is recoverable work the platform
  * owns (S35, S36, S37).
  */
@@ -151,9 +154,11 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
     case 'landing': return reading('Merging', 'live');
     case 'needs_you': return reading('Waiting on you', 'needs');
     case 'merged': return reading('Merged', 'landed');
-    case 'superseded': return reading('Shipped elsewhere', 'landed');
+    // Not "Merged in #N": the task header pill's input does not carry the
+    // successor PR, and every surface must read the same label (S17).
+    case 'superseded': return reading('Merged in another PR', 'landed');
     case 'closed':
-    case 'abandoned': return reading('Closed', 'closed');
+    case 'abandoned': return reading('Closed without merging', 'closed');
     case 'failed': return reading('Failed', 'failed');
   }
 }

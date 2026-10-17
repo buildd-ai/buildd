@@ -91,6 +91,10 @@ ended · pushed ·
 waiting for a worker · waiting on checks · approved · ready to merge ·
 needs a human · merged · closed without merging
 
+A PR's end states are the terms catalog's words (`packages/shared/src/terms.ts`,
+`docs/design/terms.md`): Merging, Merged, Merged in #N, Closed without merging.
+Never "landed", "landing", "shipped", "delivered" or "held" as a state.
+
 Avoid: "buildd is on it", "working on", "applying", "attempt" (say "fix"),
 exclamation marks, and anything that narrates intent instead of state.
 
@@ -125,7 +129,7 @@ Four, each with one meaning. Rows only carry the outcome glyphs.
 | `○` | nothing running: queued, or waiting on checks | yes | no |
 | `✓` | good outcome: approved, merged | yes | yes |
 | `⚑` | a human has to act | yes | yes |
-| `✕` | ended without landing | yes | yes |
+| `✕` | closed without merging | yes | yes |
 
 No emoji. They render inconsistently across GitHub clients and turn a
 timeline into decoration.

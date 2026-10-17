@@ -1,6 +1,6 @@
 /**
  * `buildd top` folds a team's delivered missions (spec c7410e76 R-24, AC-10):
- * one dimmed "Delivered this week · N" row at the end of each team group,
+ * one dimmed "Done this week · N" row at the end of each team group,
  * Enter unfolds it into one row per mission with the day delivered, Enter or
  * Esc folds it again, and `/` finds a delivered mission by name without
  * unfolding. The day sits on the mission's own row, so a full pane can no
@@ -63,8 +63,8 @@ describe('the missions list folds delivered missions (state)', () => {
   test('one fold row per team, at the end of its group, counting the missions delivered in the last 7 days', () => {
     const rows = missionList(teamed(), NOW);
     expect(rows.map(r => r.title)).toEqual([
-      'Pair on the parser', 'Ship the importer', 'Docs refresh', 'Delivered this week',
-      'Billing cleanup', 'Delivered this week',
+      'Pair on the parser', 'Ship the importer', 'Docs refresh', 'Done this week',
+      'Billing cleanup', 'Done this week',
       'Other tasks',
     ]);
     const folds = rows.filter(r => r.fold);
@@ -79,7 +79,7 @@ describe('the missions list folds delivered missions (state)', () => {
   test('unfolded: one row per mission under the fold row, newest first; a mission delivered 9 days ago is not among them (AC-10)', () => {
     const s = { ...teamed(), unfolded: ['fold:Acme'] };
     const titles = missionList(s, NOW).map(r => r.title);
-    expect(titles.slice(3, 8)).toEqual(['Delivered this week', 'Retire the old API', 'Billing export', 'Search ranking', 'Onboarding copy']);
+    expect(titles.slice(3, 8)).toEqual(['Done this week', 'Retire the old API', 'Billing export', 'Search ranking', 'Onboarding copy']);
     expect(titles).not.toContain('Long finished');
     // Initech's fold stays folded.
     expect(titles).not.toContain('Invoice layout');
@@ -156,8 +156,9 @@ describe('frames (R-7, R-21, AC-10)', () => {
       expectExactSize(lines, cols, rows);
       const t = text(lines);
       expect(t).not.toContain('Retire the old');
-      expect(t).toMatch(/Delivered( this week)? · 4/);
-      expect(t).toMatch(/Delivered( this week)? · 1/);
+      expect(t).toMatch(/Done( this week)? · 4/);
+      expect(t).toMatch(/Done( this week)? · 1/);
+      expect(t).not.toMatch(/Delivered/);
       expect(t).toMatchSnapshot();
     });
 
@@ -181,7 +182,7 @@ describe('frames (R-7, R-21, AC-10)', () => {
       expectExactSize(lines, cols, rows);
       const t = text(lines);
       expect(t).toContain('Billing ex');
-      expect(t).not.toContain('Delivered this week');
+      expect(t).not.toContain('Done this week');
       expect(t).toMatchSnapshot();
     });
   }
@@ -196,19 +197,20 @@ describe('frames (R-7, R-21, AC-10)', () => {
   test('the fold row and the delivered rows are dimmed, not in the primary colour', () => {
     const s = press(onMissions(teamed(), 'fold:Initech'), '\r');
     const lines = frame(s, 80, 24, createPalette('night', 'truecolor'));
-    const fold = lines.find(l => stripAnsi(l).includes('Delivered'))!;
+    const fold = lines.find(l => /Done( this week)? ·/.test(stripAnsi(l)))!;
     const done = lines.find(l => stripAnsi(l).includes('Invoice'))!;
     const open = lines.find(l => stripAnsi(l).includes('Ship the'))!;
     const before = (l: string, word: string) => l.slice(0, l.indexOf(word));
-    expect(before(fold, 'Delivered')).not.toBe(before(open, 'Ship'));
+    expect(before(fold, 'Done')).not.toBe(before(open, 'Ship'));
     expect(before(done, 'Invoice')).not.toBe(before(open, 'Ship'));
   });
 
   test('the right pane on the fold row lists the deliveries themselves, newest first, each with its day', () => {
     const lines = frame(onMissions(teamed(), 'fold:Acme'), 80, 24).map(l => stripAnsi(l));
     const t = lines.join('\n');
-    expect(t).toContain('Delivered · 4');
-    expect(t).toContain('│ 4 delivered in the last 7 days');
+    expect(t).toMatch(/Done( this week)? · 4/);
+    expect(t).toContain('│ 4 done in the last 7 days');
+    expect(t).not.toMatch(/delivered/i);
     // No sentence about the keys: the work is shown.
     expect(t).not.toMatch(/⏎ lists them|Delivered in the last 7 days\./);
     const right = lines.map(l => l.split('│')[1] ?? '');
