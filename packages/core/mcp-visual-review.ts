@@ -245,8 +245,11 @@ export async function runListRunners(
       ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
       : '';
     // A person's hold (`buildd hold`, spec c7410e76 R-35), from the heartbeat environment.
+    // Only show hold while the runner is online (heartbeat within windowMs).
     const hold = activeRunnerHold(r.environment);
-    const holdLine = hold
+    const age = Date.now() - Date.parse(String(r.lastUpdated));
+    const runnerOnline = !Number.isNaN(age) && age < windowMs;
+    const holdLine = hold && runnerOnline
       ? `\n  on hold since ${hold.since}${hold.until ? ` until ${hold.until}` : ''}: starts nothing new, running work finishes (buildd resume lifts it) — free slots are expected, not a claim-gate bug`
       : '';
     const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'} modelAuth=${r.modelAuthSource ?? 'not_reported'}${r.codexAuthSource ? ` codexAuth=${r.codexAuthSource}` : ''}`;

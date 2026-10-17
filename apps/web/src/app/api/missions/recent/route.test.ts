@@ -25,7 +25,7 @@ mock.module('@/lib/mission-stage-load', () => ({ loadMissionStages: mockLoadMiss
 mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: mockFindMany } } } }));
 
 const { GET } = await import('./route');
-const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
+const { RECENT_DAYS, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
 const { missionStatusNoteBody, MISSION_COMPLETED_MARKER } = await import('@/lib/mission-status-note');
 const dialect = new PgDialect();
 
@@ -122,23 +122,7 @@ describe('GET /api/missions/recent', () => {
     expect(Object.keys(args.extras)).toEqual(['deliveredAt']);
   });
 
-  describe('the WHERE, rendered (a mocked findMany cannot see it)', () => {
-    const since = day(RECENT_DAYS);
-    const rendered = dialect.sqlToQuery(recentMissionsWhere(['ws-1', 'ws-2'], since)!);
-    const text = rendered.sql.replace(/\s+/g, ' ');
-
-    it('is the reachable workspaces AND (open status OR completed and delivered since the window start), nothing else', () => {
-      expect(text).toBe(
-        '(("missions"."workspace_id" in ($1, $2)) and ((("missions"."status" in ($3, $4, $5)) or ((("missions"."status" = $6) and '
-        + '(greatest("missions"."completed_at", ( select max("mission_notes"."created_at") from "mission_notes" '
-        + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."created_at" >= $7 and "mission_notes"."type" = \'update\' '
-        + 'and ("mission_notes"."collapse_key" = $8 or ("mission_notes"."author_type" = \'system\' and "mission_notes"."title" in ($9, $10) '
-        + 'and "mission_notes"."body" like $11)) )) >= $12))))))',
-      );
-      expect(rendered.params.slice(0, 11)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', since, MISSION_COMPLETED_MARKER, 'Mission status changed', 'Mission reopened', '% → completed']);
-      expect(new Date(rendered.params[11] as string).getTime()).toBe(since.getTime());
-    });
-
+  describe('delivered time calculation', () => {
     it('a re-completion through a status PATCH counts: its "→ completed" feed note is read', () => {
       const delivered = dialect.sqlToQuery(deliveredAtSql);
       const pattern = delivered.params.find(p => typeof p === 'string' && p.includes('→')) as string;

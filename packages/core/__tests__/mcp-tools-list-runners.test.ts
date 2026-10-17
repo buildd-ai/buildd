@@ -329,28 +329,66 @@ describe('list_runners', () => {
   });
 
   it('says a runner a person put on hold is on hold, since when and until when (R-35)', async () => {
-    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const now = Date.now();
+    const since = new Date(now - 60_000).toISOString();
+    const until = new Date(now + 3_600_000).toISOString();
+    const lastUpdated = new Date(now - 30_000).toISOString();
     mockApi.mockResolvedValueOnce({
       activeLocalUis: [{
         localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 1, maxConcurrent: 3,
         workspaceNames: [], trackedBranch: 'main',
-        environment: { labels: {}, hold: { since: '2026-10-11T09:12:00.000Z', until } },
-        lastUpdated: '2026-10-11T10:05:00.000Z',
+        environment: { labels: {}, hold: { since, until } },
+        lastUpdated,
       }],
     });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
-    expect(out).toContain(`on hold since 2026-10-11T09:12:00.000Z until ${until}: starts nothing new, running work finishes (buildd resume lifts it) — free slots are expected`);
+    expect(out).toContain(`on hold since ${since} until ${until}: starts nothing new, running work finishes (buildd resume lifts it) — free slots are expected`);
   });
 
   it('a hold whose until has passed is not shown', async () => {
+    const now = Date.now();
+    const since = new Date(now - 120_000).toISOString();
+    const until = new Date(now - 60_000).toISOString(); // Already passed
+    const lastUpdated = new Date(now - 30_000).toISOString();
     mockApi.mockResolvedValueOnce({
       activeLocalUis: [{
         localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 3, workspaceNames: [],
-        environment: { labels: {}, hold: { since: '2026-10-11T09:12:00.000Z', until: '2026-10-11T09:13:00.000Z' } },
-        lastUpdated: '2026-10-11T10:05:00.000Z',
+        environment: { labels: {}, hold: { since, until } },
+        lastUpdated,
       }],
     });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
     expect(out).not.toContain('on hold');
+  });
+
+  it('a runner on hold but offline does not show the hold (only online runners are held)', async () => {
+    const now = Date.now();
+    const tenMinutesAgo = new Date(now - 10 * 60_000).toISOString();
+    const oneMinuteAgo = new Date(now - 1 * 60_000).toISOString();
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [
+        {
+          localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 3, workspaceNames: [],
+          environment: { labels: {}, hold: { since: tenMinutesAgo, until: null } },
+          lastUpdated: new Date(now - 10 * 60_000).toISOString(), // Offline (>3m old)
+        },
+        {
+          localUiUrl: 'http://localhost:8767', accountName: 'Runner B', activeWorkers: 0, maxConcurrent: 3, workspaceNames: [],
+          environment: { labels: {}, hold: { since: oneMinuteAgo, until: null } },
+          lastUpdated: new Date(now - 1 * 60_000).toISOString(), // Online (<3m old)
+        },
+      ],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    // Split runner output by "- " to isolate each runner's block
+    const runners = out.split(/^- /m).slice(1);
+    const runnerA = runners.find(r => r.includes('Runner A'));
+    const runnerB = runners.find(r => r.includes('Runner B'));
+    expect(runnerA).toBeDefined();
+    expect(runnerB).toBeDefined();
+    // Runner A is offline, so its hold is not shown
+    expect(runnerA!).not.toContain('on hold');
+    // Runner B is online, so its hold is shown
+    expect(runnerB!).toContain('on hold');
   });
 });

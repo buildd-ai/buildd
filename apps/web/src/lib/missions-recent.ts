@@ -58,16 +58,6 @@ export const deliveredAtSql = sql<string | Date | null>`greatest(${missions.comp
     and ${completionNote(MISSION_STATUS_CHANGE_TITLES[0], MISSION_STATUS_CHANGE_TITLES[1])}
 ))`;
 
-/** Open missions, and those delivered since `since`, in the given workspaces. */
-export function recentMissionsWhere(workspaceIds: string[], since: Date) {
-  return and(
-    inArray(missions.workspaceId, workspaceIds),
-    or(
-      inArray(missions.status, [...OPEN_STATUSES]),
-      and(eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since)),
-    ),
-  );
-}
 
 /** The listed missions, open first, newest activity first within each set; `completedAt` is the delivered time, set only on a completed one. */
 export async function loadRecentMissions(workspaceIds: string[], now = Date.now()): Promise<Array<Omit<RecentMission, 'stage'>>> {
@@ -78,7 +68,6 @@ export async function loadRecentMissions(workspaceIds: string[], now = Date.now(
     extras: sqlExtras({ deliveredAt: deliveredAtSqlFor(since) }),
     orderBy: sqlOrderBy([desc(missions.updatedAt)]),
   };
-  // Both queries built from the same where logic (recentMissionsWhere).
   const openWhere = and(inArray(missions.workspaceId, workspaceIds), inArray(missions.status, [...OPEN_STATUSES]));
   const deliveredWhere = and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since));
   const [open, delivered] = await Promise.all([
