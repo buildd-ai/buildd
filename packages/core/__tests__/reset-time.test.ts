@@ -271,3 +271,37 @@ describe('extractResetTime with a dated reset', () => {
     expect(extractResetTime('resets Oct 16, 4am (PST)', { now })).toBeNull();
   });
 });
+
+describe('a reset quoted in an IANA timezone', () => {
+  // Spec "A runner" (34a48877) R-9: the wall lasts until the real reset.
+  // Claude names the login's own zone: "resets 12pm (America/New_York)". The
+  // parser used to refuse it, the worker route fell back to a full 5h window
+  // from the report, and a wall that lifted at noon held claims until 15:10.
+  const error = "You've hit your session limit · resets 12pm (America/New_York)";
+
+  it('reads the clock time in that zone (EDT, UTC-4)', () => {
+    const now = new Date('2026-10-17T14:10:06.000Z'); // 10:10 in New York
+    expect(extractResetTime(error, { now })?.toISOString()).toBe('2026-10-17T16:00:00.000Z');
+  });
+
+  it('follows the zone across a DST change (EST, UTC-5)', () => {
+    const now = new Date('2026-12-01T15:00:00.000Z'); // 10:00 in New York
+    expect(extractResetTime(error, { now })?.toISOString()).toBe('2026-12-01T17:00:00.000Z');
+  });
+
+  it('a zoned reset that already went by reads as passed', () => {
+    const now = new Date('2026-10-17T16:20:00.000Z'); // 12:20 in New York
+    expect(extractResetTime(error, { now })?.toISOString()).toBe('2026-10-17T16:00:00.000Z');
+    expect(resetDelayMsFrom(error, { now })).toBe(PAUSE_FLOOR_MS);
+  });
+
+  it('reads a dated reset in the zone', () => {
+    const now = new Date('2026-10-13T20:57:33.000Z');
+    expect(extractResetTime('resets Oct 16, 4am (Europe/Berlin)', { now })?.toISOString()).toBe('2026-10-16T02:00:00.000Z');
+  });
+
+  it('still refuses a label that names no zone', () => {
+    const now = new Date('2026-10-17T14:10:06.000Z');
+    expect(extractResetTime('resets 12pm (Mars/Olympus_Mons)', { now })).toBeNull();
+  });
+});

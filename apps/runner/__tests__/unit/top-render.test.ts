@@ -257,6 +257,26 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
     expect(text(lines).match(/waits for the plan limit/g)!.length).toBe(1);
   });
 
+  // Spec "A runner" R-12, AC-5: whose access waits, and that others are free.
+  test("this machine's own login limit says it is this machine's, and that other runners are free", () => {
+    const own = reduce({ ...fixtureState(), selectedMission: NO_MISSION }, {
+      type: 'claim_outcome',
+      outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
+    });
+    const t = text(frame(own, 120, 24)).split('\n');
+    expect(t[2]).toContain(`This machine's Claude login waits for its limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h) · other runners can take Claude work`);
+    expect(text(frame(own, 120, 24))).not.toContain('rate limit');
+  });
+
+  test('a shared limit is named as shared, not as a rate limit', () => {
+    const shared = reduce({ ...fixtureState(), selectedMission: NO_MISSION }, {
+      type: 'claim_outcome',
+      outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
+    });
+    const t = text(frame(shared, 120, 24)).split('\n');
+    expect(t[2]).toContain('Claude work waits for a limit every runner shares: resumes');
+  });
+
   test('no limit, no extra line', () => {
     const t = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(t[2]).toMatch(/^─+$/);
