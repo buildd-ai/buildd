@@ -13,6 +13,7 @@ import {
   calibratedCutoff,
   measurementPlan,
   planKindSwitch,
+  sweepOutcomes,
   runOptimizerSweep,
   switchFeed,
   undoSwitch,
@@ -220,6 +221,19 @@ const CLEAR_WIN = [
   row('clef-flash', 'cloudflare', { coverage: 0.6, precision: 0.95 }),
 ];
 
+describe('sweepOutcomes', () => {
+  it('lists each kind with its reason, and a skipped team with why', () => {
+    const out = sweepOutcomes({ teams: [
+      { teamId: 'abcdef012345', status: 'ran', runId: 'r', labelledRunId: null, problems: [], aborted: null, kinds: [{ kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' }] },
+      { teamId: '12345678aaaa', status: 'skipped', reason: 'no cases' },
+    ] });
+    expect(out).toEqual([
+      { team: 'abcdef01', kind: 'k', action: 'keep', reason: 'no_cases', source: 'collected' },
+      { team: '12345678', status: 'skipped', reason: 'no cases' },
+    ]);
+  });
+});
+
 describe('optimizeTeam', () => {
   it('switches on a clear win: measurement, per-kind model, one switch row and a ledger event', async () => {
     const w = world({ rows: CLEAR_WIN, stored: { endpoint: 'chat', model: 'acme/default-1', via: 'openrouter', byKind: { [KIND]: JEV_ROUTE } } });
@@ -284,7 +298,10 @@ describe('optimizeTeam', () => {
   it('does not switch under the margin', async () => {
     const w = world({ rows: [row(JEV_ID, 'openrouter', { coverage: 0.6, precision: 0.95 }), row('clef', 'cloudflare', { coverage: 0.63, precision: 0.95 })] });
     const out = await optimizeTeam(TEAM, {}, w.deps);
-    expect(out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'within_margin' })]);
+    expect(out.kinds.find(k => k.kind === KIND)).toMatchObject({ action: 'keep', reason: 'within_margin', n: 100, bar: 0.9, best: { score: expect.any(Number) } });
+    expect(out.kinds.find(k => k.kind === KIND)!.score).toBeCloseTo(0.57, 6);
+    // Kinds nothing was measured for still say why.
+    expect(out.kinds.filter(k => k.kind !== KIND).every(k => k.action === 'keep' && k.reason === 'no_cases')).toBe(true);
     expect(w.stored.value).toBeNull();
     expect(w.switches).toHaveLength(0);
     expect(w.written).toHaveLength(0);
@@ -293,7 +310,7 @@ describe('optimizeTeam', () => {
   it('does not switch below the minimum of graded cases', async () => {
     const w = world({ rows: [row(JEV_ID, 'openrouter', null, { labelled: 20 }), row('clef', 'cloudflare', { coverage: 0.9, precision: 1 }, { labelled: 20 })] });
     const out = await optimizeTeam(TEAM, {}, w.deps);
-    expect(out.kinds[0]).toMatchObject({ action: 'keep', reason: 'too_few_graded' });
+    expect(out.kinds.find(k => k.kind === KIND)).toMatchObject({ action: 'keep', reason: 'too_few_graded', n: 20, minLabelled: expect.any(Number) });
     expect(w.preflights).toHaveLength(0);
     expect(w.stored.value).toBeNull();
   });
@@ -422,7 +439,7 @@ describe('optimizeTeam on labelled sets', () => {
     expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
     expect(w.switches[0]).toMatchObject({ evalRunId: 'run-2', toRoute: CLEF });
     expect(w.ledger[0].reason).toContain('source=labelled');
-    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'switch', source: 'labelled' })]);
+    expect(out.status === 'ran' && out.kinds.filter(k => k.reason !== 'no_cases')).toEqual([expect.objectContaining({ kind: KIND, action: 'switch', source: 'labelled' })]);
   });
 
   it('never asks the labelled set of a kind with enough collected cases, and never pools the two', async () => {
@@ -433,7 +450,7 @@ describe('optimizeTeam on labelled sets', () => {
     });
     const out = await optimizeTeam(TEAM, {}, w.deps);
     expect(w.compared.map(c => c.source)).toEqual(['collected']);
-    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'within_margin', source: 'collected' })]);
+    expect(out.status === 'ran' && out.kinds.filter(k => k.reason !== 'no_cases')).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'within_margin', source: 'collected' })]);
     expect(w.written).toHaveLength(0);
   });
 
@@ -441,7 +458,7 @@ describe('optimizeTeam on labelled sets', () => {
     const none = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN, labelledKinds: [] });
     const out = await optimizeTeam(TEAM, {}, none.deps);
     expect(none.compared).toHaveLength(1);
-    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'too_few_graded', source: 'collected' })]);
+    expect(out.status === 'ran' && out.kinds.filter(k => k.reason !== 'no_cases')).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'too_few_graded', source: 'collected' })]);
 
     // Role pick has a set and no collected case; this kind has neither enough nor a set.
     const other = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN, labelledKinds: ['task_role'] });

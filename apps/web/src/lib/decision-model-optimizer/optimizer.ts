@@ -145,14 +145,30 @@ export interface ModelResult {
 export type KeepReason =
   | 'pinned' | 'too_few_graded' | 'current_not_asked' | 'no_model_clears_bar' | 'current_best' | 'within_margin'
   | 'preflight_failed' | 'no_fingerprint' | 'write_failed'
+  // No replayed decision for the kind in the window and no labelled set: nothing was measured.
+  | 'no_cases'
   // The shared (kind x model) measurement row is retired, or in force on another signal: not one team's to change.
   | 'measurement_retired' | 'measurement_other_signal'
   // The existing measurement's cutoff is above 1 (acts never), so no model should switch to it.
   | 'measurement_never_acts';
 
+/** What a keep was decided on, so a run that switched nothing can be read: the current model's graded cases and score, the best comparable model, the bar. */
+export interface KeepDetail {
+  /** Graded cases the current model was scored on. */
+  n: number;
+  /** Current model's coverage x precision; 0 when no threshold clears the bar. */
+  score: number;
+  /** The precision bar its threshold was derived against, when one was. */
+  bar: number | null;
+  /** The minimum of graded cases the kind needs. */
+  minLabelled: number | null;
+  /** Best comparable model and its score, when any model had one. */
+  best?: { model: string; score: number };
+}
+
 export type KindPlan =
   | { action: 'switch'; kind: string; from: ModelResult; to: ModelResult; before: number; after: number }
-  | { action: 'keep'; kind: string; reason: KeepReason };
+  | { action: 'keep'; kind: string; reason: KeepReason; detail?: KeepDetail };
 
 /** Share of cases the model would act on and get right: coverage x precision at its threshold. 0 without one. */
 export function scoreOf(r: ModelResult): number {
@@ -173,9 +189,17 @@ export function planKindSwitch(input: {
   pinned: boolean;
   margin?: number;
 }): KindPlan {
-  const keep = (reason: KeepReason): KindPlan => ({ action: 'keep', kind: input.kind, reason });
-  if (input.pinned) return keep('pinned');
   const current = input.results.find(r => routeKey(r.route) === routeKey(input.current));
+  const minLabelled = Number.isFinite(input.minLabelled) ? input.minLabelled : null;
+  const detail = (best?: ModelResult): KeepDetail | undefined => current ? {
+    n: current.labelled, score: scoreOf(current), bar: current.bar, minLabelled,
+    ...(best ? { best: { model: best.route.model, score: scoreOf(best) } } : {}),
+  } : undefined;
+  const keep = (reason: KeepReason, best?: ModelResult): KindPlan => {
+    const d = detail(best);
+    return { action: 'keep', kind: input.kind, reason, ...(d ? { detail: d } : {}) };
+  };
+  if (input.pinned) return keep('pinned');
   if (!current || !current.scored || current.notRun > 0) return keep('current_not_asked');
   if (current.labelled < input.minLabelled) return keep('too_few_graded');
 
@@ -185,8 +209,8 @@ export function planKindSwitch(input: {
   const best = comparable.reduce((a, b) => (scoreOf(b) > scoreOf(a) + EPS ? b : a));
   const before = scoreOf(current);
   const after = scoreOf(best);
-  if (routeKey(best.route) === routeKey(current.route) || after <= before + EPS) return keep('current_best');
-  if (after - before < (input.margin ?? OPTIMIZER_MARGIN) - EPS) return keep('within_margin');
+  if (routeKey(best.route) === routeKey(current.route) || after <= before + EPS) return keep('current_best', best);
+  if (after - before < (input.margin ?? OPTIMIZER_MARGIN) - EPS) return keep('within_margin', best);
   return { action: 'switch', kind: input.kind, from: current, to: best, before, after };
 }
 
@@ -297,6 +321,14 @@ export interface KindOutcome {
   to?: string;
   before?: number;
   after?: number;
+  /** Graded cases the current model was scored on (a keep with no score has none). */
+  n?: number;
+  /** The current model's score, its precision bar and the kind's minimum of graded cases. */
+  score?: number;
+  bar?: number | null;
+  minLabelled?: number | null;
+  /** The best comparable model and its score, when one had a score. */
+  best?: { model: string; score: number };
 }
 
 export type TeamOptimizeResult =
@@ -453,7 +485,11 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
   const kinds: KindOutcome[] = [];
   for (const [kind, { plan, run }] of plans) {
     const source = run.source;
-    if (plan.action === 'keep') { kinds.push({ kind, action: 'keep', reason: plan.reason, source }); continue; }
+    if (plan.action === 'keep') {
+      const d = plan.detail;
+      kinds.push({ kind, action: 'keep', reason: plan.reason, source, ...(d ? { n: d.n, score: d.score, bar: d.bar, minLabelled: d.minLabelled, ...(d.best ? { best: d.best } : {}) } : {}) });
+      continue;
+    }
     const kept = (reason: KeepReason) => kinds.push({ kind, action: 'keep', reason, source, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
 
     const probe = await deps.preflight(plan.to.route, teamId);
@@ -497,6 +533,10 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
     await deps.recordLedger(switchLedgerEvent(teamId, kind, plan.from.route.model, plan.to.route.model,
       `optimizer: eval_run=${run.runId} source=${source} before=${fmt(plan.before)} after=${fmt(plan.after)} n=${plan.to.labelled}`, run.runId, plan.after));
     kinds.push({ kind, action: 'switch', source, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
+  }
+  // A kind nothing was measured for (no replayed decisions, no labelled set) still reports why.
+  for (const kind of DECISION_MODEL_KINDS) {
+    if (!plans.has(kind)) kinds.push({ kind, action: 'keep', reason: pinned.has(kind) ? 'pinned' : 'no_cases', source: 'collected' });
   }
   return { teamId, status: 'ran', runId: out.runId, labelledRunId, problems, aborted, kinds };
 }
@@ -675,4 +715,15 @@ export async function runOptimizerSweep(
     }
   }
   return { reverts, teams, deferred };
+}
+
+/** The sweep's per-kind outcomes, flat, for the recorded cron result. Teams are named by a short prefix. */
+export function sweepOutcomes(out: Pick<SweepResult, 'teams'>): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const t of out.teams) {
+    const team = t.teamId.slice(0, 8);
+    if (t.status === 'ran') for (const k of t.kinds) rows.push({ team, ...k });
+    else rows.push({ team, status: t.status, ...(t.status === 'skipped' ? { reason: t.reason } : {}) });
+  }
+  return rows;
 }
