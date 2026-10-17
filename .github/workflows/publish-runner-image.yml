@@ -143,6 +143,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      dockerhub_ref: ${{ steps.dockerhub.outputs.ref }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -254,3 +256,67 @@ jobs:
             echo "::warning::${MSG}"
             printf '| Visibility | **private** |\n\n%s\n' "$MSG" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # Cloudflare Containers pulls from its own registry, Docker Hub, ECR and
+      # Google Artifact Registry, not GHCR, so a server-side cloud runner
+      # deploy (Settings → Runners → Cloudflare → Deploy) needs a public Docker
+      # Hub copy. Optional: set the repo variable DOCKERHUB_IMAGE
+      # (<namespace>/<repo>) and the secrets DOCKERHUB_USERNAME and
+      # DOCKERHUB_TOKEN. Without them the release bundle records no image and
+      # that deploy stops at its container step, saying so.
+      - name: Mirror to Docker Hub
+        id: dockerhub
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_IMAGE:-}" ] || [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "::warning::No Docker Hub mirror (DOCKERHUB_IMAGE, DOCKERHUB_USERNAME, DOCKERHUB_TOKEN). The Settings Deploy button cannot deploy this release's runner."
+            exit 0
+          fi
+          echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          docker tag "$IMAGE:$TAG" "docker.io/$DOCKERHUB_IMAGE:$TAG"
+          docker push "docker.io/$DOCKERHUB_IMAGE:$TAG"
+          DIGEST=$(docker buildx imagetools inspect "docker.io/$DOCKERHUB_IMAGE:$TAG" --format '{{json .Manifest}}' | jq -r '.digest // empty')
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Pushed docker.io/$DOCKERHUB_IMAGE:$TAG but could not read its digest back (got '${DIGEST}')."
+            exit 1
+          fi
+          echo "ref=docker.io/$DOCKERHUB_IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "| Docker Hub | \`docker.io/$DOCKERHUB_IMAGE@$DIGEST\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # The release asset a server-side deploy reads: the Worker bundle, its
+  # wrangler config and the Docker Hub image (apps/cloud-runner/src/release-bundle.ts).
+  # Its own job so the image push never holds contents: write.
+  cloud-runner-bundle:
+    needs: [plan, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.plan.outputs.tag }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build and attach the cloud runner bundle
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          DOCKERHUB_REF: ${{ needs.publish.outputs.dockerhub_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/cloud-runner-$TAG.json"
+          bun apps/cloud-runner/scripts/build-release-bundle.ts --tag "$TAG" --out "$OUT" ${DOCKERHUB_REF:+--image "$DOCKERHUB_REF"}
+          gh release upload "$TAG" "$OUT" --clobber --repo "$GITHUB_REPOSITORY"
