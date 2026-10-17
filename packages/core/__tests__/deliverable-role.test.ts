@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { deliverableRole, isBuildDeliverable, computeMissionProgress } from '../mission-helpers';
+import { deliverableRole, isBuildDeliverable, computeMissionProgress, DELIVERABLE_ROLE_CONTEXT_KEYS } from '../mission-helpers';
 
 // Illustrative fixtures only. Spec f7f67f1a P-2 / R-14: verification, repair and
 // maintenance work is listed but never enters the build count.
@@ -47,5 +47,32 @@ describe('computeMissionProgress counts build work only (R-14)', () => {
     expect(p.totalTasks).toBe(2);
     expect(p.completedTasks).toBe(1);
     expect(p.segments.map(s => s.taskId)).toEqual(['b1', 'b2']);
+  });
+});
+
+// A list (`buildd top`'s mission stages) cannot afford whole `tasks.context`
+// blobs, so it projects only the keys `deliverableRole` reads
+// (DELIVERABLE_ROLE_CONTEXT_KEYS). A new key read here must join that list, or
+// the list silently stops seeing it.
+describe('DELIVERABLE_ROLE_CONTEXT_KEYS', () => {
+  function keysRead(context: Record<string, unknown>): Set<string> {
+    const read = new Set<string>();
+    const proxy = new Proxy(context, { get(target, key, recv) { if (typeof key === 'string') read.add(key); return Reflect.get(target, key, recv); } });
+    deliverableRole({ title: 'feat(x): plain work', roleSlug: 'builder', context: proxy });
+    return read;
+  }
+
+  it('names every context key deliverableRole reads', () => {
+    const allowed = new Set<string>([...DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers, ...DELIVERABLE_ROLE_CONTEXT_KEYS.values]);
+    // A context with none of the markers walks every branch.
+    for (const k of keysRead({})) expect(allowed.has(k)).toBe(true);
+    expect([...keysRead({})].sort()).toEqual([...allowed].sort());
+  });
+
+  it('an object marker reduced to {} reads the same role as the full object', () => {
+    for (const k of DELIVERABLE_ROLE_CONTEXT_KEYS.objectMarkers) {
+      const full = deliverableRole({ title: 'feat(x): work', context: { [k]: { a: 1, nested: { b: 'x'.repeat(100) } }, other: 'big' } });
+      expect(deliverableRole({ title: 'feat(x): work', context: { [k]: {} } })).toBe(full);
+    }
   });
 });
