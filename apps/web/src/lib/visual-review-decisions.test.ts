@@ -319,7 +319,7 @@ describe('applyDecision', () => {
     // Scoped by missionVisualShotsWhere plus the ids.
     const q = render(calls[0].where);
     expect(q.sql).toContain('"artifacts"."mission_id" = $');
-    expect(q.sql).toContain('"t"."role_slug" = $');
+    expect(q.sql).toContain('"t".role_slug = $');
     expect(q.sql).toContain('"artifacts"."id" in');
     expect(q.params).toContain(MISSION.id);
   });

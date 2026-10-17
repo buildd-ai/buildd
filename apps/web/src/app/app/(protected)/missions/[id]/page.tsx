@@ -16,7 +16,7 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
-import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isMissionAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -68,7 +68,6 @@ import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-ta
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { MissionVisualReviewProvider } from './MissionVisualReview';
@@ -290,7 +289,7 @@ export default async function MissionDetailPage({
     // itself, only when a claimable audit has waited past the window. A
     // mission with no audit skips it. A failed read hides the review rather
     // than the page.
-    (mission.tasks ?? []).some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+    (mission.tasks ?? []).some(t => isMissionAuditTask({ title: t.title, roleSlug: t.roleSlug }))
       ? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null }).catch((err): VisualReviewModel | null => {
           console.error('[mission-page] visual review load failed', err);
           return null;
@@ -804,7 +803,7 @@ export default async function MissionDetailPage({
   const showAuditWaiver = !!surfaceAuditWaiver
     || (visualPresentation
       ? visualPresentation.canWaive
-      : (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+      : (mission.tasks ?? []).some(t => isMissionAuditTask(t))
         || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true));
   const vs = boardVisual?.summary;
   const visualReview = vs

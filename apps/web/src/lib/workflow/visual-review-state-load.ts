@@ -6,13 +6,13 @@
  * writers stay `ensureMissionSurfaceAudit` / `requestMissionSurfaceAudit`.
  */
 import 'server-only';
-import { and, desc, eq, like } from 'drizzle-orm';
+import { and, desc, eq, like, or } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { sqlWhere, sqlOrderBy } from '@buildd/core/db/relational-sql';
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { missions, tasks as tasksTable, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
-import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surface-audit';
-import { visualReviewPolicyOf } from '@buildd/shared';
+import { SURFACE_AUDIT_TITLE_PREFIX, isMissionAuditTask, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { visualReviewPolicyOf, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
@@ -31,8 +31,8 @@ import {
 /** The mission's audit tasks, newest first, in the shape the scheduler and the evidence check read. */
 export async function loadMissionAuditLedger(missionId: string): Promise<ScheduleAudit[]> {
   const rows = await db.query.tasks.findMany({
-    where: sqlWhere(and(eq(tasksTable.missionId, missionId), like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
-    columns: { id: true, title: true, status: true, context: true, result: true, updatedAt: true, createdAt: true },
+    where: sqlWhere(and(eq(tasksTable.missionId, missionId), or(like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`), eq(tasksTable.roleSlug, VISUAL_AUDITOR_ROLE_SLUG)))),
+    columns: { id: true, title: true, roleSlug: true, status: true, context: true, result: true, updatedAt: true, createdAt: true },
     orderBy: sqlOrderBy(desc(tasksTable.createdAt)),
   });
   return rows.map(r => ({
@@ -92,7 +92,7 @@ export async function getMissionVisualReviewState(
     }
   }
 
-  const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
+  const uiBuilders = tasks.filter(t => t.taskClass === 'work' && !isMissionAuditTask(t));
   const ledger = await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
   const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
