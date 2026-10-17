@@ -69,6 +69,10 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // Load escalation gate verdicts for missions: server-side core logic that
   // matches the mission module naming pattern but is core coordination.
   'packages/core/mission-verdicts.ts',
+  // Projection of why a mission has not started (Not started vs Paused), read by
+  // the delivery projection and home cards; shared start-gate vocabulary, not a
+  // missions-module internal.
+  'apps/web/src/lib/mission-start-state.ts',
   // Model-credential storage and resolution for every surface (provider
   // registry, packages/core/providers): the chat-key resolver, and the LiteLLM
   // gateway credential and its settings. `inference-(…key…)` and `litellm`

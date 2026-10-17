@@ -4,6 +4,7 @@
  * releases. `missionPlanInputs` is the pure half (rows in, planner input out)
  * so the mapping is tested without a database; the planner is lib/mission-plan.ts.
  */
+import { missionStartState } from './mission-start-state';
 import { db } from '@buildd/core/db';
 import { releases, taskEstimates } from '@buildd/core/db/schema';
 import { and, desc, gte, inArray, type SQL } from 'drizzle-orm';
@@ -23,6 +24,7 @@ export interface PlanMissionRow {
   workspaceId: string | null;
   dependsOnMissionId: string | null;
   isHeld: boolean;
+  armedAt?: Date | string | null;
   tasks: Array<{
     id: string; status: string; dependsOn: string[] | null; updatedAt: Date | string | null;
     workers?: Array<{ startedAt: Date | string | null; completedAt: Date | string | null }>;
@@ -48,6 +50,7 @@ export function missionPlanInputs(
     href: `/app/missions/${m.id}`,
     workspaceId: m.workspaceId,
     blocked: planBlock(kinds.get(m.id) ?? 'planning', m.isHeld),
+    startState: missionStartState({ isHeld: m.isHeld, armedAt: m.armedAt ?? null }),
     dependsOnMissionId: m.dependsOnMissionId,
     tasks: m.tasks.map(t => {
       const started = (t.workers ?? []).map(w => time(w.startedAt)).filter((v): v is number => v != null);
@@ -98,7 +101,7 @@ export async function loadMissionPlan(missionsWhere: SQL | undefined, now: numbe
   for (const m of found) {
     kinds.set(m.id, projectMissionDelivery({
       id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
-      isHeld: m.isHeld ?? false, integrationBranch: m.integrationBranchEnabled === true,
+      isHeld: m.isHeld ?? false, armedAt: m.armedAt ?? null, integrationBranch: m.integrationBranchEnabled === true,
       tasks: m.tasks ?? [],
     }, missionHelpers).kind);
   }

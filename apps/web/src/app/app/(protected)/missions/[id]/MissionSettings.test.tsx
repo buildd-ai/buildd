@@ -80,11 +80,18 @@ describe('the header owns the primary action', () => {
     expect(html).not.toContain(PRIMARY);
   });
 
-  it('still shows Arm mission as primary for a held mission, since no header affordance exists for it', () => {
+  it('still shows Start mission as primary for a mission that has not started, since no header affordance exists for it', () => {
     const html = render({ isHeld: true, displayState: 'active', hasPrimaryAction: false });
 
-    expect(html).toContain('Arm mission');
+    expect(html).toContain('Start mission');
+    expect(html).not.toContain('Arm mission');
     expect(html).toContain(PRIMARY);
+  });
+
+  it('a paused mission offers Resume mission', () => {
+    const html = render({ isHeld: true, startState: 'paused', displayState: 'active', hasPrimaryAction: false });
+
+    expect(html).toContain('Resume mission');
   });
 });
 

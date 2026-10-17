@@ -50,6 +50,7 @@ import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } fro
 import type { SpecCaller } from '@/lib/specs/store';
 import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
+import { armedAtForStartGate } from '@/lib/mission-start-state';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -672,6 +673,11 @@ export async function PATCH(
       updateData.isHeld = false;
     } else if (startMode !== undefined) {
       updateData.isHeld = startMode === 'held';
+    }
+    // Record the first release, so a held mission reads Not started or Paused.
+    if (updateData.isHeld !== undefined) {
+      const armedAt = armedAtForStartGate(existing, updateData.isHeld, new Date());
+      if (armedAt) updateData.armedAt = armedAt;
     }
     // executor: who claims the tasks — runners, or a person's local session.
     // Independent of isHeld: arming does not change it, and held still pauses.

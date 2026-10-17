@@ -28,7 +28,7 @@ export function missionTone(stateLabel: string, status: string): Tone {
   if (/need|question|decision|awaiting verification|stalled/.test(s)) return 'attention';
   if (/fail|error|blocked|stalled|budget/.test(s)) return 'bad';
   if (/complete|done|shipped|verified/.test(s)) return 'ok';
-  if (/held|paused|queued|archived|draft/.test(s)) return 'idle';
+  if (/held|paused|not started|queued|archived|draft/.test(s)) return 'idle';
   return 'neutral';
 }
 

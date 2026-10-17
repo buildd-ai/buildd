@@ -535,7 +535,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'))),
             orderBy: sqlOrderBy([desc(missionsTable.priority), desc(missionsTable.createdAt)]),
-            columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
+            columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
@@ -606,7 +606,7 @@ export default async function HomePage({
           missionDeliveries = lifecycleMissions.map(m => ({
             delivery: projectMissionDelivery({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
-              isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
+              isHeld: m.isHeld, armedAt: m.armedAt, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
               // The same facts the missions list reads, so both cards agree.
               ...missionDeliveryFacts(m as Parameters<typeof missionDeliveryFacts>[0], visualReviews.get(m.id), factsNow),
@@ -678,6 +678,7 @@ export default async function HomePage({
             ready: model.held?.ready ?? 0, roles: model.held?.roles ?? [],
             done: model.counts.done, total: model.counts.total,
             heldFor: model.held?.since ? shortAgo(model.held.since, nowMs) : null,
+            startState: model.held?.startState ?? 'not_started',
           }));
           const done = listed.filter(r => r.model.kind === 'done');
           shippedToday = done.length;

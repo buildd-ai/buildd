@@ -10,7 +10,12 @@
  * missions.conversation_id) is the docked one.
  */
 
+import { missionStartCopy } from '@/lib/mission-start-state';
 import type { ApiFn } from '@buildd/core/mcp-tools';
+
+/** A held mission's status word: "not started" or "paused". */
+const missionStartWord = (m: { isHeld?: unknown; armedAt?: unknown }) =>
+  (missionStartCopy({ isHeld: true, armedAt: typeof m.armedAt === 'string' ? m.armedAt : null })?.label ?? 'Not started').toLowerCase();
 
 export interface DockedTask { id: string; title: string; status: string | null; held: boolean }
 
@@ -59,7 +64,7 @@ export async function loadDocked(
     if (!missionId) return null;
     const m = await read(`/api/missions/${missionId}`);
     return {
-      kind: 'mission', id: String(m.id), title: String(m.title ?? 'mission'), status: m.isHeld ? 'held' : m.executor === 'local' ? 'local' : (m.status ?? null),
+      kind: 'mission', id: String(m.id), title: String(m.title ?? 'mission'), status: m.isHeld ? missionStartWord(m) : m.executor === 'local' ? 'local' : (m.status ?? null),
       workspaceId: m.workspaceId ?? null, missionId: String(m.id), missionTitle: String(m.title ?? 'mission'),
       tasks: tasksOf(m),
     };

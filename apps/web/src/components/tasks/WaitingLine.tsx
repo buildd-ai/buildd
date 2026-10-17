@@ -17,7 +17,8 @@ import Disclosure from '@/components/ui/Disclosure';
 import { gateName, orderWaitingReasons, waitingChip, waitingSummary, type WaitingChip, type WaitingReason } from '@buildd/core/waiting-reason';
 
 const CHIP_LABEL: Record<WaitingChip, string> = {
-  ready: 'Ready', held: 'Held', blocked: 'Blocked', cant_run: "Can't run", scheduled: 'Scheduled', unknown: 'Unknown',
+  // `held` is a coordination wait on other work; a task a person paused says Paused.
+  ready: 'Ready', held: 'Waiting', blocked: 'Blocked', cant_run: "Can't run", scheduled: 'Scheduled', unknown: 'Unknown',
 };
 const CHIP_TONE: Record<WaitingChip, string> = {
   ready: 'border-border-default text-text-secondary',
@@ -53,7 +54,7 @@ export default function WaitingLine({ reasons, children }: { reasons: WaitingRea
   return (
     <div data-testid="task-waiting-line" data-kind={head.kind} data-chip={chip} className="space-y-2 border border-border-default p-3">
       <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-meta">
-        <span className={`border px-1.5 py-0.5 text-chip font-semibold ${CHIP_TONE[chip]}`}>{CHIP_LABEL[chip]}</span>
+        <span className={`border px-1.5 py-0.5 text-chip font-semibold ${CHIP_TONE[chip]}`}>{chip === 'held' && head.kind === 'task_held' ? 'Paused' : CHIP_LABEL[chip]}</span>
         <span data-testid="task-waiting-headline" className="font-medium text-text-primary [overflow-wrap:anywhere]">
           {summarised ? summary.headline : <>Waiting on <BlockerLink r={head} /></>}
         </span>

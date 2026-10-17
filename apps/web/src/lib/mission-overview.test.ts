@@ -162,7 +162,7 @@ describe('overviewWaitCause', () => {
 describe('overviewLegend', () => {
   it('says each group in words, waiting split by cause', () => {
     const ten = overviewWavesBoard(20);
-    expect(overviewLegend(ten, overviewLayout(ten)).map(e => e.text)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 held', '1 not started', '1 check']);
+    expect(overviewLegend(ten, overviewLayout(ten)).map(e => e.text)).toEqual(['10 done', '2 in progress', '4 waiting on tasks', '2 next in line', '1 blocked', '1 not started', '1 check']);
   });
 
   it('drops a cause nothing has', () => {
