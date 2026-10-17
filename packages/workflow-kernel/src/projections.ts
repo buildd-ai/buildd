@@ -21,7 +21,7 @@
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
 import { openRequiredFindings } from './findings';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
-import { attemptView } from './reducer';
+import { attemptOrdinal, attemptView } from './reducer';
 import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 export type { DeliverySnapshot } from './types';
@@ -502,4 +502,17 @@ export function roundTriggerSentence(r: RoundSnapshot): string | null {
   else if (el && el.eligible !== true && typeof el.reason === 'string') parts.push(`A full review, because ${el.reason}`);
   if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'Ended: replaced by a newer push' : 'Ended: superseded');
   return `Review round ${r.round} at ${r.headSha.slice(0, 7)}: ${parts.join('. ')}.`;
+}
+
+const REPAIR_FAMILY_LABEL: Record<AttemptFamily, string> = { review_fix: 'Review fix', ci: 'CI fix', conflict: 'Conflict fix', migration: 'Migration fix', trunk: 'Base fix' };
+
+/**
+ * One repair's label, "CI fix 2 of 3" (§5.7 rule 4, 295486ba): N is its place among the
+ * attempts that were dispatched (`attemptOrdinal`), never the raw `attempt_no`, which a skipped
+ * row also takes, so the label can't run past the budget ("4 of 3"). A skipped row spent nothing
+ * and has no number.
+ */
+export function repairLabelOf(a: AttemptSnapshot, ledger: AttemptSnapshot[]): string {
+  const n = attemptOrdinal(ledger, a);
+  return n == null ? `${REPAIR_FAMILY_LABEL[a.family]}, not started` : `${REPAIR_FAMILY_LABEL[a.family]} ${n} of ${a.maxAttempts}`;
 }

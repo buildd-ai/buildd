@@ -22,8 +22,9 @@ import {
   RecordingRails, RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
-import { deliveryPrState, deriveDeliveryView } from '../projections';
+import { deliveryPrState, deriveDeliveryView, repairLabelOf } from '../projections';
 import { landingStatusOf, reviewGate } from '../landing-gate';
+import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
@@ -2428,6 +2429,61 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await m.merged('H1'), 'MERGED', 'merged');
       await drainKernel(host, m, g.ports);
       eq(g.work.cancelled.map((x) => x.taskId), [ciTask], 'the merge cancels the CI fix nobody started');
+    },
+  },
+  {
+    // Task 295486ba (seen on a PR whose own builder fixed CI): CI-fix tasks a person cancelled before
+    // anyone claimed them each spent the budget, the next was filed as "4 of 3", and the delivery
+    // stayed ESCALATED(ci_exhausted) after CI went green on its head.
+    name: '295486ba: a CI fix cancelled before it started spends nothing and files no next one; "N of M" never runs past the budget; a green head clears ci_exhausted',
+    async run(host) {
+      const s = await new Delivery(host, 121).open();
+      await s.approvedAt('H1');
+      const ci = async () => (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => a.attemptNo - b.attemptNo);
+      const queued = async () => (await ci()).find((a) => a.status === 'queued')!;
+      const claim = async () => {
+        const a = await queued();
+        applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a.id, revalidation: { live: s.live('H1'), approved: true, ciGreen: false } }), 'REPAIRING', `CI fix ${a.attemptNo} claimed`);
+        return a;
+      };
+      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined });
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
+      applied(await fails(await claim()), 'REPAIRING', 'fix 1 failed: fix 2 is filed');
+      const second = await queued();
+      // A person cancels fix 2 before anyone picked it up.
+      applied(await s.fixEnded(second.id, { outcome: 'lost', cancelled: true, taskId: undefined, workerId: `cancel:${second.id}` }), 'APPROVED', 'the cancel ends the repair: back to the approval');
+      eq(pick((await ci()).find((a) => a.id === second.id), ['status', 'outcome']), { status: 'skipped', outcome: 'noop' }, 'fix 2 spent nothing');
+      eq((await ci()).filter((a) => a.status === 'queued').length, 0, 'and no fix 3 was filed behind the cancel');
+      eq(pick(await s.d(), ['ci', 'ciHeadSha', 'boundAttemptId']), { ci: 'red', ciHeadSha: 'H1', boundAttemptId: null }, 'H1 still reads red');
+      // CI is still red, so the platform files again: the budget has two of three left.
+      applied(await s.ciRed('H1', { trigger: 'human', actor: 'human:u' }), 'REPAIRING', 'Fix CI files the next fix');
+      applied(await fails(await claim()), 'REPAIRING', 'it fails: one more');
+      const last = await queued();
+      const rows = await ci();
+      eq({ no: last.attemptNo, of: attemptOrdinal(rows, last), max: last.maxAttempts }, { no: 4, of: 3, max: 3 }, 'row 4 is "CI fix 3 of 3", never "4 of 3"');
+      eq(rows.map((a) => repairLabelOf(a, rows)), ['CI fix 1 of 3', 'CI fix, not started', 'CI fix 2 of 3', 'CI fix 3 of 3'], 'every label counts only the fixes that ran');
+      applied(await fails(await claim()), 'ESCALATED', 'the third fix that ran fails: the budget is spent');
+      eq((await s.d()).stateReason, 'ci_exhausted', 'a person\'s');
+      // The PR's own builder fixed CI from elsewhere and the head re-ran green.
+      const green = { type: 'CiObserved' as const, actor: 'webhook:ci_reading', headSha: 'H1', verdict: 'green' as const, liveChecks: { complete: true, failing: [] }, allPassing: true };
+      notApplied(await s.submit({ ...green, headSha: 'H0' }), 'stale', 'head_not_current', 'green on another head says nothing');
+      applied(await s.submit(green), 'APPROVED', 'green on the head clears ci_exhausted');
+      eq(pick(await s.d(), ['stateReason', 'ci']), { stateReason: null, ci: 'green' }, 'no escalation left, CI green');
+      applied(await s.land('H1'), 'LANDING', 'and it lands');
+
+      // A spent review budget under the CI escalation stays with the person (2ded4e88).
+      const t = await new Delivery(host, 122).open({ maxRounds: 1 });
+      applied(await t.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await t.verdict('request_changes'), 'ESCALATED', 'one round, changes requested: the review budget is spent');
+      eq((await t.d()).stateReason, 'review_exhausted', 'review budget spent');
+      applied(await t.ciRed('H1', { maxAttempts: 1 }), 'REPAIRING', 'CI is red: the fix runs first, carrying the review hold');
+      const only = (await t.view()).attempts.find((a) => a.family === 'ci')!;
+      applied(await t.submit({ type: 'FixClaimed', actor: 'runner', attemptId: only.id, revalidation: { live: t.live('H1'), approved: false, ciGreen: false } }), 'REPAIRING', 'claimed');
+      applied(await t.fixEnded(only.id, { outcome: 'failed', taskId: undefined }), 'ESCALATED', 'it fails: the CI budget of one is spent');
+      eq(pick(await t.d(), ['stateReason', 'resumeState']), { stateReason: 'ci_exhausted', resumeState: 'ESCALATED' }, 'ci_exhausted over the spent review budget');
+      applied(await t.submit(green), 'ESCALATED', 'green does not reopen a spent review budget');
+      eq(pick(await t.d(), ['stateReason', 'resumeState', 'ci']), { stateReason: 'review_exhausted', resumeState: null, ci: 'green' }, 'the person still owes the review decision, and is told so');
+      eq((await t.view()).rounds.length, 1, 'no new round');
     },
   },
   {

@@ -1071,7 +1071,12 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   and the landing door (`latestRunPerName`) already read it. The reading is
   recorded whether or not anything acts on it (`CiObserved`, no state change):
   T10 deferring to an open CI fix, a state CI does not move, or a green with no
-  repair to end still leaves the head red, running or green.
+  repair to end still leaves the head red, running or green. A green reading on
+  the current head of a delivery held `ESCALATED(ci_exhausted)` ends that hold
+  (295486ba): a spent CI budget is a person's only while CI is red, so it goes
+  back to review or landing the way a CI repair that ends green does. A spent
+  review budget under it stays the person's and the escalation names it
+  (`review_exhausted`).
 
 **Acceptance criteria**:
 - AC-24: GIVEN a delivery with two review rounds WHEN `get_pr`, the task page
