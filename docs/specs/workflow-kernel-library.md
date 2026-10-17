@@ -353,7 +353,10 @@ the control plane, authenticated as the caller).
     control plane that predates the op refuses it as an unknown op and
     applies nothing, and only then the web host applies the end itself and
     logs it loudly, so a repair's or review's end is never lost; any other
-    refusal stays a refusal). The same
+    refusal stays a refusal), and `observe_ci_failure` (T10 from buildd's
+    own CI doors: the red-PR sweep `cron:ci-red`, the landing path and the
+    `check_suite` subscriber, each as a `system` principal; the same skew
+    rule applies, so a red PR is never left without its repair). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
