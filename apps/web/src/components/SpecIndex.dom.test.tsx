@@ -345,3 +345,38 @@ describe('titleLines', () => {
     expect(titleLines('Supercalifragilisticexpialidocious')).toEqual(['Supercalifragilistice…']);
   });
 });
+
+describe('SpecIndex cluster map (R-37)', () => {
+  const specs = [area('a', 'Alpha'), area('b', 'Beta'), ...many('a', 3), draft('b-0', 'b'), spec('loose-1'), spec('loose-2')];
+
+  it('shows a block per area, sized by count, with dots for unfiled specs', () => {
+    render(specs);
+    const blocks = qa('[data-testid="spec-cluster-block"]');
+    expect(blocks.map((b) => b.getAttribute('data-count'))).toEqual(['3', '1']);
+    expect(qa('[data-testid="spec-cluster-dot"]').length).toBe(2);
+  });
+
+  it('tapping a block filters the outline to that area; tapping again clears it', () => {
+    render(specs);
+    const block = () => q('[data-testid="spec-cluster-block"][data-area-id="b"]') as HTMLElement;
+    act(() => block().click());
+    expect(qa('[data-testid="spec-index-area"]').map((a) => a.getAttribute('data-area-id'))).toEqual(['b']);
+    expect(q('[data-testid="spec-index-unfiled"]')).toBeNull();
+    act(() => block().click());
+    expect(qa('[data-testid="spec-index-area"]').length).toBe(2);
+    expect(q('[data-testid="spec-index-unfiled"]')).not.toBeNull();
+  });
+
+  it('tapping Unfiled shows only the unfiled card', () => {
+    render(specs);
+    act(() => (q('[data-testid="spec-cluster-unfiled"]') as HTMLElement).click());
+    expect(qa('[data-testid="spec-index-area"]').length).toBe(0);
+    expect(q('[data-testid="spec-index-unfiled"]')).not.toBeNull();
+  });
+
+  it('with one area there is no map, only the line', () => {
+    render([area('a', 'Alpha'), ...many('a', 2)]);
+    expect(q('[data-testid="spec-cluster-map"]')).toBeNull();
+    expect(q('[data-testid="spec-index-line"]')).not.toBeNull();
+  });
+});
