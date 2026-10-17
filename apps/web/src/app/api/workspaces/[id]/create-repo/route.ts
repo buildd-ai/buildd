@@ -91,6 +91,7 @@ export async function POST(
       if (org) {
         const onAccount = await db.query.githubInstallations.findMany({
           where: sqlWhere(sql`lower(${githubInstallations.accountLogin}) = ${String(org).toLowerCase()}`),
+          limit: 10,
         });
         for (const candidate of onAccount) {
           if (!candidate.suspendedAt && await installationBelongsToTeam(candidate.installationId, workspace.teamId)) {
