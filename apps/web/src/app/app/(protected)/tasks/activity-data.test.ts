@@ -20,7 +20,7 @@ function chain(joined = false): any {
 }
 mock.module('@buildd/core/db', () => ({ db: { select: () => chain() } }));
 
-const { liveRootIdsOf, loadLiveRootIds, ACTIVITY_LIVE_ROOT_LIMIT } = await import('./activity-data');
+const { liveRootIdsOf, loadLiveRootIds, overlayActivityRows, ACTIVITY_LIVE_ROOT_LIMIT } = await import('./activity-data');
 
 describe('liveRootIdsOf', () => {
   it('maps a live attempt to its root and dedupes, open roots first', () => {
@@ -61,6 +61,20 @@ describe('the loader reads live work in scope', () => {
     expect(page).toContain('loadLiveRootIds(wsIds)');
     expect(page).toMatch(/inArray\(tasks\.workspaceId, wsIds\), inArray\(tasks\.id, missingLiveIds\)/);
     expect(page).toContain('const allTasks = [...new Map([...rootTasks, ...childTasks]');
+  });
+
+  it('AC-26: a merged worker row reads as not merged while its delivery is in review', () => {
+    const merged = { prNumber: 7, prUrl: 'https://github.com/acme/app/pull/7', mergedAt: new Date('2026-10-01'), prLifecycleStatus: 'merged' };
+    const view = { ownerTaskId: 't1', repoFullName: 'acme/app', prNumber: 7, state: 'AWAITING_REVIEW', prState: 'ci_passed', mergedAt: null, headline: 'Review queued' } as any;
+    const out = overlayActivityRows({
+      workersByTask: new Map([['t1', [{ ...merged }]], ['legacy', [{ ...merged, prNumber: 9 }]]]),
+      missions: [{ id: 'm1', tasks: [{ id: 't1', workers: [{ ...merged }] }] }],
+      views: new Map([['t1', view]]),
+    });
+    expect(out.workersByTask.get('t1')![0]).toMatchObject({ mergedAt: null, prLifecycleStatus: 'ci_green' });
+    expect((out.missions[0]!.tasks![0] as any).workers[0]).toMatchObject({ mergedAt: null, prLifecycleStatus: 'ci_green' });
+    // No delivery: the worker row stands.
+    expect(out.workersByTask.get('legacy')![0]).toMatchObject({ prLifecycleStatus: 'merged' });
   });
 
   it('attempts are read newest first, so a cap never drops the live one', () => {
