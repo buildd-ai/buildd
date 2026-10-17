@@ -155,6 +155,11 @@ export function targetLocalUiUrlOf(metadata: Record<string, unknown> | null | un
   return typeof metadata?.targetLocalUiUrl === 'string' ? metadata.targetLocalUiUrl : null;
 }
 
+/** Whether a person aimed the targeted wake (only then does a held runner run it). */
+export function byPersonOf(metadata: Record<string, unknown> | null | undefined): boolean {
+  return metadata?.byPerson === true && !!targetLocalUiUrlOf(metadata);
+}
+
 /**
  * Whether the workspace webhook takes this wake: the pure policy
  * (`webhookWants`) first, then the held gate — a query, asked only once the
@@ -180,9 +185,14 @@ const runnerPayload = (ctx: DispatchContext) => ({
  * Send the runner wake: targeted to one local runner, or the broadcast every
  * Pusher-connected runner hears. The one sender of TASK_ASSIGNED (invariant
  * 6), whether the in-app chain or the Dispatch relay callback asked for it.
+ * `byPerson` is sent explicitly: a runner never infers a person from the target.
  */
-export async function sendRunnerWake(ctx: DispatchContext, targetLocalUiUrl: string | null): Promise<'sent' | 'unconfigured' | 'failed'> {
-  return triggerEventChecked(channels.workspace(ctx.task.workspaceId), events.TASK_ASSIGNED, { task: runnerPayload(ctx), targetLocalUiUrl });
+export async function sendRunnerWake(ctx: DispatchContext, targetLocalUiUrl: string | null, byPerson = false): Promise<'sent' | 'unconfigured' | 'failed'> {
+  return triggerEventChecked(channels.workspace(ctx.task.workspaceId), events.TASK_ASSIGNED, {
+    task: runnerPayload(ctx),
+    targetLocalUiUrl,
+    byPerson: !!targetLocalUiUrl && byPerson,
+  });
 }
 
 // ── Runner adapters ────────────────────────────────────────────────────────
@@ -206,7 +216,7 @@ export const targetedLocalRunner: DispatchAdapter = {
   async offer(ctx) {
     const targetLocalUiUrl = targetLocalUiUrlOf(ctx.metadata);
     if (!targetLocalUiUrl) return DECLINED;
-    const sent = await sendRunnerWake(ctx, targetLocalUiUrl);
+    const sent = await sendRunnerWake(ctx, targetLocalUiUrl, byPersonOf(ctx.metadata));
     if (sent === 'failed') throw new Error('pusher targeted assignment failed');
     return { kind: 'delivered', via: sent === 'sent' ? 'pusher:targeted' : 'pusher:unconfigured' };
   },
