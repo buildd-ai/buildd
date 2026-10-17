@@ -77,3 +77,35 @@ it('keeps human and Jev ledger actors separate within the same policy fingerprin
  expect(stats.decisions.byGroup).toHaveLength(2);
  expect(stats.decisions.byGroup.map(g => g.actor).sort()).toEqual(['human_force', 'jev_start']);
 });
+
+it('reports the share of overlap STARTs whose PR later hit a merge conflict, by area class and gate', async () => {
+ reads = 0;
+ const at = new Date('2026-10-01T10:00:00Z');
+ const loaded: string[] = [];
+ const loadSoftStarts = async ({ workspaceId }: { workspaceId: string }) => {
+  loaded.push(workspaceId);
+  return {
+   starts: [{ id: 'e1', taskId: 'bad', workspaceId, holderTaskId: 'h', decidedBy: 'rule' as const, riskTier: null, startedAt: at, gate: 'open_pr_overlap', areaClass: 'other' as const }],
+   outcome: {
+    tasks: [{ id: 'bad', workspaceId, status: 'completed' }], labels: [], gateEvents: [],
+    prs: [{ taskId: 'bad', workspaceId, prNumber: 2, headSha: null, baseRef: null, mergedAt: new Date(at.getTime() + 3_600_000), lifecycle: 'merged' }],
+    conflictTasks: [{ id: 'c', workspaceId, prNumber: 2, headSha: null, createdAt: new Date(at.getTime() + 60_000) }],
+   } as any,
+   probes: [],
+  };
+ };
+ const stats = await fetchOrchestrationDecisionStats({ workspaceIds: ['ws'], window: '7d' }, { loadSoftStarts });
+ expect(stats.overlapStartsError).toBeUndefined();
+ expect(loaded).toEqual(['ws']);
+ expect(stats.overlapStarts?.total).toMatchObject({ starts: 1, observed: 1, conflicted: 1, conflictShare: 1 });
+ expect(stats.overlapStarts?.cells.find(c => c.gate === 'open_pr_overlap')).toMatchObject({ areaClass: 'other', conflictShare: 1 });
+
+ reads = 0;
+ const scoped = await fetchOrchestrationDecisionStats({ workspaceIds: ['ws'], missionId: 'm', window: '7d' }, { loadSoftStarts });
+ expect(scoped.overlapStarts).toBeUndefined();
+
+ reads = 0;
+ const failed = await fetchOrchestrationDecisionStats({ workspaceIds: ['ws'], window: '7d' }, { loadSoftStarts: async () => { throw new Error('down'); } });
+ expect(failed.overlapStarts).toBeUndefined();
+ expect(failed.overlapStartsError).toBe('down');
+});

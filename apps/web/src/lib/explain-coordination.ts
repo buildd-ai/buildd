@@ -13,6 +13,11 @@
  *    HOLD/START (verdict from the newest `soft_overlap` gate row);
  *  - `path_lease` / `open_pr`: the newest `path_overlap` deferral's holder.
  *
+ * A task that started past an overlap (the claim's `soft_overlap_start`
+ * rows: soft overlap, open PR or live lease on mergeable files) is not held:
+ * `overlapStartLink` says it "starts alongside #n (same files, merges at the
+ * end)", naming the PR, else the holder task.
+ *
  * Pure: explain.ts loads the holders and the gate rows.
  */
 import { isTerminalTaskStatus } from '@buildd/shared';
@@ -186,4 +191,63 @@ export function coordinationLink(
       ? 'tasks.pathDeclaration.softOverlaps + gate_events'
       : 'gate_events.detail';
   return { claim: `Waiting on ${EDGE_WORDS[h.edge]} ${who}${on}${why}.${more}`, derivedFrom, refs };
+}
+
+/** The words explain and top's Queue both use for a START past an overlap. */
+export function startsAlongsideWords(who: string): string {
+  return `starts alongside ${who} (same files, merges at the end)`;
+}
+
+export interface OverlapStart {
+  gate: string;
+  holderTaskId: string | null;
+  prNumber: number | null;
+  paths: string[];
+}
+
+/**
+ * The overlaps the task's newest claim started past: every `soft_overlap_start`
+ * row of that claim (one per holder, same `startedAt`). Rows newest first.
+ */
+export function latestOverlapStarts(gateDetails: ReadonlyArray<{ reason: string; detail: unknown }>): OverlapStart[] {
+  const rows = gateDetails.filter(g => g.reason === 'soft_overlap_start' && g.detail && typeof g.detail === 'object');
+  if (rows.length === 0) return [];
+  const startedAt = (d: unknown) => (d as Record<string, unknown>).startedAt ?? null;
+  const first = startedAt(rows[0].detail);
+  return rows
+    .filter((g, i) => i === 0 || (first !== null && startedAt(g.detail) === first))
+    .map(g => {
+      const d = g.detail as Record<string, unknown>;
+      const own = coordinationGateDetail(d);
+      return {
+        gate: typeof d.gate === 'string' ? d.gate : 'soft_overlap',
+        holderTaskId: own?.holderTaskId ?? null,
+        prNumber: own?.prNumber ?? null,
+        paths: own?.paths ?? [],
+      };
+    });
+}
+
+/** Who a START ran alongside, in words: the PR as `#n`, else the holder task. */
+export function overlapStartWho(s: OverlapStart): string {
+  if (s.prNumber) return `#${s.prNumber}`;
+  return s.holderTaskId ? `task ${s.holderTaskId.slice(0, 8)}` : 'other work on its files';
+}
+
+/** One causal link for a task that started past an overlap; null when it did not. */
+export function overlapStartLink(
+  starts: OverlapStart[],
+  subject: { taskId?: string | null; workspaceId?: string | null },
+): Omit<CausalLink, 'order'> | null {
+  const s = starts[0];
+  if (!s) return null;
+  const on = s.paths.length > 0 ? ` Shared: ${s.paths.slice(0, 5).join(', ')}.` : '';
+  const more = starts.length > 1 ? ` It also overlaps ${starts.slice(1).map(overlapStartWho).join(', ')}.` : '';
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(s.prNumber ? { prNumber: s.prNumber } : {}),
+    ...(s.paths.length > 0 ? { paths: s.paths.slice(0, 10) } : {}),
+  };
+  return { claim: `It ${startsAlongsideWords(overlapStartWho(s))}.${on}${more}`, derivedFrom: 'gate_events.detail', refs };
 }
