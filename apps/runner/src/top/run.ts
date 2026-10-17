@@ -30,6 +30,11 @@ export const TASK_REFRESH_MS = 60_000;
 export const MISSION_REFRESH_MS = 60_000;
 /** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
 export const QUEUE_REFRESH_MS = 60_000;
+/**
+ * With no key pressed for this long, the timers stop fetching (the pushed
+ * stream and the once-a-second redraw carry on). The next key refetches.
+ */
+export const IDLE_PAUSE_MS = 5 * 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
 /** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
@@ -128,6 +133,16 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const scheduleDraw = () => { if (!renderTimer) renderTimer = setTimeout(draw, 16); };
   const dispatch = (event: TopEvent) => { state = reduce(state, event); scheduleDraw(); };
 
+  // ── idle pause ──────────────────────────────────────────────────────────
+  let lastInputAt = Date.now();
+  const idle = () => Date.now() - lastInputAt > IDLE_PAUSE_MS;
+  /** A key ends an idle pause (or a switch of view) with one catch-up read of what is on screen. */
+  const noteInput = () => {
+    const wasIdle = idle();
+    lastInputAt = Date.now();
+    if (wasIdle) queueMicrotask(() => catchUp());
+  };
+
   // ── data ────────────────────────────────────────────────────────────────
   let queueTimer: ReturnType<typeof setTimeout> | null = null;
   const refreshTasks = async () => {
@@ -180,6 +195,11 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         void refreshQueue();
       }
     }, QUEUE_DEBOUNCE_MS);
+  };
+
+  const catchUp = () => {
+    if (state.view === 'queue') void refreshQueue();
+    else { void refreshTasks(); void refreshMissions(); }
   };
 
   const loadSnapshot = async () => {
@@ -321,11 +341,14 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const decoder = createKeyDecoder();
   let escTimer: ReturnType<typeof setTimeout> | null = null;
   const applyKeys = (keys: Key[]) => {
+    if (keys.length) noteInput();
+    const viewBefore = state.view;
     for (const key of keys) {
       const r = handleKey(state, key, Date.now());
       state = r.state;
       for (const e of r.effects) void runEffect(e);
     }
+    if (state.view !== viewBefore) catchUp();
     scheduleDraw();
   };
   const onData = (d: Buffer | string) => {
@@ -393,10 +416,12 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   if (typedEarly) onData(typedEarly);
   scheduleDraw();
   // Elapsed times move without any event; redraw (no fetch) once a second.
+  // Fetch timers run only for the view that shows their data, and not while
+  // nobody has touched the keyboard for IDLE_PAUSE_MS.
   timers.push(setInterval(scheduleDraw, 1_000));
-  timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
-  timers.push(setInterval(() => void refreshMissions(true), MISSION_REFRESH_MS));
-  timers.push(setInterval(() => { if (state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
+  timers.push(setInterval(() => { if (!idle() && state.view === 'missions') void refreshTasks(); }, TASK_REFRESH_MS));
+  timers.push(setInterval(() => { if (!idle() && state.view === 'missions') void refreshMissions(true); }, MISSION_REFRESH_MS));
+  timers.push(setInterval(() => { if (!idle() && state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
   return done;

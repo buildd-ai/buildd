@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { serveRunnerSocket, type RunnerSocketServer } from '../../src/runner-socket';
 import { OSC11_QUERY, createPalette, stripAnsi } from '../../src/terminal-palette';
-import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, LEAVE_SCREEN, runTop, type TopTerminal } from '../../src/top/run';
+import { IDLE_PAUSE_MS, EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, LEAVE_SCREEN, runTop, type TopTerminal } from '../../src/top/run';
 import { TASKS, WORKERS } from './top-fixture';
 
 let dir: string;
@@ -290,6 +290,61 @@ describe('runTop', () => {
       clock.mockReturnValue(now + 119_800);
       intervals[2].callback();
       await until(() => missionFetches === 3);
+    } finally {
+      clock?.mockRestore();
+      timer.mockRestore();
+      t.type('q');
+      await done;
+    }
+  });
+
+  test('timers stop fetching after IDLE_PAUSE_MS without a key, and the next key reads once', async () => {
+    serveFakeRunner();
+    const intervals: Array<{ callback: () => void; ms: number }> = [];
+    const realInterval = globalThis.setInterval;
+    const timer = spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, ms: number) => {
+      intervals.push({ callback, ms });
+      return realInterval(() => {}, 1_000_000);
+    }) as typeof setInterval);
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false });
+    let clock: ReturnType<typeof spyOn> | undefined;
+    try {
+      await until(() => intervals.length === 4 && missionFetches === 1);
+      const now = Date.now();
+      clock = spyOn(Date, 'now').mockReturnValue(now + IDLE_PAUSE_MS + 1_000);
+      intervals[2].callback();
+      await Bun.sleep(100);
+      expect(missionFetches).toBe(1);
+      t.type('j');
+      await until(() => missionFetches === 2);
+    } finally {
+      clock?.mockRestore();
+      timer.mockRestore();
+      t.type('q');
+      await done;
+    }
+  });
+
+  test('the missions timer does not fetch while the Queue view is open', async () => {
+    serveFakeRunner();
+    const intervals: Array<{ callback: () => void; ms: number }> = [];
+    const realInterval = globalThis.setInterval;
+    const timer = spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, ms: number) => {
+      intervals.push({ callback, ms });
+      return realInterval(() => {}, 1_000_000);
+    }) as typeof setInterval);
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false });
+    let clock: ReturnType<typeof spyOn> | undefined;
+    try {
+      await until(() => intervals.length === 4 && missionFetches === 1);
+      t.type('\t');
+      await Bun.sleep(100);
+      clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+      intervals[2].callback();
+      await Bun.sleep(100);
+      expect(missionFetches).toBe(1);
     } finally {
       clock?.mockRestore();
       timer.mockRestore();
