@@ -1,4 +1,6 @@
 import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
+import { latestRunPerName } from '@/lib/auto-merge-bound';
+import { listAllCheckRuns } from '@/lib/ci-verdict';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 // GitHub App configuration
@@ -368,6 +370,7 @@ export function isOwnPrReviewRefusal(message: string): boolean {
 }
 
 export interface CheckSuiteSummary {
+  id?: number;
   status: string;
   conclusion: string | null;
   app?: { slug?: string } | null;
@@ -397,6 +400,32 @@ export function checkSuitesAllPassed(suites: CheckSuiteSummary[]): boolean {
   );
 }
 
+interface SuiteRun {
+  id?: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  started_at?: string | null;
+  check_suite?: { id?: number } | null;
+}
+
+/**
+ * Drop the suites a re-run replaced. A workflow run twice on one commit leaves the
+ * first run's failed suite beside the run that replaced it; GitHub's merge box reads
+ * the newest run per check name, so a suite all of whose runs a newer same-name run
+ * superseded no longer decides anything. A suite with no runs (a startup failure) or
+ * any current run stays. Without a complete run read nothing is dropped (fails closed).
+ */
+export function dropSupersededSuites<S extends { id?: number }>(suites: S[], runs: SuiteRun[] | null): S[] {
+  if (!runs) return suites;
+  const rows = runs.map((r) => ({ ...r, name: String(r.name ?? 'unnamed'), status: String(r.status ?? ''), conclusion: r.conclusion ?? null, __row: r }));
+  const current = new Set(latestRunPerName(rows).map((r) => r.__row));
+  return suites.filter((s) => {
+    const own = runs.filter((r) => s.id != null && r.check_suite?.id === s.id);
+    return own.length === 0 || own.some((r) => current.has(r));
+  });
+}
+
 // Check if all check suites on a commit have passed
 export async function allCheckSuitesPassed(
   installationId: number,
@@ -404,12 +433,13 @@ export async function allCheckSuitesPassed(
   headSha: string
 ): Promise<boolean> {
   try {
-    const data = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-suites`
-    );
+    const [data, runs] = await Promise.all([
+      githubApi(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`),
+      // The runs only ever drop a superseded suite; an unreadable or partial list drops nothing.
+      listAllCheckRuns<SuiteRun>(githubApi, installationId, repoFullName, headSha).catch(() => null),
+    ]);
 
-    return checkSuitesAllPassed(data.check_suites ?? []);
+    return checkSuitesAllPassed(dropSupersededSuites<CheckSuiteSummary>(data.check_suites ?? [], runs?.complete ? runs.items : null));
   } catch (error) {
     console.warn(`Failed to check suites for ${repoFullName}@${headSha}:`, error);
     return false;

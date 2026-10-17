@@ -66,7 +66,7 @@ describe('PrCard open fix attempt', () => {
     const html = render({ prLifecycleStatus: 'pr_open', openAttempt });
     expect(html).not.toContain('Review &amp; merge');
     expect(html).toContain('View PR');
-    expect(html).toContain('Fix 1 of 3');
+    expect(html).toContain('Fix 1 of up to 3');
     expect(html).toContain('queued');
     expect(html).toContain('[reviewer retry #1] Fix flaky date parsing');
     expect(html).toContain('href="/app/tasks/fix-1"');
@@ -85,13 +85,13 @@ describe('PrCard open fix attempt', () => {
       outcome: outcome([{ add: 10, rem: 1, files: 1 }]),
     });
     expect(html).not.toContain('Review &amp; merge');
-    expect(html).toContain('Fix 1 of 3');
+    expect(html).toContain('Fix 1 of up to 3');
     expect(html).toContain('[reviewer retry #1] Fix flaky date parsing');
   });
 
   it('never shows on a merged PR', () => {
     const html = render({ prLifecycleStatus: 'merged', openAttempt });
-    expect(html).not.toContain('Fix 1 of 3');
+    expect(html).not.toContain('Fix 1 of up to 3');
     expect(html).toContain('View PR');
   });
 });
@@ -298,5 +298,24 @@ describe('merged PR the status row already states', () => {
     const html = render({ prLifecycleStatus: 'merged', hideAction: true, outcome: merged(false) });
     expect(html).toContain('data-testid="pr-outcome-number"');
     expect(html).toContain('Claim → merge');
+  });
+});
+
+describe('PrCard repair links', () => {
+  it('links a parent PR to its repair tasks', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', repairLinks: { fixes: [{ taskId: 'fix-9', title: 'Fix the lint failure' }] } });
+    expect(html).toContain('Repair task: ');
+    expect(html).toContain('href="/app/tasks/fix-9"');
+    expect(html).toContain('Fix the lint failure');
+  });
+
+  it('links a repair back to the task that opened the PR', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', repairLinks: { parent: { taskId: 'parent-1', title: 'Add the thing' } } });
+    expect(html).toContain('Repair of');
+    expect(html).toContain('href="/app/tasks/parent-1"');
+  });
+
+  it('draws nothing without a lineage', () => {
+    expect(render({ prLifecycleStatus: 'pr_open', repairLinks: { fixes: [] } })).not.toContain('pr-repair-links');
   });
 });

@@ -396,7 +396,7 @@ export default async function TaskDetailPage({
     prWorker?.prNumber
       ? db.query.tasks.findMany({
           where: sqlWhere(and(eq(tasks.parentTaskId, id), eq(tasks.ciRetryPrNumber, prWorker.prNumber), isNotNull(tasks.ciRetryHeadSha))),
-          columns: { id: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
+          columns: { id: true, title: true, status: true, createdAt: true, ciRetryHeadSha: true, context: true, result: true },
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
@@ -1867,6 +1867,12 @@ export default async function TaskDetailPage({
             hideAction: !!shippedView,
             statedAbove: prStatedAbove,
             openAttempt,
+            repairLinks: {
+              parent: deliverableLink && subject.kind === 'fix'
+                ? { taskId: deliverableLink.taskId, title: deliverableLink.title ? displayTaskTitle(deliverableLink.title) : null }
+                : null,
+              fixes: ciAttemptTasks.map(t => ({ taskId: t.id, title: t.title ? displayTaskTitle(t.title) : null })),
+            },
             // AC-24: the delivery's rounds, the same line the checks list and get_pr print.
             reviewRounds: checksSection?.checks.review ?? null,
           };

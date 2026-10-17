@@ -117,6 +117,11 @@ export interface PrCardProps {
    */
   openAttempt?: OpenAttemptInfo | null;
   /**
+   * The PR's repair lineage, so a parent and its repair child link both ways:
+   * `parent` is set on a repair's own page, `fixes` on the task that opened the PR.
+   */
+  repairLinks?: RepairLinks | null;
+  /**
    * Task page: the status row already reads "PR #N merged" with its link and
    * the claim-to-merge time. On a merged PR the outcome card then drops its own
    * header line and that figure, and draws no card at all when nothing else
@@ -145,6 +150,44 @@ function cardPrState(props: Pick<PrCardProps, 'prState' | 'prLifecycleStatus'>):
   return resolvePrDisplayState({ delivery: { prState: props.prState ?? null }, prLifecycleStatus: props.prLifecycleStatus });
 }
 
+export interface RepairLinks {
+  parent?: { taskId: string; title: string | null } | null;
+  fixes?: Array<{ taskId: string; title: string | null }>;
+}
+
+/** "Repair of <task>" on a repair's page, "Repairs: <task>, …" on the parent's; null when neither applies. */
+export function RepairLinkLine({ links }: { links?: RepairLinks | null }) {
+  const parent = links?.parent ?? null;
+  const fixes = links?.fixes ?? [];
+  if (!parent && fixes.length === 0) return null;
+  return (
+    <div data-testid="pr-repair-links" className="text-[12px] text-text-muted">
+      {parent && (
+        <>
+          Repair of{' '}
+          <Link href={`/app/tasks/${parent.taskId}`} className="text-accent-text hover:underline">
+            {parent.title ?? 'the task that opened this PR'}
+          </Link>
+        </>
+      )}
+      {parent && fixes.length > 0 && ' · '}
+      {fixes.length > 0 && (
+        <>
+          {fixes.length === 1 ? 'Repair task: ' : 'Repair tasks: '}
+          {fixes.map((f, i) => (
+            <span key={f.taskId}>
+              {i > 0 && ', '}
+              <Link href={`/app/tasks/${f.taskId}`} className="text-accent-text hover:underline">
+                {f.title ?? `Repair ${i + 1}`}
+              </Link>
+            </span>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** The card's primary link: label and target. */
 function primaryAction(
   prUrl: string,
@@ -165,10 +208,10 @@ function primaryAction(
   return { label: 'Review & merge', href: prUrl };
 }
 
-/** `"Fix 1 of 3"` / `"Fix"` — no claimed/queued suffix, same vocabulary as the Home action queue and the mission timeline. */
+/** `"Fix 1 of up to 3"` / `"Fix"` — no claimed/queued suffix, same vocabulary as the Home action queue and the mission timeline. */
 function openAttemptName(a: OpenAttemptInfo): string {
   if (a.iteration == null) return 'Fix';
-  return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
+  return a.maxIterations != null ? `Fix ${a.iteration} of up to ${a.maxIterations}` : `Fix ${a.iteration}`;
 }
 
 /**
@@ -211,6 +254,7 @@ export default function PrCard(props: PrCardProps) {
     mergeable,
     mergeableState,
     openAttempt,
+    repairLinks,
   } = props;
   const state = cardPrState(props);
   const lifecycle = PR_PILL[state];
@@ -294,6 +338,7 @@ export default function PrCard(props: PrCardProps) {
       {/* Open fix attempt — outranks the mergeable/review lines below: the
           branch is about to change, so naming the fix is the honest state. */}
       {!isMerged && openAttempt && <OpenAttemptLine openAttempt={openAttempt} />}
+      <RepairLinkLine links={repairLinks} />
 
       {/* Mergeable state */}
       {!isMerged && mergeable !== undefined && mergeable !== null && (
