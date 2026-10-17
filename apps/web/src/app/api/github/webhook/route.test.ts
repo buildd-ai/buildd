@@ -78,6 +78,16 @@ mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPo
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
 mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
+const invalidatedApprovals: Array<[string, number]> = [];
+mock.module('@/lib/github-approval', () => ({
+  readGithubApproval: async () => ({ reviewDecision: null, humanApproved: false }),
+  readGithubApprovalCached: async () => ({ reviewDecision: null, humanApproved: false }),
+  loadGithubApprovals: async () => {},
+  githubApprovalCacheKey: (repo: string, n: number) => `${repo}#${n}`,
+  invalidateGithubApproval: async (repo: string, n: number) => { invalidatedApprovals.push([repo, n]); },
+  GITHUB_APPROVAL_TTL_SEC: 60,
+  GITHUB_APPROVAL_CONCURRENCY: 8,
+}));
 // Base-advance notices: what is matched and sent is covered in
 // lib/base-advance-notice.test.ts; here only what the webhook hands over.
 const mockRunBaseAdvanceNotice = mock((_input: any, _resolver: any) => Promise.resolve({ notified: [], debounced: [] }));
@@ -4171,6 +4181,25 @@ describe('POST /api/github/webhook', () => {
       ]);
     });
 
+    // A new head from anyone (a person, a platform base refresh) must miss
+    // Home's cached approval of the previous head.
+    it('a synchronize drops the cached GitHub approval for that PR', async () => {
+      invalidatedApprovals.length = 0;
+      mockWorkersFindFirst.mockReturnValue({ id: 'w-sync', workspaceId: 'ws1', taskId: 'task-sync', prNumber: 47 });
+      mockWorkspacesFindMany.mockReturnValue([]);
+      await POST(createWebhookRequest('pull_request', {
+        action: 'synchronize',
+        pull_request: {
+          number: 47, merged: false, draft: false,
+          head: { ref: 'buildd/abc-sync', sha: 'sha-47' },
+          html_url: 'https://github.com/test-org/test-repo/pull/47',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+      expect(invalidatedApprovals).toEqual([['test-org/test-repo', 47]]);
+    });
+
     it('a reopened event is the only open fact that may lift a close (reopened: true)', async () => {
       mockWorkersFindFirst.mockReturnValue({ id: 'w-reopen', workspaceId: 'ws1', taskId: 'task-reopen', prNumber: 45 });
       mockWorkspacesFindMany.mockReturnValue([]);
@@ -5600,6 +5629,15 @@ describe('POST /api/github/webhook — pull_request_review', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls).toHaveLength(0);
+  });
+
+  // Home caches GitHub's approval state per PR; any review action, a dismissal
+  // included, must drop it so a withdrawn approval is not served from cache.
+  it.each(['submitted', 'dismissed', 'edited'])('drops the cached approval on a %s review', async (action) => {
+    invalidatedApprovals.length = 0;
+    workerOnMission();
+    await POST(createWebhookRequest('pull_request_review', { ...reviewPayload('approved'), action }));
+    expect(invalidatedApprovals).toEqual([['test-org/test-repo', 42]]);
   });
 
   it('ignores non-submitted actions', async () => {

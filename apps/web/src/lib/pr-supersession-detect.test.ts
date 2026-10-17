@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ── state the mocks read ────────────────────────────────────────────────────
 let workerRow: any = null;
 let siblingTasks: any[] = [];
+/** The merged PR's task, for `rescanOnMerge`'s mission read. */
+let mergedTask: any = null;
 const scanWrites: any[] = [];
 /** GitHub, keyed by "owner/repo" then path suffix. */
 let gh: Record<string, any> = {};
@@ -25,7 +27,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mock(() => Promise.resolve(workerQueue.length ? workerQueue.shift() : workerRow)) },
-      tasks: { findMany: mock(() => Promise.resolve(siblingTasks)) },
+      tasks: { findMany: mock(() => Promise.resolve(siblingTasks)), findFirst: mock(() => Promise.resolve(mergedTask)) },
     },
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
     // The sweep's candidate query: from → innerJoin → where → orderBy → limit.
@@ -76,7 +78,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession, sweepClosedUnsupersededPrs, RESCAN_AFTER_MS } from './pr-supersession-detect';
+import { detectPrSupersession, prRefsIn, rescanOnMerge, sweepClosedUnsupersededPrs, RESCAN_AFTER_MS, RESCAN_ON_MERGE_CAP } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -108,6 +110,7 @@ beforeEach(() => {
   gateEvents.length = 0;
   recordResult = { ok: true };
   siblingTasks = [];
+  mergedTask = null;
   workerQueue = [];
   sweepRows = [];
   workerRow = {
@@ -529,5 +532,56 @@ describe('review findings: the queue rotates, a timeout stays a timeout, nothing
     const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
     expect(r.outcome).toBe('deferred');
     expect(stamped()).toEqual([]);
+  });
+});
+
+// b6cfdbb9 (audit case: a PR closed, its re-land opened and merged after the close-time scan, and
+// nothing looked again, so no edge was recorded and the findings never moved).
+describe('rescanOnMerge', () => {
+  const reland = (body: string) => mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }], { title: 'fix: re-land', body });
+
+  it('a re-land that names the closed PR records the edge once its content verifies, though the closed PR never named it', async () => {
+    reland('Re-land of #6 without the stale reverts.');
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: 't-9' });
+    expect(r).toEqual({ nominated: 1, results: [{ prUrl: 'https://github.com/org/kb/pull/6', outcome: 'recorded' }] });
+    expect(recordCalls[0]).toMatchObject({ workerId: 'w-6', supersedingPrNumber: 9 });
+    expect(gateEvents[0]).toMatchObject({ outcome: 'accepted', surface: 'webhook pull_request.closed (merged)' });
+  });
+
+  it('naming is not proof: a merged PR that names the closed one but carries none of it records nothing', async () => {
+    mergedPr('org/kb', 9, [{ filename: 'apps/x.ts', status: 'modified', patch: patch('export const somethingElseEntirely = 1;') }], { body: 'follow-up to #6' });
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null });
+    expect(r.results.map((x) => x.outcome)).toEqual(['suggested']);
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('nothing nominated: no scan, and the merged PR itself is never a nominee', async () => {
+    reland('no references here');
+    sweepRows = [{ id: 'w-9', prUrl: 'https://github.com/org/kb/pull/9' }];
+    expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
+    expect(recordCalls).toHaveLength(0);
+  });
+
+  it('scans each closed PR once, and at most the cap', async () => {
+    reland('#6');
+    sweepRows = Array.from({ length: RESCAN_ON_MERGE_CAP + 3 }, (_, i) => ({ id: `w-${i}`, prUrl: `https://github.com/org/kb/pull/${100 + (i % (RESCAN_ON_MERGE_CAP + 2))}` }));
+    const r = await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null });
+    expect(r.nominated).toBe(RESCAN_ON_MERGE_CAP);
+    expect(new Set(r.results.map((x) => x.prUrl)).size).toBe(RESCAN_ON_MERGE_CAP);
+  });
+
+  it('never throws when GitHub or the database fails', async () => {
+    sweepRows = null as any;
+    expect(await rescanOnMerge({ workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 9, taskId: null })).toEqual({ nominated: 0, results: [] });
+  });
+});
+
+describe('prRefsIn', () => {
+  it('reads #n, owner/repo#n and pull URLs, once each, and not issue anchors inside words or URLs', () => {
+    expect(prRefsIn('Re-land of #6, see org/other#7 and https://github.com/org/kb/pull/6 and https://github.com/a/b/pull/8#issuecomment-1; x#9', 'org/kb')).toEqual([
+      { repo: 'org/kb', prNumber: 6 }, { repo: 'a/b', prNumber: 8 }, { repo: 'org/other', prNumber: 7 },
+    ]);
   });
 });

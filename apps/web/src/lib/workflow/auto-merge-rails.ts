@@ -31,7 +31,7 @@ export interface RailsOwnerTask { title?: string | null; taskClass?: string | nu
 
 export interface LandingRailsDeps {
   /** The mission-PR hold (lib/mission-pr.ts `guardMissionPrMerge`), from the composition root. */
-  missionGate: (task: RailsOwnerTask | null) => Promise<{ blocks: boolean; reason?: string | null }>;
+  missionGate: (task: RailsOwnerTask | null) => Promise<{ blocks: boolean; reason?: string | null; lasting?: boolean }>;
   safety?: typeof evaluateAutoMergeSafety;
   repoFor?: typeof workspaceRepo;
   load?: (workspaceId: string, ownerTaskId: string) => Promise<RailsContext | null>;
@@ -101,7 +101,10 @@ export function builddLandingRails(deps: LandingRailsDeps): Rails {
         };
       }
       const hold = await deps.missionGate(ctx.task);
-      if (hold.blocks) return { passed: false, reasons: [hold.reason ?? 'mission work is not finished'] };
+      // A hold that clears by waiting (mission work unfinished, a delivery being settled) leaves the
+      // approval standing; a lasting one (a refresh on a branch it was not filed for) is a person's,
+      // escalated once at T16 rather than re-requested by the sweep every pass (#4909).
+      if (hold.blocks) return { passed: false, reasons: [hold.reason ?? 'mission work is not finished'], ...(hold.lasting ? { lasting: true } : {}) };
       return { passed: true, reasons: [] };
     },
   };
