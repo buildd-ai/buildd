@@ -151,6 +151,8 @@ export interface DeliveryView {
   findings?: FindingSnapshot[];
   /** §5: how many required findings are still open (`open` or `addressed`). */
   openFindings?: number;
+  /** Of those, how many a push already touched (`addressed`): a fix waiting for a re-review (AC-17). */
+  addressedFindings?: number;
 }
 
 /**
@@ -234,6 +236,35 @@ const ESCALATION_COPY: Record<string, string> = {
   policy_human: 'Workspace policy requires a person',
   unsafe_to_merge: 'Unsafe to merge',
 };
+
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+const countWord = (n: number): string => COUNT_WORDS[n] ?? String(n);
+const timesWord = (n: number): string => (n === 1 ? 'once' : n === 2 ? 'twice' : `${countWord(n)} times`);
+
+/**
+ * c1d66a6a: `review_exhausted` names what happened. A delivery that never had an approval spent
+ * its budget without one; one that was approved and then had a later change refused says so,
+ * rather than "without an approval" for a PR approved twice.
+ */
+export function reviewExhaustedCopy(rounds: RoundSnapshot[]): string {
+  const decided = rounds.filter((r) => r.effectiveVerdict === 'approve' || r.effectiveVerdict === 'request_changes').sort((a, b) => a.round - b.round);
+  const approvals = decided.filter((r) => r.effectiveVerdict === 'approve');
+  const last = approvals.at(-1);
+  if (!last) return ESCALATION_COPY.review_exhausted!;
+  const refused = decided.filter((r) => r.round > last.round && r.effectiveVerdict === 'request_changes').length;
+  if (refused === 0) return ESCALATION_COPY.review_exhausted!;
+  return `Approved${approvals.length > 1 ? ` ${timesWord(approvals.length)}` : ''}, then a later change was refused${refused > 1 ? ` ${timesWord(refused)}` : ''}`;
+}
+
+/** c1d66a6a / AC-17: open findings a push already touched, waiting for a review to verify them. */
+function addressedNote(findings: FindingSnapshot[]): string | null {
+  const open = findings.filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+  const addressed = open.filter((f) => f.status === 'addressed').length;
+  if (addressed === 0) return null;
+  return addressed === open.length
+    ? `${addressed === 1 ? 'the finding has' : `all ${countWord(addressed)} findings have`} a fix waiting for a re-review`
+    : `${countWord(addressed)} of ${countWord(open.length)} findings ${addressed === 1 ? 'has' : 'have'} a fix waiting for a re-review`;
+}
 
 /**
  * `landing_needs_human` says which kind of refusal it was (S15 / T16 / §6.7), so a
@@ -356,8 +387,8 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       if (d.stateReason === 'landing_needs_human') {
         ({ headline, detail } = landingEscalationCopy(input.lastTransition));
       } else {
-        headline = ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
-        detail = evidenceDetail(input.lastTransition);
+        headline = d.stateReason === 'review_exhausted' ? reviewExhaustedCopy(input.view.rounds) : ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
+        detail = [evidenceDetail(input.lastTransition), addressedNote(input.view.findings ?? [])].filter(Boolean).join('; ') || null;
       }
       cta = { action: 'open_pr', label: 'Review on GitHub' };
       break;
@@ -425,6 +456,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     approvalBasis: d.approvalBasis,
     findings: input.view.findings ?? [],
     openFindings: openRequiredFindings(input.view).length,
+    addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
   };
 }
 

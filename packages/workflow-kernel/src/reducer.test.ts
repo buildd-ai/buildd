@@ -13,6 +13,7 @@ import {
   headCoverage,
   reduce,
   reviewBudgetHeld,
+  spentReviewRounds,
   stableIdempotencyKey,
   verifyCompositionAttestation,
 } from './reducer';
@@ -2356,4 +2357,65 @@ describe('79649a80: closing and reopening a PR does not reset a spent review bud
     const ab = applied(run(V(closed(), [decided3]), { type: 'Abandon', actor: 'human:u', reason: 'not needed' }));
     expect({ to: ab.toState, resume: ab.patch.resumeState }).toEqual({ to: 'ABANDONED', resume: null });
   });
+});
+
+// Task c1d66a6a (the #4948 sequence): rounds 1 and 2 asked for changes, round 3 approved, rounds 4
+// and 5 re-checked new heads after a conflict and a CI repair (round 4 a delta approval), and round 5's
+// request for changes escalated review_exhausted on a PR approved twice. The budget counts
+// change-request cycles: a re-check after an approval spends none, and a re-check that asks for
+// changes gets one repair cycle before the delivery is a person's.
+describe('c1d66a6a: a re-check after an approval does not spend the review budget', () => {
+  const da = { deltaApproval: { eligible: true, fromHeadSha: 'Ha' } };
+  const rc = (round: number, head: string, o: Partial<RoundSnapshot> = {}) => R({ id: `r${round}`, round, headSha: head, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', ...o });
+  const ap = (round: number, head: string, o: Partial<RoundSnapshot> = {}) => R({ id: `r${round}`, round, headSha: head, status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', ...o });
+  const history = [rc(1, 'H1'), rc(2, 'H2'), ap(3, 'Ha'), ap(4, 'Hc', { scope: da })];
+  const verdict = (v: KernelView, roundId: string, effectiveVerdict: 'approve' | 'request_changes', head: string) =>
+    applied(run(v, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId, verdict: effectiveVerdict, effectiveVerdict, headBound: head }));
+  const awaiting = (round: number, head: string, rounds: RoundSnapshot[], o: Partial<DeliverySnapshot> = {}) =>
+    V(D({ state: 'AWAITING_REVIEW', currentRound: round, currentHeadSha: head, approvedHeads: ['Hc'], approvalBasis: 'verdict', ...o }), rounds);
+
+  test('a re-check that asks for changes past the counted budget gets one repair cycle, not an escalation', () => {
+    const v = awaiting(5, 'Hd', [...history, R({ id: 'r5', round: 5, headSha: 'Hd', kind: 'delta', scope: { deltaApproval: { eligible: false, fromHeadSha: 'Hc' } } })]);
+    const dec = verdict(v, 'r5', 'request_changes', 'Hd');
+    expect(dec.toState).toBe('CHANGES_REQUESTED');
+    expect(effectKinds(dec)).toContain('dispatch_fix');
+    expect(effectKinds(dec)).not.toContain('escalate_exhaustion');
+  });
+
+  test('the repair\'s own review is counted: asking for changes again escalates, an approval approves', () => {
+    const rounds = [...history, rc(5, 'Hd', { scope: { deltaApproval: { eligible: false, fromHeadSha: 'Hc' } } }), R({ id: 'r6', round: 6, headSha: 'He', kind: 'delta' })];
+    const again = verdict(awaiting(6, 'He', rounds), 'r6', 'request_changes', 'He');
+    expect({ to: again.toState, why: again.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    expect(effectKinds(again)).toContain('escalate_exhaustion');
+    expect(verdict(awaiting(6, 'He', rounds), 'r6', 'approve', 'He').toState).toBe('APPROVED');
+  });
+
+  test('without an approval the budget is unchanged (2ded4e88): the third request for changes escalates', () => {
+    const v = V(D({ state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H3' }), [rc(1, 'H1'), rc(2, 'H2'), R({ id: 'r3', round: 3, headSha: 'H3', kind: 'delta' })]);
+    const dec = verdict(v, 'r3', 'request_changes', 'H3');
+    expect({ to: dec.toState, why: dec.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+  });
+
+  test('re-checks do not count toward the budget: two change cycles after an approval and two re-checks still fit', () => {
+    // r1 approves; r2, r3 and r4 re-check later heads (r4 asks for changes); r5 reviews r4's fix and asks again.
+    // Counted: r1 and r5, two of three, so r5's request gets a normal fix.
+    const rounds = [ap(1, 'H1'), ap(2, 'H2', { scope: da }), ap(3, 'H3', { scope: da }), rc(4, 'H4', { scope: da }), R({ id: 'r5', round: 5, headSha: 'H5', kind: 'delta' })];
+    const dec = verdict(awaiting(5, 'H5', rounds, { approvedHeads: ['H3'] }), 'r5', 'request_changes', 'H5');
+    expect(dec.toState).toBe('CHANGES_REQUESTED');
+    expect(spentReviewRounds({ delivery: D({ currentRound: 5 }), rounds, attempts: [] })).toBe(2);
+  });
+
+  test('the free cycle\'s fix is dispatched even when the fix ledger is spent, and recorded as such', () => {
+    const r5 = rc(5, 'Hd', { scope: { deltaApproval: { eligible: false, fromHeadSha: 'Hc' } } });
+    const spentFixes = [1, 2, 3].map((n) => A({ id: `f${n}`, attemptNo: n, status: 'ended', outcome: 'delivered', triggerReason: n < 3 ? `r${n}` : 'r2' }));
+    const v = V(D({ state: 'CHANGES_REQUESTED', currentRound: 5, currentHeadSha: 'Hd', approvedHeads: ['Hc'], approvalBasis: 'verdict' }), [...history, r5], spentFixes);
+    const fix = applied(run(v, { type: 'FixDispatched', actor: 'kernel', roundId: 'r5', taskId: 'ft9', maxAttempts: 3, revalidation: { live: live('Hd'), newerApprove: false } }));
+    expect(fix.toState).toBe('CHANGES_REQUESTED');
+    expect(fix.attempts.find((a) => a.op === 'insert')).toMatchObject({ family: 'review_fix', attemptNo: 4 });
+    expect(fix.evidence).toMatchObject({ recheckCycle: true });
+    // A second fix for the same re-check is not free.
+    const twice = V(v.delivery, v.rounds, [...spentFixes, A({ id: 'f4', attemptNo: 4, status: 'ended', outcome: 'failed', triggerReason: 'r5' })]);
+    expect(applied(run(twice, { type: 'FixDispatched', actor: 'kernel', roundId: 'r5', taskId: 'ft10', maxAttempts: 3, revalidation: { live: live('Hd'), newerApprove: false } })).toState).toBe('ESCALATED');
+  });
+
 });

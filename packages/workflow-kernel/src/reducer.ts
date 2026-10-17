@@ -126,6 +126,32 @@ function liftsReviewBudget(cmd: Command): boolean {
   return (cmd.type === 'ReviewRequested' && cmd.forced === true) || cmd.type === 'HumanResolve';
 }
 
+/**
+ * Task c1d66a6a: the review budget counts change-request cycles, not every round. A round started
+ * after an approval at another head (`startRound` records `scope.deltaApproval` exactly then: a
+ * re-check of what a repair or a push changed since the approval) is a verification and spends
+ * nothing. A re-check that asks for changes gets one repair cycle before the delivery is a
+ * person's, even with the counted budget spent; the review of that repair counts as usual. A
+ * delivery that never had an approval spends exactly as before (2ded4e88).
+ */
+export function isRecheckAfterApproval(r: Pick<RoundSnapshot, 'scope'> | null | undefined): boolean {
+  const da = r?.scope?.deltaApproval;
+  return da != null && typeof da === 'object';
+}
+
+/** The rounds up to `upTo` (default the current one) that spend the review budget. */
+export function spentReviewRounds(view: Pick<KernelView, 'delivery' | 'rounds'>, upTo?: number): number {
+  const n = upTo ?? view.delivery?.currentRound ?? 0;
+  const rechecks = new Set(view.rounds.filter((r) => r.round <= n && isRecheckAfterApproval(r)).map((r) => r.round));
+  return n - rechecks.size;
+}
+
+/** Whether a request for changes at `round` spends the last of the budget (escalates instead of a fix). */
+function budgetSpentAt(view: Pick<KernelView, 'delivery' | 'rounds'>, round: Pick<RoundSnapshot, 'round' | 'scope'>, maxRounds: number): boolean {
+  if (isRecheckAfterApproval(round)) return false;
+  return spentReviewRounds(view, round.round) >= maxRounds;
+}
+
 /** The patch that carries a spent review budget into a repair that starts from its escalation. */
 function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeState'> {
   return d.state === 'ESCALATED' && d.stateReason === 'review_exhausted' ? { resumeState: 'ESCALATED' } : {};
@@ -727,7 +753,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'ReviewBudgetExhausted': {
       const dd = d!;
       if (dd.state !== 'CHANGES_REQUESTED' && dd.state !== 'FIXING') return c.stale('state_moved');
-      if (dd.currentRound < dd.maxRounds) return c.rejected('budget_not_exhausted');
+      const cur = c.currentRound();
+      if (cur ? !budgetSpentAt(c.view, cur, dd.maxRounds) : spentReviewRounds(c.view) < dd.maxRounds) return c.rejected('budget_not_exhausted');
       // The version it was read at (10658a4c): a person who resolves back to this head and
       // sees it exhaust again is a second escalation, not a replay of the first.
       const key = `exhaust:${dd.id}:${dd.currentHeadSha}@v${dd.version}`;
@@ -754,7 +781,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const inflight = c.view.attempts.find((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
       if (inflight) return c.duplicate('fix_in_flight');
       const n = c.nextNo('review_fix', 'agent');
-      if (n > cmd.maxAttempts && !human) {
+      // c1d66a6a: a re-check after an approval that asks for changes is owed one repair cycle, past
+      // a spent fix ledger too. Exactly one: a second fix for the same round is not free.
+      const recheckCycle = n > cmd.maxAttempts && !human && isRecheckAfterApproval(round)
+        && !c.view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id);
+      if (n > cmd.maxAttempts && !human && !recheckCycle) {
         // AC-14: a spent fix ledger is an escalation, never a silent refusal. T6 escalates on
         // rounds; failed fixes spend attempts faster than rounds, so this is where they run out
         // (67d34094: fix 1 and 2 failed, fix 3 delivered, round 2 requested changes).
@@ -766,14 +797,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         });
       }
       // §5.7 rule 5: a person past the cap extends it by exactly this one dispatch, visibly.
-      const extended = human && n > cmd.maxAttempts;
+      const extended = (human || recheckCycle) && n > cmd.maxAttempts;
       const max = extended ? n : cmd.maxAttempts;
       const id = c.newId();
       return c.apply(`fix:${dd.id}:${round.id}:${n}`, 'CHANGES_REQUESTED', {
         guardHead: true, guardRound: true,
         attempts: [{ op: 'insert', id, family: 'review_fix', attemptNo: n, mode: 'agent', boundHeadSha: round.headSha, triggerReason: round.id, taskId: cmd.taskId, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
-        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live, ...(human ? { trigger: 'human' } : {}) },
-        bypass: extended ? { family: 'review_fix', budgetFrom: cmd.maxAttempts, budgetTo: max, trigger: 'human' } : null,
+        evidence: { roundId: round.id, attemptId: id, attemptNo: n, live: cmd.revalidation.live, ...(human ? { trigger: 'human' } : {}), ...(recheckCycle ? { recheckCycle: true } : {}) },
+        bypass: extended ? { family: 'review_fix', budgetFrom: cmd.maxAttempts, budgetTo: max, trigger: human ? 'human' : 'recheck_after_approval' } : null,
       });
     }
 
@@ -1656,8 +1687,9 @@ function verdictDecided(
       effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
     });
   }
-  if (dd.currentRound >= dd.maxRounds) {
+  if (budgetSpentAt(c.view, round, dd.maxRounds)) {
     // Rule 9: at the limit a repeated request for changes stays blocking, with its findings attached.
+    // A re-check after an approval is never at the limit: it gets its repair cycle (c1d66a6a).
     return c.apply(key, 'ESCALATED', {
       ...common,
       patch: { stateReason: 'review_exhausted' },
@@ -1690,7 +1722,8 @@ function verificationRound(
   const head = decided.headSha;
   const ids = open.map((x) => x.id);
   const evidence = { ...(o.evidence ?? {}), unverifiedFindings: ids };
-  if (dd.currentRound >= dd.maxRounds) {
+  // The verification round to come is a counted one: it follows a verdict at the same head.
+  if (spentReviewRounds(c.view) >= dd.maxRounds) {
     return c.apply(key, 'ESCALATED', {
       ...o, evidence,
       patch: { ...(o.patch ?? {}), stateReason: 'review_exhausted' },
@@ -2255,7 +2288,7 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
     return c.apply(key, 'APPROVED', { patch: { ...base, approvedHeads: heads, approvalBasis: 'verdict', stateReason: null }, evidence: ev });
   }
   if (round.effectiveVerdict === 'request_changes') {
-    if (round.round >= d.maxRounds) {
+    if (budgetSpentAt(c.view, round, d.maxRounds)) {
       return c.apply(key, 'ESCALATED', {
         patch: { ...base, stateReason: 'review_exhausted' }, evidence: ev,
         effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}@v${d.version}`, payload: { family: 'review_fix', rounds: round.round } }],
