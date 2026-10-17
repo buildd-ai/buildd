@@ -135,7 +135,6 @@ export const DUPLICATE_CRITERIA_DEBT = new Set([
   'mission-branch-refresh',
   'settings-models',
   'timeline-mobile-rail',
-  'workflow-kernel-library',
 ]);
 
 /** Criterion ids a spec file defines more than once: an error, or a warning for a spec on the baseline. */
