@@ -1648,9 +1648,43 @@ describe('POST /api/tasks', () => {
     expect(mockAnnounceTaskCreated.mock.calls[0][0]).toEqual(createdTask);
     expect(mockWakeTask).toHaveBeenCalledWith(createdTask.id, 'task.created', {
       targetLocalUiUrl: 'http://localhost:3456',
+      byPerson: true,
     });
-    // The target rides the insert's own transaction (no untargeted broadcast window).
-    expect(mockWithDispatchHint).toHaveBeenCalledWith({ metadata: { targetLocalUiUrl: 'http://localhost:3456' } }, expect.anything());
+    // The target rides the insert's own transaction (no untargeted broadcast window),
+    // with the person flag a held runner needs to run it (spec c7410e76 R-34).
+    expect(mockWithDispatchHint).toHaveBeenCalledWith({ metadata: { targetLocalUiUrl: 'http://localhost:3456', byPerson: true } }, expect.anything());
+  });
+
+  it('refuses assignToLocalUiUrl from an API key: only a person aims a task at one runner', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', assignToLocalUiUrl: 'http://localhost:3456' },
+    }));
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toContain('person');
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses assignToLocalUiUrl from a per-task token', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', apiKey: 'bld_xxx', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', assignToLocalUiUrl: 'http://localhost:3456' },
+    }));
+
+    expect(response.status).toBe(403);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
   });
 
   it('dispatches task on successful creation', async () => {
