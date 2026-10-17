@@ -121,7 +121,7 @@ exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
- esc back  a answer  m message  p pause  x stop  c claim  o web  q quit         "
+ esc back  a answer  m message  p pause  x stop  c claim  s talk  o web  q quit "
 `;
 
 exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`] = `
