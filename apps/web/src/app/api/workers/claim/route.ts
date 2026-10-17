@@ -395,9 +395,10 @@ export async function POST(req: NextRequest) {
   if (capabilities.length === 0 && body.environment) {
     const env = body.environment;
     capabilities = [
-      ...env.tools.map(t => t.name),
-      ...env.envKeys,
-      ...env.mcp.map(m => `mcp:${m}`),
+      // A partial environment (e.g. only an isolation probe) derives nothing rather than throwing.
+      ...(env.tools ?? []).map(t => t.name),
+      ...(env.envKeys ?? []),
+      ...(env.mcp ?? []).map(m => `mcp:${m}`),
     ];
   }
 

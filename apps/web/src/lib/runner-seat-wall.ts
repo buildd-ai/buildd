@@ -25,6 +25,10 @@
  *   Claude credential), and the team's agent model endpoint does not carry
  *   Claude. Those are pools every runner draws on, so their walls stay shared.
  *
+ * A run that reports the login it used (`loginUsed`, newer runners) settles
+ * the last two checks itself: its runner's machine login or token walls only
+ * that runner, whatever the team stores; a stored team credential is shared.
+ *
  * Anything else, including any lookup failure, answers "shared": today's
  * account-wide and team-wide behaviour. The key is a hash of the runner id: no
  * credential and no login is read, stored or sent.
@@ -84,6 +88,20 @@ export interface RunnerSeatWallInput {
   accountId: string;
   teamId: string | null | undefined;
   workspaceId: string | null | undefined;
+  /**
+   * The Claude login this run says it used (the runner's failure report). A
+   * machine login walls only its runner; `stored` (a credential the team keeps
+   * server-side) is shared. Absent from older runners: the heartbeat and team
+   * credential checks below decide instead.
+   */
+  loginUsed?: RunLoginUsed | null;
+}
+
+/** Which Claude login a run used, as the runner reports it. */
+export type RunLoginUsed = 'machine_login' | 'machine_token' | 'stored';
+
+export function parseRunLoginUsed(v: unknown): RunLoginUsed | null {
+  return v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null;
 }
 
 export interface RunnerSeatWallDeps {
@@ -162,6 +180,12 @@ export async function resolveRunnerSeatWallKey(
   const runner = (input.runner ?? '').trim();
   const seatKey = runnerSeatKey(runner);
   if (!seatKey) return shared('the worker names no runner');
+  // The run's own report beats every inference below: a stored team
+  // credential existing does not mean this run used it.
+  if (input.loginUsed === 'stored') return shared("the run used the team's stored Claude credential");
+  if (input.loginUsed && MACHINE_SOURCES.has(input.loginUsed)) {
+    return { seatKey, reason: `the run used its runner's own ${input.loginUsed === 'machine_token' ? 'machine token' : 'machine login'}` };
+  }
   const scope = { teamId: input.teamId, accountId: input.accountId, workspaceId: input.workspaceId };
   try {
     const source = await deps.heartbeatModelAuthSource(input.accountId, runner);

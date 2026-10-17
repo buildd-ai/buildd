@@ -977,7 +977,10 @@ function taskBackend(t: TopTask): string {
 }
 
 const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
-const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'rate limit', tenant_budget: 'tenant budget' };
+// provider_pause is a limit recorded for every runner of the team (a shared
+// key or credential); runner_seat is this machine's own login (spec "A
+// runner", R-9, R-12). Neither is necessarily an API rate limit.
+const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'shared limit', runner_seat: 'login limit', tenant_budget: 'tenant budget' };
 
 export function wallWord(kind: string): string {
   return WALL_WORD[kind] ?? 'usage limit';
@@ -1000,6 +1003,8 @@ export function localLiftTime(iso: string, now: number): string {
 export interface ProviderHold {
   backend: string;
   provider: string;
+  /** The wall kind the server named (`runner_seat`, `provider_pause`, ...). */
+  kind?: string;
   /** `plan limit`, `rate limit`, ... */
   word: string;
   /** When it lifts (ISO), or null when the server did not say. */
@@ -1024,7 +1029,7 @@ export function providerHolds(state: TopState, now: number): ProviderHold[] {
   const add = (w: { kind: string; backend: string; resetsAt: string | null }) => {
     const prev = out.get(w.backend);
     if (prev && (isoMs(prev.resetsAt) ?? Infinity) <= (isoMs(w.resetsAt) ?? Infinity)) return;
-    out.set(w.backend, { backend: w.backend, provider: PROVIDER_NAME[w.backend] ?? w.backend, word: wallWord(w.kind), resetsAt: w.resetsAt ?? null });
+    out.set(w.backend, { backend: w.backend, provider: PROVIDER_NAME[w.backend] ?? w.backend, kind: w.kind, word: wallWord(w.kind), resetsAt: w.resetsAt ?? null });
   };
   const broad = liveBroad(state, now);
   if (broad) for (const w of activeWalls(broad, now)) add(w);
@@ -1072,10 +1077,16 @@ export function holdLine(state: TopState, now: number): string | null {
 
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
 export function providerHoldLine(h: ProviderHold, now: number): string {
-  const head = `${h.provider} work waits for the ${h.word}`;
+  // Whose access waits (spec "A runner", R-12): this machine's own login holds
+  // only this runner, so say the others are free.
+  const own = h.kind === 'runner_seat';
+  const head = own ? `This machine's ${h.provider} login waits for its limit`
+    : h.kind === 'provider_pause' ? `${h.provider} work waits for a limit every runner shares`
+    : `${h.provider} work waits for the ${h.word}`;
+  const tail = own ? ` · other runners can take ${h.provider} work` : '';
   const reset = isoMs(h.resetsAt);
-  if (reset === null || reset <= now) return `${head}.`;
-  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})`;
+  if (reset === null || reset <= now) return `${head}.${tail}`;
+  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})${tail}`;
 }
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */

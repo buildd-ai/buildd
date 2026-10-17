@@ -53,6 +53,13 @@ export interface MissionIntegrationPrView {
    */
   delivery?: number;
   shippedDeliveries?: Array<{ delivery: number; prNumber: number | null; prUrl: string | null }>;
+  /**
+   * A closed PR whose work is recorded as landed in another merged PR (its
+   * supersession edge, task fbc93ebd). Only that fact: whether the branch is
+   * finished also needs "no successor PR is open from it", which the rows here
+   * cannot tell, so the surface never claims it; settlement decides that live.
+   */
+  landedIn?: number;
 }
 
 /** The delivery record as a surface reads it (`EpochSnapshot`'s shown fields). */
@@ -78,8 +85,13 @@ export interface MissionPrTaskLike {
     prNumber?: number | null;
     mergedAt?: string | Date | null;
     prLifecycleStatus?: string | null;
+    /** The merged PR recorded as carrying this PR's work, when it closed unmerged. */
+    supersededByPrNumber?: number | null;
   }> | null;
 }
+
+/** The merged PR a closed mission PR's work is recorded as landing in, when one is. */
+const landedInOf = (supersededBy: number | null | undefined): number | undefined => (supersededBy != null ? supersededBy : undefined);
 
 /**
  * The mission's integration PR as a surface should show it, or null when the
@@ -114,9 +126,11 @@ export function deriveMissionIntegrationPr(args: {
       : current.prNumber == null
         ? 'not_opened'
         : ownerWorker?.w.prLifecycleStatus === 'closed' ? 'closed' : 'open';
+    const landedIn = state === 'closed' ? landedInOf(ownerWorker?.w.supersededByPrNumber) : undefined;
     return {
       branch: current.branch, state, prNumber: current.prNumber, prUrl: prUrlOf(current) ?? ownerWorker?.w.prUrl ?? null,
       taskId: current.ownerTaskId ?? ownerWorker?.t.id ?? null, delivery: current.epoch, shippedDeliveries,
+      ...(landedIn != null ? { landedIn } : {}),
     };
   }
 
@@ -127,16 +141,19 @@ export function deriveMissionIntegrationPr(args: {
     if (!isMissionPrTask(task)) continue;
     const worker = (task.workers ?? []).find((w) => w.prUrl);
     if (!worker) continue;
+    const state: MissionIntegrationPrState = worker.mergedAt
+      ? 'merged'
+      : worker.prLifecycleStatus === 'closed'
+        ? 'closed'
+        : 'open';
+    const landedIn = state === 'closed' ? landedInOf(worker.supersededByPrNumber) : undefined;
     return {
       branch,
-      state: worker.mergedAt
-        ? 'merged'
-        : worker.prLifecycleStatus === 'closed'
-          ? 'closed'
-          : 'open',
+      state,
       prNumber: worker.prNumber ?? null,
       prUrl: worker.prUrl ?? null,
       taskId: task.id ?? null,
+      ...(landedIn != null ? { landedIn } : {}),
     };
   }
 
@@ -181,6 +198,9 @@ function missionIntegrationPrSuffix(
       if (pr.delivery && pr.delivery > 1) return pr.prNumber != null ? `delivery ${pr.delivery} PR #${pr.prNumber} awaiting merge` : `delivery ${pr.delivery} awaiting merge`;
       return pr.prNumber != null ? `mission PR #${pr.prNumber} awaiting merge` : 'mission PR awaiting merge';
     case 'closed':
+      if (pr.landedIn != null) {
+        return `${pr.prNumber != null ? `mission PR #${pr.prNumber}` : 'mission PR'} closed, work landed in #${pr.landedIn}`;
+      }
       return pr.prNumber != null ? `mission PR #${pr.prNumber} closed unmerged` : 'mission PR closed unmerged';
     case 'not_opened':
       // Only worth saying once the work is in: before that, "not open yet" is
@@ -229,6 +249,7 @@ export function describeMissionDelivery(pr: MissionIntegrationPrView): { heading
   const earlier = (pr.shippedDeliveries ?? []).length > 0
     ? (pr.shippedDeliveries ?? []).map((d) => `Delivery ${d.delivery} merged${d.prNumber != null ? ` (#${d.prNumber})` : ''}`).join(', ') + '.'
     : null;
+  const landedIn = pr.state === 'closed' && pr.landedIn != null ? pr.landedIn : null;
   if (!pr.delivery) {
     return {
       heading: 'Mission PR',
@@ -236,7 +257,9 @@ export function describeMissionDelivery(pr: MissionIntegrationPrView): { heading
         ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
         : pr.state === 'merged'
           ? "This mission's work reached the target branch through one PR from its integration branch."
-          : "All of this mission's work ships in this one PR.",
+          : landedIn != null
+            ? `The mission PR closed without merging and its work landed in #${landedIn}.`
+            : "All of this mission's work ships in this one PR.",
       earlier,
     };
   }
@@ -246,7 +269,9 @@ export function describeMissionDelivery(pr: MissionIntegrationPrView): { heading
     : pr.state === 'not_opened'
       ? `The work still to come goes into delivery ${n} on this branch. Nothing on it has shipped yet.`
       : pr.state === 'closed'
-        ? `Delivery ${n}'s PR was closed without merging, so its work is only on this branch.`
+        ? landedIn != null
+          ? `Delivery ${n}'s PR closed without merging and its work landed in #${landedIn}.`
+          : `Delivery ${n}'s PR was closed without merging, so its work is only on this branch.`
         : `Delivery ${n}'s work ships in this PR.`;
   return { heading: `Delivery ${n}`, line, earlier };
 }

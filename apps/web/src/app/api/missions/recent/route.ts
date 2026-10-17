@@ -15,6 +15,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { loadMissionStages } from '@/lib/mission-stage-load';
+import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { loadRecentMissions } from '@/lib/missions-recent';
 import type { RecentMission } from '@buildd/shared';
 
@@ -32,7 +33,8 @@ export async function GET(req: NextRequest) {
     if (workspaceIds.length === 0) return NextResponse.json({ missions: [] });
 
     const rows = await loadRecentMissions(workspaceIds);
-    const stages = await loadMissionStages(rows.map(r => r.id), workspaceIds);
+    // Open first, newest activity first: the missions past the cap list without a stage.
+    const stages = await loadMissionStages(rows.slice(0, MAX_STAGE_MISSION_IDS).map(r => r.id), workspaceIds);
     const out: RecentMission[] = rows.map(r => ({ ...r, stage: stages.get(r.id) ?? null }));
     return NextResponse.json({ missions: out });
   } catch (err) {

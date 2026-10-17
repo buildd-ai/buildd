@@ -20,9 +20,7 @@ import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { loadMissionStages } from '@/lib/mission-stage-load';
 import { isUuid } from '@/lib/uuid';
 import type { MissionStage } from '@buildd/shared';
-
-/** The task list holds at most 200 tasks, so far fewer missions; the cap bounds the batched reads. */
-const MAX_MISSION_IDS = 100;
+import { MAX_STAGE_MISSION_IDS as MAX_MISSION_IDS } from '@/lib/mission-stage';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');

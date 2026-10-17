@@ -47,7 +47,9 @@ import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAd
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';
+import { observeBase, observePrState } from '@/lib/workflow/seam';
+// A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { observeCiGreen, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
 
@@ -483,7 +485,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         await observeCiGreen({
           workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
           headSha, source: 'webhook:check_suite',
-        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
+        }, { principal: systemPrincipal('system:webhook:check_suite') }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
 
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({

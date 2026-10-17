@@ -23,7 +23,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
-  pendingEpochSteps, reduceMissionEpochs, classifySettlement, writableEpoch, latestEpoch,
+  pendingEpochSteps, reduceMissionEpochs, classifySettlement, writableEpoch, latestEpoch, deliveryBranchFinished, finishedBranchWhy,
+  type BranchFinishFacts,
   type EpochOp, type EpochPatch, type EpochResult, type EpochSettlement, type EpochSnapshot, type LegacyMissionPr,
   type MissionEpochCommand, type MissionEpochView, type SettlementCandidate, type SettledPr,
 } from '@buildd/workflow-kernel/delivery-epochs';
@@ -274,6 +275,12 @@ export interface EpochDeps {
   cancelTask?: (taskId: string, reason: string) => Promise<void>;
   /** A reconcile recorded a settlement or retirement. Default: the `mission.delivery_settled` core event. */
   settled?: (missionId: string, steps: ReconcileOutcome['steps']) => Promise<void>;
+  /** The merged PR recorded as carrying a closed PR's work (its supersession edge), if any. */
+  supersessionOf?: (repoFullName: string, prNumber: number) => Promise<{ prNumber: number; url: string | null } | null>;
+  /** Closed refresh PRs of the mission on `branch` whose resolution is not recorded yet (the retry list). */
+  unsettledClosedRefreshesOf?: (missionId: string, repoFullName: string, branch: string) => Promise<number[]>;
+  /** A mission note posted at most once per title. */
+  noteOnce?: (missionId: string, title: string, body: string) => Promise<void>;
 }
 
 export interface MissionRepo {
@@ -445,6 +452,14 @@ export interface ReconcileOutcome {
  */
 export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps = {}): Promise<ReconcileOutcome> {
   const out = await reconcileMissionEpochSteps(missionId, deps);
+  // Task fbc93ebd: refresh PRs onto a finished open delivery (its PR closed and
+  // superseded, or the mission closed). Never throws: the next pass retries.
+  try {
+    const finish = await settleFinishedDelivery(missionId, deps);
+    if (finish) out.steps.push(finish);
+  } catch (err) {
+    console.error(`[mission-epochs] finished-branch settlement failed for ${missionId}:`, err);
+  }
   // S4b: a settlement or retirement can release a held completion. Every reconcile says so (the
   // merge door's, ensureWritableEpoch's, the hourly one), and the missions module decides.
   if (epochStepsMayComplete(out.steps)) {
@@ -834,6 +849,177 @@ WHERE t.mission_id = ${missionId}::uuid AND t.status = 'pending'
   AND (t.context->>'requireMergeCommit')::boolean IS TRUE AND t.context->>'baseBranch' = ${branch}::text
   AND NOT EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.id)`)).rows ?? []) as Array<{ id: unknown }>;
   return rows.map((r) => String(r.id));
+}
+
+/**
+ * The writable delivery's finished-branch settlement (task fbc93ebd), the
+ * step a reconcile adds after the epoch steps. Null when the mission has no
+ * open delivery or no repo to read.
+ */
+async function settleFinishedDelivery(missionId: string, deps: EpochDeps): Promise<ReconcileOutcome['steps'][number] | null> {
+  const loaded = await loadMissionEpochView(missionId, deps);
+  const open = loaded ? writableEpoch(loaded.view) : null;
+  if (!loaded || !open) return null;
+  const repo = await (deps.repoOf ?? defaultRepoOf)(loaded.mission);
+  if (!repo) return null;
+  const api: GithubApi = deps.api ?? (await import('@/lib/github')).githubApi;
+  const r = await settleFinishedBranch(api, repo, loaded.view, open, deps);
+  return { step: 'finish', epoch: open.epoch, outcome: r.outcome };
+}
+
+/**
+ * Close the refresh PRs left on a finished delivery branch
+ * (`deliveryBranchFinished`), and settle their tasks: a closed refresh is
+ * recorded as superseded by the merged PR that carries the branch's work when
+ * one is known (otherwise one mission note asks a person where to record it),
+ * and a refresh filed for the branch that never started is cancelled.
+ *
+ * Reads only as far as it needs: an open or merged delivery PR stops at one
+ * read, and a finished-ness check (including a content probe) runs only when
+ * there is something to settle. Task PRs on the branch are never touched here.
+ * Idempotent: a closed refresh PR is no longer listed, so a replay does nothing.
+ */
+export async function settleFinishedBranch(
+  api: GithubApi, repo: MissionRepo, view: MissionEpochView, epoch: EpochSnapshot, deps: EpochDeps = {},
+): Promise<{ outcome: string; closed: number[] }> {
+  const facts: Partial<BranchFinishFacts> = {};
+  if (!view.terminal) {
+    if (epoch.prNumber == null) return { outcome: 'skip:no_delivery_pr', closed: [] };
+    const pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${epoch.prNumber}`).catch(() => null);
+    if (!pr) return { outcome: 'unreadable', closed: [] };
+    if (pr.merged === true || pr.state !== 'closed') return { outcome: 'skip:delivery_pr_live', closed: [] };
+    facts.prClosedUnmerged = true;
+  }
+
+  const onBranch = await (async () => {
+    try {
+      const prs = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls?state=open&base=${encodeURIComponent(epoch.branch)}&per_page=100`);
+      return Array.isArray(prs) ? prs as Array<{ number: number; head?: { sha?: string } }> : null;
+    } catch { return null; }
+  })();
+  if (onBranch === null) return { outcome: 'unreadable', closed: [] };
+  const refreshPrs = await (deps.refreshPrsOf ?? defaultRefreshPrsOf)(view.missionId, repo.repoFullName);
+  const refreshes = onBranch.filter((p) => refreshPrs.has(p.number));
+  const unstarted = await (deps.obsoleteRefreshTasksOf ?? defaultObsoleteRefreshTasksOf)(view.missionId, epoch.branch);
+  // Refreshes already closed on this branch whose task is not settled yet (a close whose
+  // record failed, or one closed by hand): rediscovered from the rows, so a lost record is redone.
+  const closedUnsettled = (await (deps.unsettledClosedRefreshesOf ?? defaultUnsettledClosedRefreshesOf)(view.missionId, repo.repoFullName, epoch.branch))
+    .filter((n) => !refreshes.some((p) => p.number === n));
+  if (refreshes.length === 0 && unstarted.length === 0 && closedUnsettled.length === 0) return { outcome: 'skip:nothing_to_settle', closed: [] };
+
+  if (!view.terminal && epoch.prNumber != null) {
+    const owner = repo.repoFullName.split('/')[0];
+    const successors = await api(repo.installationId,
+      `/repos/${repo.repoFullName}/pulls?state=open&head=${encodeURIComponent(`${owner}:${epoch.branch}`)}&base=${encodeURIComponent(repo.trunk)}&per_page=100`)
+      .catch(() => null);
+    if (!Array.isArray(successors)) return { outcome: 'unreadable', closed: [] };
+    facts.successorOpen = successors.some((p: { number?: number }) => p?.number !== epoch.prNumber);
+    if (!facts.successorOpen) {
+      const by = await (deps.supersessionOf ?? defaultSupersessionOf)(repo.repoFullName, epoch.prNumber);
+      facts.supersededBy = by?.prNumber ?? null;
+      if (facts.supersededBy == null) {
+        const head = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(epoch.branch)}`).then((r) => str(r?.object?.sha)).catch(() => null);
+        const trunkHead = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(repo.trunk)}`).then((r) => str(r?.object?.sha)).catch(() => null);
+        facts.containedInTrunk = head && trunkHead
+          ? await contentContained(api, repo, head, trunkHead, `buildd-settle/${epoch.id.slice(0, 8)}-finished`, deps.newId)
+          : null;
+      }
+    }
+  }
+
+  const finished = deliveryBranchFinished(view, epoch, facts);
+  if (!finished.finished) return { outcome: `not_finished:${finished.reason}`, closed: [] };
+  const why = finishedBranchWhy(finished, { prNumber: epoch.prNumber, trunk: repo.trunk });
+
+  const closed: number[] = [];
+  let skipped = 0;
+  for (const p of refreshes) {
+    try {
+      // A push since the list was read is unread work: left for the next pass.
+      const live = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${p.number}`).catch(() => null);
+      if (live?.state !== 'open' || str(live?.head?.sha) !== str(p.head?.sha)) { skipped++; continue; }
+      await api(repo.installationId, `/repos/${repo.repoFullName}/issues/${p.number}/comments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: `Closing: this PR refreshes \`${epoch.branch}\`, and that branch is finished: ${why}. Nothing from it will reach \`${repo.trunk}\` any more, so this refresh has nothing left to do.` }),
+      }).catch(() => {});
+      await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${p.number}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: 'closed' }),
+      });
+      closed.push(p.number);
+    } catch (err) {
+      skipped++;
+      console.warn(`[delivery-epochs] refresh #${p.number} on finished ${epoch.branch} not closed:`, err instanceof Error ? err.message : err);
+    }
+  }
+  for (const taskId of unstarted) {
+    await (deps.cancelTask ?? defaultCancelTask)(taskId, `the branch this refresh was for is finished: ${why}`)
+      .catch((err) => console.warn(`[delivery-epochs] refresh ${taskId} on a finished branch not cancelled:`, err instanceof Error ? err.message : err));
+  }
+  // Settle every closed refresh on the branch, the ones closed now and the ones a
+  // previous pass closed but could not record. Each step is idempotent, so a retry is safe.
+  const toSettle = [...closed, ...closedUnsettled];
+  let recorded = 0;
+  if (finished.satisfiedByPr != null) {
+    for (const n of toSettle) {
+      try {
+        await (deps.recordSupersession ?? defaultRecordSupersession)({
+          workspaceId: repo.workspaceId, repoFullName: repo.repoFullName, prNumber: n, installationId: repo.installationId,
+          satisfiedBy: { prNumber: finished.satisfiedByPr, url: `https://github.com/${repo.repoFullName}/pull/${finished.satisfiedByPr}` },
+          reason: `the branch it refreshed is finished: ${why}`,
+        });
+        recorded++;
+      } catch (err) {
+        console.warn(`[delivery-epochs] supersession of refresh #${n} not recorded; retried next pass:`, err instanceof Error ? err.message : err);
+      }
+    }
+  } else if (toSettle.length > 0 && !view.terminal) {
+    // No merged PR to record them against, on a mission still open: a person says
+    // where their work went. One note per delivery, ever: a failed post is retried
+    // on the next pass (the PRs stay unsettled), and a note a person closed is not reposted.
+    const prs = toSettle.map((n) => `#${n}`).join(', ');
+    const title = `Delivery ${epoch.epoch}'s branch is finished; its refresh PRs are closed`;
+    const body = [
+      `\`${epoch.branch}\` is finished: ${why}. Nothing from it will reach \`${repo.trunk}\` any more, so buildd closed the refresh PRs on it (${prs}).`,
+      '',
+      'No merged PR is recorded as carrying this work, so buildd cannot record where it landed. Record the PR that carried it, or mark the closed PRs dropped, so the mission stops counting them as unmerged.',
+    ].join('\n');
+    await (deps.noteOnce ?? defaultNoteOnce)(view.missionId, title, body)
+      .catch((err) => console.warn('[delivery-epochs] finished-branch note not posted; retried next pass:', err instanceof Error ? err.message : err));
+  }
+  return {
+    outcome: `finished:${finished.reason}:closed=${closed.length}:cancelled=${unstarted.length}`
+      + `${closedUnsettled.length ? `:resettled=${closedUnsettled.length}` : ''}${finished.satisfiedByPr != null ? `:recorded=${recorded}` : ''}${skipped ? `:skipped=${skipped}` : ''}`,
+    closed,
+  };
+}
+
+/** Closed, unmerged refresh PRs of the mission on `branch` with no resolution recorded yet. */
+async function defaultUnsettledClosedRefreshesOf(missionId: string, repoFullName: string, branch: string): Promise<number[]> {
+  const rows = ((await dbExec(sql`-- workflow:mission_unsettled_closed_refreshes
+SELECT DISTINCT w.pr_number FROM tasks t JOIN workers w ON w.task_id = t.id
+WHERE t.mission_id = ${missionId}::uuid AND (t.context->>'requireMergeCommit')::boolean IS TRUE
+  AND w.pr_number IS NOT NULL AND w.merged_at IS NULL AND w.pr_lifecycle_status = 'closed'
+  AND w.superseded_by_pr_number IS NULL AND w.abandoned_at IS NULL
+  AND w.pr_base_ref = ${branch}::text
+  AND lower(w.pr_url) LIKE ${`https://github.com/${repoFullName.toLowerCase()}/pull/%`}::text`)).rows ?? []) as Array<{ pr_number: unknown }>;
+  return rows.map((r) => Number(r.pr_number));
+}
+
+/** A mission note posted at most once per title, whatever became of an earlier one. */
+async function defaultNoteOnce(missionId: string, title: string, body: string): Promise<void> {
+  await dbExec(sql`-- workflow:mission_epoch_note_once
+INSERT INTO mission_notes (mission_id, author_type, type, title, body, status)
+SELECT ${missionId}::uuid, 'system', 'warning', ${title}::text, ${body}::text, 'open'
+WHERE NOT EXISTS (SELECT 1 FROM mission_notes WHERE mission_id = ${missionId}::uuid AND title = ${title}::text)`);
+}
+
+async function defaultSupersessionOf(repoFullName: string, prNumber: number): Promise<{ prNumber: number; url: string | null } | null> {
+  const r = ((await dbExec(sql`-- workflow:pr_supersession_edge
+SELECT superseded_by_pr_number, superseded_by_pr_url FROM workers
+WHERE pr_number = ${prNumber}::int AND superseded_by_pr_number IS NOT NULL
+  AND lower(pr_url) LIKE ${`https://github.com/${repoFullName.toLowerCase()}/pull/%`}::text
+ORDER BY superseded_at DESC NULLS LAST LIMIT 1`)).rows ?? [])[0] as Record<string, unknown> | undefined;
+  return r ? { prNumber: Number(r.superseded_by_pr_number), url: str(r.superseded_by_pr_url) } : null;
 }
 
 async function defaultCancelTask(taskId: string, reason: string): Promise<void> {
