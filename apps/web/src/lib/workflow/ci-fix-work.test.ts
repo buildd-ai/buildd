@@ -18,11 +18,12 @@ mock.module('@buildd/core/db', () => ({
     },
   },
 }));
+const activity: unknown[] = [];
 mock.module('./github-facts', () => ({ workspaceRepo: async () => ({ installationId: 1, repoFullName: 'acme/w', gitConfig: null }) }));
 mock.module('@/lib/github', () => ({ githubApi: async (_i: number, path: string) => (path === '/repos/acme/w/pulls/7' ? pull : null) }));
 mock.module('@/lib/ci-failure-inspect', () => ({ fetchCIFailureLogs: async () => ({ summary: 'build failed', failedJobNames: ['build'], runId: 1, failedJobId: 2, runUrl: 'u' }) }));
 mock.module('@/lib/attempt-identity', () => ({ inheritAttemptIdentity: async () => inherited }));
-mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: async () => undefined, taskActivityUrl: (id: string) => `u/${id}` }));
+mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: async (a: unknown) => { activity.push(a); }, taskActivityUrl: (id: string) => `u/${id}` }));
 mock.module('@/lib/ci-job-log-evidence', () => ({ captureCiJobLogEvidence: async () => ({ status: 'skipped' }) }));
 mock.module('@/lib/ci-failure-retry', () => ({ escalateCiRedHead: async () => undefined }));
 
@@ -62,5 +63,12 @@ describe('ciFixWork (rule 3)', () => {
     expect(b.values.roleSlug).toBe('builder');
     expect(b.values.context.repairTarget).toBeUndefined();
     expect(b.values.context.resumeBranch).toBe('buildd/owner-branch');
+  });
+  test('the activity entry numbers the fix by the dispatched count the kernel hands it (a skipped row in front), never past the budget', async () => {
+    activity.length = 0;
+    const r = { ...req(), detail: { attemptNo: 3, maxAttempts: 3, firstAtHead: false } };
+    const b = await ciFixWork(r as never) as { afterFile: (row: { id: string }) => Promise<void> };
+    await b.afterFile({ id: 'ci-task-1' });
+    expect(activity[0]).toMatchObject({ entry: { kind: 'ci_fixing', iteration: 3, maxIterations: 3 } });
   });
 });
