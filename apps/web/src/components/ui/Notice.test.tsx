@@ -34,11 +34,12 @@ describe('Notice', () => {
     expect(renderToStaticMarkup(<Notice tone="ok" title="x" />)).toMatch(/aria-hidden="true"[^>]*>✓</);
   });
 
+  // h-11 / min-w-11 below md: the 44px tap target (docs/design/design-system.md).
   it('one optional action, as a .btn, never a primary fill', () => {
     const link = renderToStaticMarkup(<Notice tone="warn" action={{ label: 'Reconnect', href: '/app/settings' }}>x</Notice>);
-    expect(link).toMatch(/<a class="btn btn-sm"[^>]*href="\/app\/settings"[^>]*>Reconnect<\/a>/);
+    expect(link).toMatch(/<a class="btn btn-sm h-11 min-w-11 md:h-6 md:min-w-0"[^>]*href="\/app\/settings"[^>]*>Reconnect<\/a>/);
     const button = renderToStaticMarkup(<Notice tone="err" action={{ label: 'Retry', onClick: () => {} }}>x</Notice>);
-    expect(button).toMatch(/<button type="button" class="btn btn-sm" data-testid="notice-action">Retry<\/button>/);
+    expect(button).toMatch(/<button type="button" class="btn btn-sm h-11 min-w-11 md:h-6 md:min-w-0" data-testid="notice-action">Retry<\/button>/);
     expect(link + button).not.toMatch(/btn-primary|btn-ink|bg-accent|bg-primary/);
   });
 
