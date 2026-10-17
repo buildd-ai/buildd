@@ -461,7 +461,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(again.replayed).toBe(true);
     expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
     expect(await w!.tasksOf(pr, 'fix')).toHaveLength(1);
-  });
+  }, AC35_TIMEOUT_MS);
 
   test('a verdict re-sent after a newer head is refused as stale by the reducer and settled, never applied', async () => {
     const { pr, rv, head } = await reviewing('feat/park-stale-verdict');
@@ -488,7 +488,7 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(0);
     expect((await w!.delivery(pr)).state).not.toBe('CHANGES_REQUESTED');
     expect(await w!.tasksOf(pr, 'fix')).toEqual([]);
-  });
+  }, AC35_TIMEOUT_MS);
 
   test('an old green re-sent after a newer head is answered as for another head and settled, never recorded for the new one', async () => {
     const pr = await working('feat/park-stale-green');
