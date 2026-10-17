@@ -132,7 +132,7 @@ export default function SpecReviewChanges({ summary, lines, otherText, mismatch 
     <div className="flex flex-col gap-4" data-testid="spec-review-changes">
       {summary?.trim()
         ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary.trim()}</p>
-        : <p className="text-body text-text-muted" data-testid="spec-review-summary">No change summary was written for this revision.</p>}
+        : <p className="text-body text-text-muted" data-testid="spec-review-summary">No change summary.</p>}
       {mismatch ? <Notice tone="warn" data-testid="spec-review-mismatch">{mismatch}</Notice> : null}
       <section aria-labelledby="spec-review-criteria-heading">
         <h3 id="spec-review-criteria-heading" className="text-meta font-semibold text-text-secondary">Requirements and acceptance</h3>

@@ -98,6 +98,11 @@ export const importedRefusal = (spec: Pick<SpecRow, 'repoSource'>): SpecError | 
   : null);
 export type SpecRevisionRow = typeof specRevisions.$inferSelect;
 
+/** Test seam: runs after a revise has inserted its revision, before that revision's criteria are derived. */
+export const specStoreDeps: { afterRevisionInsert: (specId: string) => Promise<void> } = {
+  afterRevisionInsert: async () => {},
+};
+
 /**
  * After a revision is written: its criterion records and its kept reviews
  * ("Reviewing a spec revision" R-8, R-11). Fail-open: the revision stands
@@ -269,7 +274,8 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     INSERT INTO spec_revisions (spec_id, revision, artifact_revision, content_hash, author_kind, author_id, change_summary, repo_refs, design, imported)
     SELECT up.id, up.head_revision, body.current_revision, ${hash}, ${who.authorKind}, ${who.authorId}, ${summary}, ${refsJson}::jsonb, ${designJson}::jsonb, ${importJson}::jsonb FROM up, body
     RETURNING id`);
-  if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
+  const inserted = ((rows as { rows?: Array<{ id: string }> }).rows ?? [])[0];
+  if (!inserted) {
     const [now] = await db.select({ version: specs.version }).from(specs).where(eq(specs.id, specId)).limit(1);
     if (now?.version === spec.version && hash !== head.contentHash) {
       const [art] = await db.select({ currentRevision: artifacts.currentRevision }).from(artifacts).where(eq(artifacts.id, spec.bodyArtifactId)).limit(1);
@@ -281,9 +287,15 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
     }
     return fail(409, `The spec changed while you were revising it: it is now at version ${now?.version ?? spec.version}. Re-read it, merge, then revise on top.`, { currentVersion: now?.version ?? spec.version });
   }
+  // The revision this write inserted, by its RETURNING id: another revise can
+  // land between the insert and these reads, so the head is not necessarily
+  // ours, and deriving from it would keep this body's words under its revision.
+  await specStoreDeps.afterRevisionInsert(specId);
+  const [revision] = await db.select().from(specRevisions).where(eq(specRevisions.id, inserted.id)).limit(1);
+  // The spec as this write left it: the version the CAS matched, plus one.
+  // A later revise moves the head on, never what this revision was written against.
+  await afterRevisionWritten({ ...spec, version: spec.version + 1, headRevision: revision.revision }, revision, body);
   const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, after.headRevision))).limit(1);
-  await afterRevisionWritten(after, revision, body);
   return { ok: true, spec: after, revision, unchanged: false };
 }
 

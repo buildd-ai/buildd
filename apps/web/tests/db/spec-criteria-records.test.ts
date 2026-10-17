@@ -12,7 +12,7 @@ import { assertDbConfigured, q, seedWorkspace } from './harness';
 
 process.env.AUTH_SECRET ||= 'spec-criteria-records-test-secret';
 
-const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/store');
+const { createSpecDraft, reviseSpecDraft, specStoreDeps } = await import('../../src/lib/specs/store');
 const { approveSpecRevision, specApprovalDeps } = await import('../../src/lib/specs/approval');
 const { specReviewView } = await import('../../src/lib/specs/page-view');
 const { specCriterionHistory, pairChanges, backfillSpecCriteria } = await import('../../src/lib/specs/revision-changes');
@@ -79,6 +79,47 @@ describe('records (R-11)', () => {
     expect(rows[2].text_hash).toBe(criterionHash('Work that would start on a free slot reads "now".'));
     const [rev] = await q<{ criteria_count: number }>(sql`SELECT criteria_count FROM spec_revisions WHERE spec_id = ${specId}::uuid AND revision = 1`);
     expect(rev.criteria_count).toBe(4);
+  });
+
+  test('a revise that lands between another revise\'s insert and its derivation keeps each revision\'s own words', async () => {
+    const { specId, version } = await spec();
+    const bodyA = V1.replace('reads "now"', 'reads "soon"');
+    const bodyB = V1.replace('reads "now"', 'reads "later"');
+    // Writer B revises on top of A's revision 2 after A inserted it, before A derives its criteria.
+    let interleaved = false;
+    specStoreDeps.afterRevisionInsert = async () => {
+      specStoreDeps.afterRevisionInsert = async () => {};
+      const [now] = await q<{ version: number }>(sql`SELECT version FROM specs WHERE id = ${specId}::uuid`);
+      await revise(specId, now.version, bodyB, 'R-26 reads later');
+      interleaved = true;
+    };
+    try {
+      const a = await revise(specId, version, bodyA, 'R-26 reads soon');
+      expect(a.revision.revision).toBe(2);
+    } finally {
+      specStoreDeps.afterRevisionInsert = async () => {};
+    }
+    expect(interleaved).toBe(true);
+    const rows = await q<{ revision: number; text: string; text_hash: string }>(sql`
+      SELECT revision, text, text_hash FROM spec_criteria WHERE spec_id = ${specId}::uuid AND criterion_id = 'R-26' ORDER BY revision`);
+    const soon = 'Work that would start on a free slot reads "soon".';
+    const later = 'Work that would start on a free slot reads "later".';
+    expect(rows.map((r) => [r.revision, r.text, r.text_hash])).toEqual([
+      [1, 'Work that would start on a free slot reads "now".', criterionHash('Work that would start on a free slot reads "now".')],
+      [2, soon, criterionHash(soon)],
+      [3, later, criterionHash(later)],
+    ]);
+    const counts = await q<{ revision: number; criteria_count: number }>(sql`
+      SELECT revision, criteria_count FROM spec_revisions WHERE spec_id = ${specId}::uuid ORDER BY revision`);
+    expect(counts.map((c) => [c.revision, c.criteria_count])).toEqual([[1, 4], [2, 4], [3, 4]]);
+    const kept = await q<{ from_revision: number; to_revision: number }>(sql`
+      SELECT from_revision, to_revision FROM spec_revision_reviews WHERE spec_id = ${specId}::uuid ORDER BY to_revision, from_revision`);
+    expect(kept.map((k) => [k.from_revision, k.to_revision])).toContainEqual([1, 2]);
+    expect(kept.map((k) => [k.from_revision, k.to_revision])).toContainEqual([2, 3]);
+    // Each kept review compares the words its two revisions actually hold.
+    expect((await pairChanges(specId, 1, 2))?.lines.map((l) => [l.kind, l.kind === 'added-range' ? l.label : l.id])).toEqual([['changed', 'R-26']]);
+    expect((await pairChanges(specId, 2, 3))?.lines.map((l) => [l.kind, l.kind === 'added-range' ? l.label : l.id])).toEqual([['changed', 'R-26']]);
+    expect((await pairChanges(specId, 1, 3))?.lines.map((l) => [l.kind, l.kind === 'added-range' ? l.label : l.id])).toEqual([['changed', 'R-26']]);
   });
 
   test('a revision whose records were never written is derived from its body on first need', async () => {

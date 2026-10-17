@@ -23,7 +23,7 @@ export default function SpecCriterionHistory({ specId, criterionId, history }: {
         <Link href={close} className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">Close</Link>
       </div>
       {!history ? (
-        <p className="text-body text-text-secondary">This spec has never had {criterionId}.</p>
+        <p className="text-body text-text-secondary">Criterion never defined: {criterionId}.</p>
       ) : (
         <>
           {history.replaces.length ? <p className="text-meta text-text-muted">Continues {history.replaces.join(', ')}, which it replaces.</p> : null}
