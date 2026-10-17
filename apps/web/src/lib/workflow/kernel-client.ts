@@ -525,6 +525,60 @@ export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: Doo
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
+/**
+ * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
+ * (`unknown op "<op>"`), which a control plane on an older build answers before it reads anything.
+ * Nothing was applied there. Any other refusal (auth, reach, a malformed input) is not this.
+ */
+export function refusedAsUnknownOp(err: unknown, op: KernelOp): boolean {
+  if (!(err instanceof KernelCommandRefusedError) || err.status !== 400) return false;
+  const { code, error } = err.body;
+  return code === 'bad_request' && typeof error === 'string' && error.startsWith(`unknown op ${JSON.stringify(op)}`);
+}
+
+/**
+ * A door for an op newer than the control plane may be (release skew). Vercel and the control-plane
+ * Worker deploy separately, so for a few minutes the web host can submit an op to a control plane that
+ * predates it. That control plane refuses it as unknown and applies nothing, and the op has no other
+ * backstop. Only then the web host applies it itself, as it does in shadow, and says so loudly. Every
+ * other refusal stays a refusal.
+ */
+async function doorOrHereOnSkew<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, what: string): Promise<KernelOps[K]['result']> {
+  try {
+    return await door(op, input, c);
+  } catch (err) {
+    if (!refusedAsUnknownOp(err, op)) throw err;
+    console.error(`[workflow] SKEW: the control plane does not know ${op} (an older build); applying ${what} on the ${(c.deps?.host ?? kernelHost)()} host instead. This should stop once the control plane is on this release.`);
+    return (c.deps?.run ?? runKernelOp)(op, input);
+  }
+}
+
+/**
+ * T4 from the web host: the attempt's end, applied where the kernel is hosted (AC-9). A repair's or a
+ * review's end has no other backstop, so during release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_ended']['result']> {
+  return doorOrHereOnSkew('attempt_ended', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s attempt end`);
+}
+
+/**
+ * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
+ * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it
+ * is applied here, so a red PR is never left without its repair (`doorOrHereOnSkew`).
+ */
+export async function observeCiFailure(p: KernelOps['observe_ci_failure']['input'], c: DoorCall): Promise<KernelOps['observe_ci_failure']['result']> {
+  return doorOrHereOnSkew('observe_ci_failure', p, c, `the CI failure on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
+
+/**
+ * A green head from the check_suite success webhook: CiGreenObserved ends a CI repair bound to it, and
+ * outside a repair it is recorded as a CiObserved reading; applied where the kernel is hosted (AC-9).
+ * GitHub sends the green once, so during release skew it is applied here (`doorOrHereOnSkew`) rather
+ * than leave a repair waiting on a green nobody records.
+ */
+export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], c: DoorCall): Promise<KernelOps['observe_ci_green']['result']> {
+  return doorOrHereOnSkew('observe_ci_green', p, c, `the green CI on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}`);
+}
 
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {

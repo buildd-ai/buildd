@@ -218,7 +218,17 @@ export interface HeldReleaseSweepDeps {
   api?: (installationId: number, path: string) => Promise<any>;
   ciGreen?: (installationId: number, repoFullName: string, headSha: string) => Promise<boolean>;
   retry?: typeof handleReleasePrCiSuccess;
+  /** The clock the time budget reads (tests). */
+  now?: () => number;
 }
+
+/**
+ * How long one sweep may keep starting on new tasks. It shares pr-reconcile's `maxDuration` with
+ * every other step, and one task can take ~20s (a kernel-owned release PR lands through the
+ * control plane), so the sweep stops taking new ones past this and leaves the rest to the next
+ * hour; they are the oldest-touched then.
+ */
+export const HELD_RELEASE_SWEEP_BUDGET_MS = 15_000;
 
 export interface HeldReleaseSweep { scanned: number; completed: number; failed: number; retried: number; waiting: number; errors: number }
 
@@ -228,24 +238,33 @@ export interface HeldReleaseSweep { scanned: number; completed: number; failed: 
  * open green one is retried through the release-on-green door, and a task held past
  * `MAX_HELD_RELEASE_SWEEPS` sweeps fails with the reason, so no release stays pending forever.
  */
-export async function sweepHeldReleases(opts: { limit?: number; maxSweeps?: number; workspaceId?: string } = {}, deps: HeldReleaseSweepDeps = {}): Promise<HeldReleaseSweep> {
+export async function sweepHeldReleases(opts: { limit?: number; maxSweeps?: number; workspaceId?: string; budgetMs?: number } = {}, deps: HeldReleaseSweepDeps = {}): Promise<HeldReleaseSweep> {
   const repoFor = deps.repoFor ?? workspaceRepo;
   const api = deps.api ?? githubApi;
   const ciGreen = deps.ciGreen ?? allCheckSuitesPassed;
   const retry = deps.retry ?? handleReleasePrCiSuccess;
   const max = opts.maxSweeps ?? MAX_HELD_RELEASE_SWEEPS;
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const budgetMs = opts.budgetMs ?? HELD_RELEASE_SWEEP_BUDGET_MS;
   const out: HeldReleaseSweep = { scanned: 0, completed: 0, failed: 0, retried: 0, waiting: 0, errors: 0 };
+  // Moves a task to the back of the oldest-first order, so a task that cannot be settled (or
+  // that the budget reached last hour) does not hold the front of every sweep.
+  const rotate = (id: string) => db.update(tasks).set({ updatedAt: new Date() })
+    .where(and(eq(tasks.id, id), sql`(${tasks.context}->>'releasePrPending')::boolean = true`)).catch(() => undefined);
   const rows = await db.select({ id: tasks.id, workspaceId: tasks.workspaceId, context: tasks.context }).from(tasks)
     .where(and(sql`(${tasks.context}->>'releasePrPending')::boolean = true`, ...(opts.workspaceId ? [eq(tasks.workspaceId, opts.workspaceId)] : [])))
     .orderBy(tasks.updatedAt)
     .limit(opts.limit ?? 20);
   for (const t of rows) {
+    // Always one, so a slow first task still makes progress; then only while the budget lasts.
+    if (out.scanned > 0 && now() - startedAt >= budgetMs) break;
     out.scanned++;
     try {
       const ctx = ctxOf(t);
       const prNumber = Number(ctx.releasePrNumber);
       const repo = await repoFor(t.workspaceId);
-      if (!repo || !Number.isFinite(prNumber)) { out.errors++; continue; }
+      if (!repo || !Number.isFinite(prNumber)) { out.errors++; await rotate(t.id); continue; }
       const pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${prNumber}`).catch(() => null);
       if (pr?.merged === true) {
         if (await settleHeldReleaseTask(t, { merged: true, prNumber, repoFullName: repo.repoFullName, via: 'found merged by the hourly sweep' })) out.completed++;
@@ -260,7 +279,7 @@ export async function sweepHeldReleases(opts: { limit?: number; maxSweeps?: numb
         if (await settleHeldReleaseTask(t, { merged: false, prNumber, repoFullName: repo.repoFullName, reason: `PR #${prNumber} was still not merged after ${max} hourly retries; nothing was released. Land it, or release again.`, title: 'Release held too long' })) out.failed++;
         continue;
       }
-      await db.update(tasks).set({ context: { ...ctx, releaseHoldSweeps: sweeps } })
+      await db.update(tasks).set({ context: { ...ctx, releaseHoldSweeps: sweeps }, updatedAt: new Date() })
         .where(and(eq(tasks.id, t.id), sql`(${tasks.context}->>'releasePrPending')::boolean = true`));
       const head = pr?.head?.sha as string | undefined;
       if (head && await ciGreen(repo.installationId, repo.repoFullName, head).catch(() => false)) {
@@ -270,6 +289,7 @@ export async function sweepHeldReleases(opts: { limit?: number; maxSweeps?: numb
       } else out.waiting++;
     } catch (err) {
       out.errors++;
+      await rotate(t.id);
       console.error(`[held-release] sweep of task ${t.id} failed:`, err);
     }
   }

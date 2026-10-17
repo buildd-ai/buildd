@@ -3,7 +3,7 @@ import { isOpenAsk } from '@/lib/open-ask';
 import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { readGithubApproval } from '@/lib/github-approval';
+import { readGithubApprovalCached, loadGithubApprovals, GITHUB_APPROVAL_CONCURRENCY } from '@/lib/github-approval';
 import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
 import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
@@ -28,7 +28,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
+import { overlayDeliveryLifecycle, prLifecycleFor } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
@@ -66,7 +66,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { homeMissionRecencyWhere, loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_SCHEDULE_EXTRAS, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_TASK_EXTRAS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
@@ -530,19 +530,20 @@ export default async function HomePage({
             : undefined;
 
           // Exclude archived missions: they can never be active/scheduled on Home.
+          // Completed ones only inside the window Home still shows them for.
           // Columns are the card's (lib/mission-card-views.ts) so the visible
-          // cards cost no second task fan-out.
+          // cards cost no second task fan-out; task context is a digest.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
-            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'))),
+            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'), homeMissionRecencyWhere())),
             orderBy: sqlOrderBy([desc(missionsTable.priority), desc(missionsTable.createdAt)]),
-            columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
+            columns: { id: true, teamId: true, title: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, armedAt: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
-                extras: MISSION_TASK_REFRESH_EXTRAS,
+                extras: MISSION_CARD_TASK_EXTRAS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
-              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
+              schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true }, extras: MISSION_CARD_SCHEDULE_EXTRAS },
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
@@ -602,6 +603,7 @@ export default async function HomePage({
           ]);
           const factsNow = Date.now();
           const lifecycleMissions = allMissions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], missionDeliveryViews) }));
+          const lifecycleById = new Map(lifecycleMissions.map(m => [m.id, m]));
 
           missionDeliveries = lifecycleMissions.map(m => ({
             delivery: projectMissionDelivery({
@@ -650,7 +652,8 @@ export default async function HomePage({
             const recentDone = m.status === 'completed' && m.completedAt && nowMs - new Date(m.completedAt).getTime() < recentMs;
             const live = summary.liveWorkers > 0 || ['running', 'attention', 'review'].includes(summary.group);
             if (!recurring && !recentDone && !live && !m.isHeld) return [];
-            const row = m as unknown as ListMissionRow;
+            // The card's pulse, PR line and primary read the delivery's lifecycle, not the raw worker rows.
+            const row = (lifecycleById.get(m.id) ?? m) as unknown as ListMissionRow;
             if (recurring) {
               const last = lastTickSummary.get(m.id);
               const lastTick = (row.tasks ?? []).filter(t => t.scheduleId && t.status === 'completed')
@@ -853,9 +856,9 @@ export default async function HomePage({
             const humanReviewByTaskId = new Map<string, HumanPrReview>();
             const githubApprovalByWorkerId = new Map<string, import('@/lib/reviewer-gate').GithubApprovalFacts>();
             const installationByRepo = new Map<string, Promise<number | null>>();
-            // Bounded batches avoid an unbounded fan-out on large Home inboxes.
-            for (let offset = 0; offset < openPrWorkers.length; offset += 8) {
-              await Promise.all(openPrWorkers.slice(offset, offset + 8).map(async w => {
+            // One bounded pass (no unbounded fan-out on large inboxes), served
+            // from a short cache bound to the worker's head; see github-approval.ts.
+            await loadGithubApprovals(openPrWorkers, GITHUB_APPROVAL_CONCURRENCY, async w => {
                 const repo = repoFullNameFromPrUrl(w.prUrl);
                 if (!repo || !w.prNumber) return;
                 try {
@@ -866,13 +869,12 @@ export default async function HomePage({
                   }
                   const installationId = await installationByRepo.get(repo);
                   if (!installationId) return;
-                  githubApprovalByWorkerId.set(w.id, await readGithubApproval(installationId, repo, w.prNumber));
+                  githubApprovalByWorkerId.set(w.id, await readGithubApprovalCached(installationId, repo, w.prNumber, { workerSha: w.lastCommitSha ?? null }));
                 } catch {
                   // Unknown approval must never erase a canonical human handoff.
                   console.warn('[home] GitHub approval state unavailable');
                 }
-              }));
-            }
+            });
             // Landing's own record per PR (marker + handoff), read as one thing:
             // the platform-owned reading must come from the same data landPr writes.
             const landingStateByTaskId = new Map<string, { landing: unknown; handoff: unknown }>();
@@ -1823,17 +1825,22 @@ export default async function HomePage({
             // the row's own lastCheckedAt). One worker per task is assumed
             // (doc-fix tasks are single-shot planning tasks); a retried task
             // would have more than one, so the most recently started wins.
-            const docFixWorkers = docFixTaskIds.length > 0
-              ? await db.query.workers.findMany({
-                  where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
-                  columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
-                  orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
-                })
-              : [];
+            const [docFixWorkers, docFixViews] = docFixTaskIds.length > 0
+              ? await Promise.all([
+                  db.query.workers.findMany({
+                    where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
+                    columns: { taskId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, mergedAt: true },
+                    orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
+                  }),
+                  // A kernel-owned delivery's merged/open/closed reading replaces its worker's columns.
+                  getDeliveryViewsForTasks(docFixTaskIds),
+                ])
+              : [[], new Map()] as const;
             const docFixWorkerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
             for (const w of docFixWorkers) {
               if (w.taskId && !docFixWorkerByTask.has(w.taskId)) {
-                docFixWorkerByTask.set(w.taskId, { prLifecycleStatus: w.prLifecycleStatus ?? null, mergedAt: w.mergedAt ?? null });
+                const life = prLifecycleFor(w, docFixViews.get(w.taskId), w.taskId);
+                docFixWorkerByTask.set(w.taskId, { prLifecycleStatus: life.prLifecycleStatus, mergedAt: (life.mergedAt as Date | null) ?? null });
               }
             }
             const { items: discrepancyItems, overflowCount } = buildDiscrepancyItems(

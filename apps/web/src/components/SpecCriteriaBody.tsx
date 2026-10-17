@@ -137,10 +137,12 @@ export function specCriterionMarkdown(this: Processor) {
 }
 
 /** One anchored L1 criterion row, shared by plain and table definitions. */
-export default function SpecCriteriaBody({ id, children, criterionVerdicts }: {
+export default function SpecCriteriaBody({ id, children, criterionVerdicts, historyBase }: {
   id: string;
   children: ReactNode;
   criterionVerdicts: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
+  /** The spec page's address, for the criterion's History link ("Reviewing a spec revision" R-12). */
+  historyBase?: string;
 }) {
   return (
     <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
@@ -149,8 +151,11 @@ export default function SpecCriteriaBody({ id, children, criterionVerdicts }: {
           <Chip tone="muted" dot={false}>{id}</Chip>
         </a>
         {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
-          <a key={v.href} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
+          <a key={`${v.href}:${v.mark}`} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
         ))}
+        {historyBase ? (
+          <a href={`${historyBase}?history=${id}#criterion-history`} data-testid="spec-criterion-history-link" className="inline-flex min-h-11 items-center text-meta text-text-muted underline hover:text-text-primary md:min-h-0">History</a>
+        ) : null}
       </div>
       <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
     </div>

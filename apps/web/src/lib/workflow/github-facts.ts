@@ -8,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { isBaseDiffEquivalent, isContentEquivalentHead, readReviewedDelta } from '@/lib/pr-content-equivalence';
-import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
+import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
 import type { BaseDeltaFact } from './base-delta';
@@ -59,12 +59,51 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
 
 const FAILING = FAILING_CONCLUSIONS;
 
-/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. */
-export function checkRunsSummary(runs: Array<{ name?: string; status?: string; conclusion?: string | null }> | null | undefined): { complete: boolean; failing: string[] } | null {
+/** A check run as the kernel reads it: enough to order re-runs and find the suite it belongs to. */
+export interface CheckRunRow {
+  id?: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  started_at?: string | null;
+  check_suite?: { id?: number } | null;
+  app?: { id?: number | null } | null;
+}
+
+/**
+ * 6900a317: the runs that still speak for the head. A workflow triggered twice on one
+ * commit (a re-run, or a PR-body edit re-running a gate) leaves the first run's failure
+ * attached to the same SHA beside the run that replaced it; GitHub's merge box and the
+ * landing door (latestRunPerName) read the newest run per check name, and so does the
+ * kernel. Unorderable same-name runs are both kept, so an unorderable failure still counts.
+ */
+export function currentCheckRuns<T extends CheckRunRow>(runs: T[]): T[] {
+  const rows = runs.map((r) => ({ ...r, name: String(r.name ?? 'unnamed'), status: String(r.status ?? ''), conclusion: r.conclusion ?? null, __row: r }));
+  return latestRunPerName(rows).map((r) => r.__row);
+}
+
+/**
+ * The suites still to count: a suite every one of whose runs a newer same-name run
+ * replaced (in another suite) no longer decides anything. A suite with no runs, or any
+ * run still current, stays: a startup failure has no runs and is still red. Without a
+ * complete run read nothing is dropped (fails closed).
+ */
+export function currentSuites<S extends { id?: number }>(suites: S[], runs: CheckRunRow[] | null): S[] {
+  if (!runs) return suites;
+  const current = new Set(currentCheckRuns(runs));
+  return suites.filter((s) => {
+    const own = runs.filter((r) => s.id != null && r.check_suite?.id === s.id);
+    return own.length === 0 || own.some((r) => current.has(r));
+  });
+}
+
+/** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. Superseded re-runs are dropped first. */
+export function checkRunsSummary(runs: CheckRunRow[] | null | undefined): { complete: boolean; failing: string[] } | null {
   if (!runs || runs.length === 0) return null;
+  const live = currentCheckRuns(runs);
   return {
-    complete: runs.every((r) => r.status === 'completed'),
-    failing: runs.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
+    complete: live.every((r) => r.status === 'completed'),
+    failing: live.filter((r) => r.status === 'completed' && FAILING.has(String(r.conclusion ?? ''))).map((r) => String(r.name ?? 'unnamed')),
   };
 }
 
@@ -104,15 +143,20 @@ export function githubReader(installationId: number, rawApi: typeof githubApi = 
     },
     async ciGreen(repoFullName, headSha) {
       try {
-        const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;
-        return ciGreenFromSuites(data?.check_suites);
+        const [data, runs] = await Promise.all([
+          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as Promise<{ check_suites?: Array<{ id?: number; status?: string; conclusion?: string | null }> } | null>,
+          // The runs only ever drop a superseded suite; an unreadable or partial list drops nothing.
+          listAllCheckRuns<CheckRunRow>(api, installationId, repoFullName, headSha).catch(() => null),
+        ]);
+        const suites = data?.check_suites;
+        return ciGreenFromSuites(suites ? currentSuites(suites, runs?.complete ? runs.items : null) : suites);
       } catch {
         return null;
       }
     },
     async checkRuns(repoFullName, sha) {
       try {
-        const read = await listAllCheckRuns<{ name?: string; status?: string; conclusion?: string | null }>(api, installationId, repoFullName, sha);
+        const read = await listAllCheckRuns<CheckRunRow>(api, installationId, repoFullName, sha);
         const summary = checkRunsSummary(read.items);
         // A read short of total_count is unknown, never "complete".
         return summary && !read.complete ? { ...summary, complete: false } : summary;

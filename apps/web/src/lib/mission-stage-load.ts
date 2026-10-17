@@ -16,15 +16,17 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
 import { and, inArray } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { GoalCriteriaState, GoalCriterion, MissionStage } from '@buildd/shared';
 import { resolvePolicy } from './merge-policy';
 import type { MergeTier } from './mission-checks';
 import { missionStage, type MissionStagePr, type MissionStageTask } from './mission-stage';
+import { stageContextSql, stageWorkersPredicate } from './mission-stage-sql';
 import { taskRowsProgress } from './mission-strip-order';
-import { getOwnerDeliveryDisplays } from './workflow/delivery-view';
+import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from './workflow/delivery-view';
+import { overlayDeliveryLifecycle } from './delivery-overlay';
 import { loadDependencyRows } from './dependency-rows';
 import { foreignDependencyIds } from './mission-helpers';
 import { loadMissionsReleasedEdges } from './mission-board-waiting';
@@ -47,11 +49,13 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
       where: sqlWhere(and(inArray(tasks.missionId, missionIds), inArray(tasks.workspaceId, workspaceIds))),
       columns: {
         id: true, missionId: true, title: true, status: true, taskClass: true, kind: true,
-        mode: true, category: true, roleSlug: true, context: true, createdAt: true,
+        mode: true, category: true, roleSlug: true, createdAt: true,
         // What the progress cells' board projection reads besides the above.
         updatedAt: true, label: true, parentTaskId: true, creationSource: true, dependsOn: true,
         missionPhaseIndex: true, missionPhaseLabel: true, outputRequirement: true,
       },
+      // Never the whole context: only the keys the stage reads (mission-stage-sql.ts).
+      extras: sqlExtras({ stageContext: stageContextSql }),
     }),
   ]);
 
@@ -64,7 +68,7 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
     if (own.length > 0) foreignIdsByMission.set(id, foreignDependencyIds(own as never));
   }
   const foreignIds = [...new Set([...foreignIdsByMission.values()].flat())];
-  const [workerRows, deliveries, foreignDeps, releasedEdges] = await Promise.all([
+  const [rawWorkerRows, deliveries, deliveryViews, foreignDeps, releasedEdges] = await Promise.all([
     taskIds.length > 0
     ? db.select({
         id: workers.id, taskId: workers.taskId, status: workers.status,
@@ -73,13 +77,19 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
         supersededByPrNumber: workers.supersededByPrNumber, abandonedAt: workers.abandonedAt,
       })
         .from(workers)
-        .where(inArray(workers.taskId, taskIds))
+        // The newest few per task and every PR-bearing one (mission-stage-sql.ts).
+        .where(and(inArray(workers.taskId, taskIds), stageWorkersPredicate()))
     : [],
     // The page's own loads, by the ids above: one query each, never throwing past the list.
     getOwnerDeliveryDisplays(taskIds),
+    // §7: a kernel-owned delivery's merged/open/closed reading replaces its PR worker's columns.
+    getDeliveryViewsForTasks(taskIds).catch(() => new Map()),
     foreignIds.length > 0 ? loadDependencyRows(foreignIds).catch(() => new Map()) : new Map(),
     loadMissionsReleasedEdges(missionIds, workspaceIds),
   ]);
+
+  const overlaid = overlayDeliveryLifecycle(taskIds.map(id => ({ id, workers: rawWorkerRows.filter(w => w.taskId === id) })), deliveryViews);
+  const workerRows = overlaid.flatMap(t => t.workers);
 
   const prsByTask = new Map<string, MissionStagePr[]>();
   const workersByTask = new Map<string, Array<Record<string, unknown>>>();
@@ -107,7 +117,7 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
     const list = tasksByMission.get(t.missionId) ?? [];
     list.push({
       id: t.id, title: t.title ?? null, status: t.status, taskClass: t.taskClass ?? null, kind: t.kind ?? null,
-      mode: t.mode ?? null, category: t.category ?? null, roleSlug: t.roleSlug ?? null, context: t.context ?? null,
+      mode: t.mode ?? null, category: t.category ?? null, roleSlug: t.roleSlug ?? null, context: (t as { stageContext?: unknown }).stageContext ?? null,
       createdAt: (t as { createdAt?: string | Date | null }).createdAt ?? null,
       prs: prsByTask.get(t.id) ?? [],
     });

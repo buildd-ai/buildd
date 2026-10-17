@@ -33,6 +33,13 @@ describe('RunningNow', () => {
     expect(html).toContain('birch');
     expect(html).toContain('Offline');
   });
+  it('a runner running more than its slots says so, never "3 of 2 busy"', () => {
+    const over = { ...fleet, sessions: null, runners: [{ ...fleet.runners[0], maxSlots: 2 }] } as unknown as FleetSnapshot;
+    const out = renderToStaticMarkup(<RunningNow fleet={over} now={NOW} />);
+    expect(out).toContain('2 of 2 busy');
+    const three = { ...over, runners: [{ ...over.runners[0], slots: [...over.runners[0].slots.slice(0, 2), { index: 2, worker: w('e'), last: null, lane: { id: '2', bars: [] } }] }] } as unknown as FleetSnapshot;
+    expect(renderToStaticMarkup(<RunningNow fleet={three} now={NOW} />)).toContain('3 running, over its 2 slots');
+  });
   it('one row per running task: name, mission, how long, and its state as a word', () => {
     expect(html).toContain('add index');
     expect(html).toContain('Ship it');

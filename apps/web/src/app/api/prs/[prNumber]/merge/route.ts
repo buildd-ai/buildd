@@ -33,7 +33,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
-import { latestRunPerName } from '@/lib/auto-merge-bound';
+import { latestRunPerName, listAllCheckRuns, type CheckRunState } from '@/lib/ci-verdict';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -544,8 +544,8 @@ export async function POST(
   {
     let failing: string[] = [];
     try {
-      const runs = await githubApi(installationId, `/repos/${repoFullName}/commits/${liveHeadSha}/check-runs?per_page=100`);
-      failing = latestRunPerName(Array.isArray(runs?.check_runs) ? runs.check_runs : [])
+      const read = await listAllCheckRuns<CheckRunState>(githubApi, installationId, repoFullName, liveHeadSha);
+      failing = latestRunPerName(read.items)
         .filter((r) => r.conclusion === 'failure' || r.conclusion === 'timed_out')
         .map((r) => r.name);
     } catch (e) {

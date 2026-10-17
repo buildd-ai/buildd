@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
+import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
@@ -24,6 +25,9 @@ import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
 import { loadSupersededQuestionTaskIds } from './incident-recovery-load';
+import { getDeliveryViewsForTasks } from './workflow/delivery-view';
+import { prLifecycleFor } from './delivery-overlay';
+import type { DeliveryView } from './workflow/projections';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface HomeFleetStats {
@@ -66,17 +70,15 @@ const EMPTY: HomeFleetData = {
 };
 
 /**
- * The runners a team's fleet is made of: fresh heartbeats scoped to the team's
- * accounts or its workspaces. Home's fleet panel and the mission Lanes band
- * both read this (then `fleetCapacity`), so their capacity is one number.
+ * The runners a team's fleet is made of: fresh heartbeats of the team's own
+ * accounts or of accounts linked to its workspaces (`fleetHeartbeatScope`).
+ * Home's fleet panel, Settings → Runners, Health › Runners and the mission
+ * Lanes band all read this (then `fleetCapacity`), so their capacity is one number.
  */
 export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetHeartbeatRow[]> {
   const { teamId, wsIds, now } = input;
-  if (wsIds.length === 0 && !teamId) return [];
-  const wsArray = sql`array[${sql.join(wsIds.map(id => sql`${id}`), sql`, `)}]::text[]`;
-  const teamAccountIds = teamId
-    ? db.select({ id: accounts.id }).from(accounts).where(eq(accounts.teamId, teamId))
-    : null;
+  const scope = fleetHeartbeatScope({ teamId, wsIds });
+  if (!scope) return [];
   const rows = await db
     .select({
       id: workerHeartbeats.id,
@@ -91,10 +93,7 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
     .from(workerHeartbeats)
     .where(and(
       gt(workerHeartbeats.lastHeartbeatAt, new Date(now - RUNNER_STALE_CUTOFF_MS)),
-      or(
-        wsIds.length > 0 ? sql`${workerHeartbeats.workspaceIds} ?| ${wsArray}` : undefined,
-        teamAccountIds ? inArray(workerHeartbeats.accountId, teamAccountIds) : undefined,
-      ),
+      scope,
     ));
   return rows as FleetHeartbeatRow[];
 }
@@ -193,7 +192,7 @@ export async function loadHomeFleet(input: {
       .orderBy(desc(workers.startedAt))
       .limit(FLEET_WORKER_ROW_CAP),
     db
-      .select({ prNumber: workers.prNumber, taskTitle: tasks.title, taskLabel: tasks.label })
+      .select({ taskId: workers.taskId, prUrl: workers.prUrl, prNumber: workers.prNumber, taskTitle: tasks.title, taskLabel: tasks.label })
       .from(workers)
       .leftJoin(tasks, eq(workers.taskId, tasks.id))
       .where(and(
@@ -228,6 +227,12 @@ export async function loadHomeFleet(input: {
     loadSessionsOnline(wsIds, now),
   ]);
 
+  // §7: a kernel-owned delivery's merged/closed reading replaces its PR worker's columns for the
+  // ticker, "merged today" and "in CI". One batched read, run beside the superseded-question
+  // read below, so it adds no serial await to the page.
+  const deliveryTaskIds = [...new Set([...workerRows, ...ciRows].flatMap(r => (r.taskId && r.prNumber != null ? [r.taskId] : [])))];
+  const deliveryViewsPromise = getDeliveryViewsForTasks(deliveryTaskIds).catch(() => new Map<string, DeliveryView>());
+
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
@@ -249,6 +254,18 @@ export async function loadHomeFleet(input: {
   for (const runner of fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners) {
     for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
   }
+  const asking0 = workerRows.filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now));
+  // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+  const [deliveryViews, superseded] = await Promise.all([
+    deliveryViewsPromise,
+    asking0.length ? loadSupersededQuestionTaskIds(asking0.map(r => r.taskId ?? '')) : Promise.resolve(new Set<string>()),
+  ]);
+  for (const r of workerRows) {
+    if (!r.taskId) continue;
+    const life = prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId);
+    r.mergedAt = life.mergedAt as Date | null;
+    r.prLifecycleStatus = life.prLifecycleStatus as typeof r.prLifecycleStatus;
+  }
   const ticker = buildTickerEvents(
     workerRows.map(r => ({
       id: r.id, status: r.status, startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt,
@@ -262,9 +279,7 @@ export async function loadHomeFleet(input: {
 
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
-  const asking = workerRows.filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now));
-  // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
-  const superseded = asking.length ? await loadSupersededQuestionTaskIds(asking.map(r => r.taskId ?? '')) : new Set<string>();
+  const asking = asking0;
   const questions: HomeFleetQuestion[] = asking
     // Needs You admission: an open ask whose park a disposition hands to a person.
     .filter(r => !(r.taskId && superseded.has(r.taskId)))
@@ -289,6 +304,8 @@ export async function loadHomeFleet(input: {
       mergedToday: mergedPrNumbers.length,
       mergedPrNumbers,
       prsInCi: ciRows
+        // A delivery that merged or closed its PR is not "in CI", whatever the row says.
+        .filter(r => !r.taskId || !deliveryViews.has(r.taskId) || prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId).prLifecycleStatus === 'pr_open' || prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId).prLifecycleStatus === 'ci_running')
         // One entry per PR, however many rows carry it.
         .filter((r, i, all) => r.prNumber != null && all.findIndex(o => o.prNumber === r.prNumber) === i)
         .map(r => ({ prNumber: r.prNumber!, label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel }).label })),

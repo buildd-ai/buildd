@@ -2866,8 +2866,13 @@ export interface SpecPublicationDecision {
   publish: boolean;
   source: 'rule' | 'model' | 'fallback' | 'person';
   reasonCode: string;
+  /** The sentence as worded when decided; the page words it afresh (publicationSentence). */
   reason: string;
   line?: string;
+  /** rule_prod_data: the hit it named. */
+  hit?: string;
+  /** rule_marked_private: whose mark it was. */
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence?: number | null;
   model?: string | null;
@@ -2993,12 +2998,63 @@ export const specRevisions = pgTable('spec_revisions', {
   // approving statement, next to approved_at; reference attachments are never
   // in it. NULL: not approved, or approved before attachments existed.
   approvedAttachments: jsonb('approved_attachments').$type<SpecApprovedAttachment[]>(),
+  // How many spec_criteria rows were derived from this revision's body; NULL
+  // until they are (a revision with no criteria reads 0, not missing).
+  criteriaCount: integer('criteria_count'),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One criterion (R-n or AC-n) of one spec revision, derived from the body when
+ * the revision is written ("Reviewing a spec revision" R-11): its words, their
+ * sha256, the heading path it sits under, and its check, screen and replaces
+ * lines. Never edited on its own: the body is the source, and a missing row is
+ * derived again from it. A criterion's history, verdicts on a wording and the
+ * Review change list read these. Only apps/web/src/lib/specs/criteria.ts writes it.
+ */
+export const specCriterionRecords = pgTable('spec_criteria', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  criterionId: text('criterion_id').notNull(),
+  position: integer('position').notNull(),
+  text: text('text').notNull(),
+  textHash: text('text_hash').notNull(),
+  section: text('section').notNull(),
+  checks: jsonb('checks').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  screens: jsonb('screens').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  replaces: jsonb('replaces').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  revisionCriterionIdx: uniqueIndex('spec_criteria_revision_criterion_idx').on(t.specRevisionId, t.criterionId),
+  specCriterionIdx: index('spec_criteria_spec_criterion_idx').on(t.specId, t.criterionId, t.revision),
+}));
+
+/**
+ * What one revision changes against another, computed once and kept
+ * ("Reviewing a spec revision" R-8): the per-criterion change list, the other
+ * text by section, the summary check and the capped line diff. Written when the
+ * later revision is written (against the one before it and the approved one),
+ * or on first read of a pair. `from_revision` 0 is the empty text (nothing
+ * approved yet). `algo` is the version of the computation: a row of an older
+ * one is computed again.
+ */
+export const specRevisionReviews = pgTable('spec_revision_reviews', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  fromRevision: integer('from_revision').notNull(),
+  toRevision: integer('to_revision').notNull(),
+  algo: integer('algo').notNull(),
+  review: jsonb('review').$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pairIdx: uniqueIndex('spec_revision_reviews_pair_idx').on(t.specId, t.fromRevision, t.toRevision, t.algo),
 }));
 
 // Derived neighbours of a Living Spec (living-specs.md §14, decisions D-11/D-12):
@@ -3172,6 +3228,9 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
   criterionId: text('criterion_id').notNull(),
   verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  // sha256 of the criterion's words it judged (spec_criteria.text_hash). A
+  // verdict counts only for that wording; NULL: recorded before wordings were kept.
+  criterionTextHash: text('criterion_text_hash'),
   headSha: text('head_sha'),
   // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),

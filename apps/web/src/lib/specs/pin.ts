@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { specCriteria } from '@buildd/spec-contract/requirements';
+import { pinCriterionHashes } from './criteria';
 import { checkCriteriaScope } from '@buildd/spec-contract/scope';
 import type { StoredDesign } from './design';
 
@@ -73,7 +74,7 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
   // Pin provenance is the server's: a revision the filer named is explicit
   // and kept at claim; otherwise the first claim re-pins (lib/specs/claim-pin.ts).
   // A provisional pin moves at claim only to a newer approved revision.
-  const { commitSha, criteria, explicit: _explicit, pinnedAt: _pinnedAt, repinnedFrom: _repinnedFrom, provisional: _provisional, regradedFrom: _regradedFrom, regrade: _regrade, attachedBy: _attachedBy, attachedAt: _attachedAt, ...rest } = src;
+  const { commitSha, criteria, criterionHashes: _hashes, explicit: _explicit, pinnedAt: _pinnedAt, repinnedFrom: _repinnedFrom, provisional: _provisional, regradedFrom: _regradedFrom, regrade: _regrade, attachedBy: _attachedBy, attachedAt: _attachedAt, ...rest } = src;
   const pinned: Record<string, unknown> = {
     ...rest,
     specId,
@@ -93,6 +94,9 @@ export async function pinSpecSource<C extends Ctx>(workspaceId: string, context:
     if (!scope.ok) return { ok: false, status: 400, error: scope.error };
     pinned.criteria = scope.criteria;
   }
+  // The wording each criterion has here, so a later reader knows what this task was asked (R-13).
+  const hashes = await pinCriterionHashes(specId, rev.revision, pinned.criteria);
+  if (hashes) pinned.criterionHashes = hashes;
   return { ok: true, context: { ...(context as Record<string, unknown>), specSource: pinned } as unknown as C };
 }
 

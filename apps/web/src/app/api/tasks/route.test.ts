@@ -1471,6 +1471,20 @@ describe('POST /api/tasks', () => {
       expect(seen.values.context).not.toHaveProperty('specRepair');
       expect(seen.values.context.keep).toBe(1);
     });
+
+    it('a caller\'s release-candidate keys are dropped too (server-owned)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-r', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Fix it', context: { releaseCandidateFix: { prNumber: 9, headSha: 'h', version: '1.0.0', branch: 'release/v1.0.0', sourceBranch: 'dev' }, releaseCandidateAmendPr: 10, keep: 1 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('releaseCandidateFix');
+      expect(seen.values.context).not.toHaveProperty('releaseCandidateAmendPr');
+      expect(seen.values.context.keep).toBe(1);
+    });
   });
 
   it('creates task with session auth', async () => {
