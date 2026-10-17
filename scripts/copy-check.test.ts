@@ -122,7 +122,37 @@ describe('copy rules', () => {
   });
 });
 
+describe('state-jargon', () => {
+  it('flags internal state words used as state', () => {
+    for (const t of ['Held for review', 'Merge is held until CI passes', 'Armed', 'Disarm the gate', 'Force override enabled', 'Task claimed by a runner', 'Next poll in 30s', 'Last heartbeat 2m ago', 'Lease expires soon', 'Status: waiting_input']) {
+      expect(ids(t)).toContain('state-jargon');
+    }
+  });
+
+  it('leaves the plain-English senses alone', () => {
+    for (const t of ['Press and hold to see before', 'Agents hold no extra access.', 'Enter the code shown in your terminal', 'Merges are not held.', 'Hold on to your changes']) {
+      expect(ids(t)).not.toContain('state-jargon');
+    }
+  });
+
+  it('skips operator paths by path, not through the baseline', () => {
+    const src = (path: string) => scanSources([{ path, content: "export const x = 'Last heartbeat 2m ago';" }]).counts['state-jargon'][path];
+    expect(src('apps/web/src/app/app/(protected)/health/HealthClient.tsx')).toBeUndefined();
+    expect(src('apps/web/src/app/app/(protected)/tasks/Row.tsx')).toBe(1);
+  });
+});
+
 describe('extractCopy', () => {
+  it('does not count sql tagged templates as copy', () => {
+    const src = "const q = sql`(${tasks.context}->>'prNumber') IN (${sql.join(ids, sql`, `)})`;\nconst t = sql<number>`count(*) filter (where status = 'a b')`;";
+    expect(extractCopy('apps/web/src/app/app/(protected)/home/page.tsx', src)).toEqual([]);
+  });
+
+  it('serializeBaseline emits each rule once', () => {
+    const out = serializeBaseline(parseBaseline(serializeBaseline(Object.fromEntries(COPY_RULES.map((r) => [r.id, {}])) as never)));
+    for (const r of COPY_RULES) expect(out.split(`"${r.id}":`).length - 1).toBe(1);
+  });
+
   it('reads a JSX sentence whole, nested markup and expressions included', () => {
     const src = 'export const A = () => <p>No bucket <strong>of your own</strong> for {name} yet.</p>;';
     expect(extractCopy(NEW, src).map((s) => s.text)).toEqual(['No bucket of your own for N yet.']);
