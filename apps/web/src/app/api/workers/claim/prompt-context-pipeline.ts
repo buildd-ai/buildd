@@ -26,6 +26,7 @@
  * rail in the fixed order in one synchronous pass.
  */
 import type { ClaimTasksResponse } from '@buildd/shared';
+import { MEMORY_INDEX_CONTEXT_KEY } from '@buildd/core/memory-claim-index';
 import { loadTaskAreaConfig, type TaskAreaPrediction } from '@buildd/core/task-area-prediction-source';
 import { assignTaskAreaArm, TASK_AREA_TREATMENT_ARM } from '@buildd/core/task-area-prediction';
 import {
@@ -85,7 +86,7 @@ function flush(claimedWorkers: readonly Worker[], buffer: Map<Worker, string>): 
  * the task-area predictions so the caller can pass them on to
  * attachTaskAreaScope, which appends last and is unaffected by this change.
  */
-export async function runDependentContextInjections(
+async function assembleDependentContext(
   claimedWorkers: readonly Worker[],
   claimedTasks: readonly ClaimedTask[],
   account?: LinkedDocsAccount | null,
@@ -121,6 +122,13 @@ export async function runDependentContextInjections(
     claimedTasks,
     bufferingSink(discrepancyBuffer),
   );
+  // Install rejection handlers immediately. A stage can fail while another
+  // dependency is still pending; waiting until its final await would emit an
+  // unhandled rejection before the outer deadline can degrade the claim.
+  const allStages = Promise.all([
+    predictionsPromise, missionHandoffPromise, subjectPriorWorkPromise, discrepancyPromise,
+  ]);
+  void allStages.catch(() => {});
   const needsAreaHintPromise = anyTaskNeedsAreaHint(tasksToPredict);
 
   // attachKnowledgeContext's one unconditional real dependency: it reads what
@@ -151,7 +159,7 @@ export async function runDependentContextInjections(
     );
     predictions = await predictionsPromise;
   }
-  await Promise.all([subjectPriorWorkPromise, discrepancyPromise]);
+  await allStages;
 
   flush(claimedWorkers, missionHandoffBuffer);
   flush(claimedWorkers, knowledgeBuffer);
@@ -159,4 +167,44 @@ export async function runDependentContextInjections(
   flush(claimedWorkers, discrepancyBuffer);
 
   return predictions;
+}
+
+/** Optional retrieval must not strand workers that the claim already minted.
+ * Work on detached response objects: a timed-out retrieval may still finish,
+ * but cannot append context or memory-index metadata to the live response.
+ * Credentials and role configuration are outside this optional budget.
+ */
+export const CLAIM_CONTEXT_BUDGET_MS = 8_000;
+export async function runDependentContextInjections(
+  claimedWorkers: readonly Worker[],
+  claimedTasks: readonly ClaimedTask[],
+  account?: LinkedDocsAccount | null,
+  budgetMs = CLAIM_CONTEXT_BUDGET_MS,
+): Promise<ReadonlyMap<string, TaskAreaPrediction>> {
+  // This metadata is server-authored. Strip a caller-supplied index even
+  // when retrieval times out before attachKnowledgeContext gets to sanitize it.
+  for (const cw of claimedWorkers) {
+    const context = (cw.task as any)?.context;
+    if (context && typeof context === 'object') delete context[MEMORY_INDEX_CONTEXT_KEY];
+  }
+  const detached = structuredClone(claimedWorkers);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const started = performance.now();
+  try {
+    const result = await Promise.race([
+      assembleDependentContext(detached, claimedTasks, account).then(predictions => ({ predictions })),
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), budgetMs); }),
+    ]);
+    if (!result) {
+      console.warn('[claim] optional context deadline exceeded', { budgetMs, elapsedMs: Math.round(performance.now() - started) });
+      return new Map();
+    }
+    for (let i = 0; i < claimedWorkers.length; i++) Object.assign(claimedWorkers[i], detached[i]);
+    return result.predictions;
+  } catch (err) {
+    console.warn('[claim] optional context unavailable; dispatch continues:', err);
+    return new Map();
+  } finally {
+    clearTimeout(timer);
+  }
 }

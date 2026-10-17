@@ -128,21 +128,30 @@ export function pathsOverlap(a: string[], b: string[]): boolean {
   // reading and reject/skip '**' themselves — so the sentinel rule stays here.
   if (a.includes(REPO_WIDE_SENTINEL) || b.includes(REPO_WIDE_SENTINEL)) return true;
 
-  const na = a.map(stripTrailingSep);
-  const nb = b.map(stripTrailingSep);
+  const overlaps = pathOverlapIndex(b.map(stripTrailingSep));
+  return a.some(path => overlaps(stripTrailingSep(path)));
+}
 
-  const setB = new Set(nb);
-  for (const pa of na) {
-    // Exact match
-    if (setB.has(pa)) return true;
-
-    // Prefix match: pa is a directory that contains one of b's paths,
-    // or one of b's directories contains pa.
-    for (const pb of nb) {
-      if (pb.startsWith(pa + '/') || pa.startsWith(pb + '/')) return true;
+/** Index exact paths and their directory prefixes once per right-hand set.
+ * Pairwise scans made wide refresh diffs quadratic in the held lease count.
+ * A path hits if it is equal to, an ancestor of, or a descendant of an entry.
+ * Prefixes are slash-delimited; glob strings keep their literal semantics.
+ */
+function pathOverlapIndex(paths: string[]): (path: string) => boolean {
+  const exact = new Set(paths);
+  const ancestors = new Set<string>();
+  for (const path of exact) {
+    for (let i = path.indexOf('/'); i >= 0; i = path.indexOf('/', i + 1)) {
+      ancestors.add(path.slice(0, i));
     }
   }
-  return false;
+  return path => {
+    if (exact.has(path) || ancestors.has(path)) return true;
+    for (let i = path.indexOf('/'); i >= 0; i = path.indexOf('/', i + 1)) {
+      if (exact.has(path.slice(0, i))) return true;
+    }
+    return false;
+  };
 }
 
 /** At most this many overlapping paths are kept on a deferral row or an incident assessment. */
@@ -172,16 +181,13 @@ export function intersectPaths(a: string[], b: string[]): string[] {
   const nb = b.filter(p => p !== REPO_WIDE_SENTINEL).map(stripTrailingSep);
   if (na.length === 0 || nb.length === 0) return [];
 
-  const setB = new Set(nb);
+  const overlaps = pathOverlapIndex(nb);
   const out: string[] = [];
   const seen = new Set<string>();
 
   for (const pa of na) {
     if (seen.has(pa)) continue;
-    const hit =
-      setB.has(pa) ||
-      nb.some(pb => pb.startsWith(pa + '/') || pa.startsWith(pb + '/'));
-    if (hit) {
+    if (overlaps(pa)) {
       seen.add(pa);
       out.push(pa);
     }

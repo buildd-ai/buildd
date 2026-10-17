@@ -174,6 +174,20 @@ const ROLE_ENV_WINDOW_MAX_PAGES = 4;
 
 
 export async function POST(req: NextRequest) {
+  const claimStarted = performance.now();
+  let phaseStarted = claimStarted;
+  let pathChecksMs = 0;
+  const timingId = crypto.randomUUID();
+  const claimTiming = (stage: string, counts: Record<string, number> = {}) => {
+    const now = performance.now();
+    console.info('[claim-timing]', {
+      requestId: timingId, stage,
+      phaseMs: Math.round(now - phaseStarted), elapsedMs: Math.round(now - claimStarted),
+      ...counts,
+    });
+    phaseStarted = now;
+  };
+  claimTiming('request_started');
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
@@ -1274,6 +1288,7 @@ export async function POST(req: NextRequest) {
   // Workspaces whose lease read failed: their lease state is unknown, so the
   // hold/start shadow below never asks about them.
   const leaseReadFailedWorkspaces = new Set<string>();
+  claimTiming('before_lease_snapshot');
   if (openPrWorkspaceIds.length > 0) {
     await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
       try {
@@ -1285,6 +1300,13 @@ export async function POST(req: NextRequest) {
       }
     }));
   }
+
+  claimTiming('lease_snapshot', {
+    candidates: filteredTasks.length,
+    leaseReadFailures: leaseReadFailedWorkspaces.size,
+    leasePaths: [...activePathClaimsByWorkspace.values()].reduce((sum, byTask) =>
+      sum + [...byTask.values()].reduce((n, paths) => n + paths.length, 0), 0),
+  });
 
   // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
   // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
@@ -1616,7 +1638,9 @@ export async function POST(req: NextRequest) {
         },
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
+      const prCheckStarted = performance.now();
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
+      pathChecksMs += performance.now() - prCheckStarted;
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
@@ -1677,7 +1701,9 @@ export async function POST(req: NextRequest) {
       // concrete paths left and stays advisory.
       const concreteManifest = taskManifest.filter(p => p !== REPO_WIDE_SENTINEL);
       // A fix attempt's own ancestors never block it (§13.11 rule 4).
+      const leaseCheckStarted = performance.now();
       const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds);
+      pathChecksMs += performance.now() - leaseCheckStarted;
       if (leaseBlock) {
         const { holderTaskId: claimingTaskId, claimedPaths: concreteClaimed, overlapPaths } = leaseBlock;
         console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
@@ -3069,6 +3095,7 @@ export async function POST(req: NextRequest) {
   scheduleClaimHoldShadow(holdStart);
   scheduleClaimDeferralWaiters(deferralWaiters);
 
+  claimTiming('claim_arbitration', { workers: claimedWorkers.length, pathChecksMs: Math.round(pathChecksMs) });
   if (claimedWorkers.length === 0) {
     // When the account's OAuth budget is exhausted, every non-tenant Claude task
     // above was skipped by the budget gate (and none could fail over to Codex).
@@ -3281,6 +3308,7 @@ export async function POST(req: NextRequest) {
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
+  claimTiming('before_optional_context');
   const taskAreaPredictions = await runDependentContextInjections(
     claimedWorkers,
     filteredTasks,
@@ -3293,6 +3321,7 @@ export async function POST(req: NextRequest) {
         }
       : null,
   );
+  claimTiming('optional_context');
   await attachArtifactReferences(claimedWorkers, filteredTasks);
   await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
@@ -3404,6 +3433,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  claimTiming('response_ready', { workers: claimedWorkers.length });
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
     workers: claimedWorkers.map((cw) => (cw.task

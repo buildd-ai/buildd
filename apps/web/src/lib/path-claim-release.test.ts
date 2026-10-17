@@ -344,3 +344,17 @@ describe('resolveReleaseReasonForTask', () => {
     expect(await resolveReleaseReasonForTask(HOLDER)).toBe('abandoned');
   });
 });
+
+
+it('keeps a large release notification below the Pusher size limit without dropping agent delivery', async () => {
+  const paths = Array.from({ length: 4000 }, (_, i) => `src/${i}-${'long'.repeat(40)}.ts`);
+  await deliverPathReleased(HOLDER, {
+    workspaceId: WS, releasedPaths: paths, notifiedWaiters: [WAITER_A],
+    waiters: [{ waitingTaskId: WAITER_A, blockedPath: paths[3999] }],
+  }, 'merged');
+  const event = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_claim_released') as any[];
+  expect(Buffer.byteLength(JSON.stringify(event[2]))).toBeLessThan(10000);
+  expect(event[2].pathCount).toBe(4000);
+  expect(event[2].truncated).toBe(true);
+  expect(mockEnqueue.mock.calls[0][1].body.paths).toEqual([paths[3999]]);
+});
