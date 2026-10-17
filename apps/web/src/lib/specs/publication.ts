@@ -145,21 +145,38 @@ export async function readPublicationPolicy(workspaceId: string, specId?: string
 
 // ── The sentence on the spec page (R-68) ────────────────────────────────────
 
-const quote = (line: string) => `"${line.replace(/\s+/g, ' ').trim().slice(0, 160)}"`;
+const quote = (line: string) => `"${line.replace(/\s+/g, ' ').trim().slice(0, 160).replace(/[.;:]+$/, '')}"`;
 
 /**
  * One sentence: why a revision was kept private, naming the rule or the policy
- * line. Pure; stored on the decision so the page shows what was decided then.
+ * line, and what the person can do about it. Pure. Worded for the person, not
+ * for how the decision was reached.
  */
 export function publicationReason(d: Pick<SpecPublicationDecision, 'publish' | 'reasonCode' | 'line'> & { hit?: string; markFrom?: 'spec' | 'area' }): string {
-  if (d.publish) return d.line ? `Published under the policy line ${quote(d.line)}.` : 'Published.';
+  if (d.publish) {
+    if (d.reasonCode === 'person_published_anyway') return 'Published by a person.';
+    return d.line ? `Published under ${quote(d.line)}.` : 'Published.';
+  }
   const code = d.reasonCode;
-  if (code === 'rule_prod_data') return `Not published: the text has what looks like production data${d.hit ? ` (${d.hit})` : ''}. Take it out in a new revision.`;
-  if (code === 'rule_no_policy') return 'Not published: this workspace has no publication policy yet. Add a Publication section to the product spec and approve it.';
-  if (code === 'rule_marked_private') return d.markFrom === 'area' ? 'Not published: its area is marked private.' : 'Not published: a person marked this spec private.';
-  if (code === 'rule_too_long') return 'Not published: the spec is too long to check against the policy in one read, so it stays in buildd unless a person marks it public.';
-  if (code.startsWith('model_keep_private')) return d.line ? `Not published: the policy keeps this out of the repo (${quote(d.line)}).` : 'Not published: the policy keeps this out of the repo.';
-  if (code === 'below_bar') return 'Not published: the policy check has not been measured well enough to publish on its own yet, so a person decides.';
-  if (code.startsWith('model_')) return d.line ? `Not published: the policy does not clearly allow it, so it stays in buildd (closest line: ${quote(d.line)}).` : 'Not published: the policy does not clearly allow it, so it stays in buildd.';
-  return 'Not published: no decision model could read it against the policy, so it stays in buildd.';
+  if (code === 'rule_prod_data') return `Not in the repo: it looks like it contains production data${d.hit ? ` (${d.hit})` : ''}. Remove it in a new revision.`;
+  if (code === 'rule_no_policy') return 'Not in the repo: this workspace has no publication policy. Add a Publication section to the product spec.';
+  if (code === 'rule_marked_private') return d.markFrom === 'area' ? 'Its area is marked private.' : 'Marked private.';
+  if (code.startsWith('model_keep_private')) return d.line ? `Kept out of the repo by the policy: ${quote(d.line)}.` : 'Kept out of the repo by the policy.';
+  return 'Not in the repo yet.';
+}
+
+/**
+ * The sentence for a stored decision, worded now rather than when it was
+ * decided, so changed wording reaches every spec. Decisions stored before
+ * `hit` and `markFrom` were kept carry them only in their old sentence.
+ */
+export function publicationSentence(p: SpecPublicationDecision): string {
+  const hit = decisionHit(p);
+  const markFrom = p.markFrom ?? (/its area is marked private/i.test(p.reason ?? '') ? 'area' : 'spec');
+  return publicationReason({ publish: p.publish, reasonCode: p.reasonCode, line: p.line, hit, markFrom });
+}
+
+/** The production-data hit a decision named, from its field or, for an older one, its sentence. */
+export function decisionHit(p: SpecPublicationDecision): string | undefined {
+  return p.hit ?? /production data \((.+)\)\./.exec(p.reason ?? '')?.[1];
 }

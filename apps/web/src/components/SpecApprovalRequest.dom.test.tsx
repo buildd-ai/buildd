@@ -73,7 +73,7 @@ describe('SpecApprovalRequest', () => {
     expect(calls.length).toBe(1);
     expect(calls[0][0]).toBe(`/api/specs/${SPEC}/approve/confirm`);
     expect(JSON.parse(calls[0][1].body as string)).toEqual({ request: 'tok' });
-    expect(container.querySelector('[data-testid="spec-approval-result"]')!.textContent).toContain('Approved. Revision 3 is in force.');
+    expect(container.querySelector('[data-testid="spec-approval-result"]')!.textContent).toContain('Approved revision 3.');
     expect(approveButton()).toBeNull();
   });
 
@@ -90,7 +90,7 @@ describe('SpecApprovalRequest', () => {
     globalThis.fetch = mock(() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={ready} />));
     await act(async () => { approveButton()!.click(); });
-    expect(q('spec-approval-result')!.textContent).toBe('Approved. Revision 3 is in force.');
+    expect(q('spec-approval-result')!.textContent).toBe('Approved revision 3.');
     expect(approveButton()).toBeNull();
     await act(async () => { answer(new Response(JSON.stringify({}), { status: 500 })); });
     expect(q('spec-approval-result')!.textContent).toBe('Approval failed. Try again.');
@@ -99,7 +99,7 @@ describe('SpecApprovalRequest', () => {
 
   it('a first approval opens on the spec itself, rendered as Markdown', () => {
     act(() => root.render(<SpecApprovalRequest specId={SPEC} token="tok" view={first} />));
-    expect(container.textContent).toContain('Nothing is approved yet. Approving puts revision 3 in force.');
+    expect(container.textContent).toContain('Nothing is approved yet.');
     const rendered = q('spec-approval-rendered');
     expect(rendered).not.toBeNull();
     // The action comes before the text it approves.
