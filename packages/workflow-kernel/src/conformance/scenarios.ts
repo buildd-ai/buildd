@@ -2542,7 +2542,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       f.github.setPr(s.repo, s.prNumber, s.live('H1'));
       await drainKernel(host, s, f.ports);
       const next = (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => b.attemptNo - a.attemptNo)[0];
-      eq(next.attemptNo, 2, 'the ledger row is number 2');
+      eq(next!.attemptNo, 2, 'the ledger row is number 2');
       eq(f.work.filed.filter((w) => w.role === 'ci_fix').at(-1)!.detail?.attemptNo, 1, 'but it is CI fix 1');
     },
   },
