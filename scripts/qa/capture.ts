@@ -399,7 +399,18 @@ for (const route of routes) {
   try {
     pageErrors = 0;
     moduleErrors = [];
-    const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    // The first navigation to a cold route can time out while the dev server
+    // compiles it. The GET is read-only, so retry once against the warm route.
+    let response: Awaited<ReturnType<typeof page.goto>>;
+    try {
+      response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    } catch (err) {
+      if (!(err instanceof Error) || !/Timeout/i.test(err.message)) throw err;
+      console.warn(`[capture] RETRY ${route.id}: first navigation timed out (${err.message.split('\n')[0]}); retrying warm`);
+      pageErrors = 0;
+      moduleErrors = [];
+      response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    }
     const navStatus = response?.status() ?? null;
 
     if (IS_PREVIEW) {
