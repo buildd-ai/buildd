@@ -65,8 +65,44 @@ export function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+/**
+ * A current, enforced isolation probe. The claim route refuses to start a task
+ * for a runner that reports none (Living Spec "Runner isolation", R-4, R-11),
+ * and these tests claim as a bare API client, so they send one with each claim.
+ */
+function withIsolationProbe(endpoint: string, options: RequestInit): RequestInit {
+  if (endpoint !== '/api/workers/claim' || options.method !== 'POST' || typeof options.body !== 'string') return options;
+  let body: Record<string, any>;
+  try {
+    body = JSON.parse(options.body);
+  } catch {
+    return options;
+  }
+  if (!body || typeof body !== 'object' || body.environment) return options;
+  const now = new Date().toISOString();
+  const enforced = { mechanism: 'bwrap', scope: ['read', 'write'] };
+  body.environment = {
+    tools: [],
+    envKeys: [],
+    mcp: [],
+    labels: {},
+    scannedAt: now,
+    isolation: {
+      platform: 'linux',
+      evidence: ['integration-test'],
+      claude: enforced,
+      codex: { 'read-only': enforced, 'workspace-write': enforced },
+      probeAt: now,
+      processStartedAt: new Date(Date.now() - 1000).toISOString(),
+      runnerVersion: 'integration-test',
+    },
+  };
+  return { ...options, body: JSON.stringify(body) };
+}
+
 export function createTestApi(server: string, apiKey: string) {
   async function api(endpoint: string, options: RequestInit & { retries?: number } = {}) {
+    options = withIsolationProbe(endpoint, options) as typeof options;
     const maxRetries = options.retries ?? 2;
     let lastError: Error | null = null;
 
@@ -103,6 +139,7 @@ export function createTestApi(server: string, apiKey: string) {
   }
 
   async function apiRaw(endpoint: string, options: RequestInit = {}): Promise<{ status: number; body: any }> {
+    options = withIsolationProbe(endpoint, options);
     const res = await fetch(`${server}${endpoint}`, {
       ...options,
       headers: {
