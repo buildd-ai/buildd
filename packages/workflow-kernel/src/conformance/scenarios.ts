@@ -2277,6 +2277,40 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    // Task 79649a80: the close cleared the hold and the reopen started a fresh round, so closing and
+    // reopening the PR escaped a spent review budget.
+    name: '79649a80: closing and reopening a PR whose review budget is spent returns it to the person with no round; one closed mid-repair too',
+    async run(host) {
+      const s = await new Delivery(host, 115).open({ maxRounds: 1 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'the budget is spent');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the hold rides through the close');
+      applied(await s.submit({ type: 'PrReopened', actor: 'webhook', live: s.live('H2', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'ESCALATED', 'reopened');
+      eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha', 'resumeState']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2', resumeState: null }, 'a person\'s, at the reopened head');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t1', headSha: 'H2', live: s.live('H2'), forced: false }), 'rejected', 'review_budget_spent', 'an agent asks again after the reopen');
+
+      // Closed while a CI repair out of the spent escalation runs: the reopen still goes to the person.
+      const r = await new Delivery(host, 116).open({ maxRounds: 1 });
+      applied(await r.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (repair)');
+      applied(await r.verdict('request_changes'), 'ESCALATED', 'the budget is spent (repair)');
+      applied(await r.ciRed('H1'), 'REPAIRING', 'CI red on the escalated PR');
+      applied(await r.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: r.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed mid-repair');
+      eq((await r.view()).attempts.filter((a) => a.family === 'ci').map((a) => a.status), ['cancelled'], 'the repair is cancelled');
+      applied(await r.submit({ type: 'PrReopened', actor: 'webhook', live: r.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'ESCALATED', 'reopened (repair)');
+      eq(pick(await r.d(), ['stateReason', 'currentRound']), { stateReason: 'review_exhausted', currentRound: 1 }, 'a person\'s again');
+      eq(await r.count('dispatch_review'), 1, 'no reviewer for the reopen');
+
+      // Without a spent budget a reopen is reviewed, as before.
+      const n = await new Delivery(host, 117).open();
+      applied(await n.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (fresh)');
+      applied(await n.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: n.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed (fresh)');
+      applied(await n.submit({ type: 'PrReopened', actor: 'webhook', live: n.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'AWAITING_REVIEW', 'reopened (fresh)');
+      eq(await n.count('dispatch_review'), 2, 'the reopen dispatches a reviewer');
+    },
+  },
+  {
     name: 'delta approval (58c8961e): carried deltas are capped together, measured from the last full review',
     async run(host) {
       const s = await (await new Delivery(host, 96).open()).approvedAt('H1');
