@@ -483,7 +483,7 @@ describe('a reach check that cannot be made', () => {
 describe('the installation a command acts through is resolved from its workspace and repo', () => {
   const OTHER_REPO = 'acme/mobile';
   it('every op whose input carries an installationId is resolved, and no other', () => {
-    expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'observe_ci_green', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
+    expect([...INSTALLATION_OPS].sort()).toEqual(['abandon', 'land', 'observe_ci_failure', 'observe_ci_green', 'observe_conflict', 'open_delivery', 'record_supersession', 'request_ci_retry', 'request_review']);
   });
 
   it('the resolver is asked about the command\'s own workspace and repo', async () => {

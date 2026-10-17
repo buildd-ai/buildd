@@ -98,6 +98,8 @@ export interface KernelOps {
   record_review_verdict: { input: Parameters<Seam['recordReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['recordReviewVerdict']>> };
   /** A verdict from a reviewer outside the kernel's rounds on a PR the kernel owns (00d288fd), adopted. Same workspace rule. */
   adopt_review_verdict: { input: Parameters<Seam['adoptReviewVerdict']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['adoptReviewVerdict']>> };
+  /** T12: a conflict (or migration collision) a door saw on a kernel-owned PR; the control plane reads the live PR and applies ConflictObserved. */
+  observe_conflict: { input: Parameters<Seam['observeConflict']>[0]; result: Awaited<ReturnType<Seam['observeConflict']>> };
   /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
   claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
 }
@@ -125,6 +127,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   // The reach check judged `workspaceId`; the seam acts only on a delivery of that workspace.
   record_review_verdict: (s, i) => s.recordReviewVerdict(i),
   adopt_review_verdict: (s, i) => s.adoptReviewVerdict(i),
+  observe_conflict: (s, i) => s.observeConflict(i),
   claim_fix: (s, { task, workspaceId }) => {
     // As attempt_ended: the claim it revalidates must be for a task of that workspace (and the seam then
     // reads only that workspace's delivery).
@@ -140,7 +143,7 @@ export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' &
 type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOps[K]['input'] ? K : never }[KernelOp];
 // A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
 const INSTALLATION_OP: Record<InstallationOp, true> = {
-  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true,
+  land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true, observe_conflict: true,
 };
 /**
  * The control plane acts through the installation it resolves for the command's workspace and repo,

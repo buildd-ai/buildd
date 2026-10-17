@@ -57,6 +57,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   attempt_ended: true,
   // The red-PR sweep reads a red head again on its own tick.
   observe_ci_failure: false,
+  // The conflict door reads the live PR on every sweep, so the sweeps are its re-sender.
+  observe_conflict: false,
   // GitHub sends the check_suite success once.
   observe_ci_green: true,
   // The runner reports a reviewer's verdict once, in its completion PATCH.
