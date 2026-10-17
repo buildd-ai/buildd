@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
 import { loadDecisionFeatureCounts, loadDecisionHealthRows } from '@/lib/admin/data';
+import { healthObjectiveLookup } from '@/lib/decision-health-objectives';
 import { featureHealthById, groupDecisionFeatures } from '@/lib/admin/decision-features';
 import { loadDecisionFeatureModes } from '@buildd/core/decision-feature-modes';
 
@@ -32,7 +33,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ...read.scope,
     since: read.scope.since.toISOString(),
-    ...groupDecisionFeatures(counts, modes, featureHealthById(health.rows, health.outcomes)),
+    ...groupDecisionFeatures(counts, modes, featureHealthById(health.rows, health.outcomes, await healthObjectiveLookup())),
     healthTruncated: health.truncated,
   });
 }

@@ -228,6 +228,13 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         if (result.status >= 200 && result.status < 300 && b && typeof b === 'object' && 'hold' in b) {
           dispatch({ type: 'runner_hold', hold: (b.hold ?? null) as any });
         }
+      } else if (effect.type === 'slots') {
+        result = await client.post('/api/slots', effect.extras ? { slots: effect.slots, extras: effect.extras } : { slots: effect.slots });
+        const b = result.body as { slots?: unknown } | null;
+        if (result.status >= 200 && result.status < 300 && typeof b?.slots === 'number') dispatch({ type: 'slots', maxConcurrent: b.slots });
+        // A lower that left extras running keeps its own line: it offers p (R-45).
+        if (result.status >= 200 && result.status < 300 && !effect.extras && state.slotOffer?.slots === effect.slots) { queueChanged(); return; }
+        if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know slots yet (update it)' } };
       } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
@@ -238,7 +245,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       result = { status: 0, body: { error: `the runner did not answer (${err?.message ?? err})` } };
     }
     dispatch({ type: 'status', status: actionResultText(effect, result) });
-    if (effect.type === 'claim' || effect.type === 'hold') queueChanged();
+    if (effect.type === 'claim' || effect.type === 'hold' || effect.type === 'slots') queueChanged();
   };
 
   // ── terminal ────────────────────────────────────────────────────────────

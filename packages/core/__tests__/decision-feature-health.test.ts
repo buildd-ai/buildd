@@ -5,6 +5,7 @@ import {
   FALLBACK_REASON_SENTENCES,
   agentAuditObjective,
   computeFeatureHealth,
+  featureHealthByCapability,
   fallbackReasonKey,
   fallbackSentence,
   labelDecisionAudit,
@@ -310,5 +311,67 @@ describe('computeFeatureHealth — collection coverage', () => {
     expect(computeFeatureHealth([row({ id: 'a' })], []).coverage.replay).toBeNull();
     expect(computeFeatureHealth([row({ id: 'a', replayed: true }), row({ id: 'b', replayed: null })], []).coverage.replay).toBeNull();
     expect(computeFeatureHealth([row({ id: 'a', replayed: true }), row({ id: 'b', replayed: false })], []).coverage.replay).toEqual({ n: 1, pct: 50 });
+  });
+});
+
+describe('outcomeGraded: the adapters\' automatic labels, scored by the kind\'s objective', () => {
+  const objective = {
+    source: 'post_session_analysis',
+    score: (o: { label: string }, answer: string) =>
+      o.label === 'actionable' ? answer === 'analyse' : o.label === 'not_actionable' ? answer === 'skip' : null,
+  };
+  const auto = (r: HealthRow, label: string, source = 'post_session_analysis'): HealthOutcome => ({ decisionRecordId: r.id, source, label, value: null, metadata: null });
+
+  it('scores each row\'s model answer through the objective, apart from the audit grades', () => {
+    const a = row({ verdict: 'analyse' }), b = row({ verdict: 'skip' }), c = row({ verdict: 'skip' }), d = row({ verdict: 'analyse' });
+    const h = computeFeatureHealth([a, b, c, d], [
+      auto(a, 'actionable'), auto(b, 'actionable'), auto(c, 'not_actionable'), auto(d, 'unknown_label'),
+      audit(a, 'wrong'),
+    ], { objective });
+    expect(h.outcomeGraded).toMatchObject({ n: 3, right: 2, wrong: 1, unsure: 1 });
+    expect(h.outcomeGraded.accuracy).toBeCloseTo(2 / 3);
+    // The audit number is untouched by the automatic labels.
+    expect(h.graded).toMatchObject({ n: 1, right: 0, wrong: 1 });
+  });
+
+  it('ignores labels from another source and rows the model did not answer', () => {
+    const a = row({ verdict: 'analyse' }), b = fallback('timeout');
+    const h = computeFeatureHealth([a, b], [auto(a, 'actionable', 'task_terminal'), auto(b, 'actionable')], { objective });
+    expect(h.outcomeGraded).toMatchObject({ n: 0, unsure: 0, accuracy: null });
+  });
+
+  it('is empty without an objective: the labels still count as coverage only', () => {
+    const a = row();
+    const h = computeFeatureHealth([a], [auto(a, 'actionable')]);
+    expect(h.outcomeGraded).toMatchObject({ n: 0, accuracy: null });
+    expect(h.coverage.labelled.n).toBe(1);
+  });
+
+  it('the first label per row stands', () => {
+    const a = row({ verdict: 'analyse' });
+    const h = computeFeatureHealth([a], [auto(a, 'actionable'), auto(a, 'not_actionable')], { objective });
+    expect(h.outcomeGraded).toMatchObject({ n: 1, right: 1, wrong: 0 });
+  });
+
+  it('feeds the enough-evidence sentence when there is no audit sample, and the audit sample wins when there is one', () => {
+    const rows = [row({ verdict: 'analyse' }), row({ verdict: 'analyse' })];
+    const outcomes = rows.map(r => auto(r, 'actionable'));
+    const only = computeFeatureHealth(rows, outcomes, { objective, minGraded: 2 });
+    expect(only.collection.state).toBe('sufficient');
+    const none = computeFeatureHealth(rows, [], { objective, minGraded: 2 });
+    expect(none.collection.state).toBe('insufficient_sample');
+    // One audit grade exists: the audit sample is the evidence, so 1 of 2 is not enough.
+    const both = computeFeatureHealth(rows, [...outcomes, audit(rows[0], 'right')], { objective, minGraded: 2 });
+    expect(both.collection.state).toBe('insufficient_sample');
+  });
+
+  it('featureHealthByCapability picks each capability\'s objective', () => {
+    const a = { ...row({ verdict: 'analyse' }), capability: 'buildd.post_session_triage' };
+    const b = { ...row({ verdict: 'analyse' }), capability: 'other' };
+    const out = featureHealthByCapability([a, b], [auto(a, 'actionable'), auto(b, 'actionable')], {
+      objectiveFor: id => (id === 'buildd.post_session_triage' ? objective : undefined),
+    });
+    expect(out.get('buildd.post_session_triage')!.outcomeGraded.n).toBe(1);
+    expect(out.get('other')!.outcomeGraded.n).toBe(0);
   });
 });

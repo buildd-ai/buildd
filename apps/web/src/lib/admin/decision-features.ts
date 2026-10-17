@@ -4,6 +4,7 @@ import {
   type CapabilityKind,
   type InferenceCapability,
 } from '@buildd/core/inference-policy';
+import type { DecisionObjective } from '@buildd/core/decision-readout';
 import { describeFeatureMode, type FeatureModeView, type StoredFeatureMode } from '@buildd/core/decision-feature-modes';
 import { computeFeatureHealth, featureHealthByCapability, type FeatureHealth, type HealthOutcome, type HealthRow } from '@buildd/core/decision-feature-health';
 
@@ -37,7 +38,11 @@ export interface DecisionFeature extends Omit<DecisionFeatureCount, 'capability'
 export interface DecisionHealthRow extends HealthRow { capability: string }
 
 /** One health readout per capability that has rows. A capability with none is absent. */
-export const featureHealthById = (rows: readonly DecisionHealthRow[], outcomes: readonly HealthOutcome[]) => featureHealthByCapability(rows, outcomes);
+export const featureHealthById = (
+  rows: readonly DecisionHealthRow[],
+  outcomes: readonly HealthOutcome[],
+  objectiveFor?: (capability: string) => DecisionObjective | undefined,
+) => featureHealthByCapability(rows, outcomes, { objectiveFor });
 
 /** Group order: the order the kinds are introduced in packages/core/inference-policy.ts. */
 export const DECISION_FEATURE_KINDS: readonly CapabilityKind[] = ['interactive', 'built_in', 'opt_in', 'server_feature'];

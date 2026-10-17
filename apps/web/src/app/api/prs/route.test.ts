@@ -88,6 +88,23 @@ describe('per-task token', () => {
     expect((await res.json()).workspaceCount).toBe(1);
   });
 
+  it('uses its bound workspace without querying account-wide reach', async () => {
+    mockListReachable.mockRejectedValue(new Error('Task identity has no account-wide workspace access'));
+    const res = await GET(req('?workspaceId=ws-a&limit=30'));
+    expect(res.status).toBe(200);
+    expect(mockListReachable).not.toHaveBeenCalled();
+    expect(mockListPrs.mock.calls[0][0]).toMatchObject({ workspaceIds: ['ws-a'], limit: 30 });
+    expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
+  });
+
+  it('retains its bound workspace when absent from account reach', async () => {
+    mockListReachable.mockResolvedValue(['ws-b']);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(mockListPrs.mock.calls[0][0].workspaceIds).toEqual(['ws-a']);
+    expect(mockListReachable).not.toHaveBeenCalled();
+  });
+
   it('lists nothing for another workspace of the team', async () => {
     await GET(req('?workspaceId=ws-b'));
     expect(mockListPrs.mock.calls[0][0].workspaceIds).toEqual([]);

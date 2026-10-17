@@ -22,6 +22,7 @@ import {
   claimabilitySkip,
   sendRunnerWake,
   targetLocalUiUrlOf,
+  byPersonOf,
   webhookEligible,
   webhookPayloadFor,
   type DispatchContext,
@@ -156,7 +157,9 @@ export async function relayDispatch(req: RelayRequest, deps: ResolveDeps = RESOL
   if (skip) return { status: 200, body: { outcome: 'skipped', why: skip } };
   const fromPayload = typeof req.payload?.targetLocalUiUrl === 'string' ? req.payload.targetLocalUiUrl : null;
   const targeted = fromPayload ?? targetLocalUiUrlOf(p.row.metadata);
-  const sent = await deps.sendRunnerWake(p.ctx, targeted);
+  // The person flag comes from the outbox row only: the relay payload is not
+  // trusted to raise it (a held runner runs a person's Start, spec c7410e76 R-34).
+  const sent = await deps.sendRunnerWake(p.ctx, targeted, byPersonOf(p.row.metadata) && targeted === targetLocalUiUrlOf(p.row.metadata));
   if (sent === 'failed') return { status: 502, body: { error: 'pusher send failed' } };
   if (sent === 'unconfigured') return { status: 200, body: { outcome: 'skipped', why: 'pusher_unconfigured' } };
   return { status: 200, body: { outcome: 'delivered', via: targeted ? 'relay:pusher:targeted' : 'relay:pusher' } };

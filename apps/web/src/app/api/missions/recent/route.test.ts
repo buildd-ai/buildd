@@ -26,7 +26,7 @@ mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: moc
 
 const { GET } = await import('./route');
 const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
-const { missionStatusNoteBody } = await import('@/lib/mission-status-note');
+const { missionStatusNoteBody, MISSION_COMPLETED_MARKER } = await import('@/lib/mission-status-note');
 const dialect = new PgDialect();
 
 const NOW = Date.now();
@@ -132,11 +132,11 @@ describe('GET /api/missions/recent', () => {
         '(("missions"."workspace_id" in ($1, $2)) and ((("missions"."status" in ($3, $4, $5)) or ((("missions"."status" = $6) and '
         + '(greatest("missions"."completed_at", ( select max("mission_notes"."created_at") from "mission_notes" '
         + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."created_at" >= $7 and "mission_notes"."type" = \'update\' '
-        + 'and "mission_notes"."author_type" = \'system\' and "mission_notes"."title" in ($8, $9) '
-        + 'and "mission_notes"."body" like $10 )) >= $11))))))',
+        + 'and ("mission_notes"."collapse_key" = $8 or ("mission_notes"."author_type" = \'system\' and "mission_notes"."title" in ($9, $10) '
+        + 'and "mission_notes"."body" like $11)) )) >= $12))))))',
       );
-      expect(rendered.params.slice(0, 10)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', since, 'Mission status changed', 'Mission reopened', '% → completed']);
-      expect(new Date(rendered.params[10] as string).getTime()).toBe(since.getTime());
+      expect(rendered.params.slice(0, 11)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', since, MISSION_COMPLETED_MARKER, 'Mission status changed', 'Mission reopened', '% → completed']);
+      expect(new Date(rendered.params[11] as string).getTime()).toBe(since.getTime());
     });
 
     it('a re-completion through a status PATCH counts: its "→ completed" feed note is read', () => {

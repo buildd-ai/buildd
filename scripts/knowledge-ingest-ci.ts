@@ -69,7 +69,7 @@ async function main() {
     const job = await api.claimJob([repo]);
     if (!job) break;
     console.log(`[knowledge-ingest] claimed job ${job.id} (${job.trigger}) @ ${job.sha ?? 'HEAD'}`);
-    const reader = createGitRepoReader(dir, job.sha);
+    const reader = await createGitRepoReader(dir, job.sha);
     const result = await runFullIngestJob(job, reader, api);
     console.log(`[knowledge-ingest] job ${job.id}: ${result.status}`, result.stats ?? result.error ?? '');
     if (result.status === 'error') process.exit(1);

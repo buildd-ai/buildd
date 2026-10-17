@@ -28,6 +28,10 @@ export interface ClaimOutcome {
   summary?: string;
   /** Broad claim: why every candidate was deferred, by reason. */
   deferrals?: Record<string, number>;
+  /** Broad claim that took work: how many agents it started. */
+  started?: number;
+  /** The task a refused overlap waits for (the server's field, else the id its sentence names). */
+  holderTaskId?: string;
   /** HTTP refusals. */
   status?: number;
   refusal?: string;
@@ -38,6 +42,15 @@ export interface ClaimOutcomeSnapshot {
   broad: ClaimOutcome | null;
 }
 
+const OVERLAP_CODES = new Set(['soft_overlap', 'path_overlap']);
+/** A task id as the sentence prints it (hex and hyphens), never a word like "finishes". */
+const TASK_ID = /\btask ([0-9a-f][0-9a-f-]{7,})(?=[\s,.]|$)/i;
+
+/** A server from before `holderTaskId` names the holder only in its sentence ("overlaps in-flight task <id>"). */
+export function taskIdInSentence(detail: string | undefined): string | null {
+  return detail?.match(TASK_ID)?.[1] ?? null;
+}
+
 export function outcomeFromDiagnostics(diagnostics: ClaimDiagnostics | null | undefined, now: number): ClaimOutcome {
   if (!diagnostics) return { at: now, reason: 'no_pending_tasks' };
   const o: ClaimOutcome = { at: now, reason: diagnostics.reason };
@@ -46,6 +59,8 @@ export function outcomeFromDiagnostics(diagnostics: ClaimDiagnostics | null | un
     o.exclusion = ex.code;
     if (ex.detail) o.detail = ex.detail;
     if (ex.until) o.until = ex.until;
+    const holder = ex.holderTaskId ?? (OVERLAP_CODES.has(ex.code) ? taskIdInSentence(ex.detail) : null);
+    if (holder) o.holderTaskId = holder;
   }
   if (diagnostics.budgetBlock?.walls?.length) {
     o.walls = diagnostics.budgetBlock.walls.map(w => ({ kind: w.kind, backend: w.backend, resetsAt: w.resetsAt ?? null }));

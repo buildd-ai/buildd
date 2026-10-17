@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   attributeStoreReaches,
   storeGuardPath,
+  getFileWallTimeoutMs,
   getTestTimeoutMs,
   STORE_REACH_MARKER,
   diffStoreSnapshots,
@@ -179,6 +180,56 @@ describe('runTestFile', () => {
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Failed to launch Bun");
     expect(result.output).toContain("ENOENT: posix_spawn 'bun'");
+  });
+});
+
+describe('runTestFile wall-clock cap', () => {
+  it('kills a hung file and says why', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      let killed = false;
+      let resolveExit!: (n: number) => void;
+      const exited = new Promise<number>(r => (resolveExit = r));
+      const empty = () => new ReadableStream<Uint8Array>({ start: c => void exited.then(() => c.close()) });
+      const result = await runTestFile('hang.test.ts', () => ({
+        exited,
+        kill: () => { killed = true; resolveExit(137); },
+        stdout: empty(),
+        stderr: empty(),
+      }));
+      expect(killed).toBe(true);
+      expect(result.exitCode).toBe(137);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
+
+  it('resolves even when an orphan keeps stdout open after the kill', async () => {
+    process.env.BUILDD_TEST_FILE_TIMEOUT_MS = '50';
+    try {
+      const result = await runTestFile('orphan.test.ts', () => ({
+        exited: new Promise<number>(() => {}),
+        kill: () => {},
+        stdout: new ReadableStream<Uint8Array>({ start: () => {} }),
+        stderr: new ReadableStream<Uint8Array>({ start: () => {} }),
+      }));
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('wall-clock');
+    } finally {
+      delete process.env.BUILDD_TEST_FILE_TIMEOUT_MS;
+    }
+  });
+});
+
+describe('getFileWallTimeoutMs', () => {
+  it('falls back to the default for unset, blank, invalid and <1 values', () => {
+    const def = getFileWallTimeoutMs(undefined);
+    expect(def).toBeGreaterThan(0);
+    for (const v of ['', '   ', 'abc', '0', '-5', '0.5']) expect(getFileWallTimeoutMs(v)).toBe(def);
+  });
+  it('uses a valid value', () => {
+    expect(getFileWallTimeoutMs('1234')).toBe(1234);
   });
 });
 

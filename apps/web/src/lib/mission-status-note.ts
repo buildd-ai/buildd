@@ -15,3 +15,11 @@ export function missionStatusNoteIntoPattern(to: string): string {
 
 /** Titles used in mission status change notes (PATCH /api/missions/[id] and GET /api/missions/recent). */
 export const MISSION_STATUS_CHANGE_TITLES = ['Mission status changed', 'Mission reopened'] as const;
+
+/**
+ * `mission_notes.collapse_key` on the note a status PATCH writes when it
+ * completes a mission. The read trusts this, not the author type: the notes
+ * route (post_note) never writes `collapse_key`, so a posted body cannot carry
+ * it, while a person's or MCP caller's own PATCH note (author user/mcp) can.
+ */
+export const MISSION_COMPLETED_MARKER = 'mission-status:completed';

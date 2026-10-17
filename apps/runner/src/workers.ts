@@ -85,6 +85,8 @@ import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, get
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
 import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
+import { SlotPauseQueue, slotResumes } from './runner-slots';
+import { ClaimRefusalBackoff } from './claim-refusal-backoff';
 import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, commitShutdownCheckpoint } from './restart-resume';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
@@ -1116,6 +1118,13 @@ export class WorkerManager {
     return { runner: this.config.localUiUrl, skills: advertisedRoleSlugs(this.environment) ?? [] };
   }
 
+  /** Broad claims in flight right now (`buildd top`: "Looking for work…"). */
+  private lookingForWork = 0;
+
+  isLookingForWork(): boolean {
+    return (this.lookingForWork || 0) > 0;
+  }
+
   /** Keep a claim outcome and tell `top` (one `claim_outcome` frame; no taskId = the broad claim). */
   private noteClaimOutcome(taskId: string | null, outcome: ClaimOutcome): void {
     if (taskId) {
@@ -1242,6 +1251,74 @@ export class WorkerManager {
     await this.sendHeartbeat();
   }
 
+  /** Broadcast assignments the server just refused (claim-refusal-backoff.ts). */
+  private _refusalBackoff?: ClaimRefusalBackoff;
+  private get refusalBackoff(): ClaimRefusalBackoff {
+    return (this._refusalBackoff ??= new ClaimRefusalBackoff());
+  }
+
+  /** Slots raised, or the hold lifted: every refused assignment may read differently now. */
+  resetRefusalBackoff(): void {
+    this.refusalBackoff.reset();
+  }
+
+  /** Agents paused to free a slot (`buildd slots --pause`, `p` in top); they continue oldest first (R-45). */
+  private _slotPauses?: SlotPauseQueue;
+  get slotPauses(): SlotPauseQueue {
+    // Lazy: some harnesses build the manager with Object.create (no field initializers).
+    return (this._slotPauses ??= new SlotPauseQueue());
+  }
+  /** Slot-paused agents told to continue and not yet working again: they hold their slot meanwhile. */
+  private _slotResuming?: Map<string, number>;
+  private get slotResuming(): Map<string, number> {
+    return (this._slotResuming ??= new Map());
+  }
+
+  /**
+   * Set how many agents run at once (`buildd slots`, + / - in top; R-43, R-44).
+   * The caller saves it in config.json. The next heartbeat reports it; a raise
+   * claims for the new free slots straight away.
+   */
+  setSlots(slots: number): void {
+    const raised = slots > this.config.maxConcurrent;
+    this.config.maxConcurrent = slots;
+    this.emit({ type: 'slots', maxConcurrent: slots });
+    void this.sendHeartbeat();
+    if (raised) {
+      this.refusalBackoff.reset();
+      this.claimPendingTasks().catch(() => {});
+    }
+  }
+
+  /** Busy slots: working agents, plus slot-paused ones continuing right now. */
+  private busySlotCount(): number {
+    const now = Date.now();
+    for (const [id, at] of this.slotResuming) {
+      const w = this.workers.get(id);
+      if (!w || w.status !== 'waiting' || now - at > 60_000) this.slotResuming.delete(id);
+    }
+    const working = Array.from(this.workers.values()).filter(w => w.status === 'working' || w.status === 'stale').length;
+    return working + this.slotResuming.size;
+  }
+
+  /** Continue slot-paused agents on `free` slots, oldest pause first; returns how many. */
+  private async continueSlotPaused(free: number): Promise<number> {
+    if (free <= 0 || this.slotPauses.size === 0) return 0;
+    const ids = slotResumes(this.slotPauses, id => {
+      const w = this.workers.get(id);
+      return !!w && w.status === 'waiting' && w.waitingFor?.type === 'pause';
+    }, free);
+    let n = 0;
+    for (const id of ids) {
+      this.slotPauses.remove(id);
+      this.slotResuming.set(id, Date.now());
+      console.log(`[Worker ${id}] A slot freed: continuing in its own session`);
+      if (await this.sendMessage(id, 'Resume').catch(() => false)) n++;
+      else this.slotResuming.delete(id);
+    }
+    return n;
+  }
+
   // Send heartbeat to server announcing this runner instance is alive and ready
   /**
    * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
@@ -1272,7 +1349,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth });
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth }, this.config.singleTask ? undefined : this.config.maxConcurrent);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1571,6 +1648,8 @@ export class WorkerManager {
       worker.pauseRequestedAt = Date.now();
       worker.currentAction = 'Pausing after the current step';
       this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      // Persisted: a SIGKILL before the tool ends must still read as a person's pause.
+      try { storeSaveWorker(worker); } catch { /* the next save covers it */ }
       this.emit({ type: 'worker_update', worker });
       const timer = setInterval(() => {
         if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
@@ -1726,6 +1805,25 @@ export class WorkerManager {
     if (this.shuttingDown || this.config?.singleTask) return out;
     const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause' && !!w.resumeOnStart);
     for (const w of due) {
+      // One continue per worker at a time: a hold lifting while the startup
+      // pass still waits on the server must not send the carry-on twice.
+      if (this.continuing.has(w.id)) continue;
+      this.continuing.add(w.id);
+      try {
+        await this.continueRestoredAgent(w, out);
+      } finally {
+        this.continuing.delete(w.id);
+      }
+    }
+    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
+    return out;
+  }
+
+  /** Workers continueRestoredAgents is continuing right now. */
+  private continuing = new Set<string>();
+
+  private async continueRestoredAgent(w: LocalWorker, out: { continued: string[]; held: string[]; ended: string[] }): Promise<void> {
+    {
       let res: any = null;
       try {
         res = await this.buildd.updateWorker(w.id, {
@@ -1745,17 +1843,17 @@ export class WorkerManager {
         storeSaveWorker(w);
         this.emit({ type: 'worker_update', worker: w });
         out.ended.push(w.id);
-        continue;
+        return;
       }
+      // The other pass may have continued it while the server was answering.
+      if (w.status !== 'waiting' || !w.resumeOnStart) return;
       if (claimsHeldByPerson()) {
         out.held.push(w.id);
-        continue;
+        return;
       }
       console.log(`[Worker ${w.id}] Continuing in its own session after the restart`);
       if (await this.sendMessage(w.id, RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
     }
-    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
-    return out;
   }
 
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
@@ -1843,11 +1941,14 @@ export class WorkerManager {
       this.emit({ type: 'circuit_breaker', paused: false, pausedUntil: 0, reason: 'reset' });
     }
 
-    const activeWorkers = Array.from(this.workers.values()).filter(
-      w => w.status === 'working' || w.status === 'stale'
-    );
-    const slots = this.config.maxConcurrent - activeWorkers.length;
+    let slots = this.config.maxConcurrent - this.busySlotCount();
     if (slots <= 0) return [];
+    // A slot freed: agents paused to free one continue first, oldest pause first (R-45).
+    // Only awaited when there are any, so the claim below starts in the same tick otherwise.
+    if (this.slotPauses.size > 0) {
+      slots -= await this.continueSlotPaused(slots);
+      if (slots <= 0) return [];
+    }
 
     try {
       // No specific workspace: this is the autonomous cross-workspace poll. Opt
@@ -1864,9 +1965,13 @@ export class WorkerManager {
           expiresAt: string | null;
         }>;
       };
+      // `buildd top` says "Looking for work…" while this is out (R-26 claim-loop line).
+      this.lookingForWork = (this.lookingForWork || 0) + 1;
+      this.emit({ type: 'claim_loop', looking: true });
       try {
         claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, withRunnerHold(this.environment, currentRunnerHold())));
       } catch (err: any) {
+        this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
         if (status === 0) {
@@ -1881,6 +1986,7 @@ export class WorkerManager {
         this.onClaimServerErrorStreak(status);
         throw err;
       }
+      this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
       this.clearClaimDegradedAlertIfRecovered();
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
 
@@ -1925,7 +2031,7 @@ export class WorkerManager {
       }
 
       // `buildd top` reads what held this claim (R-25), or that nothing did.
-      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed', started: claimed.length } : outcomeFromDiagnostics(diagnostics, Date.now()));
       for (const cw of claimed) if (cw?.taskId) this.claimOutcomes.clearTask(cw.taskId);
 
       if (claimed.length === 0) {
@@ -2280,6 +2386,9 @@ export class WorkerManager {
       console.log(`[WorkerManager] Draining for update — not claiming task ${task.id}`);
       return null;
     }
+    // The claim storm: a broadcast assignment the server just refused for a
+    // reason that has not moved is not claimed again (claim-refusal-backoff.ts).
+    if (!opts.byPerson && this.refusalBackoff.skip(task.id, Date.now())) return null;
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
     // pausedContextFor fails toward claiming when the payload carries no
@@ -2320,7 +2429,10 @@ export class WorkerManager {
       throw err;
     }
     const { workers: claimed, diagnostics } = claimResult;
-    this.noteClaimOutcome(task.id, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+    const outcome: ClaimOutcome = claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now());
+    this.noteClaimOutcome(task.id, outcome);
+    if (claimed.length > 0) this.refusalBackoff.clear(task.id);
+    else this.refusalBackoff.refused(task.id, outcome.exclusion ?? outcome.reason, outcome.holderTaskId ?? null, outcome.at);
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({
@@ -2690,7 +2802,11 @@ export class WorkerManager {
           },
           // Cloud: the install runs behind the agent session (deps-gate.ts).
           // A host runner installs inline, as before.
-          { deferInstall: isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER !== 'deps' },
+          {
+            deferInstall: isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER !== 'deps',
+            // `buildd top` shows a starting agent's setup step in words.
+            onStep: (words) => { worker.currentAction = words; this.emit({ type: 'worker_update', worker }); },
+          },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -4504,6 +4620,8 @@ export class WorkerManager {
         // setupWorktree now defers its own install to that same case, so there
         // is one owner each and no double install. The pass is cached per
         // (baseCommit, manifestHash), so the cost is once per base per runner.
+        worker.currentAction = 'Checking the environment';
+        this.emit({ type: 'worker_update', worker });
         const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
@@ -6268,6 +6386,9 @@ export class WorkerManager {
       if (!bwrapRetryAfterCleanup) this.recordCanaryOutcome(worker, task.roleSlug);
 
       this.noteLoginOutcome(worker);
+
+      // A task refused while waiting for this one, or for a free slot, may start now.
+      if (worker.status === 'done' || worker.status === 'error') this.refusalBackoff.agentEnded(worker.taskId);
 
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {

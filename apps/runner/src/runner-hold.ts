@@ -12,7 +12,7 @@
  *   - lifted only by `buildd resume`, `h` in `buildd top`, or its own `until`
  *     (a timer here clears it and tells the runner to claim again, AC-19).
  *
- * It stops the runner CHOOSING work: the broad claim poll and broadcast
+ * It stops the runner CHOOSING work: the broad claim poll, background ingest/scout/probe polls and broadcast
  * assignments. A claim a person makes (`c` in top, POST /api/claim on the
  * socket, Start on the dashboard aimed at this runner) still runs (R-34).
  */
@@ -266,7 +266,7 @@ export function holdLine(hold: RunnerHold, running: number, now: number): string
 /** What `buildd resume` prints. */
 export function resumeLine(wasHeld: boolean, running: number): string {
   return wasHeld
-    ? `Resumed: this runner takes new work again. ${agents(running, 'running')}`
+    ? `Resumed: looking for work now. ${agents(running, 'running')}`
     : `This runner was not on hold, so nothing changed. ${agents(running, 'running')}`;
 }
 

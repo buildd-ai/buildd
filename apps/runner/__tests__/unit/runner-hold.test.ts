@@ -214,7 +214,7 @@ describe('the one-line answers', () => {
     expect(holdLine({ since: at(9, 12), until: null }, 0, T0)).toBe('On hold: nothing new starts. Nothing is running. buildd resume lifts it.');
   });
   test('resume says it takes work again', () => {
-    expect(resumeLine(true, 2)).toBe('Resumed: this runner takes new work again. 2 agents running.');
+    expect(resumeLine(true, 2)).toBe('Resumed: looking for work now. 2 agents running.');
     expect(resumeLine(false, 0)).toBe('This runner was not on hold, so nothing changed. Nothing is running.');
   });
 });
@@ -252,7 +252,7 @@ describe('runHoldCommand', () => {
       { path: '/api/workers/w1/answer', body: { message: 'Resume' } },
     ]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('Resumed: this runner takes new work again. 1 agent running.\nContinued "name override" in its own session.');
+    expect(r.stdout).toBe('Resumed: looking for work now. 1 agent running.\nContinued "name override" in its own session.');
   });
 
   test('with no runner running, it writes the config and says the next start is held', async () => {
