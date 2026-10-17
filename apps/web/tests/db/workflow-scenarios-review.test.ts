@@ -110,6 +110,8 @@ describe('a review verdict for a replaced head arrives late', () => {
   });
 });
 
+const reopen = (pr: Awaited<ReturnType<World['openPr']>>) => q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${pr.ownerTaskId}::uuid`);
+
 describe('stacked PRs', () => {
   test('B is stacked on A (B\'s base is A\'s branch, B\'s task depends on A\'s); both approved; A lands → A MERGED and its task completed, B neither merged nor completed', async () => {
     w = await world();
@@ -118,6 +120,9 @@ describe('stacked PRs', () => {
     expect(await w.delivery(b)).toMatchObject({ baseRef: 'feat/stack-a' });
     await w.approve(a);
     await w.approve(b);
+    // AC-1 slice 3: B's owner end completed B's task at its hand-off. Reopen it, so what follows
+    // is about the merges: A's merge must not complete B's task, only B's own merge does.
+    await reopen(b);
 
     expect(await w.land(a, a.head)).toMatchObject({ merged: true });
     await w.deliver();
@@ -138,6 +143,9 @@ describe('stacked PRs', () => {
     const b = await w.openPr({ branch: 'feat/stack-b', base: 'feat/stack-a', files: { 'src/b.ts': 'export const b = 2;\n' }, dependsOn: [a.ownerTaskId] });
     await w.approve(a);
     await w.approve(b);
+    // AC-1 slice 3: B's owner end completed B's task at its hand-off. Reopen it, so what follows
+    // is about the merges: A's merge must not complete B's task, only B's own merge does.
+    await reopen(b);
     expect(await w.land(a, a.head)).toMatchObject({ merged: true });
     await w.deliver();
 
