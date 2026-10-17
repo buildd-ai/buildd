@@ -12,7 +12,7 @@
  */
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { presentVisualReview } from './workflow/visual-review-presentation';
+import { earlierCommitDetail, presentVisualReview } from './workflow/visual-review-presentation';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
@@ -128,6 +128,8 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   if (state.status === 'optional' && state.scope.impact === 'unknown') return idle('not checked', 'Could not tell whether any screens changed, so nothing was captured.');
   if (state.status === 'optional') return idle('optional', 'Visual review is optional for this mission.');
   if (state.status === 'passed') {
+    // Closed: the pass stands as the record, and the row says which commit it judged.
+    if (state.passedOnEarlierCommit) return row('stale', 'passed on an earlier commit', earlierCommitDetail(state), 'none');
     if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. It checks again.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
   }

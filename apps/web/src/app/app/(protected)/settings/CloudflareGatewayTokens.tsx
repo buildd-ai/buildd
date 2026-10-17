@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useConfirm } from '@/components/useConfirm';
 
 /**
- * Settings → Cloudflare → Gateway tokens. Tokens minted from the team's
+ * Settings → Cloudflare → AI Gateway (optional). Tokens minted from the team's
  * Cloudflare credential that can only run models (AI Gateway Run, Workers AI
  * Read): the person's own, which decision calls made for them spend, and the
  * team's, which agent runs send to the gateway. Masked; revoked at Cloudflare
@@ -97,13 +97,10 @@ export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) 
   );
 
   return (
-    <div className="border-t border-border-default pt-4 space-y-3" data-testid="gateway-tokens">
-      <div>
-        <p className="text-sm font-medium text-text-primary">Gateway tokens</p>
-        <p className="text-xs text-text-muted">
-          Created from the team token, which needs Account API Tokens: Edit. Gateway tokens can only run models, expire after 90 days and are revoked individually.
-        </p>
-      </div>
+    <div className="space-y-3 pb-2" data-testid="gateway-tokens">
+      <p className="text-xs text-text-muted">
+        Created from the team token, which needs Account API Tokens: Edit. Each expires after 90 days and is revoked on its own.
+      </p>
       {tokens === null && !msg && <p className="text-xs text-text-tertiary">Loading…</p>}
       {tokens && row('personal', tokens.personal, true)}
       {tokens && row('team', tokens.team, tokens.canManageTeam)}

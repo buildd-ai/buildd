@@ -22,6 +22,7 @@ import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+import { describeUnmetCondition, type GateCondition, type UnmetCondition } from './mission-dependency-gate';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
@@ -96,6 +97,8 @@ export interface StateBecauseExtras {
   }>;
   /** Upstream mission title, when it was loaded. */
   dependencyTitle?: string | null;
+  /** The downstream's gate against the upstream's live state (`evaluateMissionGate`), when it was read. */
+  dependencyGate?: { gate: GateCondition; met: boolean; unmet: UnmetCondition[] } | null;
   /**
    * Failed rows excluded from the health signal because their deliverable
    * shipped anyway — see `mission-task-superseded.ts`. Reported unconditionally
@@ -257,16 +260,34 @@ function causeLinksFor(
   extra: StateBecauseExtras,
 ): Link[] {
   switch (w.kind) {
-    case 'dependency':
-      return [
-        link(
-          extra.dependencyTitle
-            ? `Upstream mission "${extra.dependencyTitle}" has not met this mission's gate condition.`
-            : 'The upstream mission has not met this mission\'s gate condition.',
-          'missions.dependsOnMissionId',
+    case 'dependency': {
+      const upstream = extra.dependencyTitle ? `Upstream mission "${extra.dependencyTitle}"` : 'The upstream mission';
+      const g = extra.dependencyGate ?? null;
+      if (!g) {
+        return [link(`${upstream} has not met this mission's gate condition.`, 'missions.dependsOnMissionId', { ...base, missionId: w.missionId })];
+      }
+      const gateName = g.gate === 'completed' ? 'completed' : 'merged';
+      if (g.met) {
+        return [link(
+          `${upstream} has met this mission's "${gateName}" gate. The block clears the next time this mission is checked.`,
+          'missions.dependsOnMissionId + evaluateUpstreamGate',
           { ...base, missionId: w.missionId },
-        ),
+        )];
+      }
+      return [
+        link(`${upstream} has not met this mission's "${gateName}" gate.`, 'missions.dependsOnMissionId', { ...base, missionId: w.missionId }),
+        ...g.unmet.slice(0, 10).map(u => link(
+          `Still needed: ${describeUnmetCondition(u)}.`,
+          'evaluateUpstreamGate',
+          {
+            ...base,
+            missionId: w.missionId,
+            ...('taskId' in u && u.taskId ? { taskId: u.taskId } : {}),
+            ...('prNumber' in u && u.prNumber ? { prNumber: u.prNumber } : {}),
+          },
+        )),
       ];
+    }
 
     case 'task':
       if (w.attempt) {

@@ -5671,7 +5671,8 @@ async function handleReviewerOutcomeIfNeeded(
   let serverOverrideReason: string | null = null;
   let serverOverrideSource: 'files' | 'confidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
-    let currentFiles: Array<{ filename: string }> = [];
+    // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
+    let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
     try {
       const { githubApi } = await import('@/lib/github');
@@ -5692,11 +5693,11 @@ async function handleReviewerOutcomeIfNeeded(
         repoFullName,
         prNumber,
         headSha,
-        files: currentFiles as never,
+        files: (currentFiles ?? []) as never,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
-      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // Leave currentFiles null: the helper treats an unreadable file list as
       // grounds to escalate, so a transient GitHub failure cannot grant a merge.
       console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
     }

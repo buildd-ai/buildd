@@ -18,19 +18,26 @@ mock.module('@/lib/mission-wake', () => ({
 }));
 
 /**
- * The two COUNT(*) probes behind the `merged` gate, in the order
- * `missionHasUnmergedWork` runs them:
- *   1. workers ⨝ tasks — workers holding an open PR
- *   2. tasks — non-terminal deliverable rows whose PR has not been opened yet
- *
- * Queued as a list so a test can say "no open PRs, but one task still pending".
- * Default (empty queue) is zero, i.e. nothing outstanding.
+ * The upstream's tasks, each with its latest worker, as `evaluateMissionGate`
+ * loads them (db.query.tasks.findMany). The predicate itself is covered in
+ * mission-dependency-gate.test.ts; here only how the loader and the writers
+ * use its answer.
  */
-let countQueue: number[] = [];
-const mockSelectWhere = mock(() => {
-  const next = countQueue.shift() ?? 0;
-  return Promise.resolve([{ count: next }]) as any;
+let upstreamTasks: any[] = [];
+const mockTasksFindMany = mock(() => Promise.resolve(upstreamTasks));
+const url = (n: number) => `https://github.com/example/app/pull/${n}`;
+const row = (title: string, worker: any, over: any = {}) => ({
+  id: `task-${title}`, title, status: 'completed', taskClass: 'work', parentTaskId: null, workspaceId: 'ws-1',
+  workers: worker ? [worker] : [], ...over,
 });
+const mergedW = (n: number) => ({ prUrl: url(n), prNumber: n, mergedAt: new Date('2026-01-02'), prLifecycleStatus: 'merged' });
+const openW = (n: number) => ({ prUrl: url(n), prNumber: n, mergedAt: null, prLifecycleStatus: 'pr_open' });
+const closedW = (n: number) => ({ prUrl: url(n), prNumber: n, mergedAt: null, prLifecycleStatus: 'closed' });
+
+mock.module('@/lib/workflow/delivery-ship', () => ({
+  deliveryShipsForPrs: () => Promise.resolve(new Map()),
+  shipKey: () => null,
+}));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -39,28 +46,16 @@ mock.module('@buildd/core/db', () => ({
         findFirst: mockMissionsFindFirst,
         findMany: mockMissionsFindMany,
       },
+      tasks: { findMany: mockTasksFindMany },
     },
     update: mockUpdate,
-    // db.select({...}).from(t)[.innerJoin(...)].where(expr) → awaitable
-    select: () => {
-      const node: any = {
-        where: mockSelectWhere,
-        innerJoin: () => node,
-      };
-      return { from: () => node };
-    },
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
   and: (...args: any[]) => ({ type: 'and', args }),
-  or: (...args: any[]) => ({ type: 'or', args }),
-  ne: (a: any, b: any) => ({ type: 'ne', a, b }),
   isNull: (a: any) => ({ type: 'isNull', a }),
-  isNotNull: (a: any) => ({ type: 'isNotNull', a }),
-  inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
-  count: () => ({ type: 'count' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -71,7 +66,6 @@ mock.module('@buildd/core/db/schema', () => ({
     dependencyMetAt: 'dependency_met_at',
   },
   tasks: { id: 'id', missionId: 'mission_id', status: 'status', taskClass: 'task_class' },
-  workers: { taskId: 'task_id', prUrl: 'pr_url', mergedAt: 'merged_at' },
 }));
 
 import {
@@ -85,6 +79,15 @@ import {
 describe('isMissionBlocked', () => {
   beforeEach(() => {
     mockMissionsFindFirst.mockReset();
+    mockTasksFindMany.mockClear();
+    upstreamTasks = [];
+    mockUpdate.mockReset();
+    mockUpdateSet.mockReset();
+    mockUpdateWhere.mockReset();
+    mockUpdate.mockReturnValue({ set: mockUpdateSet });
+    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+    updateReturningRows = [{ id: 'mission-2' }];
+    mockUpdateWhere.mockImplementation(() => ({ returning: () => Promise.resolve(updateReturningRows) }) as any);
   });
 
   it('returns not blocked when no dependency set', async () => {
@@ -141,12 +144,13 @@ describe('isMissionBlocked', () => {
     expect(result.blocked).toBe(false);
   });
 
-  it('returns blocked for merged gate when dependencyMetAt is null', async () => {
+  it('returns blocked for merged gate while an upstream PR is open, naming the PR', async () => {
     mockMissionsFindFirst.mockResolvedValue({
       id: 'upstream-1',
       title: 'Specs Mission',
       status: 'active',
     });
+    upstreamTasks = [row('docs: spec', openW(7))];
 
     const result = await isMissionBlocked({
       id: 'mission-2',
@@ -155,7 +159,84 @@ describe('isMissionBlocked', () => {
       dependencyMetAt: null,
     });
     expect(result.blocked).toBe(true);
-    expect(result.reason).toContain('Specs Mission');
+    expect(result.reason).toBe('Waiting for mission "Specs Mission" PRs to merge: PR #7 for "docs: spec" is not merged');
+    expect(result.unmet?.[0]).toMatchObject({ kind: 'pr_open', prNumber: 7 });
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // ── Read-through: the gate is decided from live state, not only from events ──
+  //
+  // Regression: an upstream mission was completed and delivered (every task PR
+  // and its mission PR merged, criteria passed) but its downstream, gated on
+  // `merged`, stayed blocked. The merge events had fired while a sibling row was
+  // still open, a closed obsolete refresh PR was counted as an open PR forever,
+  // and completion only released `completed`-gate dependents. Nothing re-asked.
+
+  it('unblocks and stamps a merged-gate mission whose upstream is completed', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: 'upstream-1', title: 'Upstream', status: 'completed' });
+
+    const result = await isMissionBlocked({
+      id: 'mission-2',
+      dependsOnMissionId: 'upstream-1',
+      gateCondition: 'merged',
+      dependencyMetAt: null,
+    });
+
+    expect(result.blocked).toBe(false);
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ dependencyMetAt: expect.any(Date) }));
+    // Completion already settled it: no task load, no verification read.
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+  });
+
+  it('unblocks a merged-gate mission when every upstream PR shipped, despite a closed refresh PR', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'upstream-1', title: 'Upstream', status: 'active', integrationBranchEnabled: true, workingBranch: 'mission/upstream',
+    });
+    upstreamTasks = [
+      row('feat: build', mergedW(1)),
+      row('chore(mission): merge dev into the Upstream integration branch', closedW(2)),
+      row('Ship mission: Upstream', mergedW(3), { taskClass: 'bookkeeping' }),
+      row('[surface audit] Upstream', null, { status: 'pending', roleSlug: 'visual-auditor' }),
+    ];
+
+    const result = await isMissionBlocked({
+      id: 'mission-2',
+      dependsOnMissionId: 'upstream-1',
+      gateCondition: 'merged',
+      dependencyMetAt: null,
+    });
+
+    expect(result.blocked).toBe(false);
+    expect(mockUpdate).toHaveBeenCalled();
+  });
+
+  it('keeps a mission-branch upstream shut until its mission PR merges', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'upstream-1', title: 'Upstream', status: 'active', integrationBranchEnabled: true, workingBranch: 'mission/upstream',
+    });
+    upstreamTasks = [row('feat: build', mergedW(1)), row('Ship mission: Upstream', openW(3), { taskClass: 'bookkeeping' })];
+
+    const result = await isMissionBlocked({
+      id: 'mission-2',
+      dependsOnMissionId: 'upstream-1',
+      gateCondition: 'merged',
+      dependencyMetAt: null,
+    });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe('Waiting for mission "Upstream" PRs to merge: the mission PR #3 is not merged');
+  });
+
+  it('names the upstream status for a completed gate', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: 'upstream-1', title: 'Upstream', status: 'active' });
+    const result = await isMissionBlocked({
+      id: 'mission-2',
+      dependsOnMissionId: 'upstream-1',
+      gateCondition: 'completed',
+      dependencyMetAt: null,
+    });
+    expect(result.reason).toBe('Waiting for mission "Upstream" to complete: it is active, not completed');
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
   });
 
   it('returns not blocked when upstream is deleted (no-op)', async () => {
@@ -240,8 +321,10 @@ describe('checkAndUnblockDependentMissions', () => {
     mockUpdate.mockReset();
     mockUpdateSet.mockReset();
     mockUpdateWhere.mockReset();
-    mockSelectWhere.mockClear();
-    countQueue = [];
+    mockTasksFindMany.mockClear();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue({ id: 'upstream-1', title: 'Upstream', status: 'active' });
+    upstreamTasks = [];
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     updateReturningRows = [{ id: 'unblocked' }];
@@ -264,7 +347,7 @@ describe('checkAndUnblockDependentMissions', () => {
 
   it('does not wake (or report) a mission whose gate another caller already cleared', async () => {
     mockMissionsFindMany.mockResolvedValue([{ id: 'downstream-1', gateCondition: 'merged' }]);
-    countQueue = [0, 0];
+    upstreamTasks = [row('feat: a', mergedW(1))];
     updateReturningRows = []; // the IS NULL guard matched nothing: a redelivery lost the race
 
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
@@ -275,7 +358,7 @@ describe('checkAndUnblockDependentMissions', () => {
 
   it('does not wake anything when the merged gate stays shut', async () => {
     mockMissionsFindMany.mockResolvedValue([{ id: 'downstream-1', gateCondition: 'merged' }]);
-    countQueue = [1];
+    upstreamTasks = [row('feat: a', openW(1))];
 
     await checkAndUnblockDependentMissions('upstream-1', 'merged');
 
@@ -293,6 +376,7 @@ describe('checkAndUnblockDependentMissions', () => {
   });
 
   it('sets dependencyMetAt for matching missions on merged signal', async () => {
+    upstreamTasks = [row('feat: a', mergedW(1))];
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'merged' },
       { id: 'downstream-2', gateCondition: 'merged' },
@@ -305,7 +389,7 @@ describe('checkAndUnblockDependentMissions', () => {
     expect(mockUpdate).toHaveBeenCalled();
   });
 
-  it('does not unblock missions with mismatched gateCondition', async () => {
+  it('the merged signal does not release a completed-gate mission', async () => {
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'completed' }, // wants 'completed' gate
     ]);
@@ -333,7 +417,7 @@ describe('checkAndUnblockDependentMissions', () => {
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'merged' },
     ] as any);
-    countQueue = [1]; // one worker still holds an open PR
+    upstreamTasks = [row('feat: a', mergedW(1)), row('feat: b', openW(2))]; // one sibling PR still open
 
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
 
@@ -345,7 +429,7 @@ describe('checkAndUnblockDependentMissions', () => {
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'merged' },
     ] as any);
-    countQueue = [0, 2]; // no open PRs, but two deliverables still moving
+    upstreamTasks = [row('feat: a', mergedW(1)), row('feat: b', null, { status: 'in_progress' })];
 
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
 
@@ -357,7 +441,7 @@ describe('checkAndUnblockDependentMissions', () => {
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'merged' },
     ] as any);
-    countQueue = [0, 0];
+    upstreamTasks = [row('feat: a', mergedW(1))];
 
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
 
@@ -366,7 +450,7 @@ describe('checkAndUnblockDependentMissions', () => {
   });
 
   it('does not probe the mission at all when no dependent waits on this signal', async () => {
-    // The predicate costs two COUNT(*) queries, so it must not run on the
+    // The predicate loads the upstream's tasks, so it must not run on the
     // common path where a merge has no downstream waiter.
     mockMissionsFindMany.mockResolvedValue([
       { id: 'downstream-1', gateCondition: 'completed' },
@@ -375,7 +459,7 @@ describe('checkAndUnblockDependentMissions', () => {
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
 
     expect(unblocked).toHaveLength(0);
-    expect(mockSelectWhere).not.toHaveBeenCalled();
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
   });
 
   it('leaves the completed signal alone — it is already mission-wide', async () => {
@@ -388,7 +472,19 @@ describe('checkAndUnblockDependentMissions', () => {
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'completed');
 
     expect(unblocked).toEqual(['downstream-1']);
-    expect(mockSelectWhere).not.toHaveBeenCalled();
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+  });
+
+  it('the completed signal also releases merged-gate missions: completion already settled every PR', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-merged', gateCondition: 'merged' },
+      { id: 'downstream-completed', gateCondition: 'completed' },
+    ]);
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'completed');
+
+    expect(unblocked).toEqual(['downstream-merged', 'downstream-completed']);
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
   });
 
   it('unblocks on completed signal for completed-gate missions', async () => {
