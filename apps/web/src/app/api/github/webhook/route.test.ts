@@ -646,9 +646,10 @@ const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
 const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
 const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
-const mockObserveCiGreen = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockObserveCiGreen = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({
-  observeCiGreen: mockObserveCiGreen,
+  // The seam's own is never the webhook's door (AC-9): it would apply the green on this host.
+  observeCiGreen: mock(async () => { throw new Error('the webhook called the seam\'s observeCiGreen, not the kernel client\'s'); }),
   openKernelDelivery: mockOpenKernelDelivery,
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
@@ -669,7 +670,8 @@ mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClo
 // The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
 import * as realKernelClient from '@/lib/workflow/kernel-client';
 const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand }));
+// CiGreenObserved / CiObserved go through the client too (AC-9): the control plane applies them in own mode.
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand, observeCiGreen: mockObserveCiGreen }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
@@ -2478,6 +2480,8 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
       expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
+      // Through the kernel client as buildd's own webhook (AC-9), never the seam on this host.
+      expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:check_suite' } });
     });
 
     it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {

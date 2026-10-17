@@ -92,6 +92,8 @@ export interface KernelOps {
   attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
+  /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
+  observe_ci_green: { input: Parameters<Seam['observeCiGreen']>[0]; result: Awaited<ReturnType<Seam['observeCiGreen']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -113,6 +115,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     return s.attemptEnded(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
+  observe_ci_green: (s, i) => s.observeCiGreen(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];

@@ -46,6 +46,13 @@ assertions:
   - id: runner-seat-wall-test
     type: test_file
     path: apps/web/src/lib/runner-seat-wall.test.ts
+  - id: claude-login-used
+    type: symbol
+    name: claudeLoginUsed
+    path: apps/runner/src/terminal-attribution.ts
+  - id: claude-login-used-test
+    type: test_file
+    path: apps/runner/__tests__/unit/claude-login-used.test.ts
 supersedes: []
 ---
 # Provider Failover
@@ -216,6 +223,16 @@ dispatched onto a provider that is itself walled.
   and the team agent endpoint does not carry Claude. Anything else, including
   a lookup error or a runner that reports no model auth, records the wall with
   no seat key: shared, as before.
+- The run's own report of the login it used (`claudeLoginUsed` on the worker
+  PATCH: `machine_login`, `machine_token` or `stored`) decides before those
+  inferences. A run on its runner's machine login or token is runner-scoped
+  even when the team stores a Claude credential it did not use; a run on the
+  stored team credential is shared. The contract is the Living Spec
+  "A runner: one machine, its own login, its own slots, its own limits"
+  (R-9, R-10, R-13).
+- A reset quoted in an IANA zone ("resets 12pm (America/New_York)") is read in
+  that zone (`extractResetTime`). Refusing it sent the pause to the full
+  session-window fallback, hours past the real reset.
 - `seat_key` is a hash of the runner id (`runnerSeatKey`), never a credential.
 - A claim reads shared pauses plus only the pauses keyed to its own runner. A
   caller with no seat key (the client's default id, a cloud run) reads every
@@ -239,6 +256,12 @@ dispatched onto a provider that is itself walled.
   the seat key, `accounts.budget_exhausted_at` is not written and the task is
   pending with no `start_at`. GIVEN the same report from a runner that reports
   no model auth THEN the wall is recorded as before.
+- AC-26: GIVEN the team stores a Claude credential AND a session-limit report
+  whose run says `claudeLoginUsed: machine_login` WHEN it is processed THEN the
+  pause carries that runner's seat key; GIVEN `claudeLoginUsed: stored` THEN it
+  is shared.
+- AC-27: GIVEN "resets 12pm (America/New_York)" reported at 10:10 New York
+  time THEN the pause lifts at 12:00 New York time, not five hours later.
 
 ### A flip to Codex only where Codex auth will exist
 

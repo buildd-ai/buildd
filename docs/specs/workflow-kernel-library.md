@@ -356,7 +356,11 @@ the control plane, authenticated as the caller).
     refusal stays a refusal), and `observe_ci_failure` (T10 from buildd's
     own CI doors: the red-PR sweep `cron:ci-red`, the landing path and the
     `check_suite` subscriber, each as a `system` principal; the same skew
-    rule applies, so a red PR is never left without its repair). The same
+    rule applies, so a red PR is never left without its repair), and
+    `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
+    outside a repair, from the `check_suite` success webhook as a `system`
+    principal; the same skew rule applies, so a repair is never left waiting
+    on a green GitHub sends once). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -829,12 +833,19 @@ push, refresh, completion or owner change can make it disappear.
   while the owner works, a repair holds or trunk is red, and the kernel has
   asked no reviewer of its own, it is kept as a decided round and the
   hand-off applies it. It is never posted to GitHub as a review. The kept
-  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  round is a round like any other: it uses one of the delivery's `maxRounds`
+  (unless it re-checks a head after an approval, which spends none:
+  workflow-state-kernel.md §8.2, c1d66a6a).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
   does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
+- A push after an escalation that touches a finding's path marks the finding
+  `addressed` (AC-17's interim disposition), held deliveries included. No
+  review is queued for it while the hold stands, but the person sees it: the
+  review line reads "2 open findings, 1 with a fix waiting for a re-review" and
+  the escalation detail says how many have a fix waiting (c1d66a6a).
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its
   proof is §9's "L unknown" rule (the head moved off the bound head; a
@@ -1187,16 +1198,32 @@ column outside the kernel; S3 and S4 remove or route each one.
   count of `tasks.status` / `tasks.result` write statements
   (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
   one, fails CI, and a family moved behind the projection lowers its count.
+  The kernel reads an owner attempt's end from its latest worker row, not
+  from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
+  floor): a finished worker is an end even while the task is still
+  `assigned` (the status a running owner task holds for its whole attempt),
+  so an end that never arrived is re-sent. `pending` (its retry is queued)
+  and `cancelled` (the cancel sent its own end) are never an end. On an
+  `assigned` task the end counts only for a worker row created at or after
+  `claimed_at` (the claim stamps it, then inserts the new worker row, so an
+  older row is the previous attempt's while a claim is in flight), and only
+  once that row has gone unchanged for `OWNER_END_SETTLE_MS`: the worker
+  PATCH writes the worker's terminal status before it decides on a retry
+  requeue, so an end read in between is not sent. A terminal task's end
+  counts at once.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
   conflict and CI retries, loop exits) still set the owner task's status
-  directly, because the kernel reads that status as the attempt's end
-  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
-  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  directly, because there is no attempt-to-task projection to replace them
+  yet (an AttemptEnded that sets the owner task in its own statement);
+  person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row).
+  worker PATCH still copies them from the worker row). Also not implemented
+  (AC-9): the worker PATCH and the claim route still apply the review verdict
+  (record and adopt) and FixClaimed on the web host through the seam, with no
+  door op of their own like `attempt_ended`.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

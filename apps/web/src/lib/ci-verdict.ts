@@ -72,13 +72,46 @@ async function readPaged<T>(
   return { items, complete: false };
 }
 
-/** Every check run on `sha`, all pages. Throws on a failed or malformed read. */
-export function listAllCheckRuns<T = Record<string, unknown>>(
+/**
+ * Every check run on `sha`, all pages. Throws on a failed or malformed read.
+ *
+ * Each run that belongs to a GitHub Actions workflow run is annotated with the
+ * `workflow_id` of that workflow (read from the commit's workflow runs, matched on
+ * check suite), because a job name alone does not identify a check: `integration`
+ * exists in several workflows. When the workflow-run read fails or is incomplete
+ * (5xx, no actions:read, too many pages) the check runs are still returned, each given
+ * its own workflow id, so nothing collapses and every failing run keeps counting: the
+ * degraded read errs red, never green.
+ */
+export async function listAllCheckRuns<T = Record<string, unknown>>(
   api: Api, installationId: number, repoFullName: string, sha: string,
 ): Promise<PagedRead<T>> {
   // filter=latest (GitHub's default) already returns only the most recent run
   // per check name; callers still dedupe with latestRunPerName as a backstop.
-  return readPaged<T>(api, installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?filter=latest`, 'check_runs');
+  const read = await readPaged<T>(api, installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?filter=latest`, 'check_runs');
+  const inSuite = (r: T) => (r as { check_suite?: { id?: number | null } | null }).check_suite?.id;
+  if (!read.items.some((r) => typeof inSuite(r) === 'number')) return read;
+  const bySuite = new Map<number, number>();
+  let wfRead = true;
+  try {
+    const wf = await readPaged<{ workflow_id?: number; check_suite_id?: number }>(
+      api, installationId, `/repos/${repoFullName}/actions/runs?head_sha=${encodeURIComponent(sha)}`, 'workflow_runs',
+    );
+    if (!wf.complete) wfRead = false;
+    for (const w of wf.items) {
+      if (typeof w.check_suite_id === 'number' && typeof w.workflow_id === 'number') bySuite.set(w.check_suite_id, w.workflow_id);
+    }
+  } catch {
+    wfRead = false;
+  }
+  const items = read.items.map((r, i) => {
+    // Unknown workflows: a distinct negative id per run, so no run supersedes another.
+    if (!wfRead) return { ...r, workflow_id: -(i + 1) };
+    const suite = inSuite(r);
+    const workflow_id = typeof suite === 'number' ? bySuite.get(suite) : undefined;
+    return workflow_id === undefined ? r : { ...r, workflow_id };
+  });
+  return { items, complete: read.complete };
 }
 
 /**
@@ -102,6 +135,18 @@ export interface CheckRunState {
   started_at?: string | null;
   /** When the run finished (ISO). The landing clock reads green from here. */
   completed_at?: string | null;
+  /** The GitHub App that reported the run. Part of what makes two runs "the same check". */
+  app?: { id?: number | null } | null;
+  /**
+   * The Actions workflow the run belongs to, annotated by listAllCheckRuns. A re-run or
+   * re-triggered workflow keeps its workflow_id; a same-named job elsewhere does not.
+   */
+  workflow_id?: number | null;
+}
+
+/** A run's identity for supersession: (workflow, app, name), not the name alone. */
+function runKey(r: CheckRunState): string {
+  return `${r.workflow_id ?? ''}|${r.app?.id ?? ''}|${r.name}`;
 }
 
 function isNewer(a: CheckRunState, b: CheckRunState): boolean | null {
@@ -111,9 +156,13 @@ function isNewer(a: CheckRunState, b: CheckRunState): boolean | null {
 }
 
 /**
- * Collapse to the most recent run per check name. A re-run or a re-triggered
- * workflow (e.g. a PR-body edit) leaves the superseded run attached to the same
- * head SHA, and its stale failure must not outvote the run that replaced it.
+ * Collapse to the most recent run per check, a check being (workflow, app, name).
+ * Job names such as `integration` repeat across workflows, so a newer pass in one
+ * workflow must not hide an older failure of a same-named job in another. A re-run
+ * or a re-triggered workflow (e.g. a PR-body edit) leaves the superseded run attached
+ * to the same head SHA, and its stale failure must not outvote the run that replaced
+ * it. Runs without workflow info (non-Actions apps, or unannotated input) match on
+ * (app, name).
  *
  * Fails closed: two same-name runs with nothing to order them by are both
  * kept, so an unorderable failure still blocks.
@@ -121,7 +170,8 @@ function isNewer(a: CheckRunState, b: CheckRunState): boolean | null {
 export function latestRunPerName<T extends CheckRunState>(checkRuns: T[]): T[] {
   const kept: T[] = [];
   for (const run of checkRuns) {
-    const i = kept.findIndex((k) => k.name === run.name);
+    const key = runKey(run);
+    const i = kept.findIndex((k) => runKey(k) === key);
     if (i === -1) {
       kept.push(run);
       continue;

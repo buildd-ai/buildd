@@ -41,7 +41,9 @@ describe('waiting reasons from the last claim (R-25)', () => {
       [{ reason: 'context_paused', until: new Date(NOW + 5 * 60_000).toISOString() }, 'paused after repeated failures, 5m'],
       [{ reason: 'refused', status: 409, refusal: 'path overlap with another task' }, 'refused: path overlap with another task'],
       [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: reset }] }, /^plan limit/],
-      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: reset }] }, /^rate limit/],
+      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: reset }] }, /^shared limit/],
+      // Spec "A runner" R-12: this machine's own login, never a team-wide word.
+      [{ reason: 'budget_exhausted', exclusion: 'budget_paused', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: reset }] }, /^login limit/],
       [{ exclusion: 'some_future_gate', detail: 'A new gate said no. More words here.' }, 'A new gate said no'],
     ];
     for (const [o, want] of cases) {
@@ -109,7 +111,7 @@ describe('one provider limit, said once (R-25, AC-11)', () => {
 
   test('the broad claim held by the Claude limit: one header hold, short rows, no Claude task reads ready', () => {
     const s = walled();
-    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', word: 'plan limit', resetsAt: reset }]);
+    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', kind: 'account_seat', word: 'plan limit', resetsAt: reset }]);
     expect(waitingReason(loose(), s, NOW)).toBe('plan limit');
     for (const key of ['m-tui-0000-0000', 'm-spec-0000-0000', NO_MISSION]) {
       for (const r of taskRows({ ...s, selectedMission: key }, NOW)) {
@@ -164,7 +166,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
 
   test('a broad claim that takes some other task does not erase a Claude limit that has not lifted', () => {
     const s = broad(broad(fixtureState(), walledOutcome), { reason: 'claimed' });
-    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', word: 'plan limit', resetsAt: reset }]);
+    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', kind: 'account_seat', word: 'plan limit', resetsAt: reset }]);
     expect(waitingReason(loose(), s, NOW)).toBe('plan limit');
   });
 
