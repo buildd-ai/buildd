@@ -1184,16 +1184,25 @@ column outside the kernel; S3 and S4 remove or route each one.
   count of `tasks.status` / `tasks.result` write statements
   (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
   one, fails CI, and a family moved behind the projection lowers its count.
+  The kernel reads an owner attempt's end from its latest worker row, not
+  from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
+  floor): a finished worker is an end even while the task is still in
+  progress, so an end that never arrived is re-sent. The task row only rules
+  out a next attempt (`pending`: its retry is queued; `assigned`: a claim is
+  starting one) and a cancel, which sends its own end.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
   conflict and CI retries, loop exits) still set the owner task's status
-  directly, because the kernel reads that status as the attempt's end
-  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
-  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  directly, because there is no attempt-to-task projection to replace them
+  yet (an AttemptEnded that sets the owner task in its own statement);
+  person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row).
+  worker PATCH still copies them from the worker row). Also not implemented
+  (AC-9): the worker PATCH and the claim route still apply the review verdict
+  (record and adopt) and FixClaimed on the web host through the seam, with no
+  door op of their own like `attempt_ended`.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

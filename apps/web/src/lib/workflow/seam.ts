@@ -44,6 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
+import { ownerAttemptEndOf } from './task-projection';
 import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
@@ -283,12 +284,14 @@ export function reviewOwedWhileOwnerRuns(task: { kind?: string | null }, live: L
 }
 
 /**
- * bb6a3a56: the owner end the kernel is owed, rebuilt from the task and
- * workers rows. Stamps `tasks.delivery_id` when it is missing (a crash between
- * the open's transitions and its stamp), then, when the owner task is terminal
- * and its latest worker ended, sends that worker's AttemptEnded. Safe to repeat:
- * the reducer keys an end by its worker (`end:<workerId>`), so one the kernel
- * already has answers `duplicate`. Answers whether an end was sent.
+ * bb6a3a56: the owner end the kernel is owed, rebuilt from the workers row.
+ * Stamps `tasks.delivery_id` when it is missing (a crash between the open's
+ * transitions and its stamp), then, when the owner's latest worker ended, sends
+ * that worker's AttemptEnded. The end is the worker row's (AC-1 slice 2,
+ * `ownerAttemptEndOf`), not `tasks.status`: a task left in progress because its
+ * end never arrived still gets it re-sent. Safe to repeat: the reducer keys an
+ * end by its worker (`end:<workerId>`), so one the kernel already has answers
+ * `duplicate`. Answers whether an end was sent.
  */
 async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; deliveryId: string; source: string }, deps: SeamDeps): Promise<boolean> {
   await db.update(tasks)
@@ -296,17 +299,17 @@ async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; de
     .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
   const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, deliveryId: true, deliveryRole: true } });
   if (!task || task.deliveryId !== p.deliveryId || task.deliveryRole !== 'owner') return false;
-  if (task.status !== 'completed' && task.status !== 'failed') return false;
   const latest = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
     columns: { id: true, status: true, lastCommitSha: true, commitCount: true },
     orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
-  if (!latest || (latest.status !== 'completed' && latest.status !== 'failed' && latest.status !== 'error')) return false;
+  const end = latest ? ownerAttemptEndOf(task.status, latest.status) : null;
+  if (!latest || !end) return false;
   await attemptEnded({
     task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: null },
     workerId: latest.id,
-    status: latest.status === 'completed' ? 'completed' : 'failed',
+    status: end,
     localHeadSha: latest.lastCommitSha ?? null,
     commitCount: latest.commitCount ?? 0,
     source: p.source,

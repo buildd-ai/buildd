@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf } from './task-projection';
+import { mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -46,5 +46,29 @@ describe('mergeTaskTransitionOf', () => {
     expect(mergeTaskTransitionOf({ mergeCommitSha: 'x' })).toBeNull();
     expect(mergeTaskTransitionOf(undefined)).toBeNull();
     expect(mergeTaskTransitionOf({ taskTransition: 'bogus' })).toBeNull();
+  });
+});
+
+describe('ownerAttemptEndOf (AC-1 slice 2): the end is read from the worker row', () => {
+  test('a finished worker is an end whatever the task row says, the task still in progress included', () => {
+    for (const task of ['in_progress', 'completed', 'failed']) {
+      expect(ownerAttemptEndOf(task, 'completed')).toBe('completed');
+      expect(ownerAttemptEndOf(task, 'failed')).toBe('failed');
+      expect(ownerAttemptEndOf(task, 'error')).toBe('failed');
+    }
+  });
+
+  test('a live worker is no end, even on a terminal task', () => {
+    for (const wk of ['idle', 'starting', 'running', 'waiting_input', 'paused', 'superseded', null]) {
+      expect(ownerAttemptEndOf('completed', wk)).toBeNull();
+      expect(ownerAttemptEndOf('in_progress', wk)).toBeNull();
+    }
+  });
+
+  test('a queued retry (pending), a claim in flight (assigned) or a cancel (its own end) is not an end to re-send', () => {
+    expect(ownerAttemptEndOf('pending', 'failed')).toBeNull();
+    expect(ownerAttemptEndOf('assigned', 'failed')).toBeNull();
+    expect(ownerAttemptEndOf('pending', 'completed')).toBeNull();
+    expect(ownerAttemptEndOf('cancelled', 'completed')).toBeNull();
   });
 });

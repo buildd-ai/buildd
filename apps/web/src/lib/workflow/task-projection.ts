@@ -79,3 +79,26 @@ export function mergeTaskTransitionOf(payload: unknown): { taskTransition: Merge
   if (t !== 'flipped' && t !== 'already_completed' && t !== 'not_flipped') return null;
   return { taskTransition: t, ownerWorkerId: typeof p.ownerWorkerId === 'string' ? p.ownerWorkerId : null };
 }
+
+/**
+ * AC-1 slice 2 (workflow-kernel-library.md §9): whether the owner attempt has ended, read from its
+ * latest worker row. `forwardOwnerEnd` and the floor use this, never `tasks.status` alone, so the
+ * kernel can become the task-status writer without losing an end that never arrived: a task left
+ * in progress whose worker finished still has its end found and re-sent.
+ *
+ * The task row is read for one thing only: a next attempt. A `pending` task has its own retry queued
+ * (the worker PATCH sends no end then, `taskRetryCoversAttemptEnd`), and an `assigned` one is being
+ * claimed for it (the claim sets `assigned` before it inserts the new worker row), so the next
+ * attempt continues the delivery. A `cancelled` one sent its own end (task-cancel.ts). None of
+ * these is an end to re-send.
+ * Answers the end's status, or null when there is none.
+ */
+export function ownerAttemptEndOf(
+  taskStatus: string | null | undefined,
+  latestWorkerStatus: string | null | undefined,
+): 'completed' | 'failed' | null {
+  if (taskStatus === 'pending' || taskStatus === 'assigned' || taskStatus === 'cancelled') return null;
+  if (latestWorkerStatus === 'completed') return 'completed';
+  if (latestWorkerStatus === 'failed' || latestWorkerStatus === 'error') return 'failed';
+  return null;
+}
