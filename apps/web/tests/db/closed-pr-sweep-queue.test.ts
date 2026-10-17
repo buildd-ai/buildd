@@ -52,4 +52,17 @@ describe('closedPrSweepQueue', () => {
     const rows = (await closedPrSweepQueue(now, 10_000)).filter(r => r.prUrl && ours.has(r.prUrl));
     expect(rows.map(r => Number(r.prUrl!.split('/').pop()) - base)).toEqual([2, 3, 1]);
   });
+
+  test('a malformed lastAttemptAt in supersessionScan does not crash the query', async () => {
+    // Insert a row with a malformed lastAttemptAt that would fail if cast to timestamptz.
+    const n = base + 100;
+    await q(sql`
+      INSERT INTO workers (workspace_id, task_id, name, runner, branch, pr_url, pr_number, pr_lifecycle_status, supersession_scan, updated_at)
+      VALUES (${workspaceId}::uuid, ${taskId}::uuid, 'w', 'test', ${`b-${n}`}, ${`https://github.com/o/r/pull/${n}`}, ${n}, 'closed',
+        ${{ scannedAt: '', candidatesChecked: 0, suggestion: null, lastAttemptAt: '2026-13-40T00:00:00Z' }}::jsonb, ${now.toISOString()}::timestamptz)`);
+
+    // The query should complete without error, treating the malformed value as NULL.
+    const rows = await closedPrSweepQueue(now, 10_000);
+    expect(rows).toBeDefined();
+  });
 });

@@ -753,7 +753,8 @@ export interface ClosedPrSweepResult {
  */
 export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 3): Promise<Array<{ id: string; prUrl: string | null }>> {
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
-  const lastAttempt = sql`(case when ${workers.supersessionScan}->>'lastAttemptAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' then (${workers.supersessionScan}->>'lastAttemptAt')::timestamptz end)`;
+  // Validate with strict ISO timestamp pattern and use string comparison (ISO strings sort correctly).
+  const lastAttempt = sql`(case when ${workers.supersessionScan}->>'lastAttemptAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' then ${workers.supersessionScan}->>'lastAttemptAt' else null end)`;
   return db
     .select({ id: workers.id, prUrl: workers.prUrl })
     .from(workers)
@@ -768,7 +769,7 @@ export async function closedPrSweepQueue(now: Date, limit: number = SWEEP_CAP * 
       isNotNull(tasks.missionId),
       inArray(tasks.status, ['completed']),
     ))
-    .orderBy(sql`greatest(${workers.supersessionScannedAt}, ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
+    .orderBy(sql`greatest(${workers.supersessionScannedAt}::text, ${lastAttempt}) asc nulls first`, asc(workers.updatedAt))
     .limit(limit);
 }
 

@@ -530,4 +530,28 @@ describe('review findings: the queue rotates, a timeout stays a timeout, nothing
     expect(r.outcome).toBe('deferred');
     expect(stamped()).toEqual([]);
   });
+
+  it('first interruption label sticks: a request timeout before the budget runs out is not relabelled a budget stop', async () => {
+    // Request timeout: 50ms, so a ~40ms read will succeed.
+    // Budget: 80ms (less than 2 × requestTimeout), but the timeout fires during parallel reads.
+    // The timeout on one read happens while the budget is still active.
+    claims(9);
+    // Candidate with small commits so patch-id is attempted.
+    mergedPr('org/kb', 9, [{ filename: 'apps/x.ts', status: 'added', patch: null }], { commits: 3 });
+    // Set up slow commit reads for the candidate that will timeout.
+    const shas = ['a', 'b', 'c'];
+    gh['org/kb/pulls/6/commits'] = shas.map(sha => ({ sha, parents: [{ sha: 'p' }] }));
+    for (const sha of shas) gh[`org/kb/commits/${sha}`] = slow(30, { files: [] });
+    // The candidate's commits stall, will timeout at 50ms.
+    gh['org/kb/pulls/9/commits'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 50, budget: AbortSignal.timeout(80) } });
+    expect(r.outcome).toBe('deferred');
+    // The interruption should be labeled 'timeout', not 'budget'.
+    const scan = scanWrites.at(-1).supersessionScan;
+    expect(scan.deferral).toBeDefined();
+    expect(scan.deferral).toMatchObject({ count: 1 });
+    // Verify the reason mentions GitHub request timeout, not budget.
+    expect(scan.deferral.reason).toContain('GitHub request');
+    expect(scan.deferral.reason).not.toContain('time budget');
+  });
 });
