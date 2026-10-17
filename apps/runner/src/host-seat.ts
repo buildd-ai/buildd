@@ -280,6 +280,24 @@ export async function detectMachineLoginAsync(probe: MachineLoginProbe = {}): Pr
   return null;
 }
 
+/** Reset keychain caches (for testing only). */
+export function resetKeychainCaches(): void {
+  keychainCache = undefined;
+  keychainStampCache = undefined;
+  keychainHasLoginInFlight = undefined;
+  keychainStampInFlight = undefined;
+}
+
+/** Expire the keychain cache by setting its timestamp far in the past (for testing only). */
+export function expireKeychainCache(): void {
+  if (keychainCache) {
+    keychainCache.at = Date.now() - KEYCHAIN_CACHE_MS - 1000;
+  }
+  if (keychainStampCache) {
+    keychainStampCache.at = Date.now() - KEYCHAIN_CACHE_MS - 1000;
+  }
+}
+
 export interface MachineLoginDecision {
   machineLogin: MachineLogin | null;
   detected: MachineLogin | null;

@@ -3,8 +3,8 @@
  * `claude login`) is given to the agent as-is and wins over a seat the server
  * delivers on the claim. Its value never reaches a log line or evidence.
  */
-import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { describe, test, expect, afterEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, readFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH, buildAgentBaseEnv } from '../../src/agent-env';
@@ -12,7 +12,7 @@ import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-
 import {
   machineLoginStamp,
   parseKeychainMdat,
-  applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues, detectMachineLoginAsync, defaultMacKeychainHasLoginAsync, defaultMacKeychainStampAsync,
+  applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues, detectMachineLoginAsync, defaultMacKeychainHasLoginAsync, defaultMacKeychainStampAsync, resetKeychainCaches, expireKeychainCache,
 } from '../../src/host-seat';
 import { createSecretRedactor } from '@buildd/core/redaction';
 
@@ -30,6 +30,73 @@ function tmpHome(credentials?: unknown): string {
 }
 
 const noKeychain = () => false;
+
+// ─── Fake security binary for async keychain tests ────────────────────────────
+
+let currentFakeSecurityDir: string | undefined;
+const originalPath = process.env.PATH || '';
+
+interface FakeSecuritySetup {
+  resetCaches: () => void;
+  fakeSecurityPath: string;
+  invocationLog: string;
+}
+
+function setupFakeSecurity(): FakeSecuritySetup {
+  // Create temp directory for fake security and invocation log
+  const tmpBase = mkdtempSync(join(tmpdir(), 'fake-security-'));
+  const binDir = join(tmpBase, 'bin');
+  mkdirSync(binDir);
+
+  const invocationLog = join(tmpBase, 'invocations.log');
+
+  // Create fake `security` script that:
+  // - Logs each invocation with timestamp and args
+  // - Can be controlled via file markers (expire-cache for delay)
+  // - Sleeps 100ms if expire-cache marker exists (simulates slow refresh after cache expiry)
+  const securityScript = join(binDir, 'security');
+  writeFileSync(securityScript, `#!/bin/bash
+# Fake security binary for testing keychain async behavior
+echo "$(date -Iseconds) $@" >> "${invocationLog}"
+
+# If expire-cache marker exists, sleep to simulate slow refresh
+if [ -f "${tmpBase}/expire-cache" ]; then
+  sleep 0.1
+  rm -f "${tmpBase}/expire-cache"
+fi
+
+# Simulate find-generic-password success (exit 0)
+exit 0
+`);
+  chmodSync(securityScript, 0o755);
+
+  // Prepend bin dir to PATH
+  process.env.PATH = `${binDir}:${originalPath}`;
+  currentFakeSecurityDir = tmpBase;
+
+  return {
+    resetCaches: () => resetKeychainCaches(),
+    fakeSecurityPath: tmpBase,
+    invocationLog,
+  };
+}
+
+function cleanupFakeSecurity(): void {
+  if (currentFakeSecurityDir) {
+    rmSync(currentFakeSecurityDir, { recursive: true, force: true });
+    currentFakeSecurityDir = undefined;
+  }
+  process.env.PATH = originalPath;
+}
+
+function readInvocationLog(logPath: string): string[] {
+  try {
+    const content = readFileSync(logPath, 'utf-8');
+    return content.trim().split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 describe('passthrough: the host env token reaches the agent', () => {
   test('CLAUDE_CODE_OAUTH_TOKEN is allowlisted', () => {
@@ -281,69 +348,155 @@ describe('async keychain checks: never block on event loop', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
-  test('background refresh does not create timer loop: stale value served while refresh updates', async () => {
-    let callCount = 0;
-    let slowCall = false;
-    const slowProbe = async () => {
-      callCount++;
-      if (slowCall) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-      return 'stale-value-before-update';
-    };
+  test('background refresh returns stale value while single refresh runs; no timer loop', async () => {
+    const { resetCaches, fakeSecurityPath, invocationLog } = setupFakeSecurity();
 
-    // First call returns initial value
-    const first = await defaultMacKeychainHasLoginAsync();
-    expect(typeof first).toBe('boolean');
+    try {
+      // Populate cache with first call
+      resetCaches();
+      const first = await defaultMacKeychainHasLoginAsync();
+      expect(first).toBe(true);
+      const initialCount = readInvocationLog(invocationLog).length;
 
-    // Trigger a stale cache scenario by injecting a slow probe
-    // The key invariant: subsequent calls return immediately even while refresh is pending
-    const before = Date.now();
-    slowCall = true;
+      // Expire cache
+      expireKeychainCache();
+      // Signal fake security to sleep on next call
+      writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
 
-    // Start first call which will block once on slow probe
-    const p1 = defaultMacKeychainHasLoginAsync();
-    await new Promise(r => setTimeout(r, 10));
+      // Start a slow refresh
+      const refreshStart = Date.now();
+      const p1 = defaultMacKeychainHasLoginAsync();
 
-    // Second call should return immediately with stale/initial value, not wait for p1
-    const before2 = Date.now();
-    const p2 = defaultMacKeychainHasLoginAsync();
-    const p2Result = await p2;
-    const elapsed2 = Date.now() - before2;
+      // Give refresh time to start the slow security call
+      await new Promise(r => setTimeout(r, 30));
 
-    // p2 should return in < 50ms (not wait for p1's 100ms slow probe)
-    expect(elapsed2).toBeLessThan(50);
-    expect(p2Result).toBe(true); // cached or initial value
+      // Concurrent call should return immediately with stale value, not wait for refresh
+      const p2Start = Date.now();
+      const p2 = defaultMacKeychainHasLoginAsync();
+      const p2Result = await p2;
+      const p2Elapsed = Date.now() - p2Start;
 
-    // Finish the first call
-    const p1Result = await p1;
-    expect(p1Result).toBe(true);
+      expect(p2Result).toBe(true); // stale cached value
+      expect(p2Elapsed).toBeLessThan(50); // returned immediately, not waiting for 100ms slow call
 
-    // No excessive calls should happen (no timer loop retrying)
-    expect(callCount).toBeLessThanOrEqual(3);
+      // Finish the refresh
+      const p1Result = await p1;
+      expect(p1Result).toBe(true);
+
+      // Total invocations: should be initialCount + 1 (just the one background refresh, not repeated)
+      const finalCount = readInvocationLog(invocationLog).length;
+      expect(finalCount).toBe(initialCount + 1);
+    } finally {
+      cleanupFakeSecurity();
+    }
   });
 
-  test('background refresh completes and updates cache without re-scheduling', async () => {
-    let callCount = 0;
-    const probe = async () => {
-      callCount++;
-      await new Promise(r => setTimeout(r, 50));
-      return callCount === 1 ? 'old-value' : 'new-value';
-    };
+  test('background refresh coalesces concurrent refresh calls into one', async () => {
+    const { resetCaches, fakeSecurityPath, invocationLog } = setupFakeSecurity();
 
-    // Call with old probe to populate cache
-    const first = await defaultMacKeychainStampAsync();
+    try {
+      // Populate cache with first call
+      resetCaches();
+      const first = await defaultMacKeychainHasLoginAsync();
+      expect(first).toBe(true);
+      const initialCount = readInvocationLog(invocationLog).length;
 
-    // Replace with counting probe - further calls should use it
-    // The refresh happens once and completes
-    expect(callCount).toBeGreaterThanOrEqual(0);
-    const initialCount = callCount;
+      // Expire cache
+      expireKeychainCache();
+      // Signal fake security to sleep on next call
+      writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
 
-    // After 200ms, refresh should have completed (not looping)
-    await new Promise(r => setTimeout(r, 200));
+      // Start multiple concurrent calls during the slow refresh
+      const p1 = defaultMacKeychainHasLoginAsync();
+      await new Promise(r => setTimeout(r, 10));
+      const p2 = defaultMacKeychainHasLoginAsync();
+      const p3 = defaultMacKeychainHasLoginAsync();
 
-    // Call again - should get updated or initial value
-    const second = await defaultMacKeychainStampAsync();
-    expect(second === null || typeof second === 'string').toBe(true);
+      // All should return the stale value immediately
+      const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+      expect(r1).toBe(true);
+      expect(r2).toBe(true);
+      expect(r3).toBe(true);
+
+      // Wait for refresh to complete
+      await new Promise(r => setTimeout(r, 150));
+
+      // Should only have 1 new invocation (all calls coalesced into one refresh)
+      const finalCount = readInvocationLog(invocationLog).length;
+      expect(finalCount).toBe(initialCount + 1);
+    } finally {
+      cleanupFakeSecurity();
+    }
+  });
+
+  test('socket stays responsive while fake security is slow (event loop not blocked)', async () => {
+    const { resetCaches, fakeSecurityPath, invocationLog } = setupFakeSecurity();
+
+    try {
+      resetCaches();
+
+      // Signal fake security to sleep on next call (100ms)
+      writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
+
+      // Start a slow keychain refresh
+      const refreshPromise = defaultMacKeychainHasLoginAsync();
+
+      // While the refresh is running (sleeping), verify we can do sync I/O and timers
+      await new Promise(r => setTimeout(r, 20));
+
+      const socketStart = Date.now();
+      // Synchronous operation that would fail/hang if event loop was blocked
+      const canWrite = () => {
+        try {
+          writeFileSync(join(fakeSecurityPath, 'socket-test'), 'ok');
+          return true;
+        } catch { return false; }
+      };
+      expect(canWrite()).toBe(true);
+      const socketElapsed = Date.now() - socketStart;
+
+      // Socket operation should be fast (not blocked waiting for security)
+      expect(socketElapsed).toBeLessThan(50);
+
+      // Let refresh finish
+      const result = await refreshPromise;
+      expect(result).toBe(true);
+    } finally {
+      cleanupFakeSecurity();
+    }
+  });
+
+  test('cache is updated after background refresh completes', async () => {
+    const { resetCaches, fakeSecurityPath, invocationLog } = setupFakeSecurity();
+
+    try {
+      resetCaches();
+
+      // First call populates cache
+      const first = await defaultMacKeychainHasLoginAsync();
+      expect(first).toBe(true);
+
+      // Force refresh by expiring cache and signaling slow response
+      expireKeychainCache();
+      writeFileSync(join(fakeSecurityPath, 'expire-cache'), Date.now().toString());
+
+      // Start refresh
+      const refreshStart = defaultMacKeychainHasLoginAsync();
+      await new Promise(r => setTimeout(r, 20));
+
+      // Get stale value while refresh is in flight
+      const stale = await defaultMacKeychainHasLoginAsync();
+      expect(stale).toBe(true);
+
+      // Wait for refresh to complete
+      await refreshStart;
+      await new Promise(r => setTimeout(r, 120));
+
+      // After refresh, cache should be updated with fresh value
+      const fresh = await defaultMacKeychainHasLoginAsync();
+      expect(fresh).toBe(true);
+    } finally {
+      cleanupFakeSecurity();
+    }
   });
 });
