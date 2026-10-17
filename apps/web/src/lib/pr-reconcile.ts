@@ -132,12 +132,13 @@ export async function refreshWorkerMergeStateIfStale(
  */
 async function recordMergeWithKernel(workspaceId: string, repoFullName: string, prNumber: number, installationId: number, pull: unknown, observeOnly: boolean): Promise<void> {
   try {
-    const seam = await import('@/lib/workflow/seam');
     if (observeOnly) {
-      await seam.recordPrStateObserved({ workspaceId, repoFullName, prNumber, pull, source: 'render:merge-state' });
+      const { recordPrStateObserved } = await import('@/lib/workflow/seam');
+      await recordPrStateObserved({ workspaceId, repoFullName, prNumber, pull, source: 'render:merge-state' });
       return;
     }
-    await seam.observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'dependency-gate', pull });
+    const { observePrState, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'dependency-gate', pull }, { principal: systemPrincipal('system:dependency-gate') });
   } catch (err) {
     console.warn(`[pr-reconcile] kernel merge import for ${repoFullName}#${prNumber} did not apply (a fast heal is scheduled when the kernel owns it):`, err);
   }
@@ -151,8 +152,8 @@ async function recordMergeWithKernel(workspaceId: string, repoFullName: string, 
 async function importClosureToKernel(workspaceId: string | null | undefined, repoFullName: string, prNumber: number, installationId: number, pull?: unknown): Promise<boolean> {
   if (!workspaceId) return false;
   try {
-    const { observePrState } = await import('@/lib/workflow/seam');
-    return await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile', pull });
+    const { observePrState, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    return await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile', pull }, { principal: systemPrincipal('system:sweep:pr-reconcile') });
   } catch (err) {
     console.error(`[pr-reconcile] kernel close import failed for ${repoFullName}#${prNumber}:`, err);
     return false;

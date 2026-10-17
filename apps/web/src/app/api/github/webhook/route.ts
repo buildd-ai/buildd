@@ -47,9 +47,8 @@ import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAd
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observeBase, observePrState } from '@/lib/workflow/seam';
 // A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { observeCiGreen, systemPrincipal } from '@/lib/workflow/kernel-client';
+import { observeBase, observeCiGreen, observePrState, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
 
@@ -836,7 +835,7 @@ async function handlePullRequestEvent(event: {
         await observeBase({
           workspaceId: intentWorkspaceId, repoFullName: repository.full_name, prNumber: pr.number,
           installationId: event.installation.id, hintedFromBase: retargetFrom, source: 'webhook:edited',
-        }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
+        }, { principal: systemPrincipal('system:webhook:edited') }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
@@ -909,7 +908,7 @@ async function handlePullRequestEvent(event: {
       await observePrState({
         workspaceId: openWorker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
         installationId: event.installation.id, source: 'webhook:reopened', pull: pr,
-      }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
+      }, { principal: systemPrincipal('system:webhook:reopened') }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
     }
 
     // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
@@ -1044,7 +1043,7 @@ async function handlePullRequestEvent(event: {
     kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
       installationId: event.installation.id, source: 'webhook:closed', pull: pr,
-    }).catch((err) => {
+    }, { principal: systemPrincipal('system:webhook:closed') }).catch((err) => {
       // S4a: the kernel owns the PR but its live read failed. This payload is recorded as an
       // unapplied fact and a fast heal applies it within minutes (kernel-heal.ts); the legacy
       // path must not run for a PR the kernel owns (it would race the kernel's own merge work).
