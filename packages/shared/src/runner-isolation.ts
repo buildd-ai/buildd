@@ -52,6 +52,31 @@ export interface RunnerIsolationRecord {
   runnerVersion: string;
 }
 
+function isConfinement(v: unknown): v is BackendConfinement {
+  return !!v && typeof v === 'object' && typeof (v as { mechanism?: unknown }).mechanism === 'string';
+}
+
+/**
+ * The record from a heartbeat's `environment` jsonb, or null when it is absent
+ * or not shaped like one. Older rows and newer writers fill that column
+ * differently, so this checks what Health dereferences instead of trusting a cast.
+ */
+export function readIsolationRecord(environment: unknown): RunnerIsolationRecord | null {
+  if (!environment || typeof environment !== 'object') return null;
+  const rec = (environment as { isolation?: unknown }).isolation;
+  if (!rec || typeof rec !== 'object') return null;
+  const r = rec as {
+    platform?: unknown;
+    claude?: unknown;
+    codex?: unknown;
+    probeAt?: unknown;
+    processStartedAt?: unknown;
+  };
+  if (typeof r.platform !== 'string' || typeof r.probeAt !== 'string' || typeof r.processStartedAt !== 'string') return null;
+  if (!isConfinement(r.claude) || !r.codex || typeof r.codex !== 'object') return null;
+  return rec as RunnerIsolationRecord;
+}
+
 /** R-11: a probe that is absent, or predates the process reporting it, says nothing. */
 export function isIsolationRecordCurrent(record: RunnerIsolationRecord | null | undefined): record is RunnerIsolationRecord {
   if (!record || typeof record !== 'object') return false;
