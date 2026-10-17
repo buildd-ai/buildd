@@ -59,6 +59,12 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   observe_ci_failure: false,
   // GitHub sends the check_suite success once.
   observe_ci_green: true,
+  // The runner reports a reviewer's verdict once, in its completion PATCH.
+  record_review_verdict: true,
+  adopt_review_verdict: true,
+  // Never: the claim it revalidates is rolled back to pending when unanswered and claimed afresh on the
+  // next poll, under a new key. Re-sending the old one would claim a fix for a claim that moved on.
+  claim_fix: false,
 };
 
 export const shouldPark = (op: KernelOp): boolean => PARK_ON_UNAVAILABLE[op] === true;

@@ -690,11 +690,29 @@ describe('AC-35: a door command the control plane never answered is parked for t
     expect(logged.join('\n')).toContain('could not be parked');
   });
 
+  it('a reviewer\'s verdict that got no answer is parked; a fix claim never is (its claim is rolled back and claimed afresh)', async () => {
+    const { recordReviewVerdict, claimFix } = await import('./kernel-client');
+    const verdict = { workspaceId: WS, reviewerTask: { id: 'rv-1', deliveryId: DELIVERY, context: { workflowRoundId: 'r-1' } }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 };
+    const k = parker();
+    const err = await recordReviewVerdict(verdict, { principal: runner, idempotencyKey: 'record_review_verdict:k-park-3', deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: k.park as never } }).catch((e) => e);
+    expect(err.parked).toBe(true);
+    expect(k.parked).toMatchObject([{ key: 'record_review_verdict:k-park-3', op: 'record_review_verdict', input: verdict }]);
+
+    const c = parker();
+    const fixTask = { id: 'fix-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } };
+    const claimErr = await claimFix(fixTask, { principal: runner, deps: { ...local().deps, ...clock(), env: OWN, fetch: down, park: c.park as never } }).catch((e) => e);
+    expect(claimErr).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(claimErr.parked).toBe(false);
+    expect(c.parked).toEqual([]);
+  });
+
   it('every op is classified, and the doors without another re-sender are the parked ones', async () => {
     const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
     const { KERNEL_OPS } = await import('./command-api');
     expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
-    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['attempt_ended', 'observe_ci_green']);
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'observe_ci_green', 'record_review_verdict']);
+    // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
+    expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
   });
 
   it('the door\'s 503 says it was parked', async () => {

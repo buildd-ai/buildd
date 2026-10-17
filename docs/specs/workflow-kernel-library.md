@@ -370,7 +370,9 @@ the control plane, authenticated as the caller).
     workspace's delivery is refused, never read as a release to legacy). A
     claim request's fix claims share one control-plane budget; once it is
     spent the next fix candidate defers at once as `kernel_unavailable` and
-    the rest of the batch is claimed. The same
+    the rest of the batch is claimed; a fix claim the control plane refuses
+    (403: auth, the claiming account's reach) defers as `kernel_refused`,
+    not as an outage. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -431,8 +433,9 @@ the control plane, authenticated as the caller).
 - A door command nothing else re-sends is not lost when the control plane
   does not answer (`apps/web/src/lib/workflow/command-outbox.ts`). An
   attempt's end (`attempt_ended`: the runner reports it once, and the floor
-  re-sends only an owner's) and GitHub's one green (`observe_ci_green`) are
-  parked in `workflow_command_outbox` under the door's own idempotency key,
+  re-sends only an owner's), a reviewer's verdict (`record_review_verdict`,
+  `adopt_review_verdict`: reported once, in the completion PATCH) and
+  GitHub's one green (`observe_ci_green`) are parked in `workflow_command_outbox` under the door's own idempotency key,
   with their input, principal and whether an earlier submission may have
   reached the control plane; the door still answers unavailable, with
   `parked: true`. Every op is classified in `PARK_ON_UNAVAILABLE`, so a new op
@@ -626,12 +629,13 @@ the web host.
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
 - AC-35 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
-  unreachable for a door's whole budget WHEN an attempt end or a CI green is
-  submitted THEN it is parked under its idempotency key, and once the control
+  unreachable for a door's whole budget WHEN an attempt end, a reviewer's
+  verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control
   plane answers the floor applies it exactly once (a repeat is answered from
   the ledger); an earlier submission that did apply is settled from the
-  ledger without applying it again; and one a newer head overtook is settled,
-  never applied to the new head (`kernel-command-host.test.ts`,
+  ledger without applying it again; one a newer head overtook is refused as
+  stale (a verdict) or as for another head (a green) and settled, never
+  applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
   `command-outbox.test.ts`, `kernel-client.test.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3

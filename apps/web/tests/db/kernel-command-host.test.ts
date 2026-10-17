@@ -419,6 +419,77 @@ describe('AC-35: a door command the control plane never answered lands once it r
     expect(await countOf(pr, 'AttemptEnded')).toBe(1);
   }, AC35_TIMEOUT_MS);
 
+  /** A PR handed on to review, its reviewer filed (shadow setup), then own mode with a short door budget. */
+  async function reviewing(branch: string) {
+    const pr = await working(branch);
+    process.env.EXECUTION_MODE = 'shadow';
+    await w!.handOn(pr);
+    const rv = await w!.reviewer(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    return { pr, rv, head: w!.gh.pr(w!.repo, pr.prNumber).headSha };
+  }
+  const verdictOf = (pr: OpenedPr, rv: { id: string; context: Record<string, unknown> }, head: string) => ({
+    workspaceId: w!.workspaceId, reviewerTask: { id: rv.id, deliveryId: pr.deliveryId, context: rv.context },
+    verdict: 'request_changes', effectiveVerdict: 'request_changes', headSha: head, confidence: 0.9,
+  });
+
+  test('a reviewer\'s verdict while the control plane is down is parked; after it recovers it lands once, and the fix it asks for is filed once', async () => {
+    const { pr, rv, head } = await reviewing('feat/park-verdict');
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `record_review_verdict:${crypto.randomUUID()}`;
+
+    const err = await recordReviewVerdict(verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect((await w!.delivery(pr)).state).toBe('AWAITING_REVIEW');
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(0);
+
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ claimed: 1, done: 1, dead: 0 });
+    expect((await w!.delivery(pr)).state).toBe('CHANGES_REQUESTED');
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
+    expect(await parked(key)).toMatchObject({ status: 'done', outcome: 'applied' });
+    const fixes = await w!.tasksOf(pr, 'fix');
+    expect(fixes).toHaveLength(1);
+
+    // Exactly once, whoever asks next: the floor again, or the web host's own retry with the key.
+    expect(await floorPass([key], 'web')).toMatchObject({ claimed: 0 });
+    const again = await submitKernelCommand('record_review_verdict', verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key });
+    expect(again.replayed).toBe(true);
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(1);
+    expect(await w!.tasksOf(pr, 'fix')).toHaveLength(1);
+  });
+
+  test('a verdict re-sent after a newer head is refused as stale by the reducer and settled, never applied', async () => {
+    const { pr, rv, head } = await reviewing('feat/park-stale-verdict');
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `record_review_verdict:${crypto.randomUUID()}`;
+    await recordReviewVerdict(verdictOf(pr, rv, head), { principal: runner, idempotencyKey: key }).catch(() => null);
+    expect(await parked(key)).toMatchObject({ status: 'pending' });
+
+    // The owner pushes again while the verdict waits.
+    w!.gh.push(w!.repo, pr.branch, { 'src/a.ts': 'export const a = 7;\n' }, { message: 'newer' });
+    process.env.EXECUTION_MODE = 'shadow';
+    await w!.deliver();
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    const moved = await w!.delivery(pr);
+    expect(moved.currentHeadSha).not.toBe(head);
+
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ done: 1, dead: 0 });
+    const row = await parked(key);
+    expect(row.status).toBe('done');
+    expect(['stale', 'rejected']).toContain(row.outcome);
+    expect(await countOf(pr, 'ReviewVerdictRecorded')).toBe(0);
+    expect((await w!.delivery(pr)).state).not.toBe('CHANGES_REQUESTED');
+    expect(await w!.tasksOf(pr, 'fix')).toEqual([]);
+  });
+
   test('an old green re-sent after a newer head is answered as for another head and settled, never recorded for the new one', async () => {
     const pr = await working('feat/park-stale-green');
     await w!.handOn(pr);

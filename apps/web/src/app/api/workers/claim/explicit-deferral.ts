@@ -106,6 +106,10 @@ export function describeExplicitDeferral(
     }
     case 'kernel_unavailable':
       return { code: reason, detail: 'The fix could not be revalidated because the workflow control plane did not answer in time; it was put back and is retried on the next poll.' };
+    case 'kernel_refused': {
+      const why = str(detail.reason);
+      return { code: reason, detail: `The workflow control plane refused to revalidate the fix${why ? ` (${why})` : ''}, so it was put back; asking again gets the same answer until the runner's access or the command is fixed.` };
+    }
     case 'ordered_behind': {
       const blocker = str(detail.blockedBy);
       return {
