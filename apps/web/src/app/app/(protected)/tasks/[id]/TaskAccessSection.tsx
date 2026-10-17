@@ -18,7 +18,6 @@ import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import { ZonedTime } from '@/components/DisplayTimezone';
 import type { AccessItem } from '@/lib/agent-capabilities/access-log';
-import { accessRequestHref } from '@/lib/capability-grants-needs-you';
 
 const ROW = 'flex flex-wrap md:flex-nowrap items-baseline gap-x-3 gap-y-1 px-3 py-2 md:px-4 border-b border-border-default/40 last:border-b-0';
 
@@ -70,7 +69,7 @@ function Governed({ item }: { item: AccessItem }) {
       <span className="text-meta basis-full md:basis-auto md:text-right">
         {item.pending ? (
           item.grantId ? (
-            <a data-testid="task-access-review" href={accessRequestHref(item.grantId)} className="text-text-primary underline underline-offset-2 inline-flex items-center min-h-11 md:min-h-0">
+            <a data-testid="task-access-review" href={`/app/settings/apps?request=${encodeURIComponent(item.grantId)}#agent-access`} className="text-text-primary underline underline-offset-2 inline-flex items-center min-h-11 md:min-h-0">
               waiting on a person · Review
             </a>
           ) : <span className="text-text-muted">waiting on a person</span>
