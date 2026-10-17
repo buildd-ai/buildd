@@ -595,7 +595,7 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
 
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc).toMatchObject({ state: 'private', removal: { path: opened.path, prNumber: gh.PR + 5000 }, publication: { policyVersion: expect.stringMatching(/-r2$/) } });
-    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain(`Merge PR #${gh.PR + 5000} to remove it`);
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain(`Merge PR #${gh.PR + 5000} to remove the earlier copy at ${opened.path}`);
     // The old copy PR's head cannot land under the exception any more.
     expect(await repoCopy.landSpecRepoCopy({ repoFullName: GH, prNumber: gh.PR, headSha: opened.headSha, conclusion: 'success', installationId: 1 }, gh.deps)).toEqual({ specId: spec.id, outcome: 'kept_private' });
   });
