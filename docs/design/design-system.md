@@ -667,7 +667,8 @@ notification text) follows the same rules as a PR lede:
     disarm, claim, poll, heartbeat, lease or a raw status enum. A mission or
     task shows one of **Not started**, **Paused**, **Waiting for approval**,
     **Blocked** or **Ready**, from one projection that every surface uses,
-    with one reason and one action. "Held until you arm the mission" reads
+    with one reason and one action; the start-state words live in
+    `MISSION_START_COPY` (`lib/mission-start-state.ts`). "Held until you arm the mission" reads
     **Not started**, with **Start**. An action names what it does ("Start
     now"), never "Force start"; the confirmation says what it skips. Operator
     pages (/app/health) may use the technical term when it is the clearest
@@ -675,7 +676,9 @@ notification text) follows the same rules as a PR lede:
 18. **Diagnostics are a layer, not the headline.** Headline: state and
     action. Detail: one sentence of reason, and who can act. Diagnostics
     (gate codes, runner scheduling, override flags, exact timings) sit in a
-    Disclosure for team admins and operators only. No narration of the
+    Disclosure for team admins and operators, or only on the operator page
+    that owns them (Settings › Runners, Health). A fact a member can act on
+    stays a plain sentence ("No runner is online."). No narration of the
     machinery ("runners claim on their next poll"), and no precision beyond
     what the reader acts on.
 19. **Errors and notifications say what happened and what to do.** "Could
