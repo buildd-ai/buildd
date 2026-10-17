@@ -30,8 +30,11 @@ const PERIOD: Record<FlowWindow, { now: string; before: string }> = {
 
 export interface FormatOptions { timeZone?: string; locale?: string }
 
-const stamp = (t: number, o: FormatOptions) =>
-  new Date(t).toLocaleString(o.locale, { timeZone: o.timeZone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+/** Date and time are formatted apart and joined here: ICU versions disagree on the joiner ("Oct 4, 12:00 PM" vs "Oct 4 at 12:00 PM"). */
+const joinStamp = (t: number, o: FormatOptions, date: Intl.DateTimeFormatOptions) =>
+  `${new Date(t).toLocaleDateString(o.locale, { timeZone: o.timeZone, ...date })}, ${new Date(t).toLocaleTimeString(o.locale, { timeZone: o.timeZone, hour: 'numeric', minute: '2-digit' })}`;
+
+const stamp = (t: number, o: FormatOptions) => joinStamp(t, o, { month: 'short', day: 'numeric' });
 
 /** "Oct 10, 2:00 PM to Oct 17, 2:00 PM": the exact span, in the reader's zone. */
 export function formatSpan(from: number, to: number, o: FormatOptions = {}): string {
@@ -160,7 +163,7 @@ export interface DayBar {
  */
 export function dayBars(series: FlowSeries, window: FlowWindow, o: FormatOptions = {}): DayBar[] {
   const prev = window === '7d' ? series.previous?.days ?? null : null;
-  const dayStamp = (t: number) => new Date(t).toLocaleString(o.locale, { timeZone: o.timeZone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const dayStamp = (t: number) => joinStamp(t, o, { weekday: 'short', month: 'short', day: 'numeric' });
   return series.days.map((d, i) => {
     const p = prev?.[i];
     const aligned = p != null && p.start === d.start - 7 * DAY;
