@@ -54,7 +54,7 @@ export default function InstructWorkerForm({ workerId, pendingInstructions }: In
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        throw new Error(data?.error || 'Failed to send instruction');
+        throw new Error(data?.error || 'Could not send the instruction. Try again.');
       }
 
       setMessage('');

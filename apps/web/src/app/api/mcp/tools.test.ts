@@ -258,6 +258,8 @@ describe('listMcpTools — group tools', () => {
   // ~900 and broken the 6k spec budget, so they stay untyped beyond the
   // selector. The admin ceiling now IS the 6k spec budget: the next addition
   // has to pay for itself.
+  // manage_specs specId + expectedVersion typed on More: (task e2d6728b):
+  // +37, measured 5.94k admin / 4.77k task token.
   it('keeps the whole groups surface under the 6k spec budget', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
     expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);

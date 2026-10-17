@@ -83,11 +83,11 @@ export function PolicyRescanSheet({
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ policyConfig: scan.proposed }),
             });
-            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to apply policy');
+            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not apply the policy. Try again.');
             setScan({ status: 'idle' });
             onApplied();
         } catch (err) {
-            setApplyError(err instanceof Error ? err.message : 'Failed to apply policy');
+            setApplyError(err instanceof Error ? err.message : 'Could not apply the policy.');
         } finally {
             setApplying(false);
         }

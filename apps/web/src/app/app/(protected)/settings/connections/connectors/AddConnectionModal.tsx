@@ -192,10 +192,10 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         setStep('discovered');
       } else {
         const data = await res.json() as { error?: string; message?: string };
-        setError(data.message || (data.error === 'connector_name_taken' ? `A connector named "${name.trim()}" already exists.` : data.error) || 'Failed to add connection');
+        setError(data.message || (data.error === 'connector_name_taken' ? `A connector named "${name.trim()}" already exists.` : data.error) || 'Could not add the connection. Try again.');
       }
     } catch {
-      setError('Failed to add connection');
+      setError('Could not add the connection.');
     } finally {
       setSubmitting(false);
     }
@@ -217,7 +217,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         setSubmitting(false);
       }
     } catch {
-      setError('Failed to start OAuth flow');
+      setError('Could not start sign-in. Try again.');
       setSubmitting(false);
     }
   }
@@ -254,10 +254,10 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         onAdded({ ...data.connector, status: 'connected' });
       } else {
         const data = await res.json() as { error?: string };
-        setError(data.error || 'Failed to save API key');
+        setError(data.error || 'Could not save the API key. Try again.');
       }
     } catch {
-      setError('Failed to save API key');
+      setError('Could not save the API key.');
     } finally {
       setSubmitting(false);
     }

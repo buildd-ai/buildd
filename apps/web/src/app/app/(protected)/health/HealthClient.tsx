@@ -411,7 +411,7 @@ export function HealthClient({
     } catch {
       setRunnerHealth(prev => {
         const next = new Map(prev);
-        next.set(heartbeatId, { loading: false, expanded: true, error: 'Failed to fetch health data.' });
+        next.set(heartbeatId, { loading: false, expanded: true, error: 'Could not load health data. Try again.' });
         return next;
       });
     }
