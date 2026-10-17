@@ -596,7 +596,6 @@ path. See Platform operator.
 | `apps/web/src/app/api/model-tiers/policy/route.ts` (`PUT`) | set the `soak` upgrade mode | operator | admin key of a platform admin account; OAuth by its person | platform operator |
 | `apps/web/src/lib/model-ceilings-api.ts` (`handlePutTeamCeilings`) | set `overCapAuto` | operator | as above | platform operator |
 | `apps/web/src/app/api/teams/[id]/route.ts` (`PATCH`) | PATCH `decisionModel` | operator | — (session only) | platform operator |
-| `apps/web/src/lib/decision-health-needs-you.ts` (`loadDecisionHealthNeedsYou`) | UI: "Decisions are failing" Home card | operator, in the team | — | platform operator |
 | `apps/web/src/app/app/(protected)/settings/models/page.tsx` (`ModelsSettingsPage`) | UI: traffic pools in the cell editor, tier History, the decision model | operator | — | platform operator |
 
 ### Oddities, reproduced not fixed

@@ -4,7 +4,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readGovernedOutcome, type OutcomeView } from './outcome';
-import { reach, type SpecCaller } from './store';
+import { reach, type SpecCaller, type SpecRow } from './store';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import type { GoalCriteriaState, LivingSpecCriterionStanding } from '@buildd/shared';
 import {
@@ -277,11 +277,12 @@ async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRo
  * spec is not there or the reader does not reach its workspace (the page then
  * shows no section, never an error).
  */
-export async function readSpecDelivery(caller: SpecCaller, specId: string, opts: { limit?: number; cursor?: string | null } = {}): Promise<SpecDelivery | null> {
+export async function readSpecDelivery(caller: SpecCaller, specId: string, opts: { limit?: number; cursor?: string | null; checkedSpec?: Pick<SpecRow, 'id' | 'workspaceId' | 'approvedRevision'> } = {}): Promise<SpecDelivery | null> {
   if (!isUuid(specId)) return null;
-  const [spec] = await db.select({ id: specs.id, workspaceId: specs.workspaceId, approvedRevision: specs.approvedRevision })
+  // `checkedSpec`: the spec row, from a caller that already checked reach on it (the spec page).
+  const [spec] = opts.checkedSpec?.id === specId ? [opts.checkedSpec] : await db.select({ id: specs.id, workspaceId: specs.workspaceId, approvedRevision: specs.approvedRevision })
     .from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!spec || !(await reach(caller, spec.workspaceId, false))) return null;
+  if (!spec || (!opts.checkedSpec && !(await reach(caller, spec.workspaceId, false)))) return null;
   const limit = Math.min(Math.max(opts.limit ?? DELIVERY_PAGE, 1), 50);
   const cursor = decodeCursor(opts.cursor);
 
