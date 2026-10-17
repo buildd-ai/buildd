@@ -49,18 +49,37 @@ export function progressMark(cell: ProgressCell): ProgressMark {
 
 const GROUPS: readonly ProgressGroup[] = ['done', 'active', 'waiting', 'checks'];
 
-function groupWord(group: ProgressGroup, n: number): string {
+/**
+ * Waiting cells by why they wait (from the owner: a bare "1 waiting" never
+ * said for what), in the strip's own state words: ready when nothing holds
+ * it, blocked when something does (a dependency, a hold, other work on its
+ * files), closed unmerged for a PR that closed without merging. Short words,
+ * so the glyphs still fit an 80-column pane.
+ */
+function waitingWords(cells: readonly ProgressCell[]): string {
+  const next = cells.filter(c => c.state === 'ready').length;
+  const closed = cells.filter(c => FAILED.has(c.state)).length;
+  const blocked = cells.length - next - closed;
+  return [
+    next > 0 ? `${next} ready` : null,
+    blocked > 0 ? `${blocked} blocked` : null,
+    closed > 0 ? `${closed} closed unmerged` : null,
+  ].filter(Boolean).join(', ');
+}
+
+function groupWord(group: ProgressGroup, cells: readonly ProgressCell[]): string {
+  const n = cells.length;
   switch (group) {
     case 'done': return `${n} done`;
     case 'active': return `${n} in progress`;
-    case 'waiting': return `${n} waiting`;
+    case 'waiting': return waitingWords(cells);
     case 'checks': return `${n} ${n === 1 ? 'check' : 'checks'}`;
   }
 }
 
 /** The counts in words, as the mission page's legend: `8 done · 2 in progress · 3 waiting · 2 checks`. */
 export function progressCounts(cells: readonly ProgressCell[]): string {
-  return countsByGroup(cells).map(g => groupWord(g.group, g.cells.length)).join(' · ');
+  return countsByGroup(cells).map(g => groupWord(g.group, g.cells)).join(' · ');
 }
 
 function countsByGroup(cells: readonly ProgressCell[]): Array<{ group: ProgressGroup; cells: ProgressCell[] }> {
@@ -112,7 +131,7 @@ function legend(cells: readonly ProgressCell[]): ProgressPiece[] {
       seen.add(m.ch);
       out.push({ text: m.ch, token: m.token });
     }
-    out.push({ text: ' ' + groupWord(g.group, g.cells.length), token: 'muted' });
+    out.push({ text: ' ' + groupWord(g.group, g.cells), token: 'muted' });
   }
   return out;
 }
