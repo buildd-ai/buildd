@@ -32,6 +32,7 @@ import {
   COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
+import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
 
 export type { KernelOp, KernelOps, KernelPrincipal, DeliveryVersion } from './command-api';
 
@@ -47,6 +48,8 @@ export const CONTROL_PLANE_URL = 'https://control-plane.buildd.dev';
 export class ControlPlaneUnavailableError extends Error {
   readonly code = 'control_plane_unavailable';
   readonly retryable = true;
+  /** Set by a door that kept the command for the floor to re-submit (command-outbox.ts): it is not lost. */
+  parked = false;
   constructor(readonly why: string, readonly outcome: 'not_applied' | 'unknown' = 'not_applied', readonly idempotencyKey: string | null = null) {
     super(outcome === 'unknown'
       ? `The control plane did not confirm the outcome (${why}); it may have been applied. Retry with the same idempotency key${idempotencyKey ? ` (${idempotencyKey})` : ''} to get its answer.`
@@ -93,6 +96,7 @@ export function doorErrorAnswer(err: DoorError): { status: number; body: Record<
       headers: { ...headers, 'Retry-After': '5' },
       body: {
         error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
+        ...(err.parked ? { parked: true } : {}),
         // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
         ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
       },
@@ -127,6 +131,8 @@ export interface ClientDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   newKey?: () => string;
+  /** Keeps an unanswered door command for the floor (command-outbox.ts). */
+  park?: CommandOutbox['park'];
 }
 
 // ── The mode ────────────────────────────────────────────────────────────────
@@ -495,6 +501,25 @@ export const DOOR_BUDGET_MS = 20_000;
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+  try {
+    return await submitDoor(op, input, c, idempotencyKey);
+  } catch (err) {
+    // Unanswered for the whole budget: an op nothing else re-sends is kept, under this same key, for the
+    // floor to re-submit until it is answered (command-outbox.ts). The door still answers unavailable.
+    if (err instanceof ControlPlaneUnavailableError && c.principal && shouldPark(op)) {
+      err.parked = await (c.deps?.park ?? ((p) => postgresCommandOutbox().park(p)))({
+        key: idempotencyKey, op, input, principal: c.principal, priorUnknown: err.outcome === 'unknown', why: err.why,
+      }).catch((parkErr: unknown) => {
+        console.error(`[workflow] ${op} ${idempotencyKey}: the control plane did not answer and the command could not be parked; it is lost until re-sent:`, parkErr);
+        return false;
+      });
+      if (err.parked) console.warn(`[workflow] ${op} ${idempotencyKey}: the control plane did not answer (${err.why}); parked, the kernel floor re-submits it.`);
+    }
+    throw err;
+  }
+}
+
+async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, idempotencyKey: string): Promise<KernelOps[K]['result']> {
   // Never read off the input's actor: null (no caller) stays null and is refused before sending.
   const principal = c.principal;
   const now = c.deps?.now ?? Date.now;

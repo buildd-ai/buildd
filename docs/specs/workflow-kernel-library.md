@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-17
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -373,7 +373,9 @@ the control plane, authenticated as the caller).
     workspace's delivery is refused, never read as a release to legacy). A
     claim request's fix claims share one control-plane budget; once it is
     spent the next fix candidate defers at once as `kernel_unavailable` and
-    the rest of the batch is claimed. The same
+    the rest of the batch is claimed; a fix claim the control plane refuses
+    (403: auth, the claiming account's reach) defers as `kernel_refused`,
+    not as an outage. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -431,6 +433,33 @@ the control plane, authenticated as the caller).
   never applies the command twice. Once any attempt of a door call may have
   reached the control plane, the web host never runs that command itself: a
   later `not_host`, `unconfigured` or shadow reading raises `unknown` instead.
+- A door command nothing else re-sends is not lost when the control plane
+  does not answer (`apps/web/src/lib/workflow/command-outbox.ts`). An
+  attempt's end (`attempt_ended`: the runner reports it once, and the floor
+  re-sends only an owner's), a reviewer's verdict (`record_review_verdict`,
+  `adopt_review_verdict`: reported once, in the completion PATCH) and
+  GitHub's one green (`observe_ci_green`) are parked in `workflow_command_outbox` under the door's own idempotency key,
+  with their input, principal and whether an earlier submission may have
+  reached the control plane; the door still answers unavailable, with
+  `parked: true`. Every op is classified in `PARK_ON_UNAVAILABLE`, so a new op
+  does not type-check until someone decides. A door whose caller retries (a
+  person's merge, a sweep's observation) is not parked; a fix claim
+  (`claim_fix`) never is, since the claim it revalidates is rolled back and
+  claimed afresh. An answer is never parked either: a refusal, the command's
+  own failure, or the release-skew fallback.
+  - The kernel floor drains it. On the control plane it applies each due row
+    itself through the same reach check, installation and ledger as a
+    request (`applyCommandRequest`); on the web host (shadow, or the liveness
+    fallback) it re-submits through the client with the same key. The ledger
+    is read first: a key done there is settled as replayed and never sent; no
+    ledger row means nothing ran under it; a live claim is waited for. So a
+    parked command is applied at most once whoever drains it.
+  - Order: the command is re-submitted as it was and judged as the delivery
+    stands when it lands, so one a newer head, round or attempt has overtaken
+    is answered stale (or for another head) and settled, never applied.
+  - A row settles on any answer (applied, duplicate, stale, rejected); a
+    refusal, or 48 attempts, gives it up as `dead`, logged and counted as a
+    floor error. A control plane still down stops the pass at the first row.
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
@@ -613,6 +642,15 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
+- AC-35 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
+  unreachable for a door's whole budget WHEN an attempt end, a reviewer's
+  verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control
+  plane answers the floor applies it exactly once (a repeat is answered from
+  the ledger); an earlier submission that did apply is settled from the
+  ledger without applying it again; one a newer head overtook is refused as
+  stale (a verdict) or as for another head (a green) and settled, never
+  applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
+  `command-outbox.test.ts`, `kernel-client.test.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
