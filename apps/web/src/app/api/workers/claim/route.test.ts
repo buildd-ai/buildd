@@ -797,7 +797,7 @@ describe('POST /api/workers/claim', () => {
     });
 
     // cleanupStaleWorkers is mocked as no-op, so only the active workers query hits findMany
-    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1' }, { id: 'w2' }]);
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w1', status: 'running' }, { id: 'w2', status: 'running' }]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -813,6 +813,28 @@ describe('POST /api/workers/claim', () => {
     // Task e7e8740a: the refusal names its limit and what lifts it.
     expect(data.code).toBe('max_concurrent_workers');
     expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
+  });
+
+  it('a question whose session ended does not count against max concurrent workers', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 2,
+      type: 'user',
+      authType: 'api',
+    });
+    // One running worker, and one parked on a question the runner ended the
+    // session for (the `needs_input:` marker). Only the first holds a slot.
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'test-runner' },
+      { id: 'w2', status: 'waiting_input', runner: 'test-runner', error: 'needs_input: Which repo?', waitingFor: { type: 'question', prompt: 'Which repo?' } },
+    ]);
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    }));
+    const data = await res.json();
+    expect(data.code).not.toBe('max_concurrent_workers');
   });
 
   it('returns 429 when daily cost limit exceeded for API auth type', async () => {
@@ -1375,7 +1397,7 @@ describe('POST /api/workers/claim', () => {
     it("counts the key's own workers toward its limit, whatever team their tasks are in (AC-5)", async () => {
       mockAuthenticateApiKey.mockResolvedValue({ ...runnerKey, maxConcurrentWorkers: 1, workspaceIds: ['ws-home', 'ws-other'] });
       // One live worker, on a picked task from the other team.
-      mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w-other', workspaceId: 'ws-other' }]);
+      mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w-other', workspaceId: 'ws-other', status: 'running' }]);
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
       expect(res.status).toBe(429);

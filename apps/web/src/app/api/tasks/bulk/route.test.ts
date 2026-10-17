@@ -14,9 +14,11 @@ const mockTasksUpdate = mock(() => ({
   })),
 }));
 const mockApplyTaskCancelSideEffects = mock(() => Promise.resolve());
+const mockApplyTaskDeleteSideEffects = mock((_id: string) => Promise.resolve());
 
 mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
+  applyTaskDeleteSideEffects: mockApplyTaskDeleteSideEffects,
 }));
 const mockTasksDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
@@ -267,6 +269,8 @@ describe('POST /api/tasks/bulk', () => {
     const data = await res.json();
     expect(data.affected).toBe(1);
     expect(data.dryRun).toBe(false);
+    // Settles the task's parked workers and releases its claims before the row goes.
+    expect(mockApplyTaskDeleteSideEffects).toHaveBeenCalledWith('task-old');
   });
 
   it('returns 0 affected when no workspaces accessible', async () => {

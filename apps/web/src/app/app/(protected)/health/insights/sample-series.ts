@@ -120,6 +120,6 @@ export function sampleFlowSeries(window: FlowWindow, now = Date.now()): FlowSeri
   const prior = fold({ from: from - span, to: from }, span);
   return {
     ...fold({ from, to: now }, bucketMsFor(window)),
-    previous: { shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
+    previous: { window: prior.window, shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
   };
 }

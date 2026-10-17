@@ -93,3 +93,33 @@ export function buildWorkflowRunOutcome(
     ...(succeeded ? {} : { error: `Workflow conclusion: ${run.conclusion ?? 'unknown'}` }),
   };
 }
+
+/**
+ * Is a release pull request into `prodBranch` open? A gated dispatch run that
+ * succeeded without opening one (nothing to release, or the cut refused)
+ * leaves no merge to wait for, so its row must not hold the in-flight guard.
+ * A frozen candidate is `release/v*`; the legacy flow opens from `dev`.
+ */
+export function hasOpenReleasePr(
+  pulls: Array<{ base?: { ref?: string }; head?: { ref?: string } }>,
+  prodBranch: string,
+): boolean {
+  return pulls.some((p) => {
+    const head = p.head?.ref ?? '';
+    return p.base?.ref === prodBranch && (head === 'dev' || head.startsWith('release/'));
+  });
+}
+
+/**
+ * The commit range a merged release PR shipped: what prod held before the
+ * merge up to the merge commit. The dispatch-time dev head is not it: a
+ * candidate is cut from its own captured sha, so dev moving in between puts
+ * later PRs on the release's list.
+ */
+export function attributionRange(params: {
+  baseSha?: string | null;
+  mergeCommitSha?: string | null;
+}): { previousSha: string; headSha: string } | null {
+  if (!params.baseSha || !params.mergeCommitSha) return null;
+  return { previousSha: params.baseSha, headSha: params.mergeCommitSha };
+}

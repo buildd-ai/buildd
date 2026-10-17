@@ -6,9 +6,12 @@ const mockReleaseAndNotify = mock(() => Promise.resolve());
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
+const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { workers: { findFirst: mockWorkersFindFirst }, tasks: { findFirst: mockTasksFindFirst } } },
+  db: { query: { workers: { findFirst: mockWorkersFindFirst, findMany: mockWorkersFindMany }, tasks: { findFirst: mockTasksFindFirst } } },
 }));
+const mockSettle = mock((_taskId: string, _cause: string) => Promise.resolve(0));
+mock.module('@/lib/sessionless-worker-settle', () => ({ settleSessionlessWorkersOfTask: mockSettle }));
 const mockAttemptEnded = mock(async (_p: any) => ({ handled: true }));
 mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockAttemptEnded }));
 mock.module('@/lib/pusher', () => ({
@@ -46,7 +49,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
-import { applyTaskCancelSideEffects, applyTaskReopenSideEffects, emitTaskUpdated } from './task-cancel';
+import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects, applyTaskReopenSideEffects, emitTaskUpdated } from './task-cancel';
 
 const TASK = { id: 'task-1', workspaceId: 'ws-1', missionId: null };
 
@@ -98,6 +101,12 @@ describe('applyTaskCancelSideEffects', () => {
     mockTasksFindFirst.mockResolvedValue({ id: 'task-1', deliveryId: null, deliveryRole: null, context: {} });
     await applyTaskCancelSideEffects(TASK);
     expect(mockAttemptEnded).not.toHaveBeenCalled();
+  });
+
+  it('settles a worker parked on a question: no session is left to report its end', async () => {
+    mockSettle.mockClear();
+    await applyTaskCancelSideEffects(TASK);
+    expect(mockSettle).toHaveBeenCalledWith('task-1', 'task_cancelled');
   });
 
   it('aborts an active worker, releases claims, resolves and emits TASK_UPDATED', async () => {
@@ -193,5 +202,32 @@ describe('applyTaskReopenSideEffects', () => {
   it('skips the mission reopen when the task has no mission', async () => {
     await applyTaskReopenSideEffects(TASK, 'x');
     expect(mockReopenCompletedMission).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyTaskDeleteSideEffects', () => {
+  beforeEach(() => {
+    mockSettle.mockReset();
+    mockSettle.mockResolvedValue(1);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
+    mockReleaseAndNotify.mockReset();
+    mockReleaseAndNotify.mockResolvedValue(undefined);
+  });
+
+  it('settles parked workers, aborts live sessions and releases claims before the row goes', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w-live' }]);
+    await applyTaskDeleteSideEffects('task-1');
+    expect(mockSettle).toHaveBeenCalledWith('task-1', 'task_deleted');
+    expect(mockTriggerEvent).toHaveBeenCalledWith('worker-w-live', 'worker:command', expect.objectContaining({ action: 'abort' }));
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
+  });
+
+  it('never throws: a failed settle still releases the claims', async () => {
+    mockSettle.mockRejectedValue(new Error('db down'));
+    await applyTaskDeleteSideEffects('task-1');
+    expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
   });
 });

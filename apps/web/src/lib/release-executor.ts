@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
-import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, githubRepos, releases, releaseTasks } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
@@ -9,6 +9,7 @@ import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 import { mergeReleasePrPinned } from '@/lib/release/pinned-merge';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
+import { attributionRange } from '@/lib/release/workflow-run';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import {
@@ -471,6 +472,24 @@ export async function advanceGatedReleaseOnPrMerge(params: {
       });
       // Lost the CAS: a concurrent delivery already handled this merge.
       if (!advanced) continue;
+
+      // The edges written at dispatch came from dev's head then. The candidate
+      // was cut from its own sha, so replace them with what the merge shipped.
+      const range = attributionRange({ baseSha, mergeCommitSha });
+      if (range && installationId) {
+        void (async () => {
+          await db.delete(releaseTasks).where(eq(releaseTasks.releaseId, newest));
+          await attributeRelease({
+            releaseId: newest,
+            workspaceId: workspace.id,
+            ...range,
+            archetype: 'gated',
+            repoFullName,
+            githubInstallationId: installationId,
+            db,
+          });
+        })().catch(() => {});
+      }
 
       if (older.length > 0) {
         const superseded = await db

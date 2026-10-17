@@ -1382,8 +1382,9 @@ export class WorkerManager {
 
   private async sendHeartbeat() {
     try {
-      // A paused worker holds no slot (pause.ts); a question still does.
-      const activeCount = Array.from(this.workers.values()).filter(holdsRunnerSlot).length;
+      // A paused worker holds no slot (pause.ts), nor a question whose session
+      // ended; one asked inside a live session still does.
+      const activeCount = Array.from(this.workers.values()).filter(w => holdsRunnerSlot(w, this.sessions.has(w.id))).length;
       // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
       // liveness while a worker sits inside one long silent tool call — the case
       // where `updatedAt` freezes and the server could not tell a busy worker

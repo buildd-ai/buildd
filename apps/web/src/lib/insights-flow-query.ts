@@ -211,7 +211,7 @@ export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow,
   const names = workspaceIds.length ? await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, workspaceIds)) : [];
   return {
     ...series,
-    previous: prior && { shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
+    previous: prior && { window: prior.window, shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
     workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])),
     truncated: oldest > since.getTime(),
   };

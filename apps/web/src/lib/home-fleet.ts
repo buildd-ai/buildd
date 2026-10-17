@@ -14,7 +14,7 @@ import { isOpenAsk } from './open-ask';
 import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
+import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
@@ -118,7 +118,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       .select({
         id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
-        prNumber: workers.prNumber,
+        prNumber: workers.prNumber, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
@@ -130,7 +130,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
   ]);
   const rows: FleetWorkerRow[] = liveRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
-    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber, error: r.error,
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
@@ -231,7 +231,7 @@ export async function loadHomeFleet(input: {
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
-    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'],
+    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
@@ -309,7 +309,7 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
   const fromDate = new Date(from);
   const [runRows, taskRows] = await Promise.all([
     db
-      .select({ startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt, status: workers.status })
+      .select({ startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt, status: workers.status, error: workers.error })
       .from(workers)
       .where(and(
         inArray(workers.workspaceId, wsIds),
@@ -337,7 +337,8 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
   const live = new Set<string>(LIVE_WORKER_STATUSES);
   const runs: RunInterval[] = runRows.map(r => ({
     start: new Date(r.startedAt!).getTime(),
-    end: live.has(r.status) ? null : new Date(r.completedAt ?? r.updatedAt ?? now).getTime(),
+    // A question whose session ended stopped using its slot at its last write.
+    end: live.has(r.status) && !questionSessionEnded(r) ? null : new Date(r.completedAt ?? r.updatedAt ?? now).getTime(),
   }));
   const queued: QueuedInterval[] = [];
   for (const t of taskRows) {

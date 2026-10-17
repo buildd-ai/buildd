@@ -240,6 +240,8 @@ export interface HealthData {
   protectedWorkPending: boolean;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
+  /** The workspaces `runnerLanes` reads, so the page can re-render on their worker events. */
+  laneWorkspaceIds: string[];
   now: number;
 }
 
@@ -727,6 +729,8 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       agentAccess: agentAccess ?? null,
       runnerLanes,
       protectedWorkPending,
+      // The workspaces the lanes read, for the page's live refresh.
+      laneWorkspaceIds: runnerLanes ? scopedWsIds : [],
       now,
     },
   };
