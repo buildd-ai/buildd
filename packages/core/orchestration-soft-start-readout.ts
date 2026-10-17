@@ -1,3 +1,4 @@
+import type { OverlapStartConflictCell, OverlapStartConflictReadout } from '@buildd/shared';
 import { summarizeClaimHoldReadout, type ClaimCalibrationEvidence, type ClaimHoldGroupSummary } from './orchestration-claim-readout';
 /**
  * Soft-overlap STARTs, graded by the same outcome labeller as Jev's
@@ -11,6 +12,11 @@ import { summarizeClaimHoldReadout, type ClaimCalibrationEvidence, type ClaimHol
  * (conflict retry created, path collision, merge-base refusal; composite
  * `risk`), so a rule START and a Jev START carry the same unsafe-start
  * measure and can be set side by side.
+ *
+ * `summarizeOverlapStartConflicts` answers the overlap policy's own question
+ * (spec: Claim Overlap Scheduling, Measurement): of the STARTs past an
+ * overlap, by area class and gate (`soft_overlap`, `open_pr_overlap`,
+ * `lease_overlap`), what share's PR later hit a merge conflict.
  *
  * The live sibling probe is reported next to it, never inside the composite:
  * when the pair overlapped live and a probe of the two tasks' branches ran
@@ -142,4 +148,38 @@ export function summarizeSoftStartReadout(input: SoftStartReadoutInput): SoftSta
       byRiskTier,
     };
   });
+}
+
+export type { OverlapStartConflictCell, OverlapStartConflictReadout };
+
+/**
+ * Of every overlap START, the share whose PR later hit a merge conflict (the
+ * labeller's `conflictCreated`: a conflict retry filed for the task's PR),
+ * by area class and by gate. A start still running is pending, never clean.
+ */
+export function summarizeOverlapStartConflicts(input: SoftStartReadoutInput): OverlapStartConflictReadout {
+  const decisions: DecisionForJoin[] = input.starts.map(s => ({
+    id: s.id, taskId: s.taskId, workspaceId: s.workspaceId, prNumber: null, headSha: null, baseRef: null, createdAt: s.startedAt,
+  }));
+  const labels = new Map(labelDecisionOutcomes({ ...input.outcome, decisions }).map(l => [l.decisionId, l]));
+  const cells = new Map<string, OverlapStartConflictCell>();
+  const cell = (areaClass: string, gate: string) => {
+    const key = `${areaClass}\u0000${gate}`;
+    let c = cells.get(key);
+    if (!c) { c = { areaClass, gate, starts: 0, observed: 0, conflicted: 0, pending: 0, conflictShare: null }; cells.set(key, c); }
+    return c;
+  };
+  const total = cell('all', 'all');
+  for (const s of input.starts) {
+    const area = s.areaClass ?? 'unknown';
+    const l = labels.get(s.id)?.conflictCreated;
+    for (const c of [total, cell(area, 'all'), cell(area, s.gate ?? 'soft_overlap')]) {
+      c.starts++;
+      if (l?.status === 'observed') { c.observed++; if (l.value) c.conflicted++; } else c.pending++;
+    }
+  }
+  for (const c of cells.values()) c.conflictShare = c.observed > 0 ? c.conflicted / c.observed : null;
+  const rest = [...cells.values()].filter(c => c !== total).sort((a, b) =>
+    a.areaClass.localeCompare(b.areaClass) || (a.gate === 'all' ? -1 : b.gate === 'all' ? 1 : a.gate.localeCompare(b.gate)));
+  return { cells: rest, total };
 }

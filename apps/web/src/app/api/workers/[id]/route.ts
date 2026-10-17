@@ -3289,10 +3289,10 @@ export async function PATCH(
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
       title: `⏳ ${walledLabel} budget/rate-limit hit`,
       message: failoverBackend
-        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
+        ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
         : runnerSeatWall
-          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
-          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
+          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
+          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'}: claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',
       priority: 0,
@@ -3441,7 +3441,7 @@ export async function PATCH(
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
               console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
               void notifyTeamOf({ workspaceId: worker.workspaceId }, 'credentialExpired', {
-                title: `🔑 Auth failure — failing over to ${backendLabel(authFailoverBackend)}`,
+                title: `🔑 Sign-in failed. Moved to ${backendLabel(authFailoverBackend)}`,
                 message: `Task re-queued on ${backendLabel(authFailoverBackend)} after ${backendLabel(currentBackend)} auth failure.\n${(error || '').slice(0, 150)}`,
                 url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/tasks/${worker.taskId}`,
                 urlTitle: 'View task',
@@ -6332,10 +6332,10 @@ async function handleReviewerOutcomeIfNeeded(
     case 'escalate': {
       // BT-9: Escalate path — notify human, no retry
       void notifyTeamOf({ workspaceId }, 'needsAttention', {
-        title: `PR #${prNumber} escalated by reviewer`,
+        title: 'The reviewer escalated a PR',
         message: serverOverrideReason ?? output.escalationReason ?? output.summary,
         url: prUrl,
-        urlTitle: 'View PR',
+        urlTitle: `PR #${prNumber}`,
       });
       await appendPrActivity({
         installationId,

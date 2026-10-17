@@ -180,6 +180,37 @@ describe('planClaimBatch — hard edges', () => {
   });
 });
 
+describe('planClaimBatch — overlapHolds (overlap policy)', () => {
+  const onlyLockfiles = (shared: string[]) => shared.some(p => p.endsWith('bun.lock'));
+
+  it('a concrete overlap the policy answers false for is no edge: both are picked', () => {
+    const r = planClaimBatch(input({
+      candidates: [cand('a', { declaredScope: ['src/x.ts'] }), cand('b', { declaredScope: ['src/x.ts'] })],
+      inFlight: [flight('pr:1', { kind: 'open_pr', declaredScope: ['src/x.ts'] })],
+      overlapHolds: onlyLockfiles,
+    }));
+    expect(picks(r).sort()).toEqual(['a', 'b']);
+    expect(r.orientation).toEqual([]);
+  });
+
+  it('it still holds where the policy answers true, and sees both sides of a prefix overlap', () => {
+    const seen: Array<[string[], string]> = [];
+    const r = planClaimBatch(input({
+      candidates: [cand('a', { declaredScope: ['src'] })],
+      inFlight: [flight('lease:x', { kind: 'lease', taskId: 'x', declaredScope: ['src/bun.lock'] })],
+      overlapHolds: (shared, kind) => { seen.push([shared, kind]); return onlyLockfiles(shared); },
+    }));
+    expect(picks(r)).toEqual([]);
+    expect(r.orientation[0]).toMatchObject({ blockedBy: 'lease:x', edge: 'lease_overlap' });
+    expect(seen).toEqual([[['src', 'src/bun.lock'], 'lease']]);
+  });
+
+  it('absent, every concrete overlap is an edge as before', () => {
+    const r = planClaimBatch(input({ candidates: [cand('a', { priority: 1, declaredScope: ['src/x.ts'] }), cand('b', { declaredScope: ['src/x.ts'] })] }));
+    expect(picks(r)).toEqual(['a']);
+  });
+});
+
 describe('planClaimBatch — soft edges', () => {
   it('a low-confidence prediction never blocks', () => {
     const r = planClaimBatch(input({

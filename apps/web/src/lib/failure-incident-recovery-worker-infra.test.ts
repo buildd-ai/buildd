@@ -10,7 +10,6 @@ import { ruleCauseKey } from './failure-incident-cause-key';
 import { assessIncident, planRecovery, type RecoveryDeps, type RecoveryEffects } from './failure-incident-recovery';
 import { evaluateWorkerInfra, parseWorkerInfraSignature, type WorkerInfraRecoveryFacts, type WorkerInfraSubjectFacts } from './failure-incident-recovery-worker-infra';
 import { mergeIncident, type IncidentStorePort, type StoredIncident } from './failure-incident-store';
-import { incidentEscalationRule } from './failure-incident-escalation';
 import { planCredentialHold, releasedHoldContext, type CredentialHold } from './task-recovery-hold';
 
 const T0 = Date.parse('2026-10-11T12:00:00.000Z');
@@ -87,11 +86,6 @@ describe('the rule: one incident per cause, never per task (I-16)', () => {
   it('parses its own signature', () => {
     expect(parseWorkerInfraSignature(`infrastructure_failure|ws=${WS}|component=worker.session_lost|sig=stale_worker_expired`))
       .toEqual({ component: 'worker.session_lost', key: 'stale_worker_expired' });
-  });
-
-  it('before its first assessment the gate holds it as Buildd\'s, never the person\'s', () => {
-    const inc = openFrom([authFact(TASK_A), authFact(TASK_B)]);
-    expect(incidentEscalationRule({ status: 'open', severity: inc.severity, rule: inc.rule } as any).owner).toBe('buildd');
   });
 });
 

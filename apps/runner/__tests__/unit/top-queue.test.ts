@@ -36,6 +36,25 @@ describe('queue sections (R-26)', () => {
     expect(two.rows.map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'when a slot frees']]);
   });
 
+  test('a row sharing only mergeable files with other work says it starts alongside it (I-38)', () => {
+    const t = QUEUE.teams[0];
+    const queue = { ...QUEUE, teams: [{ ...t, queue: t.queue.map(q =>
+      q.id === 'q-intake' ? { ...q, alongside: { prNumber: 41, holderTaskId: 'pr-task' } }
+        : q.id === 'q-fonts' ? { ...q, alongside: { prNumber: null, holderTaskId: 'q-review' } }
+          : q.id === 'q-docs' ? { ...q, alongside: { prNumber: 42, holderTaskId: null } }
+            : q) }, QUEUE.teams[1]] };
+    const s = reduce(queueState(), { type: 'queue', queue });
+    const [one] = queueSections(s, NOW);
+    const by = new Map(one.rows.map(r => [r.taskId, r]));
+    expect(by.get('q-intake')).toMatchObject({ starts: 'now', alongside: 'starts alongside #41 (same files, merges at the end)' });
+    // No PR: the holder by title.
+    expect(by.get('q-fonts')?.alongside).toBe('starts alongside "fix(kernel): review com…" (same files, merges at the end)');
+    // A row something holds says what it waits for, not alongside.
+    expect(by.get('q-docs')?.starts).toBe('after its dependency');
+    expect(by.get('q-docs')?.alongside).toBeUndefined();
+    expect(by.get('q-review')?.alongside).toBeUndefined();
+  });
+
   test('a retry floor far out is held with its reason and takes no free slot', () => {
     const far = new Date(NOW + 6 * 24 * 3_600_000).toISOString();
     const t = QUEUE.teams[0];

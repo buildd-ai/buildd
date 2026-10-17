@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildCoordinationHolds, coordinationLink, coordinationGateDetail } from './explain-coordination';
+import { buildCoordinationHolds, coordinationLink, coordinationGateDetail, latestOverlapStarts, overlapStartLink, startsAlongsideWords } from './explain-coordination';
 
 /**
  * `explain` for a task held on coordination: who holds what, on which paths,
@@ -85,5 +85,39 @@ describe('coordinationGateDetail', () => {
     expect(coordinationGateDetail({ holderTaskId: 'h', paths: ['a', 7], verdict: 'HOLD', consecutiveDeferrals: 3, secret: 'x' }))
       .toEqual({ holderTaskId: 'h', paths: ['a'], verdict: 'HOLD' });
     expect(coordinationGateDetail({ consecutiveDeferrals: 3 })).toBeNull();
+  });
+});
+
+describe('a task that started past an overlap', () => {
+  const at = '2026-10-17T10:00:00.000Z';
+  const row = (detail: Record<string, unknown>) => ({ reason: 'soft_overlap_start', detail: { startedAt: at, decidedBy: 'rule', ...detail } });
+
+  it('says it starts alongside the PR, from its open-PR start row', () => {
+    const starts = latestOverlapStarts([
+      row({ gate: 'open_pr_overlap', holderTaskId: 'pr-task-1', prNumber: 41, paths: ['apps/web/src/lib/x.ts'] }),
+      { reason: 'path_overlap', detail: { prNumber: 41 } },
+    ]);
+    expect(starts).toEqual([{ gate: 'open_pr_overlap', holderTaskId: 'pr-task-1', prNumber: 41, paths: ['apps/web/src/lib/x.ts'] }]);
+    const link = overlapStartLink(starts, { taskId: 't', workspaceId: 'ws' });
+    expect(link?.claim).toContain('starts alongside #41 (same files, merges at the end)');
+    expect(link?.refs).toMatchObject({ prNumber: 41, paths: ['apps/web/src/lib/x.ts'] });
+  });
+
+  it('names the holder task when the start row has no PR, and lists the rest of that claim', () => {
+    const starts = latestOverlapStarts([
+      row({ gate: 'soft_overlap', holderTaskId: 'abcdef12-3456', paths: ['apps/web/src/lib'] }),
+      row({ gate: 'lease_overlap', holderTaskId: 'feedbeef-0000', paths: ['apps/web/src/lib/x.ts'] }),
+      // An earlier claim's start: not this one.
+      { reason: 'soft_overlap_start', detail: { startedAt: '2026-10-16T10:00:00.000Z', prNumber: 7 } },
+    ]);
+    expect(starts.map(s => s.gate)).toEqual(['soft_overlap', 'lease_overlap']);
+    const claim = overlapStartLink(starts, {})!.claim;
+    expect(claim).toContain(startsAlongsideWords('task abcdef12'));
+    expect(claim).toContain('also overlaps task feedbeef');
+    expect(claim).not.toContain('#7');
+  });
+
+  it('is absent without a start row', () => {
+    expect(overlapStartLink(latestOverlapStarts([{ reason: 'path_overlap', detail: { prNumber: 41 } }]), {})).toBeNull();
   });
 });
