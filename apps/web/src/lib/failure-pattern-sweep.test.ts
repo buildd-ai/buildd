@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   countsTowardFailureRate,
   computeSweepFloors,
+  earliestSweepFloors,
   effectiveFloor,
   minutesBeforeIso,
   runFailurePatternSweep,
@@ -533,5 +534,115 @@ describe('countsTowardFailureRate', () => {
   it('never counts bookkeeping', () => {
     expect(countsTowardFailureRate({ exitCause: 'needs_input', taskStatus: 'failed' })).toBe(false);
     expect(countsTowardFailureRate({ exitCause: 'task_cancelled', taskStatus: 'cancelled' })).toBe(false);
+  });
+});
+
+// ── R-25: a full sweep reads only the workspaces with something to find ─────
+
+describe('runFailurePatternSweep: a full sweep skips workspaces with nothing to find (R-25)', () => {
+  /** fakeDeps plus the batched watermark ports and an activity answer. */
+  function batchedDeps(workspaceIds: string[], active: { facts?: string[]; recovery?: string[] } | Error, opts: FakeOpts = {}) {
+    const h = fakeDeps(workspaceIds, opts);
+    const collected: string[] = [];
+    const batchWrites: Array<{ ids: string[]; at: string }> = [];
+    const activityCalls: Array<{ ids: string[]; floors: SweepFloors; rules: string[] }> = [];
+    const perWorkspaceWatermarkReads: string[] = [];
+    const collect = h.deps.collectFacts;
+    h.deps.collectFacts = async (ws, floors, n) => { collected.push(ws); return collect(ws, floors, n); };
+    const getOne = h.deps.getWatermark;
+    h.deps.getWatermark = async ws => { perWorkspaceWatermarkReads.push(ws); return getOne(ws); };
+    h.deps.getWatermarks = async ids => new Map(ids.map(id => [id, h.watermarks.get(id) ?? null]));
+    h.deps.setWatermarks = async (ids, at) => { batchWrites.push({ ids: [...ids], at }); for (const id of ids) h.watermarks.set(id, at); };
+    h.deps.selectActiveWorkspaces = async (ids, floors, _n, rules) => {
+      activityCalls.push({ ids, floors, rules });
+      if (active instanceof Error) throw active;
+      return { facts: new Set(active.facts ?? []), recovery: new Set(active.recovery ?? []) };
+    };
+    return { ...h, collected, batchWrites, activityCalls, perWorkspaceWatermarkReads };
+  }
+
+  it('a quiet workspace costs no reads of its own, still counts as evaluated, and its watermark moves', async () => {
+    const h = batchedDeps([WS1, WS2, WS3], { facts: [WS2] });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(h.collected).toEqual([WS2]);
+    expect(h.perWorkspaceWatermarkReads).toEqual([]);
+    expect(counters.workspacesEvaluated).toBe(3);
+    expect(counters.windowsEvaluated).toBe(3);
+    // One batched write for every workspace that was looked at, none per workspace.
+    expect(h.watermarkWrites).toEqual([]);
+    expect(h.batchWrites).toEqual([{ ids: [WS1, WS2, WS3], at: now() }]);
+  });
+
+  it('a workspace with facts is still swept and its pattern still fires', async () => {
+    const incidentPort = memoryIncidentPort();
+    const facts = new Map([[WS2, { ...emptyFacts(WS2), workerFailures: criticalWorkerFailures(10) }]]);
+    const h = batchedDeps([WS1, WS2], { facts: [WS2] }, { facts, incidentPort });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(counters.incidentsOpened).toBe(1);
+    expect([...incidentPort.rows.values()][0].workspaceId).toBe(WS2);
+  });
+
+  it('the activity read uses the earliest floor across workspaces, so an old watermark widens it', async () => {
+    const h = batchedDeps([WS1, WS2], { facts: [] });
+    const old = minutesBeforeIso(now(), 5000);
+    h.watermarks.set(WS1, old);
+    await runFailurePatternSweep(h.deps, { now });
+    expect(h.activityCalls).toHaveLength(1);
+    expect(h.activityCalls[0].floors.workerFailuresSince).toBe(old);
+  });
+
+  it('a workspace with only an open incident is re-assessed without collecting facts', async () => {
+    const incidentPort = memoryIncidentPort();
+    const observed: string[] = [];
+    const h = batchedDeps([WS1, WS2], { recovery: [WS2] }, { incidentPort });
+    const families = [{
+      rule: 'path_overlap_stall' as const,
+      async observe(incident: StoredIncident) { observed.push(incident.workspaceId ?? ''); return { complete: false as const, reason: 'test' }; },
+      evaluate: evaluatePathOverlap,
+    }];
+    h.deps.recovery = { families: families as never, effects: { async releaseBlocker() {}, async wakeSubject() {}, async fileFixTask() { return null; } } };
+    const listed: string[] = [];
+    const list = incidentPort.listUnresolved!.bind(incidentPort);
+    incidentPort.listUnresolved = async (ws, rule) => { listed.push(ws); return list(ws, rule); };
+    await runFailurePatternSweep(h.deps, { now });
+    expect(h.collected).toEqual([]);
+    expect(listed).toEqual([WS2]);
+    expect(h.activityCalls[0].rules).toEqual(['path_overlap_stall']);
+  });
+
+  it('a failed activity read sweeps every workspace, as before', async () => {
+    const h = batchedDeps([WS1, WS2], new Error('db down'));
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(h.collected).toEqual([WS1, WS2]);
+    expect(counters.workspacesEvaluated).toBe(2);
+    expect(counters.runFailures).toBe(0);
+  });
+
+  it('a failing workspace keeps its old watermark; the rest advance in one write', async () => {
+    const h = batchedDeps([WS1, WS2], { facts: [WS1, WS2] }, { throwingWorkspaces: new Set([WS1]) });
+    const counters = await runFailurePatternSweep(h.deps, { now });
+    expect(counters.runFailures).toBe(1);
+    expect(h.batchWrites).toEqual([{ ids: [WS2], at: now() }]);
+  });
+
+  it('a triggered one-workspace sweep reads per workspace and asks nothing up front', async () => {
+    const h = batchedDeps([WS1], { facts: [] });
+    await runFailurePatternSweep(h.deps, { now, workspaceIds: [WS1] });
+    expect(h.activityCalls).toEqual([]);
+    expect(h.collected).toEqual([WS1]);
+    expect(h.watermarkWrites).toEqual([{ workspaceId: WS1, at: now() }]);
+  });
+});
+
+describe('earliestSweepFloors', () => {
+  it('is the rolling floors with no watermark, and never later than any workspace\'s own', () => {
+    expect(earliestSweepFloors([], now())).toEqual(computeSweepFloors(null, now()));
+    const a = minutesBeforeIso(now(), 400);
+    const e = earliestSweepFloors([null, a, minutesBeforeIso(now(), 2)], now());
+    for (const w of [null, a]) {
+      const own = computeSweepFloors(w, now());
+      for (const k of Object.keys(own) as Array<keyof SweepFloors>) expect(e[k] <= own[k]).toBe(true);
+    }
+    expect(e.workerFailuresSince).toBe(a);
   });
 });

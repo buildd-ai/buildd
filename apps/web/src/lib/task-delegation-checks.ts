@@ -21,6 +21,7 @@ import {
 import { loadRawTaskGrants, teamsOf } from './task-delegation';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from './team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from './caller-cache';
 
 type DelegatedTaskRow = Parameters<typeof loadRawTaskGrants>[0];
 
@@ -128,7 +129,11 @@ export async function addTaskDelegationGrant(
       .set({ delegation: next, updatedAt: new Date() })
       .where(and(eq(tasks.id, taskId), eq(tasks.updatedAt, task.updatedAt)))
       .returning({ id: tasks.id });
-    if (row) return { ok: true };
+    if (row) {
+      // The task's token carries the new grant on its next call.
+      await clearCallerCache(callerDep.task(taskId));
+      return { ok: true };
+    }
   }
   return { ok: false, error: 'The task changed while the grant was being written; approve again.' };
 }
@@ -148,6 +153,10 @@ export async function removeTaskDelegationGrant(
       .set({ delegation: next, updatedAt: new Date() })
       .where(and(eq(tasks.id, taskId), eq(tasks.updatedAt, task.updatedAt)))
       .returning({ id: tasks.id });
-    if (row) return;
+    if (row) {
+      // The task's token loses the grant on its next call.
+      await clearCallerCache(callerDep.task(taskId));
+      return;
+    }
   }
 }

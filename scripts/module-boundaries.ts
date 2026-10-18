@@ -123,6 +123,9 @@ export function moduleOf(path: string): Owner {
 export const COMPOSITION_ROOTS: ReadonlySet<string> = new Set<string>([
   // Core-event subscribers (lib/core-events.ts); core emits, this lists who reacts.
   'apps/web/src/modules.ts',
+  // In-process MCP read routes (lib/mcp-local-reads.ts); split from modules.ts so
+  // the routes that import modules.ts do not bundle every route it names.
+  'apps/web/src/mcp-read-routes.ts',
 ]);
 
 const SCAN_ROOTS = ['apps/web/src', 'packages/core', 'packages/shared/src'];

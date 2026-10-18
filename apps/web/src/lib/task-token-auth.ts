@@ -8,7 +8,8 @@ import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKe
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { taskLinksPr } from './agent-capabilities/pr-links';
 import { delegationAllows, type ScheduleDelegationCapability, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
-import { loadTokenDelegations } from './task-delegation';
+import { loadTokenDelegationsOrThrow } from './task-delegation';
+import { cachedCaller, callerDep } from './caller-cache';
 import { sqlWhere, sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 /**
@@ -60,7 +61,12 @@ export async function authenticateTaskScopedCaller(
   if (!isTaskToken(apiKey)) return request ? authenticateApiKey(apiKey, request) : authenticateApiKey(apiKey);
   const claims = verifyTaskToken(apiKey);
   if (!claims) return null;
-  const account = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, claims.accountId)) });
+  // The minting account's row and the token's delegations are cached for at
+  // most 60 s (lib/caller-cache.ts) and cleared when the account changes
+  // (a key rotation included) or a delegation is written.
+  const account = await cachedCaller(`account-row:${claims.accountId}`,
+    () => db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, claims.accountId)) }),
+    { known: [callerDep.account(claims.accountId)], depsOf: (a) => [callerDep.keyHash(a.apiKey)] });
   if (!account) return null;
   if (taskTokenKeyBinding(account.apiKey) !== claims.keyBinding) return null;
   // The minting key's current scopes and workspace list still bound the
@@ -72,9 +78,10 @@ export async function authenticateTaskScopedCaller(
   // An admin token stays admin only while its minting key is: demoting the
   // key ends the admin tokens it minted rather than quietly downgrading them.
   if (claims.level === 'admin' && !canMintAdminTaskToken(account)) return null;
-  // Read on every request (lib/task-delegation.ts), so clearing a grant ends
-  // the reach at once.
-  const delegations = await loadTokenDelegations(claims.taskId, claims.workspaceId, account);
+  // Every delegation write clears this entry (task-delegation-checks.ts, the
+  // task and schedule routes), so clearing a grant ends the reach at once. A
+  // lookup that failed is not cached: it reads as no delegation this call only.
+  const delegations = await cachedTokenDelegations(claims.taskId, claims.workspaceId, account);
   await noteBearerTenant(apiKey, account.teamId);
   return {
     ...account,
@@ -87,6 +94,25 @@ export async function authenticateTaskScopedCaller(
       ...(delegations.length ? { delegations } : {}),
     },
   };
+}
+
+async function cachedTokenDelegations(
+  taskId: string,
+  workspaceId: string,
+  account: { id: string; teamId?: string | null; workspaceIds?: string[] | null },
+): Promise<ScheduleDelegationGrant[]> {
+  try {
+    const hit = await cachedCaller(`delegations:${taskId}:${workspaceId}:${account.id}`,
+      async () => ({ grants: await loadTokenDelegationsOrThrow(taskId, workspaceId, account) }),
+      {
+        known: [callerDep.task(taskId), callerDep.workspaceSchedules(workspaceId), callerDep.account(account.id), callerDep.workspace(workspaceId)],
+        depsOf: (v) => v.grants.map((g) => callerDep.workspace(g.workspaceId)),
+      });
+    return hit?.grants ?? [];
+  } catch (err) {
+    console.warn('[task-delegation] delegation lookup failed; none applied:', (err as Error)?.message ?? err);
+    return [];
+  }
 }
 
 /**
