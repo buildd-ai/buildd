@@ -225,10 +225,15 @@ function wipeEntries(dir: string, keep: (abs: string) => boolean, uid?: number):
   for (const name of names) {
     const abs = join(dir, name);
     if (keep(abs)) continue;
-    try {
-      if (uid !== undefined && lstatSync(abs).uid !== uid) continue;
-      rmSync(abs, { recursive: true, force: true });
-    } catch { /* checked by verify */ }
+    // A straggler still writing (e.g. a detached `git gc --auto`) can make a
+    // recursive remove fail with ENOTEMPTY; the writer is short-lived, so retry.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        if (uid !== undefined && lstatSync(abs).uid !== uid) break;
+        rmSync(abs, { recursive: true, force: true });
+        break;
+      } catch { /* retried, then checked by verify */ }
+    }
   }
 }
 

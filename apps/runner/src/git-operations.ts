@@ -60,6 +60,10 @@ export type ExecAsync = (command: string, opts: ExecAsyncOptions) => Promise<str
 /** No call here runs without a timeout; this only backs an options bag that forgot one. */
 const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 
+// Materializing a checkout can exceed the metadata-command budget on a busy
+// host. Killing it mid-copy fails healthy claims and leaves a partial tree.
+const CHECKOUT_TIMEOUT_MS = 180_000;
+
 const realExecAsync: ExecAsync = async (command, opts) => {
   try {
     return await gitShellAsync(command, {
@@ -1329,15 +1333,16 @@ export async function setupWorktree(
     emitPhase('worktree_start');
     emitWorktreeMode(cloud ? 'clone' : 'worktree');
     step('Creating the worktree');
+    const checkoutOpts = { ...execOpts, timeout: CHECKOUT_TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'] };
     try {
       if (cloud) {
         await execAsync(checkoutExistingBranch
           ? `git checkout "${actualBranch}"`
-          : `git checkout -B "${actualBranch}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          : `git checkout -B "${actualBranch}" "${base}"`, checkoutOpts);
       } else if (checkoutExistingBranch) {
-        await execAsync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add "${worktreePath}" "${actualBranch}"`, checkoutOpts);
       } else {
-        await execAsync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, checkoutOpts);
         // `worktree add -b <new> <path> origin/<base>` makes git track the BASE
         // (branch.autoSetupMerge), so a plain `git push` fails with "upstream
         // branch name differs" — the push target must be the task's own branch.
