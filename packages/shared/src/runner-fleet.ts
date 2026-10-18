@@ -13,8 +13,8 @@
  * field, so no column), and is re-derived from the URL shape for rows written
  * by runner builds that predate it. Pure and client-safe.
  */
-import { isRunnerExecutor, type RunnerExecutor } from './executor';
-import { normalizeRunnerName } from './runner-name';
+import { isRunnerExecutor, type RunnerExecutor } from './executor.js';
+import { normalizeRunnerName } from './runner-name.js';
 
 /** Env var the cloud dispatcher sets in the container: its deployment (Worker) name. */
 export const RUNNER_GROUP_ENV = 'BUILDD_RUNNER_GROUP';

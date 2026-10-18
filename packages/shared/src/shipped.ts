@@ -12,7 +12,7 @@
 // What the server owns: change type, which screenshots exist, and whether the
 // lede is fit to show. The model can only select, never assert.
 
-import type { TaskHandoff } from './types';
+import type { TaskHandoff } from './types.js';
 
 /** Longest lede shown, in characters. The same bound as the PR lede. */
 export const SHIPPED_LEDE_MAX_CHARS = 240;
