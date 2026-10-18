@@ -175,7 +175,10 @@ mock.module('../../src/backends/index.js', () => ({
   },
 }));
 
-const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest, __setIsolationHostForTest } = await import('../../src/workers');
+// The mocked env-scan models a Linux host with working bwrap; don't let a macOS
+// developer machine run the real Seatbelt probe instead.
+__setIsolationHostForTest('linux');
 // Sessions here run a mocked SDK with no model credential: skip the
 // pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
 __setModelAuthPreflightForTest(() => null);
