@@ -307,3 +307,36 @@ describe('enqueueEvent (event stream readers)', () => {
     expect(enqueueEvent(c as unknown as ReadableStreamDefaultController, new Uint8Array([1]))).toBe(false);
   });
 });
+
+describe('serveRunnerSocket handler deadline', () => {
+  test('one hung upstream read does not stop /api/runner and /health answering, and gets a 504', async () => {
+    const s = serveRunnerSocket(sock, (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/api/queue') return never(); // the server read that never returns
+      return Response.json({ ok: true });
+    }, { deadlineMs: 150 });
+    servers.push(s);
+    const get = (p: string, ms = 2000) => fetch(`http://localhost${p}`, { unix: sock, signal: AbortSignal.timeout(ms) } as RequestInit);
+
+    const queue = get('/api/queue');
+    const runner = await get('/api/runner');
+    const health = await get('/health');
+    expect(runner.status).toBe(200);
+    expect(health.status).toBe(200);
+
+    const res = await queue;
+    expect(res.status).toBe(504);
+    expect(s.inFlight()).toEqual([]);
+    expect((await checkSocketHealth(sock, 1000)).ok).toBe(true);
+  });
+
+  test('noDeadline requests are left to run', async () => {
+    const s = serveRunnerSocket(sock, async () => {
+      await new Promise(r => setTimeout(r, 300));
+      return Response.json({ done: true });
+    }, { deadlineMs: 100, noDeadline: () => true });
+    servers.push(s);
+    const res = await fetch('http://localhost/api/update', { unix: sock } as RequestInit);
+    expect(res.status).toBe(200);
+  });
+});
