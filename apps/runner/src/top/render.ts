@@ -621,7 +621,7 @@ const QEST_W = 6;
 /** The narrowest title the queue keeps before it drops a column. */
 const QTITLE_MIN = 30;
 
-interface QueueCols { est: boolean; workspace: boolean; mission: number; starts: number; title: number }
+interface QueueCols { est: boolean; workspace: boolean; by: number; mission: number; starts: number; title: number }
 
 /**
  * The queue's columns at `cols`: est. goes first, then workspace, and below 60
@@ -629,19 +629,23 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  * wide and never wraps.
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
-  const mission = cols < 60 ? 12 : 17;
+  const mission = cols < 60 ? 12 : cols < 110 ? 14 : 17;
+  // The by column (R-58): "you", a first name, or "-"; a long name is cut.
+  const by = cols < 110 ? 6 : 9;
   // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
   const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
-  const fixed = 1 + POS_W + mission + starts;
+  // The by column stays at every width (R-58); est. and workspace give way first.
+  const fixed = 1 + POS_W + by + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
   const title = Math.max(4, cols - fixed - (workspace ? QWS_W : 0) - (est ? QEST_W : 0));
-  return { est, workspace, mission, starts, title };
+  return { est, workspace, by, mission, starts, title };
 }
 
 function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Palette): string {
   const text =
-    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title) +
+    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title - 1) + ' ' +
+    fit('by', c.by) +
     (c.workspace ? fit('workspace', QWS_W) : '') +
     fit('mission', c.mission) +
     (c.est ? fit('est.', QEST_W) : '') +
@@ -661,6 +665,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
     p.fg(primary, col(row.title, c.title)) +
+    p.fg('muted', col(row.by, c.by)) +
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +

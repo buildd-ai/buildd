@@ -1,6 +1,6 @@
 /**
  * The event doors of `Buildd / Review approval` on an open PR head (docs/specs/workflow-kernel-library.md
- * §4, AC-39): GitHub webhooks (a PR opened or pushed, a check suite or run finished), a stored review
+ * §4, AC-78): GitHub webhooks (a PR opened or pushed, a check suite or run finished), a stored review
  * request and a recorded review verdict call here (through `republishPrHeads` in apps/web/src/modules.ts),
  * so the status follows the event instead of waiting for the hourly floor. Each call derives the answer
  * from what is true now (`publishOpenPrHead`), so a late or duplicate event is harmless. A failure here

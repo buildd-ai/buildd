@@ -6036,7 +6036,7 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
-  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-39).
+  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-78).
   await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
 
   // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────

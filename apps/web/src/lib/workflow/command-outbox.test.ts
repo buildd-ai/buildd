@@ -1,5 +1,5 @@
 /**
- * The floor's pass over parked door commands (command-outbox.ts, workflow-kernel-library.md §3 AC-35):
+ * The floor's pass over parked door commands (command-outbox.ts, workflow-kernel-library.md §3 AC-74):
  * the ledger is asked first, each row is re-submitted with its own key, and only an answer settles it.
  * The real-SQL half (the table, the ledger, the control plane down and back) is
  * apps/web/tests/db/kernel-command-host.test.ts.
