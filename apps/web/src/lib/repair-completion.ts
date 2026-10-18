@@ -139,3 +139,90 @@ export async function legacyRepairCompletionGate(
   return verdict.ok ? null : verdict;
 }
 
+
+// ── Legacy review fix (a PR with no delivery) ───────────────────────────────
+
+export type LegacyReviewFixRefusal = {
+  code: 'delivery_not_advanced' | 'repair_unrelated_diff';
+  error: string;
+  hint: string;
+  boundHeadSha: string | null;
+  liveHeadSha: string;
+};
+
+/** The review round a legacy fix answers, or null when the task is not one (kernel fixes are gated by `fixCompletionGate`). */
+export function legacyReviewFixOf(task: {
+  deliveryId?: string | null;
+  reviewerRetryPrNumber?: number | null;
+  reviewerRetryHeadSha?: string | null;
+  context?: unknown;
+}): { prNumber: number; boundHeadSha: string; feedback: string | null } | null {
+  if (task.deliveryId || typeof task.reviewerRetryPrNumber !== 'number' || !task.reviewerRetryHeadSha) return null;
+  const fc = ((task.context ?? {}) as { failureContext?: { errorType?: unknown; summary?: unknown } }).failureContext;
+  if (fc?.errorType !== 'reviewer_request_changes') return null;
+  return { prNumber: task.reviewerRetryPrNumber, boundHeadSha: task.reviewerRetryHeadSha, feedback: typeof fc.summary === 'string' ? fc.summary : null };
+}
+
+export interface LegacyReviewFixGateDeps {
+  repoFor: LegacyRepairGateDeps['repoFor'];
+  readPr: LegacyRepairGateDeps['readPr'];
+  /** Paths changed between two commits; null when unreadable or cut off. */
+  changedPaths: (p: { installationId: number; repoFullName: string; fromSha: string; toSha: string }) => Promise<string[] | null>;
+  /** Paths the review's inline comments were anchored to at `headSha`. */
+  findingPaths: (p: { workspaceId: string; repoFullName: string; prNumber: number; headSha: string }) => Promise<string[]>;
+}
+
+/**
+ * Same rule as the kernel's `fixCompletionGate` for a review fix (§13.13 rule 4), for a PR with no
+ * delivery: the head must have moved, and the push must change something near what the review
+ * names. An unmoved head passes only with a no-op claim, which the next review verifies. Fails open
+ * when GitHub cannot be read or the review named no path.
+ */
+export async function legacyReviewFixCompletionGate(
+  p: {
+    task: { workspaceId: string; deliveryId?: string | null; reviewerRetryPrNumber?: number | null; reviewerRetryHeadSha?: string | null; context?: unknown };
+    localHeadSha: string | null;
+    noopClaimed?: boolean;
+  },
+  deps: LegacyReviewFixGateDeps,
+): Promise<LegacyReviewFixRefusal | null> {
+  const fix = legacyReviewFixOf(p.task);
+  if (!fix) return null;
+  const repo = await deps.repoFor(p.task.workspaceId);
+  if (!repo) return null;
+  const live = await deps.readPr(repo.installationId, repo.repoFullName, fix.prNumber);
+  if (!live || live.state !== 'open' || live.merged) return null;
+  const base = { boundHeadSha: fix.boundHeadSha, liveHeadSha: live.headSha };
+  if (live.headSha === fix.boundHeadSha) {
+    if (p.noopClaimed) return null;
+    const local = p.localHeadSha && p.localHeadSha !== live.headSha ? ` Your local head is ${p.localHeadSha.slice(0, 7)}.` : '';
+    return {
+      code: 'delivery_not_advanced',
+      error: `Your fix is not on GitHub: PR #${fix.prNumber}'s head is still ${live.headSha.slice(0, 7)}, the commit the review asked you to change.${local}`,
+      hint: 'Push your branch (git push), confirm with git ls-remote that the PR head moved, then complete again.',
+      ...base,
+    };
+  }
+  const { diffTouchesFindings, pathsNamedIn } = await import('@buildd/workflow-kernel/findings');
+  const named = await deps.findingPaths({ workspaceId: p.task.workspaceId, repoFullName: repo.repoFullName, prNumber: fix.prNumber, headSha: fix.boundHeadSha });
+  const changed = await deps.changedPaths({ installationId: repo.installationId, repoFullName: repo.repoFullName, fromSha: fix.boundHeadSha, toSha: live.headSha }).catch(() => null);
+  const view = { findings: named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  if (named.length === 0) {
+    // No anchored finding: only an empty diff is plainly not a fix.
+    if (changed && changed.length === 0) return unrelated(fix.prNumber, [], base);
+    return null;
+  }
+  if (diffTouchesFindings(view, changed, pathsNamedIn(fix.feedback)) === false) return unrelated(fix.prNumber, named, base);
+  return null;
+}
+
+function unrelated(prNumber: number, named: string[], base: { boundHeadSha: string; liveHeadSha: string }): LegacyReviewFixRefusal {
+  return {
+    code: 'repair_unrelated_diff',
+    error: named.length
+      ? `Your push to PR #${prNumber} changes nothing near the files the review names (${[...new Set(named)].slice(0, 5).join(', ')}), nor anything its feedback names.`
+      : `Your push to PR #${prNumber} changes no files.`,
+    hint: 'Fix what the review asked for and push. If there is nothing to change, say so in the summary and complete without a push only with a verified no-op claim.',
+    ...base,
+  };
+}

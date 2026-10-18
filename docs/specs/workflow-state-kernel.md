@@ -1527,7 +1527,8 @@ type".
    finding nor any path the feedback names (the library's §5 "As built" says what "near"
    is and why it is wide). A no-op claim ends the attempt "no change" and owes a
    verification round; a fix that ends with the head unmoved is "no change" too.
-   *Today:* legacy review fixes (a PR with no delivery) have no completion gate, and a
+   *Today:* a legacy review fix (a PR with no delivery) is gated the same way
+   (`legacyReviewFixCompletionGate`: head moved, diff near the review's paths), and a
    refresh push credited to a running fix by §6.9 is not told apart from the fix's own.
 5. **A refresh push is not a fix.** A push whose only new content is a merge of the
    base, or the platform's own `refresh_branch`, starts a delta round scoped to what

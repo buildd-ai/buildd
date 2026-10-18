@@ -92,3 +92,35 @@ describe('legacyRepairCompletionGate', () => {
     expect(r?.code).toBe('repair_still_colliding');
   });
 });
+
+describe('legacyReviewFixCompletionGate (§13.13 rule 4 for a PR with no delivery)', () => {
+  const { legacyReviewFixCompletionGate } = require('./repair-completion') as typeof import('./repair-completion');
+  const task = {
+    workspaceId: 'w1', reviewerRetryPrNumber: 9, reviewerRetryHeadSha: HEAD,
+    context: { failureContext: { errorType: 'reviewer_request_changes', summary: 'Fix the copy' } },
+  };
+  const deps = (over: Record<string, unknown> = {}) => ({
+    repoFor: async () => ({ installationId: 1, repoFullName: 'acme/widgets' }),
+    readPr: async () => open({ headSha: 'bbbbbbb2222222' }),
+    changedPaths: async () => ['packages/other/x.ts'] as string[] | null,
+    findingPaths: async () => ['apps/web/src/copy.ts'],
+    ...over,
+  });
+  const run = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+    legacyReviewFixCompletionGate({ task, localHeadSha: null, ...extra }, deps(over) as never);
+
+  it('refuses a fix with no relevant diff', async () => {
+    expect((await run())?.code).toBe('repair_unrelated_diff');
+    expect((await run({ changedPaths: async () => [] }))?.code).toBe('repair_unrelated_diff');
+  });
+  it('refuses an unmoved head unless a no-op is claimed', async () => {
+    const same = { readPr: async () => open({ headSha: HEAD }) };
+    expect((await run(same))?.code).toBe('delivery_not_advanced');
+    expect(await run(same, { noopClaimed: true })).toBeNull();
+  });
+  it('allows a push that touches a named path, an unreadable diff, and a task that is not a legacy review fix', async () => {
+    expect(await run({ changedPaths: async () => ['apps/web/src/copy.ts'] })).toBeNull();
+    expect(await run({ changedPaths: async () => null })).toBeNull();
+    expect(await legacyReviewFixCompletionGate({ task: { ...task, deliveryId: 'd1' }, localHeadSha: null }, deps() as never)).toBeNull();
+  });
+});
