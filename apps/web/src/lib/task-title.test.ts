@@ -201,3 +201,13 @@ describe('formatAttemptTitle — builder and reviewer retries with structured ro
     });
   });
 });
+
+describe('taskAttempt', () => {
+  it('reads the attempt label for a retry title and nothing for a plain one', async () => {
+    const { taskAttempt, displayTaskTitle } = await import('./task-title');
+    expect(taskAttempt('[builder · after CI #1] fix(top): words')).toBe('Fix 1 · CI failed');
+    expect(taskAttempt('feat: plain')).toBeUndefined();
+    expect(taskAttempt(null)).toBeUndefined();
+    expect(displayTaskTitle('[builder · after CI #1] fix(top): words')).toBe('Words');
+  });
+});

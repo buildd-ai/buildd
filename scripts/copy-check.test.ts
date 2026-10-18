@@ -236,6 +236,12 @@ describe('vocabulary surfaces (catalog-word)', () => {
     // Lower-case keys never read as labels.
     expect(extractCopy(KERNEL, "export const k = { state: 'landed' };")).toEqual([]);
   });
+  it('reads MCP replies as an agent does: worker is allowed there, seat and LOCAL are not', () => {
+    const MCP = 'packages/core/mcp-tools.ts';
+    const src = "export const a = 'Use the worker ID to report progress.';\nexport const b = '[LOCAL]';\nexport const c = 'on a subscription seat';";
+    expect(scanSources([{ path: MCP, content: src }]).counts['catalog-word'][MCP]).toBe(2);
+    expect(scanSources([{ path: TOP, content: src }]).counts['catalog-word'][TOP]).toBe(3);
+  });
 });
 
 describe('notification copy', () => {

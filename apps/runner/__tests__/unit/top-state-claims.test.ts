@@ -22,11 +22,11 @@ describe('waiting reasons from the last claim (R-25)', () => {
     const inTwoHours = new Date(NOW + 2 * 3_600_000).toISOString();
     const cases: Array<[Partial<ClaimOutcome>, string | RegExp]> = [
       [{ exclusion: 'runner_cooldown' }, 'cooldown, 1 min'],
-      [{ exclusion: 'mission_local' }, 'local session'],
+      [{ exclusion: 'mission_local' }, 'your session'],
       [{ exclusion: 'mission_held' }, 'mission is paused'],
       [{ exclusion: 'task_held' }, 'paused by a person'],
       [{ exclusion: 'budget_paused' }, 'usage limit'],
-      [{ exclusion: 'task_reserved' }, 'reserved by a local session'],
+      [{ exclusion: 'task_reserved' }, 'taken by your session'],
       [{ exclusion: 'already_claimed' }, 'another runner has it'],
       [{ exclusion: 'active_worker' }, 'another runner has it'],
       [{ exclusion: 'workspace_cap' }, 'workspace is at its task limit'],
@@ -96,7 +96,7 @@ describe('waiting reasons from the last claim (R-25)', () => {
 
   test("init carries the runner's outcomes so a fresh top starts with them", () => {
     const s = reduce(fixtureState(), { type: 'init', claimOutcomes: { tasks: { 't-loose': { at: NOW - 1000, reason: 'no_pending_tasks', exclusion: 'mission_local' } }, broad: null } });
-    expect(waitingReason(loose(), s, NOW)).toBe('local session');
+    expect(waitingReason(loose(), s, NOW)).toBe('your session');
   });
 
   test('a claim outcome refetches the task list', () => {
@@ -208,7 +208,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
     let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
     expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim, for reasons it did not tie to this task');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
-    expect(waitingReason(loose(), s, NOW)).toBe('local session');
+    expect(waitingReason(loose(), s, NOW)).toBe('your session');
   });
 
   test('a server clock ahead of this machine does not drop a fresh outcome', () => {
@@ -216,7 +216,7 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
     let s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, updatedAt: ahead } : t) });
     s = withOutcome({ exclusion: 'mission_local' }, 't-loose', s);
     s = reduce(s, { type: 'tasks', tasks: s.tasks });
-    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('local session');
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('your session');
     // A later change on the server still retires it.
     s = reduce(s, { type: 'tasks', tasks: s.tasks.map(t => t.id === 't-loose' ? { ...t, updatedAt: new Date(NOW + 7_200_000).toISOString() } : t) });
     expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();

@@ -97,7 +97,7 @@ export function SkillPills({ skills, selectedSlugs, onToggle, useSkillAgents, on
           </div>
 
           <p className="text-xs text-text-secondary">
-            Skills give the worker agent reusable instructions.
+            Skills give the agent reusable instructions.
           </p>
 
           {selectedCount > 0 && (
@@ -111,7 +111,7 @@ export function SkillPills({ skills, selectedSlugs, onToggle, useSkillAgents, on
               <div>
                 <span className="text-sm font-medium">Use skills as specialist agents</span>
                 <p className="text-xs text-text-secondary mt-0.5">
-                  The worker can delegate to each skill as a sub-agent.
+                  The agent can delegate to each skill as a sub-agent.
                 </p>
               </div>
             </label>

@@ -20,6 +20,7 @@ import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 import AttemptStrip from './AttemptStrip';
 import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
 import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -600,7 +601,7 @@ function BookkeepingFooter({ tasks }: { tasks: BookkeepingTask[] }) {
         <div className="mt-2 space-y-0.5 pl-2">
           {sortedDesc.map(task => (
             <div key={task.id} className="flex items-center gap-2 text-[11px] text-text-muted py-0.5">
-              <span className="flex-1 min-w-0 truncate">{task.title}</span>
+              <span className="flex-1 min-w-0 truncate"><TaskTitle title={task.title} /></span>
               <span className="shrink-0 text-[11px] md:text-[10px]">{timeAgo(task.taskUpdatedAt)}</span>
               {task.latestWorker?.prUrl && (
                 <a

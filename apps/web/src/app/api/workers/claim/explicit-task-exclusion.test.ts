@@ -141,7 +141,7 @@ describe('classifyExplicitTaskExclusion', () => {
   it('a local-executor mission → mission_local, naming the local session and how to claim', () => {
     const r = classifyExplicitTaskExclusion(probe({ gates: { missionLocal: false } }), NOW);
     expect(r.code).toBe('mission_local');
-    expect(r.detail).toContain('This mission runs in a local session');
+    expect(r.detail).toContain('This mission runs from your session');
     expect(r.detail).toContain('claim_task {taskId}');
     expect(r.detail).toMatch(/Start with override/);
   });

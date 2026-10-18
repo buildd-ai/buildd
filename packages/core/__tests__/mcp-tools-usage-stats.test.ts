@@ -247,7 +247,7 @@ describe('get_usage_stats', () => {
     mockApi.mockResolvedValueOnce({ ...statsPayload, byModel: [] });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx()))
       .content[0].text;
-    expect(out).toMatch(/By model: unavailable — the SDK reports no per-model usage on seat-based \(OAuth\) auth/);
+    expect(out).toMatch(/By model: unavailable — the SDK reports no per-model usage on a subscription \(OAuth\) sign-in/);
   });
 
   it('marks a role group that recorded no tokens instead of showing 0', async () => {

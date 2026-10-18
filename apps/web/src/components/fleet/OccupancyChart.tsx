@@ -340,7 +340,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
           />
         </div>
       )}
-      {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest workers were read.</p>}
+      {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest agents were read.</p>}
     </div>
   );
 }

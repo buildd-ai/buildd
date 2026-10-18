@@ -31,6 +31,7 @@ import InteractiveSessions from './InteractiveSessions';
 import LocalTime from './LocalTime';
 import { HISTORY_PAGE, groupEpisodesByDay } from './history-days';
 import { displayTaskTitle } from '@/lib/task-title';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export type ActivityMode = 'now' | 'history';
 
@@ -305,7 +306,7 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
   const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair').sort((a, b) => a.round - b.round);
   const head = (
     <>
-      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}>{displayTaskTitle(row.title)}</span>
+      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}><TaskTitle short title={row.title} /></span>
       <span className="whitespace-nowrap font-mono text-meta text-text-muted">
         {age(row.updatedAt, nowMs)}
         {expandable && <span aria-hidden="true" className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-90' : ''}`}>›</span>}
