@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { clearWorkspaceSettingsCache } from '@/lib/team-cache';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubInstallations, githubRepos } from '@buildd/core/db/schema';
@@ -219,4 +220,5 @@ async function linkRepoToWorkspace(
       updatedAt: new Date(),
     })
     .where(eq(workspaces.id, workspaceId));
+  await clearWorkspaceSettingsCache(workspaceId);
 }
