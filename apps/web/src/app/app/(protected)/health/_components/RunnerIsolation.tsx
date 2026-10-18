@@ -8,15 +8,23 @@ import { runnerIsolationDetail, type IsolationRunner } from '@/lib/runner-isolat
  * the probe age, and the operator's steps. Read from the heartbeat, so it
  * needs no call to the runner. Opens by itself when something is reduced.
  */
-export function RunnerIsolation({ runner, now }: { runner: IsolationRunner; now: number }) {
+export function RunnerIsolation({ runner, now, expanded = false }: { runner: IsolationRunner; now: number; expanded?: boolean }) {
   const d = runnerIsolationDetail(runner);
   const reduced = d.cause !== null || d.steps.length > 0;
-  const probed = d.probeAt ? `checked ${observedAgo(d.probeAt, now) ?? 'at an unknown time'}` : 'never checked';
+  // A confined runner has nothing to say in the overview; its mechanisms and
+  // probe time are diagnostics, shown once the row is opened. Reduced or
+  // unknown isolation stays visible: someone may need to act on it.
+  if (!reduced && !expanded) return null;
+  // The probe is the sandbox check, not the heartbeat; a stale one says so.
+  const probed = !d.probeAt
+    ? 'never confirmed'
+    : d.probeCurrent
+      ? `confirmed ${observedAgo(d.probeAt, now) ?? 'at an unknown time'}`
+      : `last confirmed ${observedAgo(d.probeAt, now) ?? 'at an unknown time'}, before the runner restarted`;
   return (
     <div data-testid="runner-isolation" className="px-4 pb-3">
-      <Disclosure summary={<span className="text-xs text-text-secondary">Sandbox · {probed}</span>} defaultOpen={reduced}>
+      <Disclosure summary={<span className="text-xs text-text-secondary">{reduced ? 'Sandbox needs attention' : 'Sandbox details'}</span>} defaultOpen={reduced}>
         <div className="space-y-2 pt-1 text-xs">
-          {d.platform && <p className="text-text-primary">Runs on {d.platform}.</p>}
           {d.backends.length > 0 && (
             <ul className="space-y-0.5">
               {d.backends.map(b => (
@@ -29,6 +37,7 @@ export function RunnerIsolation({ runner, now }: { runner: IsolationRunner; now:
               ))}
             </ul>
           )}
+          <p className="text-text-muted">Sandbox {probed}.</p>
           {d.filesystem && <p className="text-text-secondary">{d.filesystem}</p>}
           {d.cause && <p className="text-text-primary">{d.cause}</p>}
           {d.allowed && <p className="text-text-muted">{d.allowed}</p>}

@@ -66,6 +66,8 @@ export interface SeamDeps {
   reader?: (installationId: number) => GithubFactReader;
   repoFor?: typeof workspaceRepo;
   drain?: (deliveryId: string) => Promise<DrainSummary | null>;
+  /** Wake the landing sweep for `workspaceId:prNumber` (the due queue). */
+  markLandingDue?: (member: string) => Promise<void>;
 }
 
 const readerFor = (deps: SeamDeps, installationId: number): GithubFactReader => (deps.reader ?? githubReader)(installationId);
@@ -645,7 +647,18 @@ export async function attemptEnded(p: {
     }
   }
   await drainDelivery(deliveryId, deps);
+  // An end that leaves the delivery APPROVED (a verdict kept while the owner worked, now applied)
+  // is the moment landing becomes possible: the landing door deferred while the delivery was WORKING
+  // and nothing else wakes it, so ask the landing sweep to look at this PR now.
+  if (result.result === 'applied' && result.decision.toState === 'APPROVED' && d.prNumber != null) {
+    await (deps.markLandingDue ?? markLandingDue)(`${p.task.workspaceId}:${d.prNumber}`).catch((err) => console.warn('[workflow] could not mark landing due:', err));
+  }
   return { handled: true, result };
+}
+
+async function markLandingDue(member: string): Promise<void> {
+  const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/landing-due-queue')]);
+  await markDue(PR_LANDING_DUE_QUEUE, member, Date.now());
 }
 
 // ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────

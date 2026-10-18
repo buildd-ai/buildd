@@ -5,7 +5,7 @@ import { FailureGroupsSection, failureProblemLine } from './_components/FailureG
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { isolationProblem, runnerIsolationDetail } from '@/lib/runner-isolation-health';
+import { isolationProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
@@ -864,15 +864,14 @@ export function HealthClient({
                           {sandboxLabel && (
                             <span
                               className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
-                              title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
                             >
                               {sandboxLabel}
                             </span>
                           )}
                         </div>
                         <p className="text-xs text-text-muted">
-                          {busyLine} ·{' '}
-                          {online ? `checked ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
+                          {hb.isolation && hb.isolation.platform !== 'other' ? `${PLATFORM_TEXT[hb.isolation.platform] ?? hb.isolation.platform} · ` : ''}{busyLine} ·{' '}
+                          {online ? `seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
                         </p>
                       </div>
                       <button
@@ -880,10 +879,10 @@ export function HealthClient({
                         disabled={health?.loading}
                         className="text-[11px] px-2.5 h-7 border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
                       >
-                        {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Check health'}
+                        {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Details'}
                       </button>
                     </div>
-                    <RunnerIsolation runner={hb} now={now} />
+                    <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         {health.pushOnlyResult && (
