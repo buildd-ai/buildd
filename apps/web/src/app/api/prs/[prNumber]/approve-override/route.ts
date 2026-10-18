@@ -41,6 +41,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ prN
   const account = bearer ? await authenticateTaskScopedCaller(bearer, req) : null;
   // A bearer that does not authenticate is refused; it never falls back to the cookie session.
   if (bearer && !account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // A per-task token is never a person.
+  if (account && (account as { taskScope?: unknown }).taskScope) return refuse('human_required', 403);
   const person = account ? requestingPerson(null, account) : (await getCurrentUser())?.id ?? null;
   if (!person) {
     if (account) return refuse('human_required', 403);
