@@ -5,7 +5,7 @@
  */
 
 import { db } from '@buildd/core/db';
-import { accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { users, accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { classifyRunnerOwnership } from './runner-ownership';
@@ -77,5 +77,12 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
 export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0, viewerId: string | null = null): Promise<OccupancySeries & { truncated: boolean }> {
   const { from } = occupancyBuckets(window, now, tzOffsetMs);
   const rows = await fetchOccupancyRows(workspaceIds, new Date(from), new Date(now));
-  return { ...buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
+  const series = buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId });
+  const ids = (series.members ?? []).map(m => m.id);
+  if (ids.length > 0) {
+    const found = (await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids))) as { id: string; name: string | null }[];
+    const label = new Map(found.map(u => [u.id, u.name]));
+    series.members = series.members!.map(m => ({ ...m, name: label.get(m.id) ?? null }));
+  }
+  return { ...series, truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
 }

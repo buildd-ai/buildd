@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type OccupancyOwner, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
+import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type OccupancyCoverage, type OccupancyOwner, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
 import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sample';
 import Segmented from '@/components/ui/Segmented';
@@ -122,15 +122,52 @@ function Metric({ label, value, testId }: { label: string; value: string; testId
   );
 }
 
+export type OccupancyView = 'total' | 'mine' | 'member';
+const VIEWS: Array<{ value: OccupancyView; label: string }> = [{ value: 'total', label: 'Total' }, { value: 'mine', label: 'Mine' }, { value: 'member', label: 'By member' }];
+
+/** Slot usage per attributed member; work with no recorded owner is its own line, never given to a person. */
+function MemberSplit({ series }: { series: OccupancySeries }) {
+  const members = series.members ?? [];
+  const other = series.summary.runnerBy.unattributed;
+  const max = Math.max(0.0001, ...members.map(m => m.avg), other.avg);
+  const Row = ({ id, label, avg, peak }: { id: string; label: string; avg: number; peak: number }) => (
+    <li data-testid={`occupancy-member-${id}`} className="py-1.5">
+      <div className="flex items-baseline justify-between gap-3 text-body">
+        <span className="min-w-0 truncate text-text-primary">{label}</span>
+        <span className="shrink-0 font-mono text-meta text-text-muted">avg {fmtLevel(avg)} · peak {peak}</span>
+      </div>
+      <div className="mt-1 h-1 bg-surface-3"><div className="h-1 bg-text-secondary" style={{ width: `${Math.round((avg / max) * 100)}%` }} /></div>
+    </li>
+  );
+  if (members.length === 0 && other.avg === 0) return null;
+  return (
+    <ul data-testid="occupancy-members" className="mb-3 divide-y divide-border-default border-y border-border-default">
+      {members.map(m => <Row key={m.id} id={m.id} label={m.isMe ? 'You' : (m.name || 'Teammate')} avg={m.avg} peak={m.peak} />)}
+      {other.avg > 0 && <Row id="unattributed" label="Other / unattributed" avg={other.avg} peak={other.peak} />}
+    </ul>
+  );
+}
+
 const OWNER_LABELS: Record<OccupancyOwner, string> = { mine: 'Yours', others: 'Teammates', unattributed: 'Other / unattributed' };
 
 /** Average busy slots by owner. The parts sum to the average above; work with no recorded owner is its own line, never folded into anyone's. */
-function OwnerSplit({ by }: { by: OccupancyBreakdown }) {
+function OwnerSplit({ by, coverage }: { by: OccupancyBreakdown; coverage?: OccupancyCoverage }) {
+  const gaps = coverage ? [
+    coverage.ownerMissing > 0 && `${coverage.ownerMissing} of ${coverage.total} have no recorded owner`,
+    coverage.runnerMissing > 0 && `${coverage.runnerMissing} ran on a runner with no recorded owner`,
+  ].filter(Boolean) : [];
   return (
-    <div data-testid="occupancy-owner-split" className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
-      {OCCUPANCY_OWNERS.map(o => (
-        <Metric key={o} testId={`occupancy-owner-${o}`} label={`${OWNER_LABELS[o]}, average`} value={fmtLevel(by[o].avg)} />
-      ))}
+    <div className="mb-3">
+      <div data-testid="occupancy-owner-split" className="flex flex-wrap gap-x-6 gap-y-2">
+        {OCCUPANCY_OWNERS.map(o => (
+          <Metric key={o} testId={`occupancy-owner-${o}`} label={`${OWNER_LABELS[o]}, average`} value={fmtLevel(by[o].avg)} />
+        ))}
+      </div>
+      {gaps.length > 0 && (
+        <p data-testid="occupancy-coverage-note" className="mt-2 text-meta text-text-muted">
+          Of {coverage!.total} runner jobs: {gaps.join('; ')}.
+        </p>
+      )}
     </div>
   );
 }
@@ -235,8 +272,11 @@ function LevelChart({ series, avg, peak, height, capacity, hover, setHover, labe
 /** The charts for one loaded window; no fetching, so it renders in a test. */
 export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded; capacityNow: number; busyNow: number }) {
   const [hover, setHover] = useState<number | null>(null);
-  const avg = useMemo(() => series.buckets.map(b => b.runner.avg), [series]);
-  const peak = useMemo(() => series.buckets.map(b => b.runner.peak), [series]);
+  const [view, setView] = useState<OccupancyView>('total');
+  const shown = (b: OccupancySeries['buckets'][number]) => (view === 'mine' ? b.runnerBy.mine : b.runner);
+  const shownSummary = view === 'mine' ? series.summary.runnerBy.mine : series.summary.runner;
+  const avg = useMemo(() => series.buckets.map(b => (view === 'mine' ? b.runnerBy.mine : b.runner).avg), [series, view]);
+  const peak = useMemo(() => series.buckets.map(b => (view === 'mine' ? b.runnerBy.mine : b.runner).peak), [series, view]);
   const sessAvg = useMemo(() => series.buckets.map(b => b.sessions.avg), [series]);
   const sessPeak = useMemo(() => series.buckets.map(b => b.sessions.peak), [series]);
   const runnerIdle = series.summary.runner.peak === 0;
@@ -250,18 +290,24 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
 
   const b = hover != null ? series.buckets[hover] : null;
   const readout = (kind: 'runner' | 'sessions') => b
-    ? `${fmtBucket(b.t, series.windowKey)}: average ${fmtLevel(b[kind].avg)}, peak ${b[kind].peak}`
+    ? `${fmtBucket(b.t, series.windowKey)}: average ${fmtLevel((kind === 'runner' ? shown(b) : b.sessions).avg)}, peak ${(kind === 'runner' ? shown(b) : b.sessions).peak}`
     : '';
 
   return (
     <div>
       <div data-testid="occupancy-metrics" className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
-        <Metric label="Peak" value={String(series.summary.runner.peak)} />
-        <Metric label="Average" value={fmtLevel(series.summary.runner.avg)} />
+        <Metric label="Peak" value={String(shownSummary.peak)} />
+        <Metric label="Average" value={fmtLevel(shownSummary.avg)} />
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
-      {!runnerIdle && <OwnerSplit by={series.summary.runnerBy} />}
+      {!runnerIdle && (
+        <div data-testid="occupancy-view-picker" className="mb-3">
+          <Segmented label="Runner slots view" items={VIEWS} value={view} onChange={setView} />
+        </div>
+      )}
+      {!runnerIdle && view === 'total' && <OwnerSplit by={series.summary.runnerBy} coverage={series.summary.coverage} />}
+      {!runnerIdle && view === 'member' && <MemberSplit series={series} />}
       {runnerIdle ? (
         <p data-testid="occupancy-runner-idle" className="py-2 text-body text-text-muted">No runner work in the {words}.</p>
       ) : (
@@ -270,7 +316,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
           <LevelChart
             series={series} avg={avg} peak={showPeak ? peak : null} height={PLOT_H} capacity={capacityNow}
             hover={hover} setHover={setHover} tone="accent"
-            label={`Runner slots in use over the ${words}: peak ${series.summary.runner.peak}, average ${fmtLevel(series.summary.runner.avg)}.`}
+            label={`${view === 'mine' ? 'Your runner slots' : 'Runner slots'} in use over the ${words}: peak ${shownSummary.peak}, average ${fmtLevel(shownSummary.avg)}.`}
           />
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-meta text-text-muted">
             <span className="flex items-center gap-1.5"><i className="inline-block h-2.5 w-2.5 bg-accent" />Average</span>
