@@ -135,7 +135,8 @@ export const REVIEW_STATUS_TERMS = {
   finding: 'Unresolved review finding',
   ready: 'Ready to merge',
   blocked: 'Merge blocked',
-  repairing: 'Branch update in progress',
+  repairing: 'Repair in progress',
+  repairingBehind: 'Branch update in progress',
   repairingCi: 'CI fix in progress',
   repairingConflict: 'Conflict fix in progress',
   repairingMigration: 'Migration fix in progress',
@@ -149,6 +150,7 @@ function repairTerm(reason: string | null | undefined): string {
     case 'ci': return T.repairingCi;
     case 'conflict': return T.repairingConflict;
     case 'migration': return T.repairingMigration;
+    case 'behind': return T.repairingBehind;
     default: return T.repairing;
   }
 }

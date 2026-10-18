@@ -4,6 +4,8 @@
  * rules 6 and 7). Pure: the same answer the merge effect asks at merge time
  * and the status puts on the head.
  */
+import { reviewHandlers } from './handlers/review';
+import type { KernelPorts } from './ports';
 import { describe, expect, test } from 'bun:test';
 import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate } from './landing-gate';
 import { openVerdict } from './reducer';
@@ -106,7 +108,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
   ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
+    const terms = ['Repair in progress', 'Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];
@@ -144,7 +146,7 @@ describe('landingStatusOf while the PR is being repaired (review validity vs lan
     ['conflict', 'Conflict fix in progress: review approved abcdef1; a merge conflict is being resolved'],
     ['migration', 'Migration fix in progress: review approved abcdef1; a migration is being renumbered'],
     ['behind', 'Branch update in progress: review approved abcdef1; the branch is being brought up to date'],
-    ['something_else', 'Branch update in progress: review approved abcdef1; the PR is being repaired'],
+    ['something_else', 'Repair in progress: review approved abcdef1; the PR is being repaired'],
   ])('reason %s reads in its own terms and stays pending', (stateReason, description) => {
     expect(landingStatusOf(V(rep({ stateReason }), [R(1, 'approve')]))).toEqual({ state: 'pending', sha: 'abcdef1234', description });
   });
@@ -193,10 +195,25 @@ describe('reviewGate with findings (workflow-kernel-library.md §5, AC-13)', () 
 });
 
 describe('team notification copy (R-43)', () => {
-  test('the handlers never say "landing" or "land" to a person', () => {
-    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, 'handlers/review.ts'), 'utf8') as string;
-    const copy = [...src.matchAll(/needsAttention\([^;]*?`([^`]*)`(?:,\s*([^;]*?))?\);/gs)].map((m) => m[1] + (m[2] ?? '')).join('\n');
-    expect(copy).toContain('merge needs a person');
-    expect(copy).not.toMatch(/\bland(ing)?\b/i);
+  // The real handler (the web app runs this same code behind its own ports), not its source text.
+  async function sent(payload: Record<string, unknown>) {
+    const notices: Array<{ title: string; body: string }> = [];
+    const ports = {
+      store: { loadView: async () => ({ delivery: { id: 'd1', workspaceId: 'w1', repoFullName: 'acme/app', prNumber: 7, state: 'ESCALATED' }, rounds: [], attempts: [], findings: [] }) },
+      notify: { team: async (n: { title: string; body: string }) => { notices.push(n); } },
+    } as unknown as KernelPorts;
+    const effect = { id: 'e1', deliveryId: 'd1', transitionId: 't1', kind: 'notify', dedupeKey: 'k', payload, attemptCount: 1, delivery: null, transition: null, authority: 'kernel' } as never;
+    await reviewHandlers(ports).notify!(effect);
+    return notices;
+  }
+  test('landing_needs_human says "merge needs a person"', async () => {
+    const [n] = await sent({ event: 'landing_needs_human', detail: 'update-branch kept failing' });
+    expect(n.title).toBe('PR #7: merge needs a person');
+    expect(`${n.title} ${n.body}`).not.toMatch(/\bland(ing)?\b/i);
+  });
+  test('effect_dead says "merge or re-run it"', async () => {
+    const [n] = await sent({ event: 'effect_dead', effectKind: 'merge_call' });
+    expect(n.body).toContain('merge or re-run it');
+    expect(`${n.title} ${n.body}`).not.toMatch(/\bland(ing)?\b/i);
   });
 });
