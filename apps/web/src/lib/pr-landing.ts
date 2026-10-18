@@ -918,7 +918,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       if (adoption.reason === 'adoption_failed:adoption_unavailable') return waiting(adoption.message, { adoption: adoption.reason });
       return human('unsafe_other', adoption.message, { adoption: adoption.reason });
     }
-    if (adoption.adopted) kernelViewPromise = null;
+    if (adoption.kind === 'kernel' && adoption.adopted) kernelViewPromise = null;
   }
   kernelView = await kernelStatus();
   if (kernelView?.current.state === 'REPAIRING') {
