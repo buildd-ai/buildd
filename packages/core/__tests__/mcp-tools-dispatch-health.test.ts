@@ -70,7 +70,7 @@ describe('get_task include:["dispatch"]', () => {
     }));
     const out = textOf(await handleBuilddAction(api as unknown as ApiFn, 'get_task', { taskId: TASK_ID, include: ['dispatch'] }, ctx()));
     const url = new URL(api.mock.calls[0][0], 'http://localhost');
-    expect(url.searchParams.get('include')).toBe('dispatch');
+    expect(url.searchParams.get('include')).toBe('dispatch,evidence');
     expect(out).toContain('## Dispatch (2)');
     expect(out).toContain('- o-1 task.created: delivered via webhook · dispatch · handed off 2026-10-04T12:00:01.000Z · 1 attempt');
     expect(out).toContain('- o-2 ci.retry: failed · dispatch · handed off 2026-10-04T13:00:01.000Z · 5 attempts · last error: http_500');

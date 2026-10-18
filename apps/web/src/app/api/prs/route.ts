@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/lib/pr-list';
 
 /**
@@ -48,11 +47,6 @@ export async function GET(req: NextRequest) {
     ...(since ? { since } : {}),
     ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
   });
-
-  // The webhook is lossy: heal stale PR state so the next read is right.
-  if (workspaceIds.length > 0) {
-    after(() => refreshStaleWorkersForWorkspaces(workspaceIds).catch(err => console.error('[pr-state-refresh] pr list refresh failed:', err)));
-  }
 
   return NextResponse.json({ state: parsed.state, workspaceCount: workspaceIds.length, ...(since ? { sinceDays: days } : {}), prs });
 }

@@ -31,6 +31,9 @@ describe('the read, rendered', () => {
   const gates = runnerQueueGates(caller, NOW);
   const q = buildRunnerQueueQuery(new QueryBuilder() as any, { workspaceIds: ['ws-a', 'ws-b'], gates }).toSQL();
 
+  it('does not repeat workspace git configuration in every task row', () => {
+    expect(q.sql.split(' from ')[0]).not.toContain('"workspaces"."git_config"');
+  });
   it('reads pending tasks in the given workspaces only', () => {
     expect(q.sql).toMatch(/ where \(\("tasks"\."workspace_id" in \(\$\d+, \$\d+\)\) and \("tasks"\."status" = \$\d+\)\) order by /);
     const where = dialect.sqlToQuery(runnerQueueWhere(['ws-a', 'ws-b']));
@@ -214,6 +217,7 @@ describe('loadRunnerQueue', () => {
         row({ id: 't-undeclared' }),
       ],
       estimates: async () => null,
+      workspaceConfigs: async () => [{ id: 'ws-a', gitConfig: null }],
       overlaps: async () => ({
         openPrs: new Map([['ws-a', [
           { ...pr('pr-task', 41), pathManifest: ['apps/web/src/lib/x.ts'] },
@@ -234,10 +238,10 @@ describe('loadRunnerQueue', () => {
 
   it('reads no overlaps when no queued task declares files, and a failed read only drops alongside', async () => {
     let reads = 0;
-    await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => [row()], estimates: async () => null, overlaps: async () => { reads++; throw new Error('x'); } });
+    await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => [row()], estimates: async () => null, workspaceConfigs: async () => [], overlaps: async () => { reads++; throw new Error('x'); } });
     expect(reads).toBe(0);
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
-      read: async () => [row({ pathManifest: ['a.ts'] })], estimates: async () => null, overlaps: async () => { reads++; throw new Error('down'); },
+      read: async () => [row({ pathManifest: ['a.ts'] })], estimates: async () => null, workspaceConfigs: async () => [], overlaps: async () => { reads++; throw new Error('down'); },
     });
     expect(reads).toBe(1);
     expect(out.teams[0].queue[0].alongside).toBeUndefined();
