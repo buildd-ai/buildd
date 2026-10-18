@@ -11,14 +11,18 @@
  * DISPATCH_TOKEN already on the Worker is never replaced.
  *
  * Every step is idempotent, so a failed one is retried by running it again
- * and a fresh run starts from `check`.
+ * and a fresh run starts from `check`. `check` also reports the steps that
+ * are already current (`detail.current`: the Worker at this release, the
+ * bucket with its lifecycle, the container applications on this image, the
+ * workspace dispatching to the Worker with its key and secrets in place), and
+ * the client skips them, so a re-run only does what changed.
  *
  * Secrets made here never leave the server: the runner key is minted and put
  * straight onto the Worker, and the DISPATCH_TOKEN is written to the Worker
  * and the workspace's webhook. Neither appears in a reply or an audit row.
  * Orchestration only; storage and the actions are injected (cloud-runner-store.ts).
  */
-import { SNAPSHOT_BUCKET, deployNames, dispatchUrl, planDeploy, type DeployPlan, type ObservedWebhook } from '../../../../cloud-runner/src/deploy-plan';
+import { DISPATCH_EVENTS, SNAPSHOT_BUCKET, deployNames, dispatchUrl, planDeploy, type DeployPlan, type ObservedWebhook } from '../../../../cloud-runner/src/deploy-plan';
 import { configForScript, snapshotBucketOf, type ReleaseBundle } from '../../../../cloud-runner/src/release-bundle';
 import type { LoadReleaseBundle } from './cloudflare';
 import type { DeploymentOperation, DeploymentResponse } from './action';
@@ -126,6 +130,36 @@ function pointedAt(w: StoredWebhook | null, url: string): boolean {
   return !!w && w.url === url && w.enabled === true && !!w.token;
 }
 
+/**
+ * `connect` has nothing to do: the Worker holds every secret it puts, this
+ * workspace already dispatches to it on every event, and the runner key
+ * reaches the workspace. BUILDD_SERVER cannot be read back; it is judged by
+ * its presence, as connect last put it with this server's URL.
+ */
+function connectCurrent(ctx: CloudRunnerDeployContext, names: string[], url: string, minted: MintedRunnerKey | null): boolean {
+  const own = ctx.workspace.webhookConfig;
+  return ['BUILDD_SERVER', 'BUILDD_API_KEY', 'DISPATCH_TOKEN'].every((n) => names.includes(n))
+    && pointedAt(own, url)
+    && DISPATCH_EVENTS.every((e) => own?.events?.includes(e))
+    && !(minted?.workspaceIds && !minted.workspaceIds.includes(ctx.workspace.id));
+}
+
+/**
+ * The steps after `check` that are already current. A failed read skips
+ * nothing, so the deploy runs in full as before.
+ */
+async function currentSteps(bundle: ReleaseBundle, deps: CloudRunnerDeployDeps, connect: () => Promise<boolean>): Promise<CloudRunnerDeployStep[]> {
+  const res = await deps.action('release_state', { release: bundle.tag, lifecycle: SNAPSHOT_BUCKET.lifecycle });
+  if (res.status !== 200) return [];
+  const r = (res.body.result ?? {}) as { worker?: { current?: boolean }; bucket?: { current?: boolean }; containers?: { current?: boolean } };
+  const out: CloudRunnerDeployStep[] = [];
+  if (r.bucket?.current === true) out.push('bucket');
+  if (r.worker?.current === true) out.push('worker');
+  if (r.containers?.current === true) out.push('containers');
+  if (await connect()) out.push('connect');
+  return out;
+}
+
 const NO_SUBDOMAIN = 'This Cloudflare account has no workers.dev subdomain yet. Pick one under Workers & Pages in the Cloudflare dashboard, then deploy again.';
 
 /**
@@ -187,9 +221,16 @@ export async function runCloudRunnerDeployStep(
       // A first deploy has no Worker yet: pretend it exists with no secrets, as it will by `connect`.
       const dry = plan(ctx, { ...s.status, exists: true }, workerUrl, needsKey ? 'bld_planned' : undefined, token, 'planned');
       if (!dry.ok) return fail(step, 409, dry.error);
+      const current = s.status.exists
+        ? await currentSteps(bundle, deps, async () => connectCurrent(ctx, names, url, await deps.runnerKey.find(ctx.teamId, script)))
+        : [];
       return {
-        ok: true, step, next: nextOf(step),
-        detail: { release: bundle.tag, workerUrl, workerExists: s.status.exists, workspace: ctx.workspace.name, notes: dry.notes },
+        ok: true, step, next: CLOUD_RUNNER_DEPLOY_STEPS.find((x) => x !== 'check' && !current.includes(x)) ?? null,
+        detail: {
+          release: bundle.tag, workerUrl, workerExists: s.status.exists, workspace: ctx.workspace.name, current,
+          ...(current.includes('connect') ? { dispatchUrl: url } : {}),
+          notes: dry.notes,
+        },
       };
     }
 
