@@ -7,7 +7,7 @@ exports[`the frame while held 80x24: "paused" in place of "online", and the line
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
-   Local o… local 0/1 │─────────────────────────────────────────────────────────
+   Local only     0/1 │─────────────────────────────────────────────────────────
    Specs import   1/2 │ Running now                                             
    Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ? installer hint   Builder      9m asks: "Print the URL…
@@ -34,7 +34,7 @@ exports[`the frame while held 120x40 1`] = `
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
  ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
-   Local only     local 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
+   Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
    Specs import         1/2 │ Running now                                                                               
    Other tasks       1 open │›● name override               Builder     12m Edit config.ts                       41k tok
                             │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         

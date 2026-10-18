@@ -29,6 +29,7 @@ import { deriveWorkKind } from '@/lib/task-presentation';
 import { PULSE_STATE_LABEL, PULSE_TOKEN_TEXT } from './MissionPulse';
 import { useMissionFocusSnapshot, useMissionFocusStore } from './mission-focus-context';
 import { statusPill } from '@/components/ui/states';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 /**
  * `scroll-margin-top` equal to `MISSION_MASTHEAD_FOLDED_PX`, so a focused row lands just
@@ -183,7 +184,7 @@ export default function MissionTaskRow<T extends MissionFeedTaskInput>({
               {kind?.glyph ?? ''}
             </span>
             <span className="sr-only">{`${PULSE_STATE_LABEL[row.state]}: `}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-text-primary">{task.title}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-text-primary"><TaskTitle title={task.title} /></span>
             {row.pr && (
               <span
                 data-testid="mission-task-row-pr"

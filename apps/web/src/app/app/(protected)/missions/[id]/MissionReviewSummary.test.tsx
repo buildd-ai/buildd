@@ -59,4 +59,16 @@ describe('MissionReviewSummary — PRs counted by identity', () => {
     expect(text(html)).toContain('0 merged · 2 open');
     expect(text(html)).toContain('2 PRs unmerged');
   });
+
+  it('a retry row reads its title plus the attempt, never the machine key', () => {
+    const html = renderToStaticMarkup(
+      <MissionReviewSummary
+        missionId="m-1"
+        tasks={[row({ id: 'retry', title: '[builder · after CI #1] Do the work', prUrl: url(5), prNumber: 5 })]}
+      />,
+    );
+    expect(text(html)).toContain('Do the work');
+    expect(text(html)).toContain('Fix 1 · CI failed');
+    expect(text(html)).not.toContain('[builder');
+  });
 });

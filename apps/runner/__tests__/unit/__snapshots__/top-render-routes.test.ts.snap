@@ -8,7 +8,7 @@ exports[`routes and dollars in the list view 120x40: every column, with billed a
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
  ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
-   Local only     local 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
+   Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
    Specs import         1/2 │ Running now                                                                               
    Other tasks       1 open │›● name override            Builder   Claude · plan               12m Edit config…  41k tok
                             │ ● installer hint           Builder   Codex · OpenRouter (team)    9m Read run.ts    ~$0.02
@@ -51,7 +51,7 @@ exports[`routes and dollars in the list view 80x24: cost goes first, then the ro
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
-   Local o… local 0/1 │─────────────────────────────────────────────────────────
+   Local only     0/1 │─────────────────────────────────────────────────────────
    Specs import   1/2 │ Running now                                             
    Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ● installer hint   Builder      9m Read run.ts          
@@ -79,7 +79,7 @@ exports[`the header (R-39, AC-24) an expired Codex login says so and where to re
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
-   Local o… local 0/1 │─────────────────────────────────────────────────────────
+   Local only     0/1 │─────────────────────────────────────────────────────────
    Specs import   1/2 │ Running now                                             
    Other tasks 2 open │›● name override    Builder     12m Edit config.ts       
                       │ ● installer hint   Builder      9m Read run.ts          

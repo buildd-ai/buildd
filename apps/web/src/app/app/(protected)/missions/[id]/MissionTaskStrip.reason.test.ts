@@ -12,6 +12,6 @@ describe('stripReason for a ready task', () => {
     expect(stripReason(ready, null)).toBe('Next in line for a runner.');
   });
   it('a local mission asks for a local claim', () => {
-    expect(stripReason(ready, 'local')).toBe('Ready to start. Claim it from a local session.');
+    expect(stripReason(ready, 'local')).toBe('Ready to start. Claim it from your session.');
   });
 });

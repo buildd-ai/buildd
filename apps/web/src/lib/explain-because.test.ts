@@ -42,9 +42,9 @@ describe('buildStateBecause', () => {
     const open = { id: 'rev-1', title: 'Review PR #1', status: 'pending', runnerClaimable: true };
     const view = deriveMissionStateView({ ...base, executor: 'local', openTasks: [{ id: 'rev-1', status: 'pending', title: 'Review PR #1' }] });
     const chain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [open] });
-    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from a local session');
+    expect(chain.map(l => l.claim).join('\n')).not.toContain('Claim it from your session');
     const plain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [{ ...open, runnerClaimable: false }] });
-    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from a local session');
+    expect(plain.map(l => l.claim).join('\n')).toContain('Claim it from your session');
   });
 
   it('ends on the state and carries the mission ref on every link', () => {

@@ -78,6 +78,7 @@ import { plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
+import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
@@ -1014,7 +1015,7 @@ export default async function TaskDetailPage({
     ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker && !shippedViewShown
       ? [{
           key: 'workers',
-          label: 'Workers',
+          label: 'Agents',
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
@@ -1056,7 +1057,7 @@ export default async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{displayTaskTitle(dep.title)}</Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1673,7 +1674,7 @@ export default async function TaskDetailPage({
                         {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
                       <span className="text-[12px] text-text-muted" title={dep.title}>
-                        {displayTaskTitle(dep.title)}
+                        <TaskTitleText short title={dep.title} />
                       </span>
                     </div>
                   );
@@ -2034,7 +2035,7 @@ export default async function TaskDetailPage({
               <dt>Runner preference</dt><dd>{task.runnerPreference}</dd>
               {task.backend && <><dt>Backend</dt><dd>{task.backend}</dd></>}
               <dt>Claimed by</dt><dd className="truncate">{task.account?.name || '-'}</dd>
-              <dt>Workers</dt><dd>{taskWorkers.length}</dd>
+              <dt>Agents</dt><dd>{taskWorkers.length}</dd>
               {task.claimedAt && <><dt>Claimed at</dt><dd><ZonedTime value={task.claimedAt} format="datetime" /></dd></>}
             </dl>
           </DiagnosticsDisclosure>

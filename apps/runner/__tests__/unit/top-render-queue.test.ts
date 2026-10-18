@@ -31,7 +31,7 @@ describe('Queue view (R-26)', () => {
     expect(t).toContain('now');
     expect(t).toContain('after its dependency');
     expect(t).not.toMatch(/\bnext\s*$/m);
-    expect(t).toContain('local session');
+    expect(t).toContain('runs from your session');
     expect(t).toContain('another runner');
     expect(t).not.toContain('est.');
     expect(t).toContain('workspace');

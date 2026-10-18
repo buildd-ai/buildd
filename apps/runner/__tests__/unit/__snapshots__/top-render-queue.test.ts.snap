@@ -12,7 +12,7 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
  Not yet                                                                        
     chore: rotate the logs           Workflow kernel  17:00 · scheduled         
  Not for this runner                                                            
-    Runner terminal: round 3 audit   Workflow kernel  runs in a local session   
+    Runner terminal: round 3 audit   Workflow kernel  runs from your session    
     fix(supersession): close the ol… Workflow kernel  another runner takes it   
     design: the queue tab            Workflow kernel  needs Designer            
  Team Two · next for this runner     mission          starts                    
@@ -39,7 +39,7 @@ exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on
  Not yet                                                                                                                
     chore: rotate the logs                      alpha        Workflow kernel  -     17:00 · scheduled                   
  Not for this runner                                                                                                    
-    Runner terminal: round 3 audit              alpha        Workflow kernel  -     runs in a local session             
+    Runner terminal: round 3 audit              alpha        Workflow kernel  -     runs from your session              
     fix(supersession): close the old PR         alpha        Workflow kernel  -     another runner takes it             
     design: the queue tab                       alpha        Workflow kernel  -     needs Designer                      
  Team Two · next for this runner                      workspace    mission          starts                              
