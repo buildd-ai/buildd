@@ -5,6 +5,7 @@ import { INTERACTIVE_WORKER_RUNNER, LIVE_WORKER_STATUSES, NEEDS_INPUT_ERROR_PREF
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 /**
  * Settling a live worker that has no session left to report its own end.
@@ -58,6 +59,8 @@ interface SettledRow { id: string; taskId: string | null; accountId: string | nu
 
 async function afterSettle(rows: SettledRow[]): Promise<void> {
   if (rows.length === 0) return;
+  // A settled worker leaves the mission's live count; no core event carries it.
+  noteWorkChanged({ workerIds: rows.map(r => r.id), taskIds: rows.map(r => r.taskId) });
   const steps: Array<[string, () => Promise<unknown>]> = [
     ['seat release', () => releaseConcurrencySeats(rows.map(r => r.accountId))],
   ];
