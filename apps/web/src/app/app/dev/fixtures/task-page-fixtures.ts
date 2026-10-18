@@ -9,6 +9,7 @@ import { deriveDeliveryView, type DeliverySnapshot, type DeliveryView } from '@/
 
 type RoundSnapshot = DeliveryView['rounds'][number];
 type AttemptSnapshot = DeliveryView['ledger'][number];
+type FindingSnapshot = NonNullable<DeliveryView['findings']>[number];
 import { deriveTaskChecks, type TaskChecks } from '@/lib/task-checks';
 import { deriveTaskVerdict, type TaskVerdict, type VerdictInput } from '@/lib/task-verdict';
 import { buildTaskShippedView, type TaskShippedView } from '../../(protected)/tasks/[id]/task-shipped-header';
@@ -16,7 +17,6 @@ import { headerLifecycle } from '../../(protected)/tasks/[id]/task-header';
 import type { StateKey } from '@/components/ui/states';
 import type { ReviewFindings } from '@/lib/task-checks';
 import type { EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
-import type { FindingSnapshot } from '@buildd/workflow-kernel/types';
 import { decisionActionHref, decisionCopy, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
 export const TASK_PAGE_CASES = ['review-pending', 'review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human', 'review-stuck'] as const;
