@@ -80,12 +80,20 @@ export async function GET(req: NextRequest) {
     if (!details) {
       const rows = await db.query.missions.findMany({
         where: sqlWhere(where), columns: MISSION_SUMMARY_COLUMNS,
+        with: { workspace: { columns: { id: true, name: true } } },
         orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
         limit: limit + 1,
       });
       const page = rows.slice(0, limit);
-      const summaries = await readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : []));
-      return NextResponse.json({ missions: page.map(row => missionSummaryResponse(row, summaries.get(row.id)?.summary ?? null)), hasMore: rows.length > limit });
+      const hasMore = rows.length > limit;
+      const [summaries, total] = await Promise.all([
+        readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : [])),
+        hasMore ? db.$count(missions, where) : page.length,
+      ]);
+      return NextResponse.json({
+        missions: page.map(row => ({ ...missionSummaryResponse(row, summaries.get(row.id)?.summary ?? null), workspace: row.workspace ?? null })),
+        total, hasMore,
+      });
     }
 
     const results = await db.query.missions.findMany({

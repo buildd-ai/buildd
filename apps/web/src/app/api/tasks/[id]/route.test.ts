@@ -267,11 +267,28 @@ describe('GET /api/tasks/[id]', () => {
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-123' });
     mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
     await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
-    expect(mockTasksFindFirst.mock.calls[0][0]).toMatchObject({
+    const lean = mockTasksFindFirst.mock.calls[0][0];
+    expect(lean).toMatchObject({
       columns: { context: false, result: false, categoryDecision: false, verdictDecision: false },
       with: { workspace: { columns: { id: true, name: true, repo: true } } },
     });
+    // The blobs come back as the projections get_task renders, under their own names.
+    expect(Object.keys(lean.extras)).toEqual(['leanContext', 'leanResult']);
     mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending', leanContext: { specSource: { specId: 's' } }, leanResult: { summary: 'done' } });
+    const leanBody = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
+    expect(leanBody.context).toEqual({ specSource: { specId: 's' } });
+    expect(leanBody.result).toMatchObject({ summary: 'done' });
+    expect(leanBody).not.toHaveProperty('leanContext');
+    mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    await callHandler(GET, createMockRequest({ search: '?include=full', headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const full = mockTasksFindFirst.mock.calls[0][0];
+    expect(full.columns).toBeUndefined();
+    expect(full.extras).toBeUndefined();
+    expect(full.with.workspace).toBe(true);
+    mockTasksFindFirst.mockClear();
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
     const response = await callHandler(GET, createMockRequest({ search: '?view=status', headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     expect(await response.json()).toEqual({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
     expect(mockTasksFindFirst.mock.calls[0][0].with).toBeUndefined();

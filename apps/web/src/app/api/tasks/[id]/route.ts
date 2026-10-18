@@ -46,7 +46,8 @@ import { TASK_RESERVATION_KEY, buildReservation } from '../../workers/claim/held
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 /**
@@ -85,6 +86,10 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //     the workers even without `workers`).
 //   include=estimate — the task's frozen estimate (task-estimates experiment),
 //     omitted when none was written.
+//   Lean by default (spec 3ef37387 R-19, lib/task-read-shape.ts): `context` and
+//   `result` reduced to the keys get_task renders, no decision JSON, workspace
+//   as id/name/repo. include=context|result|decisions|evidence expands one;
+//   include=full is the pre-R-19 row. view=status is a status-only poll.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -123,23 +128,30 @@ export async function GET(
     // A task token for a worker-level caller needs to check if the requested
     // task is its own task or a child task, which requires fetching the task.
     // We can't know this without a DB query, so we fetch first then check.
-    const include = new Set((req.nextUrl.searchParams.get('include') || '').split(',').map(s => s.trim()).filter(Boolean));
-    const statusOnly = req.nextUrl.searchParams.get('view') === 'status';
-    const task = await db.query.tasks.findFirst({
+    const shape = taskReadShape(req.nextUrl.searchParams);
+    const { include, statusOnly } = shape;
+    const columns = taskReadColumns(shape);
+    const leanExtras = {
+      ...(!statusOnly && !shape.wants('context') ? { leanContext: leanContextSql } : {}),
+      ...(!statusOnly && !shape.wants('result') ? { leanResult: leanResultSql } : {}),
+    };
+    const row = await db.query.tasks.findFirst({
       where: sqlWhere(eq(tasks.id, id)),
-      columns: statusOnly
-        ? { id: true, workspaceId: true, missionId: true, parentTaskId: true, status: true, updatedAt: true }
-        : { ...(!include.has('context') ? { context: false as const } : {}), ...(!include.has('result') ? { result: false as const } : {}), ...(!include.has('decisions') ? { categoryDecision: false as const, verdictDecision: false as const } : {}), outputSchema: false, releaseResult: false, pathDeclaration: false, loopConfig: false },
+      ...(columns ? { columns } : {}),
+      ...(Object.keys(leanExtras).length > 0 ? { extras: sqlExtras(leanExtras) } : {}),
       ...(!statusOnly ? { with: {
-        workspace: { columns: { id: true, name: true, repo: true } },
+        workspace: shape.full ? true : { columns: { id: true, name: true, repo: true } },
         mission: { columns: { id: true, title: true, status: true } },
       } } : {}),
-    });
+    }) as Record<string, any> | undefined;
+    // The lean projections answer under the blobs' own names.
+    const { leanContext, leanResult, ...task } = row ?? {};
 
-    if (!task) {
+    if (!row) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task))) {
+    if ('leanContext' in row) task.context = leanContext;
+    if (apiAccount && !(await taskScopeAllowsMissionTaskRead(apiAccount, task as any))) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
@@ -224,7 +236,8 @@ export async function GET(
     // result.prUrl / prNumber are derived on read (workflow/task-pr.ts): get_task's PR line reads them.
     const response: Record<string, unknown> = {
       ...task,
-      ...(include.has('result') ? { result: withTaskPr(task.result as Record<string, unknown> | null, await taskPrOf(id)) } : {}),
+      result: withTaskPr(('leanResult' in row ? leanResult : task.result) as Record<string, unknown> | null, await taskPrOf(id)),
+      workspace: withoutDispatchToken(task.workspace),
     };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
@@ -247,7 +260,7 @@ export async function GET(
         };
       }
     }
-    const evidenceObjects = include.has('evidence') ? await loadInlineEvidence(task.workspaceId, id, {
+    const evidenceObjects = shape.wants('evidence') ? await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.
       actor: apiAccount ? { accountId: apiAccount.id } : { userId: user!.id },

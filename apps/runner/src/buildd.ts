@@ -189,7 +189,8 @@ export class BuilddClient {
 
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
-      return await this.fetch(`/api/tasks/${id}`);
+      // The whole row: the claim path and park restore read context and the workspace config.
+      return await this.fetch(`/api/tasks/${id}?include=full`);
     } catch {
       return null;
     }

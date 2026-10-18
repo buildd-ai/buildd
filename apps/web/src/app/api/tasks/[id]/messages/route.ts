@@ -8,7 +8,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { messageDeliveryStatus, type InstructionHistoryEntry } from '@/lib/worker-instructions';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
@@ -66,10 +66,10 @@ export async function GET(
       where: sqlWhere(eq(workers.taskId, id)),
       orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: { id: true, status: true, runner: true },
-      extras: {
-        messageCount: messageCount.as('message_count'),
-        instructionHistory: sql<InstructionHistoryEntry[]>`case when ${end} > 0 then jsonb_path_query_array(coalesce(${workers.instructionHistory}, '[]'::jsonb), format('$[%s to %s]', ${start}, ${end} - 1)::jsonpath) else '[]'::jsonb end`.as('message_page'),
-      },
+      extras: sqlExtras({
+        messageCount,
+        instructionHistory: sql<InstructionHistoryEntry[]>`case when ${end} > 0 then jsonb_path_query_array(coalesce(${workers.instructionHistory}, '[]'::jsonb), format('$[%s to %s]', ${start}, ${end} - 1)::jsonpath) else '[]'::jsonb end`,
+      }),
     });
 
     // Every human message carries its derived state (messageDeliveryStatus):

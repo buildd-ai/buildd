@@ -2614,7 +2614,9 @@ export async function handleBuilddAction(
       // plus the frozen estimate (task-estimates experiment), which the route
       // reads only on `include=estimate`. workers/artifacts/dispatch expand
       // server-side under their own names.
-      const serverIncludes = includes.map(i => (i === 'scheduling' ? 'estimate' : i));
+      const serverIncludes = includes.map(i => (i === 'scheduling' ? 'estimate' : i))
+        // Evidence objects are bounded and always printed; the blobs stay lean (R-19).
+        .concat('evidence');
       const qs = serverIncludes.length > 0 ? `?include=${encodeURIComponent(serverIncludes.join(','))}` : '';
 
       const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
@@ -3259,7 +3261,7 @@ export async function handleBuilddAction(
           const workerData = await api(`/api/workers/${wid}`);
           const taskId = workerData?.taskId;
           if (taskId) {
-            const taskData = await api(`/api/tasks/${taskId}`);
+            const taskData = await api(`/api/tasks/${taskId}?include=full`);
             const releaseResult = taskData?.releaseResult;
             if (releaseResult?.message) {
               releaseLine = `\n\n${releaseResult.message}`;
@@ -6179,7 +6181,7 @@ export async function handleBuilddAction(
       // Only fetch the plan detail when there's actually a store to index into.
       if (ctx.knowledgeStore) {
         try {
-          const taskData = await api(`/api/tasks/${params.taskId}`);
+          const taskData = await api(`/api/tasks/${params.taskId}?include=result`);
           const planText = renderPlanText(taskData?.result?.structuredOutput?.plan);
           if (planText) {
             await mirrorWorkProduct(ctx, 'plan', buildPlanCard({
@@ -6393,7 +6395,7 @@ export async function handleBuilddAction(
           const target = await resolveMissionTarget(api, params, ctx);
           if ('message' in target) return text(target.message);
           const missionId = target.id;
-          const data = await api(`/api/missions/${missionId}`);
+          const data = await api(`/api/missions/${missionId}?include=details`);
           // Unfinished tasks first (route order kept within each half), capped
           // unless all:true; the cut says how many of each status it left out.
           const showAll = params.all === true;
