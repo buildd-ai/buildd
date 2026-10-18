@@ -10,7 +10,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -5322,6 +5322,7 @@ export async function PATCH(
   // row. The full row can exceed Pusher's 10 KB limit (instructionHistory,
   // mcpCalls, milestones). Clients that need fresh row data call router.refresh()
   // or re-fetch; clients that only need status use the fields below.
+  const isTerminalEvent = status === 'completed' || status === 'failed';
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
@@ -5347,10 +5348,24 @@ export async function PATCH(
     pusherPayload.heartbeatOk = true;
   }
 
-  await triggerEvent(channels.worker(id), eventName, pusherPayload);
+  // ── No-op suppression ──────────────────────────────────────────────────
+  // Terminal events always fire (completions/failures need to reach the
+  // dashboard immediately). WORKER_PROGRESS events are suppressed when
+  // nothing visible to subscribers has changed — this is the single biggest
+  // lever for daily Pusher message volume, since runners sync every ~30 s
+  // even when idle within a task.
+  const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
+    { status: worker.status, currentAction: worker.currentAction },
+    { status: updated.status, currentAction: updates.currentAction },
+    taskProgress,
+  );
 
-  if (worker.workspaceId) {
-    await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+  if (shouldPublish) {
+    await triggerEvent(channels.worker(id), eventName, pusherPayload);
+
+    if (worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+    }
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
