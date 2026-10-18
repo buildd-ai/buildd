@@ -29,6 +29,7 @@ import { deriveTaskModel } from '@/lib/model-presentation';
 import type { TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { runnerDisplayResolver } from '@/lib/runner-display';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -358,7 +359,8 @@ export async function GET(
           }
         : null,
       // The shared Deliverables block (components/task/TaskDeliverables).
-      deliverables: (result ?? null) as TaskDeliverablesResult | null,
+      // Its PR derived on read (workflow/task-pr.ts), not a stored snapshot.
+      deliverables: withTaskPr((result ?? null) as Record<string, unknown> | null, await taskPrOf(task.id)) as TaskDeliverablesResult | null,
       delivery: sections.delivery,
       checks: sections.checks,
       live,

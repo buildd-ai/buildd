@@ -79,7 +79,10 @@ const mockDbSelect = mock((cols?: any) => {
 // template text (interpolated columns are dropped, which is fine: we only need
 // to assert the static guard clause is present) without a real Postgres connection.
 function sqlFragmentText(fragment: any): string {
-  return Array.isArray(fragment?.strings) ? fragment.strings.join('') : '';
+  // Nested fragments are values of the outer one (the PR is a fragment of fragments, task-pr.ts).
+  if (!Array.isArray(fragment?.strings)) return '';
+  const values: unknown[] = Array.isArray(fragment.values) ? fragment.values : [];
+  return fragment.strings.map((s: string, i: number) => s + (i < values.length ? sqlFragmentText(values[i]) : '')).join('');
 }
 
 // ── Import real implementations of pure @buildd/core packages BEFORE mock.module ──
@@ -459,9 +462,10 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
 
       expect(lastRowsSelectCols).toBeTruthy();
       const prNumberSql = sqlFragmentText(lastRowsSelectCols.prNumber);
+      // The PR is derived on read (workflow/task-pr.ts); its stored-result fallback keeps the guard.
       expect(prNumberSql).toContain('CASE WHEN');
       expect(prNumberSql).toContain("~ '^[0-9]+$'");
-      expect(prNumberSql).toContain('ELSE NULL END');
+      expect(prNumberSql).toContain("to_jsonb((");
     });
 
     it('orders by updatedAt desc with an id tiebreak, not the active-mode CASE/priority order', async () => {
