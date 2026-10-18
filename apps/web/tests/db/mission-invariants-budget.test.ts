@@ -39,13 +39,15 @@ const { POST } = await import('../../src/app/api/cron/mission-invariants/route')
 
 /**
  * R-25: no single run reads more than 5 MB. Queries: the batch's own fixed set,
- * plus at most two per mission base ref it checks (the owner's installation
- * lookup; the checks themselves are capped at MAX_REMOTE_REF_CHECKS). Other
- * files in a shared test database can leave open PRs on mission branches.
+ * plus the owner's installation lookup for each mission base ref it checks:
+ * one read of the owner's installations (at most 10, reinstalls) and a team
+ * check per installation, so up to 11 (the checks themselves are capped at
+ * MAX_REMOTE_REF_CHECKS). Other files in a shared test database leave open
+ * PRs on mission branches, so CI checks some refs a fresh database does not.
  */
 const CRON_BYTES = 5 * 1024 * 1024;
 const BASE_QUERIES = 20;
-const QUERIES_PER_REF = 2;
+const QUERIES_PER_REF = 11;
 
 const HOUR = 3_600_000;
 
