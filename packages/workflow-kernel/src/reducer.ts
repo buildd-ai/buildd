@@ -355,7 +355,11 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'AttemptRequeued': return `requeue:${cmd.workerId}`;
     case 'AttemptReopened': return reopenKey(cmd);
     case 'AttemptWithdrawn': return withdrawKey(cmd);
-    case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
+    // An inconclusive verdict is its reviewer's failure of the round (T27's key), not the round's verdict:
+    // the reviewer asked next at the same round still answers it.
+    case 'ReviewVerdictRecorded':
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== cmd.headBound) return cmd.reviewerTaskId ? roundFailKey(cmd.roundId, cmd.reviewerTaskId) : null;
+      return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
@@ -774,6 +778,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // A verdict for a superseded head/round: kept for audit, never applied (nor its findings).
         return c.stale('round_superseded', { rounds: [keep], attempts: [] });
       }
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== round.headSha) {
+        // The reviewer judged another commit than the round's head (its checkout sat at the base,
+        // say): the verdict is inconclusive. It decides nothing and approves nothing; the round
+        // fails as T27 does, so a reviewer is asked again at the head, then a person.
+        if (held) return c.stale('verdict_evidence_not_at_head');
+        if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
+        return roundFailed(c, round, {
+          reason: 'evidence_not_at_head', reviewerTaskId: cmd.reviewerTaskId, maxContractRetries: cmd.maxContractRetries ?? 0,
+          inconclusive: { verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, evidenceSha: cmd.evidenceSha, headSha: round.headSha },
+        });
+      }
       return verdictDecided(c, round, cmd, { held });
     }
 
@@ -782,6 +797,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       const head = cmd.headBound;
       if (head !== dd.currentHeadSha) return c.stale('verdict_head_not_current');
+      // Read at another commit than the head it names: inconclusive, never kept as that head's review.
+      if (cmd.evidenceSha !== undefined && cmd.evidenceSha !== head) return c.stale('verdict_evidence_not_at_head');
       const mine = c.view.rounds.find((r) => r.reviewerTaskId === cmd.reviewerTaskId && r.headSha === head);
       if (mine?.status === 'decided') return c.duplicate('verdict_already_recorded');
       if (c.decidedAt(head)) return c.stale('head_already_reviewed');
@@ -1649,28 +1666,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!round || !OPEN_ROUND.has(round.status) || round.round !== dd.currentRound) return c.stale('round_not_current');
       // A reviewer the round no longer (or never) waits on cannot spend the budget of the one it does.
       if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
-      const n = round.failureCount + 1;
-      // Keyed on the reviewer that failed (§6.3 T27); only a kernel-side failure with no reviewer counts by number.
-      const key = cmd.reviewerTaskId ? roundFailKey(round.id, cmd.reviewerTaskId) : `roundfail:${round.id}:${n}`;
-      const ev = cmd.reviewerTaskId ? { roundId: round.id, reason: cmd.reason, reviewerTaskId: cmd.reviewerTaskId } : { roundId: round.id, reason: cmd.reason };
-      const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: cmd.reason, failure: n } };
-      // A person's takeover is not a contract failure to retry: it escalates now.
-      if (n <= cmd.maxContractRetries && cmd.reason !== 'human_takeover') {
-        // Re-queued at the same head with the same round number — never a new round.
-        return c.apply(key, 'AWAITING_REVIEW', {
-          guardRound: true,
-          rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
-          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(cmd.retryDelayMs ? { delayMs: cmd.retryDelayMs * n } : {}) }, gate],
-          evidence: ev,
-        });
-      }
-      return c.apply(key, 'ESCALATED', {
-        guardRound: true,
-        patch: { stateReason: 'review_unavailable' },
-        rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
-        effects: [gate],
-        evidence: ev,
-      });
+      return roundFailed(c, round, cmd);
     }
 
     // T28: a preflight finding for one head, imported as policy evidence.
@@ -1855,6 +1851,52 @@ function verdictDecided(
       kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
       payload: { roundId: round.id, round: round.round, headSha: round.headSha, attemptNo: c.nextNo('review_fix', 'agent') },
     }],
+  });
+}
+
+/**
+ * T27: the current round's reviewer failed it (no verdict, a prose one, or one read at
+ * another commit than the head). Re-queued at the same head and round number while
+ * `maxContractRetries` lasts, then ESCALATED(review_unavailable). Keyed on the reviewer
+ * that failed; only a kernel-side failure with no reviewer counts by number.
+ */
+function roundFailed(
+  c: Ctx,
+  round: RoundSnapshot,
+  f: {
+    reason: Extract<Command, { type: 'ReviewRoundFailed' }>['reason'];
+    reviewerTaskId?: string;
+    maxContractRetries: number;
+    retryDelayMs?: number;
+    /** What an inconclusive verdict said, and the commit it was read at: kept on the transition for audit. */
+    inconclusive?: { verdict: string; effectiveVerdict: string; evidenceSha: string | null; headSha: string };
+  },
+): Decision {
+  const dd = c.d!;
+  const n = round.failureCount + 1;
+  const key = f.reviewerTaskId ? roundFailKey(round.id, f.reviewerTaskId) : `roundfail:${round.id}:${n}`;
+  const ev = {
+    roundId: round.id, reason: f.reason,
+    ...(f.reviewerTaskId ? { reviewerTaskId: f.reviewerTaskId } : {}),
+    ...(f.inconclusive ? { inconclusive: f.inconclusive } : {}),
+  };
+  const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: f.reason, failure: n } };
+  // A person's takeover is not a contract failure to retry: it escalates now.
+  if (n <= f.maxContractRetries && f.reason !== 'human_takeover') {
+    // Re-queued at the same head with the same round number — never a new round.
+    return c.apply(key, 'AWAITING_REVIEW', {
+      guardRound: true,
+      rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
+      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(f.retryDelayMs ? { delayMs: f.retryDelayMs * n } : {}) }, gate],
+      evidence: ev,
+    });
+  }
+  return c.apply(key, 'ESCALATED', {
+    guardRound: true,
+    patch: { stateReason: 'review_unavailable' },
+    rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
+    effects: [gate],
+    evidence: ev,
   });
 }
 

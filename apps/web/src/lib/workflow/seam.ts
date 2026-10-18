@@ -982,6 +982,12 @@ export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files
   return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
 }
 
+/** The relevance rule of §13.13 rule 4 for a review fix on a PR with no delivery: false only when the diff plainly misses every named path. */
+export function legacyDiffTouchesFindings(p: { named: string[]; changed: string[] | null; feedback: string | null }): boolean | null {
+  const view = { findings: p.named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  return diffTouchesFindings(view, p.changed, pathsNamedIn(p.feedback));
+}
+
 export async function fixCompletionGate(p: {
   task: AttemptTask; localHeadSha: string | null;
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
@@ -1128,6 +1134,12 @@ export async function recordReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /**
+   * The commit the reviewer's checkout was at (`null`: none reported). A verdict read
+   * at any other commit than `headSha` is inconclusive: the round fails (T27), never decided.
+   * Absent = not attested (a caller that predates it).
+   */
+  evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
@@ -1147,6 +1159,7 @@ export async function recordReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -1169,6 +1182,8 @@ export async function adoptReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** As `recordReviewVerdict`'s: a verdict read at another commit than `headSha` is never adopted. */
+  evidenceSha?: string | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
   const deliveryId = p.workspaceId
@@ -1183,6 +1198,7 @@ export async function adoptReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);

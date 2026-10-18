@@ -11,6 +11,16 @@ mock.module('@/lib/knowledge-ingest-access', () => ({
   getIngestAccessibleWorkspaceIds: mock(async () => accessibleWorkspaceIds),
 }));
 
+// Redis for lib/liveness: a key map, or absent (every op "could not ask").
+let redisUp = false;
+const redisKeys = new Map<string, unknown>();
+mock.module('@/lib/redis', () => ({
+  setWithTtl: async (k: string, v: unknown) => { if (!redisUp) return false; redisKeys.set(k, v); return true; },
+  tryLock: async (k: string) => { if (!redisUp) return null; if (redisKeys.has(k)) return false; redisKeys.set(k, 1); return true; },
+  getKeys: async (ks: string[]) => (redisUp ? ks.map(k => redisKeys.get(k) ?? null) : undefined),
+  delKey: async (k: string) => { redisKeys.delete(k); },
+}));
+
 type Row = Record<string, any>;
 let jobRow: Row | null = null;
 let updateCalls: Array<{ set: Row }> = [];
@@ -88,6 +98,8 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     deleteBySourceCalls = [];
     upsertCalls = [];
     updateCalls = [];
+    redisUp = false;
+    redisKeys.clear();
   });
 
   it('C12: renews the lease on every accepted batch (heartbeat)', async () => {
@@ -100,6 +112,23 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     expect(renewal!.set.leaseExpiresAt).toBeInstanceOf(Date);
     expect(renewal!.set.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now());
     expect(renewal!.set.heartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it('with Redis, back-to-back batches write the lease once, and it outlives the gap to the next write', async () => {
+    redisUp = true;
+    for (let i = 0; i < 5; i++) {
+      const res = await POST(createRequest({ files: [{ path: `src/${i}.ts`, content: 'x' }] }), params());
+      expect(res.status).toBe(200);
+    }
+    const renewals = updateCalls.filter(c => c.set.leaseExpiresAt);
+    expect(renewals).toHaveLength(1);
+    // FULL_LEASE_MS (60 min) plus the 5-minute write interval.
+    expect(renewals[0].set.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now() + 64 * 60_000);
+  });
+
+  it('without Redis every batch renews the lease (fail open)', async () => {
+    for (let i = 0; i < 3; i++) await POST(createRequest({ files: [{ path: `src/${i}.ts`, content: 'x' }] }), params());
+    expect(updateCalls.filter(c => c.set.leaseExpiresAt)).toHaveLength(3);
   });
 
   it('does not renew the lease for a batch it rejects', async () => {
