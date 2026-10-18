@@ -181,6 +181,7 @@ import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -268,6 +269,9 @@ async function startKernelOwnerAttempt(p: {
 }
 
 export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const claimStarted = performance.now();
   let phaseStarted = claimStarted;
   let pathChecksMs = 0;
@@ -3780,6 +3784,7 @@ export async function POST(req: NextRequest) {
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });
+  } finally { await settleWorkChanges(); }
 }
 
 /**
