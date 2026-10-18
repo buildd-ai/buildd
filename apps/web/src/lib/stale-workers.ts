@@ -31,6 +31,7 @@ import {
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -82,6 +83,8 @@ async function resolveStaleTask(
   staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null; runner?: string | null } | undefined,
   exitCause?: WorkerExitCause,
 ) {
+  // Whatever this settles the task to, its mission's summary changed (lib/work-changed.ts).
+  noteWorkChanged({ taskIds: [taskId] });
   // Read current task status and context upfront. A cancelled task must never
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
@@ -421,6 +424,7 @@ async function resolveAbandonedInteractiveTask(
   workspaceId: string,
   staleWorker: { branch?: string | null; error?: string | null } | undefined,
 ) {
+  noteWorkChanged({ taskIds: [taskId] });
   const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
     const existingCtx = (current.context || {}) as Record<string, unknown>;
@@ -785,6 +789,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
           updatedAt: reapedAt,
         })
         .where(inArray(workers.id, group.ids));
+      noteWorkChanged({ workerIds: group.ids });
     }
 
     const neverStartedCount = [...byCause.values()].filter(g => g.exitCause === 'never_started').reduce((n, g) => n + g.ids.length, 0);
@@ -969,6 +974,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
         updatedAt: now,
       })
       .where(inArray(workers.id, group.ids));
+    noteWorkChanged({ workerIds: group.ids });
   }
 
   // Release concurrency seats for the orphaned workers (same pattern as section 1).
@@ -1184,6 +1190,7 @@ export async function cleanupStuckWaitingInput(
         updatedAt: new Date(),
       })
       .where(eq(workers.id, worker.id));
+    noteWorkChanged({ workerIds: [worker.id] });
     failedWorkers++;
 
     if (!worker.taskId) continue;
@@ -1449,6 +1456,7 @@ export async function cleanupUnresumedAnswers(
             updatedAt: new Date(),
           })
           .where(eq(workers.id, worker.id));
+        noteWorkChanged({ workerIds: [worker.id] });
         continue;
       }
 
@@ -1629,6 +1637,7 @@ export async function cleanupUnreadInteractiveAnswers(
         .update(workers)
         .set({ status: 'running', completedAt: null, updatedAt: worker.updatedAt })
         .where(eq(workers.id, worker.id));
+      noteWorkChanged({ workerIds: [worker.id] });
       continue;
     }
 
@@ -1647,6 +1656,7 @@ export async function cleanupUnreadInteractiveAnswers(
           .update(workers)
           .set({ continuationTaskId: continuation.id })
           .where(eq(workers.id, worker.id));
+        noteWorkChanged({ workerIds: [worker.id] });
       }
       await db.insert(missionNotes).values({
         missionId: task.missionId ?? null,

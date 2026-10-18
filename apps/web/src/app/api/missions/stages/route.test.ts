@@ -16,7 +16,7 @@ const mockLoadMissionStages = mock((missionIds: string[], workspaceIds: string[]
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/workspace-access', () => ({ listReachableWorkspaceIds: mockListReachable }));
-mock.module('@/lib/mission-stage-load', () => ({ loadMissionStages: mockLoadMissionStages }));
+mock.module('@/lib/mission-stage-read', () => ({ loadMissionStagesFromSummaries: mockLoadMissionStages }));
 
 const { GET } = await import('./route');
 
