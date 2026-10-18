@@ -2683,6 +2683,8 @@ export function visualReviewRelation(agentVerdict: VisualQaVerdict, decision: Vi
 export const VISUAL_REVIEW_PHASES = [
   'off',
   'waiting_deps',
+  /** The latest audit never ran: build work it depends on failed (spec 072de598 I-14). `waitingOn` names it. */
+  'waiting_on_failed_work',
   'queued',
   'no_browser_runner',
   'capturing',
@@ -3005,6 +3007,8 @@ export interface VisualReviewModel {
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
   replacedAudits?: VisualReviewReplacedAudit[];
+  /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
+  waitingOn?: { taskId: string; title: string | null } | null;
   generatedAt: string;
 }
 
@@ -3473,7 +3477,17 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /**
+   * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
+   * its mission's, else its schedule's) against the person behind the runner's
+   * key, never the runner or login that runs it. Absent from an older server.
+   */
+  owner?: RunnerQueueOwner;
+  /** With owner 'teammate': their first name, when buildd knows it. */
+  ownerName?: string;
 }
+
+export type RunnerQueueOwner = 'you' | 'teammate' | 'unattributed';
 
 export interface RunnerQueueTeam {
   teamId: string;

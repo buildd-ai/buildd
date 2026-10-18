@@ -2,7 +2,7 @@
 title: Runner Heartbeat and Version
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 summary: A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 domain: runners
 surfaces: [apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts]
@@ -51,6 +51,18 @@ supersedes: []
   maintain the liveness window used by stale-detection.
 - Each `(accountId, localUiUrl)` pair has at most one `worker_heartbeats` row;
   the upsert on conflict refreshes `lastHeartbeatAt`.
+- Liveness lives in Redis (`apps/web/src/lib/liveness.ts`,
+  `apps/web/src/lib/runner-beats.ts`): every beat stamps a Redis key, and the
+  row (with the leases of the workers it names) is written only when its
+  content changes, when the beat names a worker no write has renewed yet, or
+  once per `LIVENESS_DB_WRITE_INTERVAL_MS` (5 minutes). A lease written on
+  that cadence runs `WORKER_LEASE_TTL_MS` plus the interval, so it never lapses
+  between writes. A stored `lastHeartbeatAt` can therefore be one interval old:
+  every reader of the 3-minute "online now" window reads it raised to the Redis
+  beat (`withLiveRunnerBeats`), with any SQL cutoff widened by the interval
+  first. Without Redis every beat writes, as before (fail open). The lost-claim
+  search runs on a writing beat, or at once while a start is pending or a claim
+  is in flight.
 - The server issues a `viewerToken` on the first registration for that
   `(accountId, localUiUrl)` pair; subsequent heartbeats reuse it (token is
   stable for the runner instance's lifetime).
@@ -112,8 +124,10 @@ supersedes: []
 - AC-2: WHEN a runner sends its first heartbeat THEN the response contains a
   `viewerToken` that remains unchanged on all subsequent heartbeats for the same
   `localUiUrl`.
-- AC-3: WHEN a valid heartbeat is received THEN `lastHeartbeatAt` is updated to
-  `NOW()` in `worker_heartbeats`.
+- AC-3: WHEN a valid heartbeat is received THEN the runner's liveness is
+  `NOW()`: in Redis on every beat, and in `worker_heartbeats.lastHeartbeatAt`
+  on the first beat, on a change, and at least once per
+  `LIVENESS_DB_WRITE_INTERVAL_MS` (every beat when Redis is unavailable).
 - AC-17: WHEN a heartbeat carries `runnerCommit`/`runnerVersion` THEN both are
   persisted verbatim to `worker_heartbeats` and returned by
   `GET /api/workers/active`.

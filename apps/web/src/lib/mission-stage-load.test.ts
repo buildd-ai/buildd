@@ -11,7 +11,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (expr: any) => expr, sqlExtras: (extras: any) => extras }));
 // The narrowed SQL itself is rendered and pinned in mission-stage-sql.test.ts;
 // here only that the loader uses it.
-mock.module('./mission-stage-sql', () => ({ stageContextSql: 'STAGE_CONTEXT_SQL', stageWorkersPredicate: () => 'STAGE_WORKERS_PREDICATE' }));
+mock.module('./mission-stage-sql', () => ({ stageContextSql: 'STAGE_CONTEXT_SQL', stageDependencyFailedSql: 'STAGE_DEPENDENCY_FAILED_SQL', stageWorkersPredicate: () => 'STAGE_WORKERS_PREDICATE' }));
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'missions.id', workspaceId: 'missions.workspaceId' },
   tasks: { missionId: 'tasks.missionId', workspaceId: 'tasks.workspaceId' },
@@ -113,7 +113,7 @@ describe('loadMissionStages', () => {
     await loadMissionStages(['m1'], ['ws-1']);
     const tq = tasksFindMany.mock.calls[0][0];
     expect(tq.columns.context).toBeUndefined();
-    expect(tq.extras).toEqual({ stageContext: 'STAGE_CONTEXT_SQL' });
+    expect(tq.extras).toEqual({ stageContext: 'STAGE_CONTEXT_SQL', stageDependencyFailed: 'STAGE_DEPENDENCY_FAILED_SQL' });
   });
 
   it('the projected context still decides what a task is for: a trunk refresh never counts toward the build', async () => {

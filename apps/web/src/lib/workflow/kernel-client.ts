@@ -26,10 +26,11 @@
  * no control plane to follow.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
-  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
+  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, personOpRefusal, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
@@ -242,6 +243,8 @@ interface BudgetScope {
   refused: number;
   drainsSkipped: number;
   waitedMs: number;
+  /** A webhook request's scope (`withWebhookBudget`): each door is capped short and keyed by the delivery. */
+  webhook?: { deliveryId: string };
 }
 
 const budgetScope = new AsyncLocalStorage<BudgetScope>();
@@ -264,12 +267,12 @@ export interface ControlPlaneBudgetReport {
  * earlier deadline. On the web host in shadow, and on the control plane, nothing is submitted and the
  * budget never binds.
  */
-export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
+export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number; webhook?: { deliveryId: string } } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
   const now = o.now ?? Date.now;
   const outer = budgetScope.getStore();
   const own = now() + budgetMs;
   const scope: BudgetScope = {
-    label, now, submitted: 0, refused: 0, drainsSkipped: 0, waitedMs: 0,
+    label, now, submitted: 0, refused: 0, drainsSkipped: 0, waitedMs: 0, webhook: o.webhook,
     deadline: outer ? Math.min(own, outer.deadline - outer.now() + now()) : own,
   };
   const value = await budgetScope.run(scope, fn);
@@ -326,6 +329,9 @@ export function newIdempotencyKey(op: KernelOp): string {
 export async function submitKernelCommand<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions): Promise<KernelAnswer<K>> {
   const deps = opts.deps ?? {};
   const idempotencyKey = opts.idempotencyKey ?? (deps.newKey ?? (() => newIdempotencyKey(op)))();
+  // Checked on this host too, so running here never skips what the control plane would refuse.
+  const notPerson = personOpRefusal(op, input, opts.principal);
+  if (notPerson) throw new KernelCommandRefusedError(403, { code: 'person_only', error: notPerson });
   if (await hostsKernelHere(deps)) {
     // After an unknown outcome the control plane may have applied it: the web host never runs it as well.
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
@@ -534,11 +540,68 @@ export const DOOR_UNKNOWN_RETRIES = 2;
  */
 export const DOOR_BUDGET_MS = 20_000;
 
+/** A webhook request's whole control-plane budget: GitHub marks a delivery failed at about 10 s (KERNEL_WEBHOOK_BUDGET_MS overrides). */
+export const WEBHOOK_BUDGET_MS = 6_000;
+/** One door call's budget inside a webhook request (KERNEL_WEBHOOK_DOOR_BUDGET_MS overrides). */
+export const WEBHOOK_DOOR_BUDGET_MS = 2_500;
+/** After a webhook door went unanswered, how long every webhook door skips the control plane and takes its durable fallback at once. */
+export const WEBHOOK_SKIP_MS = 45_000;
+let webhookSkipUntil = 0;
+/** Close the webhook breaker (tests). */
+export function resetWebhookBreaker(): void {
+  webhookSkipUntil = 0;
+}
+
+/**
+ * Run a webhook request's handlers with a short control-plane budget, so the response is back well
+ * inside GitHub's delivery timeout even when the control plane is slow or down. Inside it, each door
+ * call waits at most `WEBHOOK_DOOR_BUDGET_MS`, the whole request at most `WEBHOOK_BUDGET_MS`, and a
+ * door left unanswered opens a breaker (`WEBHOOK_SKIP_MS`) so the rest of the request, and the next
+ * deliveries, skip the wait. A door that gives up takes the durable path it always had: a parked
+ * command (`PARK_ON_UNAVAILABLE`) or a close recorded unapplied and healed (`observePrState`), so
+ * nothing is lost. Each door's command key derives from the delivery id, so GitHub's redelivery of a
+ * request that did apply, slowly, is the same command to the ledger and answers with what was done.
+ */
+export function withWebhookBudget<T>(deliveryId: string, fn: () => Promise<T>, o: { now?: () => number; env?: Record<string, string | undefined> } = {}): Promise<T> {
+  const env = o.env ?? process.env;
+  return withControlPlaneBudget('webhook', Number(env.KERNEL_WEBHOOK_BUDGET_MS) || WEBHOOK_BUDGET_MS, fn, { now: o.now, webhook: { deliveryId } }).then((r) => r.value);
+}
+
+/** The command key of a door call made while handling one webhook delivery: stable across GitHub's redeliveries. */
+export function webhookCommandKey(deliveryId: string, op: KernelOp, input: unknown): string {
+  const hash = createHash('sha256').update(JSON.stringify(input) ?? '').digest('hex').slice(0, 16);
+  return `webhook:${deliveryId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60)}:${op}:${hash}`;
+}
+
+/**
+ * The doors a webhook request caps (AC-65): the ones that have a durable fallback when the control
+ * plane does not answer. Parked ops (`PARK_ON_UNAVAILABLE`) are kept for the floor; `observe_pr_state`
+ * is recorded unapplied and healed; `observe_ci_failure` and `observe_conflict` are not parked but the
+ * red-PR and conflict sweeps re-send them. Every other door (`open_delivery`, whose failure hands a
+ * PR to legacy review while the control plane may still finish it; `land`; the rest) keeps its own
+ * budget and is outside the webhook's scope, as before.
+ */
+export const WEBHOOK_CAPPED_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>([
+  'observe_ci_green', 'observe_head', 'observe_base', 'observe_pr_state', 'observe_ci_failure', 'observe_conflict',
+]);
+
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
+  // A door without a durable fallback runs as it always did: no cap, no breaker, and no share of the webhook's budget.
+  if (budgetScope.getStore()?.webhook && !WEBHOOK_CAPPED_OPS.has(op)) return budgetScope.exit(() => door(op, input, c));
+  const wh = budgetScope.getStore()?.webhook;
+  const whNow = c.deps?.now ?? Date.now;
   // One key for the whole door call: every retry below asks the control plane the same question.
-  const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+  const idempotencyKey = c.idempotencyKey ?? (wh && wh.deliveryId ? webhookCommandKey(wh.deliveryId, op, input) : undefined) ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
   try {
-    return await submitDoor(op, input, c, idempotencyKey);
+    if (wh && whNow() < webhookSkipUntil) {
+      throw new ControlPlaneUnavailableError(`a webhook door went unanswered within the last ${WEBHOOK_SKIP_MS / 1000}s; the door is skipped until then`, 'not_applied', idempotencyKey);
+    }
+    try {
+      return await submitDoor(op, input, c, idempotencyKey);
+    } catch (err) {
+      if (wh && err instanceof ControlPlaneUnavailableError && !err.why.includes('spent its control-plane budget')) webhookSkipUntil = whNow() + WEBHOOK_SKIP_MS;
+      throw err;
+    }
   } catch (err) {
     // Unanswered for the whole budget: an op nothing else re-sends is kept, under this same key, for the
     // floor to re-submit until it is answered (command-outbox.ts). The door still answers unavailable.
@@ -562,7 +625,8 @@ async function submitDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'
   const env = c.deps?.env ?? process.env;
   // Inside a pass, the door's budget is also cut to what is left of the pass's (submitRemote refuses once it is spent).
   const passLeft = controlPlaneBudgetLeft();
-  const deadline = now() + Math.min(Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, passLeft ?? Infinity);
+  const webhookCap = budgetScope.getStore()?.webhook ? (Number(env.KERNEL_WEBHOOK_DOOR_BUDGET_MS) || WEBHOOK_DOOR_BUDGET_MS) : Infinity;
+  const deadline = now() + Math.min(Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, passLeft ?? Infinity, webhookCap);
   let priorUnknown = false;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -585,6 +649,7 @@ export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCa
 export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
+export const disposeFinding = (p: KernelOps['dispose_finding']['input'], c: DoorCall) => door('dispose_finding', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
 /**
  * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`

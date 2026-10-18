@@ -1,5 +1,5 @@
 /**
- * Door commands the control plane never answered (docs/specs/workflow-kernel-library.md §3, AC-35):
+ * Door commands the control plane never answered (docs/specs/workflow-kernel-library.md §3, AC-74):
  * kept by their idempotency key (`workflow_command_outbox`) and re-submitted by the kernel floor until
  * the control plane answers.
  *
@@ -48,6 +48,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   request_ci_retry: false,
   record_supersession: false,
   abandon: false,
+  // A person clicked and got the 503: they click again.
+  dispose_finding: false,
   // The floor imports a PR it does not know (reconcile.ts), and re-drains effects on its own.
   open_delivery: false,
   drain: false,

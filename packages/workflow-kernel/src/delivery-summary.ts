@@ -14,7 +14,7 @@
  * change. "Completed" is never a phase: an attempt that ended has either put a
  * commit on the PR or it has not.
  */
-import { isOpenFinding } from './findings';
+import { findingTotals, findingTotalsLine, type FindingTotals } from './findings';
 import type { PrDisplayState } from './pr-display';
 import type { AttemptSnapshot, DeliveryState, FindingSnapshot, RoundSnapshot, Verdict } from './types';
 
@@ -29,11 +29,11 @@ export interface ReviewSummary {
   inFlight: boolean;
   /** Being read by a reviewer now, rather than waiting for one. */
   reviewing?: boolean;
-  /** Findings still open (`open` or `addressed`), required or not. */
-  openFindings: number;
-  /** Of those, how many a push already touched (`addressed`, AC-17): a fix waiting for a re-review. Absent when none. */
-  addressedFindings?: number;
-  totalFindings: number;
+  /**
+   * Living Spec r7 AC-47: the required findings partitioned into open, addressed awaiting
+   * verification, verified resolved and set aside, each counted once (`findingTotals`).
+   */
+  findings: FindingTotals;
 }
 
 /** Null when the delivery has had no review round. */
@@ -49,9 +49,7 @@ export function reviewSummaryOf(v: { rounds: readonly RoundSnapshot[]; findings?
     latestVerdict: decided ? (decided.effectiveVerdict ?? decided.verdict) : null,
     inFlight: latest.status === 'queued' || latest.status === 'reviewing',
     ...(latest.status === 'reviewing' ? { reviewing: true } : {}),
-    openFindings: findings.filter(isOpenFinding).length,
-    ...(findings.some((f) => f.status === 'addressed') ? { addressedFindings: findings.filter((f) => f.status === 'addressed').length } : {}),
-    totalFindings: findings.length,
+    findings: findingTotals(findings),
   };
 }
 
@@ -61,13 +59,12 @@ const VERDICT_WORDS: Record<Verdict, string> = {
   escalate: 'handed to a person',
 };
 
-/** "2 rounds · latest: changes requested · 1 open finding". Each surface adds its own label in front. */
+/** "2 rounds · latest: changes requested · 1 open finding, 1 with a fix awaiting verification". Each surface adds its own label in front. */
 export function reviewSummaryLine(s: ReviewSummary): string {
   const parts = [`${s.rounds} ${s.rounds === 1 ? 'round' : 'rounds'}`];
   if (s.latestVerdict) parts.push(`latest: ${VERDICT_WORDS[s.latestVerdict]}`);
   if (s.inFlight && s.latestRound != null) parts.push(`round ${s.latestRound} ${s.reviewing ? 'in review' : 'queued'}`);
-  const waiting = s.addressedFindings ? `, ${s.addressedFindings} with a fix waiting for a re-review` : '';
-  parts.push(s.openFindings === 0 ? 'no open findings' : `${s.openFindings} open ${s.openFindings === 1 ? 'finding' : 'findings'}${waiting}`);
+  parts.push(findingTotalsLine(s.findings));
   return parts.join(' · ');
 }
 

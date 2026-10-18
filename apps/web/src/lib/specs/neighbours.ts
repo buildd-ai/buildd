@@ -179,7 +179,7 @@ const KIND_ORDER: Record<NeighbourKind, number> = { overlaps: 0, shares_files: 1
  * counts), one line per other spec at its strongest kind, at most `limit`.
  * Only specs in the same workspace.
  */
-export async function readSpecNeighbours(specId: string, limit = 8): Promise<NearbySpec[]> {
+export async function readSpecNeighbours(specId: string, limit = 8, workspaceId?: string): Promise<NearbySpec[]> {
   const rows = await db.select({
     specId: specNeighbors.specId, neighborSpecId: specNeighbors.neighborSpecId, kind: specNeighbors.kind,
     score: specNeighbors.score, detail: specNeighbors.detail, workspaceId: specNeighbors.workspaceId,
@@ -195,9 +195,11 @@ export async function readSpecNeighbours(specId: string, limit = 8): Promise<Nea
     if (!cur || KIND_ORDER[r.kind] < KIND_ORDER[cur.kind] || (r.kind === cur.kind && r.score > cur.score)) best.set(other, r);
   }
   const ids = [...best.keys()];
-  const [self] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, specId)).limit(1);
-  const titled = await db.select({ id: specs.id, title: specs.title, workspaceId: specs.workspaceId }).from(specs).where(inArray(specs.id, ids));
-  const titles = new Map(titled.filter((t) => t.workspaceId === self?.workspaceId).map((t) => [t.id, t.title]));
+  // `workspaceId`: the spec's own, from a caller that holds its row (the spec page).
+  const ws = workspaceId ?? (await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, specId)).limit(1))[0]?.workspaceId;
+  if (!ws) return [];
+  const titled = await db.select({ id: specs.id, title: specs.title }).from(specs).where(and(inArray(specs.id, ids), eq(specs.workspaceId, ws)));
+  const titles = new Map(titled.map((t) => [t.id, t.title]));
   return ids
     .filter((id) => titles.has(id))
     .map((id) => {

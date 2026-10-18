@@ -1,3 +1,4 @@
+import { withRecentWorkerHeartbeat } from '@/lib/worker-patch-diff';
 /**
  * DB half of the live sibling conflict probe (see `sibling-conflict-probe.ts`):
  * who is live, the `sibling_probes` request/debounce rows, the instruct-queue
@@ -7,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { siblingProbes, workers } from '@buildd/core/db/schema';
 import { recordGateEvent, GATE_SLUGS } from '@buildd/core/gate-events';
 import { TERMINAL_WORKER_STATUSES, normalizeDerivedFiles } from '@buildd/shared';
-import { and, eq, gt, inArray, isNull, isNotNull, not } from 'drizzle-orm';
+import { and, eq, inArray, isNull, isNotNull, not } from 'drizzle-orm';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { kernelOwnedDeliveryStates } from '@/lib/workflow/delivery-view';
 import { markDue } from '@/lib/redis';
@@ -29,7 +30,7 @@ export const SIBLING_PROBE_SURFACE = 'sibling-conflict-probe';
 const LIVE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 const workerColumns = {
-  id: true, taskId: true, workspaceId: true, branch: true, startedAt: true, prNumber: true, observedTouches: true,
+  id: true, taskId: true, workspaceId: true, branch: true, startedAt: true, updatedAt: true, prNumber: true, observedTouches: true,
 } as const;
 
 type WorkerRow = {
@@ -102,7 +103,6 @@ function liveWhere() {
   return and(
     not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES])),
     isNull(workers.mergedAt),
-    gt(workers.updatedAt, new Date(Date.now() - LIVE_WINDOW_MS)),
   );
 }
 
@@ -123,7 +123,8 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
         columns: workerColumns,
         with: withTaskAndWorkspace,
       });
-      return toProbeWorkers(rows as unknown as WorkerRow[]);
+      const live = await withRecentWorkerHeartbeat(rows, Date.now() - LIVE_WINDOW_MS);
+      return toProbeWorkers(live as unknown as WorkerRow[]);
     },
 
     async loadProbes(pairKeys) {
@@ -149,6 +150,13 @@ export function createSiblingProbeStore(): SiblingProbeDeps {
     },
 
     async takeRequests(workerId, now) {
+      // Most polls have no pending probe. Avoid issuing an UPDATE at all for
+      // those heartbeats; the guarded claim below still settles racing takers.
+      const pending = await db.select({ id: siblingProbes.id }).from(siblingProbes)
+        .where(and(eq(siblingProbes.proberWorkerId, workerId), eq(siblingProbes.status, 'requested')))
+        .limit(1);
+      if (pending.length === 0) return [];
+
       const taken = await db.update(siblingProbes)
         .set({ status: 'dispatched', dispatchedAt: now })
         .where(and(eq(siblingProbes.proberWorkerId, workerId), eq(siblingProbes.status, 'requested')))

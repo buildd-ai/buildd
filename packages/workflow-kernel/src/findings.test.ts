@@ -110,3 +110,34 @@ describe('addressFindings / diffTouchesFindings (rule 4)', () => {
     expect(pathsNamedIn(null)).toEqual([]);
   });
 });
+
+describe('findingTotals (Living Spec r7 AC-47): a partition of the required findings', () => {
+  const STATUSES = ['open', 'addressed', 'resolved', 'waived', 'deferred'] as const;
+  // A small deterministic generator: every mix of statuses and required flags, many times over.
+  let seed = 47;
+  const rand = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+
+  test('every required finding lands in exactly one bucket; optional ones only in advisory', async () => {
+    const { findingTotals } = await import('./findings');
+    for (let run = 0; run < 500; run++) {
+      const fs = Array.from({ length: rand(12) }, () => ({ status: STATUSES[rand(5)]!, required: rand(4) !== 0 }));
+      const t = findingTotals(fs);
+      const required = fs.filter((f) => f.required);
+      expect(t.open + t.addressedAwaitingVerification + t.verifiedResolved + t.waived + t.deferred).toBe(t.total);
+      expect(t.total).toBe(required.length);
+      expect(t.advisory).toBe(fs.length - required.length);
+      expect(t.open).toBe(required.filter((f) => f.status === 'open').length);
+      expect(t.addressedAwaitingVerification).toBe(required.filter((f) => f.status === 'addressed').length);
+      expect(t.verifiedResolved).toBe(required.filter((f) => f.status === 'resolved').length);
+      expect(t.waived).toBe(required.filter((f) => f.status === 'waived').length);
+      expect(t.deferred).toBe(required.filter((f) => f.status === 'deferred').length);
+    }
+  });
+
+  test('what blocks landing is open plus awaiting verification, never anything verified or closed', async () => {
+    const { findingTotals, openRequiredFindings } = await import('./findings');
+    const fs = STATUSES.map((status, i) => ({ id: `f${i}`, status, required: true })) as never[];
+    const t = findingTotals(fs);
+    expect(t.open + t.addressedAwaitingVerification).toBe(openRequiredFindings({ findings: fs }).length);
+  });
+});

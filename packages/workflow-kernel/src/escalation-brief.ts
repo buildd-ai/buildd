@@ -9,7 +9,8 @@
  * today (T23 HumanResolve, a forced ReviewRequested, FindingDisposed), and the
  * brief only says which are open to them, what each does and what it needs.
  */
-import { OPEN_FINDING_STATUSES, type AttemptSnapshot, type FindingSnapshot, type KernelView } from './types';
+import { findingTotals, type FindingTotals } from './findings';
+import type { AttemptSnapshot, FindingSnapshot, KernelView } from './types';
 
 /** The two causes a spent review budget can have. Other review escalations are `review_required` too: a person's read is what is missing. */
 export type EscalationCause = 'fixes_exhausted' | 'review_required';
@@ -48,11 +49,25 @@ export interface EscalationBrief {
   title: string;
   /** One plain sentence on what is held and why. */
   summary: string;
+  /** The required findings, each in exactly one group (Living Spec r7 AC-47). */
   findings: {
     open: BriefFinding[];
+    /** A push touched it; no review has verified that push. Not resolved. */
     addressedAwaitingVerification: BriefFinding[];
+    /** A later review round verified it. */
     resolved: BriefFinding[];
+    /** Waived by a person: closed without a verification. */
+    waived: BriefFinding[];
+    /** Deferred to a named task: closed here without a verification. */
+    deferred: BriefFinding[];
   };
+  /** The groups' counts, from the same `findingTotals` every other surface counts with. */
+  totals: FindingTotals;
+  /**
+   * AC-45: what a decision made on this brief is bound to. A surface sends both back with the
+   * person's choice; the kernel refuses it once the head has moved (`decision_head_stale`).
+   */
+  decisionHead: { headSha: string | null; version: number };
   actions: EscalationAction[];
 }
 
@@ -84,7 +99,9 @@ export function deriveEscalationBrief(view: KernelView, perms: EscalationBriefPe
   const required = findings.filter((f) => f.required);
   const open = required.filter((f) => f.status === 'open');
   const addressed = required.filter((f) => f.status === 'addressed');
-  const resolved = required.filter((f) => !OPEN_FINDING_STATUSES.has(f.status));
+  const resolved = required.filter((f) => f.status === 'resolved');
+  const waived = required.filter((f) => f.status === 'waived');
+  const deferred = required.filter((f) => f.status === 'deferred');
   const fixes = fixesSpent(view.attempts, d.maxRounds);
   const cause: EscalationCause = d.stateReason === 'review_exhausted' && fixes.spent && open.length + addressed.length > 0
     ? 'fixes_exhausted' : 'review_required';
@@ -136,7 +153,11 @@ export function deriveEscalationBrief(view: KernelView, perms: EscalationBriefPe
       open: open.map((f) => brief(f, d.currentHeadSha)),
       addressedAwaitingVerification: addressed.map((f) => brief(f, d.currentHeadSha)),
       resolved: resolved.map((f) => brief(f, d.currentHeadSha)),
+      waived: waived.map((f) => brief(f, d.currentHeadSha)),
+      deferred: deferred.map((f) => brief(f, d.currentHeadSha)),
     },
+    totals: findingTotals(findings),
+    decisionHead: { headSha: d.currentHeadSha, version: d.version },
     actions,
   };
 }

@@ -670,6 +670,8 @@ const mockSettleHeldOnClose = mock(async (_p: any): Promise<number> => 0);
 mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClose: mockSettleHeldOnClose }));
 // The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
 import * as realKernelClient from '@/lib/workflow/kernel-client';
+// Captured before mock.module below: Bun rewrites this namespace's exports to the mocks.
+const realObserveCiGreen = realKernelClient.observeCiGreen;
 const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
 // CiGreenObserved / CiObserved go through the client too (AC-9): the control plane applies them in own mode.
 mock.module('@/lib/workflow/kernel-client', () => ({
@@ -6660,6 +6662,37 @@ describe('§4 merge holds: a commit status on a head whose merge GitHub is holdi
     expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'a'.repeat(40), installationId: 5000, source: 'webhook:status' });
     expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:status' } });
   });
+
+  it('a hanging control plane: the response is back well inside GitHub\'s 10 s, and each green is parked for the floor', async () => {
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+    const parked: Array<Record<string, any>> = [];
+    let sent = 0;
+    mockKernelDeliveriesLandingAt.mockResolvedValue([
+      { deliveryId: 'd-1', workspaceId: 'ws-1', prNumber: 42 }, { deliveryId: 'd-2', workspaceId: 'ws-1', prNumber: 43 },
+    ]);
+    mockObserveCiGreen.mockImplementation((p: any, c?: any) => realObserveCiGreen(p, {
+      ...c,
+      deps: {
+        host: () => 'web', env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, sleep: undefined,
+        fetch: ((u: string, i: RequestInit) => { sent++; return (hanging as any)(u, i); }) as unknown as typeof fetch,
+        park: (async (x: any) => { parked.push(x); return true; }) as any,
+      },
+    }));
+    realKernelClient.resetWebhookBreaker();
+    try {
+      const t0 = Date.now();
+      const res = await POST(createWebhookRequest('status', statusPayload()));
+      expect(res.status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      // One wait on the control plane, then the breaker: the second PR never sends.
+      expect(sent).toBe(1);
+      expect(parked.map((p) => [p.op, p.input.prNumber])).toEqual([['observe_ci_green', 42], ['observe_ci_green', 43]]);
+      expect(parked.every((p) => /^webhook:delivery-1:observe_ci_green:[0-9a-f]{16}$/.test(p.key))).toBe(true);
+    } finally {
+      realKernelClient.resetWebhookBreaker();
+      mockObserveCiGreen.mockImplementation(async () => ({ handled: false }));
+    }
+  }, 15_000);
 
   it('nothing is woken by a pending or failing status, or by buildd\'s own review status', async () => {
     await POST(createWebhookRequest('status', statusPayload({ state: 'pending' })));
