@@ -91,7 +91,8 @@ beforeAll(async () => {
     await q(sql`
       INSERT INTO artifacts (worker_id, workspace_id, type, title, content)
       SELECT w.id, w.workspace_id, (ARRAY['summary','report','analysis'])[1 + g % 3], 'Artifact ' || g, repeat(${ARTIFACT_BODY}, 300)
-      FROM workers w, generate_series(1, 4) g WHERE w.task_id = ${taskId}::uuid`);
+      FROM workers w, generate_series(1, 12) g
+      WHERE w.id = (SELECT id FROM workers WHERE task_id = ${taskId}::uuid ORDER BY (pr_number IS NULL), id LIMIT 1)`);
     // Excerpts at the scanner's own cap (~500 chars, enforced at write).
     await q(sql`
       INSERT INTO worker_error_traces (worker_id, task_id, pattern, excerpt, ts)

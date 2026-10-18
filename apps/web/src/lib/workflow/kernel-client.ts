@@ -650,6 +650,7 @@ export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: Doo
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
 export const disposeFinding = (p: KernelOps['dispose_finding']['input'], c: DoorCall) => door('dispose_finding', p, c);
+export const approveOverride = (p: KernelOps['approve_override']['input'], c: DoorCall) => door('approve_override', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
 /**
  * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
