@@ -1,3 +1,4 @@
+import { withRecentWorkerHeartbeat } from '@/lib/worker-patch-diff';
 /**
  * DB half of base-advance notices (see `base-advance-notice.ts`): who is live,
  * the instruct-queue write, and the gate-ledger record that doubles as the
@@ -47,10 +48,9 @@ export function createBaseAdvanceStore(resolver: BaseResolver): BaseAdvanceDeps 
           inArray(workers.workspaceId, ws.map(w => w.id)),
           not(inArray(workers.status, [...TERMINAL_WORKER_STATUSES])),
           isNull(workers.mergedAt),
-          gt(workers.updatedAt, new Date(Date.now() - LIVE_WINDOW_MS)),
         )),
         columns: {
-          id: true, taskId: true, workspaceId: true, branch: true,
+          id: true, taskId: true, workspaceId: true, branch: true, updatedAt: true,
           prNumber: true, prBaseRef: true, observedTouches: true,
         },
         with: {
@@ -61,7 +61,8 @@ export function createBaseAdvanceStore(resolver: BaseResolver): BaseAdvanceDeps 
         },
       });
 
-      return rows.map((r): BaseAdvanceCandidate => {
+      const live = await withRecentWorkerHeartbeat(rows, Date.now() - LIVE_WINDOW_MS);
+      return live.map((r): BaseAdvanceCandidate => {
         const w = byId.get(r.workspaceId);
         sensitive.set(r.id, w?.dataClass === 'sensitive');
         const task = r.task as (typeof r.task & { mission?: BaseAdvanceCandidate['mission'] }) | null;
