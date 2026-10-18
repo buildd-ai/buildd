@@ -371,14 +371,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       return { outcome: 'ok' };
     }
     if (event === 'landing_needs_human') {
-      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: landing needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
+      await needsAttention(ports, e.kind, d, `PR #${d.prNumber}: merge needs a person`, String(e.payload.detail ?? 'the platform could not bring the branch up to date'));
       return { outcome: 'ok' };
     }
     if (event === 'effect_dead') {
       // §10.3: a critical effect went dead and the delivery escalated (67d34094).
       const what = DEAD_EFFECT_COPY[String(e.payload.effectKind)] ?? `the ${String(e.payload.effectKind)} step kept failing`;
       await needsAttention(ports, e.kind, d, `PR #${d.prNumber} needs a person: ${what}`,
-        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and land or re-run it.`);
+        `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and merge or re-run it.`);
       return { outcome: 'ok' };
     }
     const local = (e.payload.localHeadSha as string | null) ?? null;
