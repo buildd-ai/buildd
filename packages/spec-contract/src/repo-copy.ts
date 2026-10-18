@@ -105,8 +105,21 @@ function scalar(v: AssertionValue): string {
   return SAFE_SCALAR.test(v) && !/^(true|false|null|yes|no|~)$/i.test(v) && !/^[\d.]+$/.test(v) && !v.endsWith(' ') ? v : JSON.stringify(v);
 }
 
+/**
+ * A repo-relative file path: no leading slash, no `..`, no comma or whitespace.
+ * Next.js route groups `(protected)` and dynamic segments `[id]` are allowed:
+ * the repo's own specs list such test files in `verified_by`.
+ */
+export const REPO_PATH = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./[\]()@+-]+$/;
+export const isRepoPath = (p: string): boolean => REPO_PATH.test(p);
+
+/**
+ * A one-line YAML-style list, as the repo specs write it. The repo parsers
+ * strip the outer brackets and split on commas, so an item may hold brackets
+ * (`[id]`) but never a comma or a newline.
+ */
 function list(items: readonly string[] | undefined): string {
-  for (const i of items ?? []) if (/[,[\]\n]/.test(i)) throw new Error(`a list item may not contain a comma, a bracket or a newline: ${i}`);
+  for (const i of items ?? []) if (/[,\n]/.test(i)) throw new Error(`a list item may not contain a comma or a newline: ${i}`);
   return `[${(items ?? []).join(', ')}]`;
 }
 
