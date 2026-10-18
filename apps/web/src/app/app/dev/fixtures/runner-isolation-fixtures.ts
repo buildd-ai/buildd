@@ -62,8 +62,13 @@ export const RUNNER_ISOLATION_ROWS: IsolationFixtureRow[] = [
   row(6, 'Linux, userns denied', true, { sandboxEnabled: false, isolation: record('linux', none('userns_sysctl_denied')) }),
   row(7, 'WSL, no bubblewrap', true, { sandboxEnabled: false, isolation: record('linux-wsl', none('bwrap_missing')) }),
   row(8, 'Container, blocked', true, { sandboxEnabled: false, isolation: record('linux-container', none('probe_exec_failed')) }),
-  row(9, 'Own laptop, opted out', false, { sandboxEnabled: false, shared: false, isolation: record('linux', none('opt_out')) }),
+  // The Oct 18 report: BUILDD_DISABLE_SANDBOX=1 on the operator's own, busy runner, protected work waiting.
+  row(9, 'Own laptop, opted out', false, {
+    sandboxEnabled: false, shared: false, activeWorkerCount: 4, maxConcurrentWorkers: 5,
+    isolation: record('linux', none('opt_out'), { reducedOptIn: true }),
+    isolationBlocked: { protected: 3, trustedLocal: 0 },
+  }),
   row(10, 'Shared box, opted out', true, { sandboxEnabled: false, shared: true, isolation: record('linux', none('opt_out')) }),
-  row(11, 'Stale probe', true, { isolation: record('linux', bwrap, { probeAt: at(90), processStartedAt: at(10) }) }),
+  row(11, 'Stale probe', true, { isolation: record('linux', bwrap, { probeAt: at(90), processStartedAt: at(10) }), isolationBlocked: { protected: 3, trustedLocal: 1 } }),
   row(12, 'Old runner version', true, { sandboxEnabled: false, isolation: null }),
 ];

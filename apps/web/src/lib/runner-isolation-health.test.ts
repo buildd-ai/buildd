@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'bun:test';
 
 import type { BackendConfinement, RunnerIsolationRecord } from '@buildd/shared';
-import { isSharedRunner, isolationProblem, runnerIsolationDetail, type IsolationRunner } from './runner-isolation-health';
+import {
+  isSharedRunner,
+  isolationBlockedCounts,
+  isolationProblem,
+  isolationStrandedCount,
+  pendingIsolationTask,
+  runnerIsolationDetail,
+  type IsolationRunner,
+} from './runner-isolation-health';
 
 /**
  * Living Spec "Runner isolation" R-9, R-10, AC-10: Health lists a runner under
@@ -183,5 +191,110 @@ describe('isSharedRunner', () => {
   it('reads as shared when membership is unknown', () => {
     expect(isSharedRunner(null, 'solo', 'solo')).toBe(true);
     expect(isSharedRunner(teams, null, 'solo')).toBe(true);
+  });
+});
+
+/**
+ * The four states Health must tell apart (verified, deliberate opt-out, probe
+ * missing or stale, isolation failure), what each lets the runner take, and
+ * the pending tasks it refuses: counted with the claim's own decideTaskIsolation.
+ */
+describe('runnerIsolationDetail: state, eligibility and blocked work', () => {
+  const optOut = { ...record('linux', none('opt_out')), reducedOptIn: true };
+
+  it('names a deliberate opt-out on your own runner "Sandbox disabled by you", with no warning', () => {
+    const d = runnerIsolationDetail(runner({ shared: false, mine: true, isolation: optOut }));
+    expect(d.state).toBe('opted_out');
+    expect(d.headline).toBe('Sandbox disabled by you');
+    expect(d.attention).toBe(false);
+    expect(d.eligibility.join(' ')).toMatch(/trusted local tasks run here without a sandbox/i);
+    expect(d.eligibility.join(' ')).toMatch(/[Pp]rotected tasks.*another runner/);
+  });
+
+  it("names a teammate's opt-out by its operator", () => {
+    const d = runnerIsolationDetail(runner({ shared: false, mine: false, isolation: optOut }));
+    expect(d.headline).toBe('Sandbox disabled by its operator');
+  });
+
+  it('says how many waiting protected tasks it refuses, and what to change', () => {
+    const d = runnerIsolationDetail(runner({ shared: false, mine: true, isolation: optOut, isolationBlocked: { protected: 3, trustedLocal: 0 } }));
+    expect(d.blocked).toMatch(/^3 waiting tasks need a sandbox, so they can't run here\./);
+    expect(d.steps.join(' ')).toMatch(/Unset BUILDD_DISABLE_SANDBOX/);
+    // Still the opt-out the operator chose: not a warning.
+    expect(d.attention).toBe(false);
+  });
+
+  it('treats the opt-out on a shared runner as needing attention', () => {
+    expect(runnerIsolationDetail(runner({ shared: true, isolation: optOut })).attention).toBe(true);
+  });
+
+  it('reads a confined runner as verified, taking every task', () => {
+    const d = runnerIsolationDetail(runner({ isolation: record('darwin', seatbelt) }));
+    expect(d.state).toBe('verified');
+    expect(d.headline).toBe('Sandbox on');
+    expect(d.attention).toBe(false);
+    expect(d.eligibility).toEqual(['Takes protected and trusted local tasks.']);
+  });
+
+  it('reads a missing probe and a stale one apart, both needing attention and taking nothing', () => {
+    const unprobed = runnerIsolationDetail(runner({ isolation: null, sandboxEnabled: null, sandboxProbeAt: null }));
+    expect(unprobed.state).toBe('unknown');
+    expect(unprobed.headline).toBe('Sandbox not confirmed');
+    const stale = runnerIsolationDetail(runner({ isolation: record('linux', bwrap, { probeAt: T0, processStartedAt: T1 }) }));
+    expect(stale.state).toBe('stale');
+    expect(stale.headline).toBe('Sandbox check out of date');
+    for (const d of [unprobed, stale]) {
+      expect(d.attention).toBe(true);
+      expect(d.eligibility.join(' ')).toMatch(/[Tt]akes no tasks/);
+    }
+  });
+
+  it('reads lost confinement without an opt-in as a failure that takes no tasks', () => {
+    const d = runnerIsolationDetail(runner({ shared: false, isolation: record('linux', none('bwrap_missing')) }));
+    expect(d.state).toBe('failed');
+    expect(d.headline).toBe('No sandbox');
+    expect(d.attention).toBe(true);
+    expect(d.eligibility.join(' ')).toMatch(/[Tt]akes no tasks/);
+  });
+
+  it('says who fixes it: you on your own runner, its operator on someone else\'s', () => {
+    const lost = record('linux', none('bwrap_missing'));
+    expect(runnerIsolationDetail(runner({ mine: true, isolation: lost })).fixer).toMatch(/^You fix this/);
+    expect(runnerIsolationDetail(runner({ mine: false, isolation: lost })).fixer).toMatch(/operator/);
+  });
+});
+
+describe('isolationBlockedCounts / isolationStrandedCount: the claim rule over pending tasks', () => {
+  const optOut = { ...record('linux', none('opt_out')), reducedOptIn: true };
+  const P = { requirement: 'protected' as const, backend: 'claude' as const, codexMode: 'workspace-write' as const };
+  const L = { ...P, requirement: 'trusted_local' as const };
+
+  it('an opted-out runner refuses protected tasks and runs trusted local ones (enforcement unchanged)', () => {
+    expect(isolationBlockedCounts(optOut, [P, P, L])).toEqual({ protected: 2, trustedLocal: 0 });
+  });
+
+  it('a runner with no current probe refuses both', () => {
+    expect(isolationBlockedCounts(null, [P, L])).toEqual({ protected: 1, trustedLocal: 1 });
+  });
+
+  it('a confined runner refuses nothing', () => {
+    expect(isolationBlockedCounts(record('darwin', seatbelt), [P, L])).toEqual({ protected: 0, trustedLocal: 0 });
+  });
+
+  it('counts a task stranded only when every online runner refuses it', () => {
+    expect(isolationStrandedCount([optOut], [P, L])).toBe(1);
+    expect(isolationStrandedCount([optOut, record('darwin', seatbelt)], [P, L])).toBe(0);
+    expect(isolationStrandedCount([], [P])).toBe(0);
+  });
+
+  it('resolves each pending task as the claim does', () => {
+    expect(pendingIsolationTask({ backend: 'codex', kind: 'research', context: null, isolationPolicy: undefined, accessMode: 'restricted' }, 1))
+      .toEqual({ requirement: 'trusted_local', backend: 'codex', codexMode: 'read-only' });
+    expect(pendingIsolationTask({ backend: 'claude', kind: null, context: null, isolationPolicy: undefined, accessMode: 'restricted' }, 3).requirement)
+      .toBe('protected');
+    expect(pendingIsolationTask({ backend: 'claude', kind: null, context: null, isolationPolicy: 'protected', accessMode: 'restricted' }, 1).requirement)
+      .toBe('protected');
+    expect(pendingIsolationTask({ backend: 'claude', kind: null, context: null, isolationPolicy: undefined, accessMode: 'open' }, 1).requirement)
+      .toBe('protected');
   });
 });
