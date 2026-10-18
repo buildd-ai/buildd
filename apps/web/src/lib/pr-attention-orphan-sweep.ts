@@ -70,6 +70,8 @@ export interface OrphanSweepDeps {
   findTaskByPrefix(workspaceId: string, prefix: string): Promise<OrphanTask | null>;
   adopt(ws: SweptWorkspace, task: OrphanTask, pr: OpenGithubPr): Promise<string | null>;
   fileNeedsYou(ws: SweptWorkspace, task: OrphanTask, pr: OpenGithubPr, ownerWorkerId: string): Promise<void>;
+  /** Undo `adopt` when the item could not be filed, so the next sweep tries both again. */
+  release(ownerWorkerId: string): Promise<void>;
 }
 
 export interface OrphanSweepResult {
@@ -130,8 +132,16 @@ export async function sweepOrphanAgentPrs(now: Date = new Date(), deps: OrphanSw
         }
         const ownerId = await deps.adopt(ws, task, pr);
         if (!ownerId) { result.errors++; continue; }
+        // Adoption is what stops the next sweep from asking again, so an item
+        // that failed to file must not leave the PR owned: release it and retry.
+        try {
+          await deps.fileNeedsYou(ws, task, pr, ownerId);
+        } catch (err) {
+          await deps.release(ownerId).catch(releaseErr =>
+            console.error(`[orphan-pr-sweep] ${ws.fullName}#${pr.number}: could not release owner ${ownerId}:`, releaseErr));
+          throw err;
+        }
         result.adopted++;
-        await deps.fileNeedsYou(ws, task, pr, ownerId);
         console.log(`[orphan-pr-sweep] adopted ${ws.fullName}#${pr.number} onto task ${task.id.slice(0, 8)} and asked a person`);
       } catch (err) {
         console.error(`[orphan-pr-sweep] ${ws.fullName}#${pr.number}:`, err);
@@ -233,6 +243,13 @@ const defaultDeps: OrphanSweepDeps = {
     });
   },
 
+  async release(ownerWorkerId) {
+    // The row stays (its PR fact points at it); without the PR it owns nothing.
+    await db.update(workers).set({ prNumber: null, prUrl: null }).where(eq(workers.id, ownerWorkerId));
+  },
+
+  // missionId may be null: the needs-you readers (lib/pr-attention.ts, the
+  // home page) find reviewer_escalated notes by taskId, not by mission.
   async fileNeedsYou(ws, task, pr, ownerWorkerId) {
     const others = await otherOpenTaskPrs(task.id, pr.number).catch(() => []);
     const note = orphanNeedsYouNote({ number: pr.number, url: pr.html_url, head: pr.head.ref }, others);

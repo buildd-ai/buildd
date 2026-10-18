@@ -30,6 +30,7 @@ function fakeDeps(open: OpenGithubPr[], owned: number[], tasksByPrefix: Record<s
   const ownedSet = new Set(owned);
   const adopted: number[] = [];
   const filed: Array<{ prNumber: number; taskId: string; ownerWorkerId: string }> = [];
+  const released: string[] = [];
   const deps: OrphanSweepDeps = {
     listWorkspaces: async () => [WS],
     listOpenPrs: async () => open,
@@ -41,8 +42,12 @@ function fakeDeps(open: OpenGithubPr[], owned: number[], tasksByPrefix: Record<s
       return `owner-${p.number}`;
     },
     fileNeedsYou: async (_ws, task, p, ownerWorkerId) => { filed.push({ prNumber: p.number, taskId: task.id, ownerWorkerId }); },
+    release: async (ownerWorkerId) => {
+      released.push(ownerWorkerId);
+      ownedSet.delete(Number(ownerWorkerId.replace('owner-', '')));
+    },
   };
-  return { deps, adopted, filed };
+  return { deps, adopted, filed, released };
 }
 
 describe('taskPrefixFromHead', () => {
@@ -102,6 +107,28 @@ describe('sweepOrphanAgentPrs', () => {
     const res = await sweepOrphanAgentPrs(NOW, deps);
     expect(filed).toEqual([]);
     expect(res.errors).toBe(1);
+  });
+
+  it('a needs-you item that fails to file releases the adoption, so the next sweep files it', async () => {
+    const { deps, filed, released } = fakeDeps([pr(5170, 'buildd/aaaabbbb-mcp')], []);
+    const fileNeedsYou = deps.fileNeedsYou;
+    deps.fileNeedsYou = async () => { throw new Error('insert failed'); };
+    const first = await sweepOrphanAgentPrs(NOW, deps);
+    expect(first).toMatchObject({ adopted: 0, errors: 1 });
+    expect(released).toEqual(['owner-5170']);
+
+    deps.fileNeedsYou = fileNeedsYou;
+    const second = await sweepOrphanAgentPrs(NOW, deps);
+    expect(second).toMatchObject({ orphans: 1, adopted: 1, errors: 0 });
+    expect(filed.map(f => f.prNumber)).toEqual([5170]);
+  });
+
+  it('files the item for a task outside any mission: the inbox reads notes by task', async () => {
+    const solo: OrphanTask = { ...TASK, missionId: null };
+    const { deps, filed } = fakeDeps([pr(5175, 'buildd/aaaabbbb-recent')], [], { aaaabbbb: solo });
+    const res = await sweepOrphanAgentPrs(NOW, deps);
+    expect(res.adopted).toBe(1);
+    expect(filed).toEqual([{ prNumber: 5175, taskId: solo.id, ownerWorkerId: 'owner-5175' }]);
   });
 
   it('a workspace GitHub will not list is an error, not a crash', async () => {
