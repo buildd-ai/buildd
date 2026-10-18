@@ -37,7 +37,7 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
-import { liveWorkerOf, liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
+import { liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -1426,6 +1426,7 @@ export default async function TaskDetailPage({
     />
   ) : null;
 
+  // The page already carries the worker as props, so the region starts without a copy of it (a duplicate in the payload is what the page's data budget counts).
   // What a live event re-reads: the shown worker and the task's status, from
   // the task's own rows. The page's other loaders do not run (lib/task-live-region.ts).
   const renderedRegion = { taskId: task.id, taskStatus: task.status, workerId: activeWorker?.id ?? null, hadQuestion: !!activeWorker?.waitingFor };
@@ -1438,7 +1439,7 @@ export default async function TaskDetailPage({
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <DiagnosticsAudienceProvider visible={diagnosticsVisible}>
-    <LiveData initial={{ taskStatus: task.status, worker: activeWorker ? liveWorkerOf(activeWorker) : null }} load={loadRegion}>
+    <LiveData initial={{ taskStatus: task.status, worker: null }} load={loadRegion}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       <div className="max-w-[1384px] w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
