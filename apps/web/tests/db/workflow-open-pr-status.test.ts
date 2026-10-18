@@ -10,6 +10,7 @@ import { q } from './harness';
 import { world, type World } from './workflow-scenarios-world';
 
 const { publishOpenPrStatuses, linkedRepos, republishKey } = await import('../../src/lib/workflow/open-pr-status');
+const { publishOpenPrHead } = await import('../../src/lib/workflow/open-pr-status');
 const { openPrReviewReads } = await import('../../src/lib/release/open-pr-review');
 const { githubReader } = await import('../../src/lib/workflow/github-facts');
 const { githubApi } = await import('../../src/lib/github');
@@ -77,6 +78,29 @@ describe('the open-PR status sweep', () => {
     const h2 = w.gh.push(w.repo, 'feat/push', { 'src/b.ts': 'export const b = 9;\n' }, { message: 'more' });
     const r = await sweep(w);
     expect(r.errors).toBe(0);
+    expect(await shown(w, h2)).toMatchObject({ state: 'pending' });
+  });
+});
+
+describe('AC-39: an event publishes one head now', () => {
+  test('a new PR is pending at once; a duplicate writes nothing; a push moves it; the older head\'s event is ignored', async () => {
+    w = await world();
+    w.gh.createBranch(w.repo, 'feat/hand', 'dev');
+    const h1 = w.gh.push(w.repo, 'feat/hand', { 'a.txt': '1\n' }, { message: 'one' });
+    const prNumber = w.gh.openPr(w.repo, { head: 'feat/hand', base: 'dev', user: 'someone' });
+    const at = (sha: string) => ({ installationId: w.installationId, repoFullName: w.repo, prNumber, sha });
+    const deps = { repos: async () => (await linkedRepos()).filter((r) => r.workspaceId === w.workspaceId), reviews: async () => openPrReviewReads() };
+    const writes = () => w.gh.calls.filter((c) => c.method === 'POST' && c.path.startsWith(`/repos/${w.repo}/statuses/`)).length;
+
+    expect(await publishOpenPrHead(at(h1), deps)).toBe('published');
+    expect(await shown(w, h1)).toMatchObject({ state: 'pending' });
+    const n = writes();
+    expect(await publishOpenPrHead(at(h1), deps)).toBe('unchanged');
+    expect(writes()).toBe(n);
+
+    const h2 = w.gh.push(w.repo, 'feat/hand', { 'b.txt': '2\n' }, { message: 'two' });
+    expect(await publishOpenPrHead(at(h1), deps)).toBe('skipped_stale_head');
+    expect(await publishOpenPrHead(at(h2), deps)).toBe('published');
     expect(await shown(w, h2)).toMatchObject({ state: 'pending' });
   });
 });
