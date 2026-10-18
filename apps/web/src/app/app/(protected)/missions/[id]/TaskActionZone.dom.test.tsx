@@ -106,6 +106,24 @@ describe('TaskActionZone — Run now frame', () => {
   });
 });
 
+describe('TaskActionZone — queued line names its subject', () => {
+  it('a plain queued task keeps the plain line', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount();
+    await flush();
+    expect(container.textContent).toContain('Waiting for a runner to claim it.');
+  });
+
+  it('a queued row whose delivery is already moving says the NEXT RUN waits, not the delivery', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ deliveryReading: 'Approved · checking' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Approved · checking. The next run is waiting for a runner to claim it.');
+    expect(text).not.toContain('Waiting for a runner to claim it.');
+  });
+});
+
 describe('TaskActionZone — inline Force start', () => {
   it('a bypassable 422 offers Force start, and pressing it posts forceOverride exactly once', async () => {
     stubFetch({ status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } });

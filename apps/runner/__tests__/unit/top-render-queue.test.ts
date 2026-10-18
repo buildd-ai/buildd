@@ -47,7 +47,7 @@ describe('Queue view (R-26)', () => {
     const two = lines.findIndex(l => stripAnsi(l).includes('Team Two · next for this runner'));
     expect(stripAnsi(lines[one])).toContain('est.');
     expect(stripAnsi(lines[two])).not.toContain('est.');
-    expect(t).toMatch(/1 fix\(kernel\): review composition\s+alpha\s+Workflow kernel\s+40m\s+Thu 00:00/);
+    expect(t).toMatch(/1 fix\(kernel\): review composition\s+-\s+alpha\s+Workflow kernel\s+40m\s+Thu 00:00/);
     expect(t).toMatchSnapshot();
   });
 

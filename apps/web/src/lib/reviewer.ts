@@ -965,14 +965,14 @@ export async function createReviewerTask(
   }
 
   // A review is now asked for: a verified release candidate's `Buildd / Review approval` turns
-  // pending at once (R-41, AC-39), instead of standing at success until the hourly floor.
+  // pending at once (R-41, AC-78), instead of standing at success until the hourly floor.
   if (reviewerTask) await republishReviewRequested({ installationId, repoFullName, prNumber, headSha });
 
   return reviewerTask ?? null;
 }
 
 /**
- * The review-request event door of the open-PR status (docs/specs/workflow-kernel-library.md §4, AC-39),
+ * The review-request event door of the open-PR status (docs/specs/workflow-kernel-library.md §4, AC-78),
  * through the composition root. Only a release candidate's answer moves (any other PR stays pending), so
  * it runs candidates-only; a failure never fails the request, the floor repeats it within the hour.
  */

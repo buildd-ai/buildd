@@ -97,7 +97,7 @@ import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, is
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
+import { HeaderStatusPill, deliveryPillLabel, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecksSection from '@/components/task/TaskChecksSection';
@@ -1597,6 +1597,7 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              deliveryReading={deliveryPillLabel(deliveryPill)}
               failureKind={failureKind}
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}

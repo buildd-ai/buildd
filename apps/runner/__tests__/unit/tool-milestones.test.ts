@@ -244,3 +244,21 @@ describe('phaseOpName / recordPhaseOp (phase milestone `ops`)', () => {
     expect(ops).toHaveLength(PHASE_OPS_CAP);
   });
 });
+
+describe('commitMessageOf', () => {
+  const { commitMessageOf } = require('../../src/tool-milestones') as typeof import('../../src/tool-milestones');
+
+  test('reads a -m message', () => {
+    expect(commitMessageOf('git commit -m "fix: a thing"')).toBe('fix: a thing');
+    expect(commitMessageOf("git commit -am 'fix: b'")).toBe('fix: b');
+  });
+
+  test('reads the first line of a heredoc message', () => {
+    expect(commitMessageOf("git commit -m \"$(cat <<'EOF'\nfeat: c\n\nbody\nEOF\n)\"")).toBe('feat: c');
+  });
+
+  test('returns null, not a made-up word, when the message is not in the command', () => {
+    expect(commitMessageOf('git commit --amend --no-edit')).toBeNull();
+    expect(commitMessageOf('git commit -F msg.txt')).toBeNull();
+  });
+});
