@@ -92,6 +92,19 @@ export interface OccupancySeries {
   buckets: OccupancyBucket[];
   /** Over the whole window: the highest peak, and the time-weighted mean. */
   summary: { runner: OccupancyLevel; sessions: OccupancyLevel; runnerBy: OccupancyBreakdown; sessionsBy: OccupancyBreakdown };
+  /**
+   * Runner-slot usage per attributed member over the window, busiest first.
+   * Work with no recorded owner is not here (it is `runnerBy.unattributed`).
+   * `name` is filled in by the API from the member's profile, never guessed.
+   */
+  members?: OccupancyMember[];
+}
+
+export interface OccupancyMember extends OccupancyLevel {
+  id: string;
+  name?: string | null;
+  /** The viewer's own row. */
+  isMe?: boolean;
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
@@ -185,6 +198,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   const { from, bucketMs, count } = occupancyBuckets(window, now, input.tzOffsetMs ?? 0);
   const runnerEdges = emptyEdges();
   const sessionEdges = emptyEdges();
+  const memberEdges = new Map<string, Edge[]>();
   for (const w of workers) {
     if (w.startedAt == null) continue;
     const executor = executorOf(w.runner);
@@ -194,7 +208,16 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
     if (end <= start || end <= from) continue;
     const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId)];
     into.push({ t: start, d: 1 }, { t: end, d: -1 });
+    if (executor !== 'interactive' && w.ownerId) {
+      const e = memberEdges.get(w.ownerId) ?? [];
+      e.push({ t: start, d: 1 }, { t: end, d: -1 });
+      memberEdges.set(w.ownerId, e);
+    }
   }
+  const members: OccupancyMember[] = [...memberEdges].map(([id, edges]) => {
+    const s = level(edges, from, now, bucketMs, count).summary;
+    return { id, avg: s.avg, peak: s.peak, isMe: !!input.viewerId && id === input.viewerId };
+  }).sort((a, b) => b.avg - a.avg || a.id.localeCompare(b.id));
   const runner = split(runnerEdges, from, now, bucketMs, count);
   const sessions = split(sessionEdges, from, now, bucketMs, count);
   return {
@@ -209,6 +232,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
       sessionsBy: sessions.at(k),
     })),
     summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary },
+    members,
   };
 }
 
