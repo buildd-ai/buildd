@@ -11,10 +11,10 @@
  */
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { normalizeErrorSignature, EMPTY_SIGNATURE } from './error-signature';
-import { isBookkeepingExit } from './worker-exit-taxonomy';
+import { BOOKKEEPING_EXIT_CAUSES, isBookkeepingExit } from './worker-exit-taxonomy';
 import type {
   FailureAnalytics,
   FailureExitCauseBucket,
@@ -527,6 +527,47 @@ export async function getFailureAnalytics(
     console.error('[failure-analytics] query failed:', err);
     return empty();
   }
+}
+
+/** The headline of a failure report: `totals.failed` and `totals.terminal`, and the rate between them. */
+export interface FailureHeadline {
+  failed: number;
+  terminal: number;
+  failureRatePct: number;
+}
+
+const sqlList = (values: readonly string[]) => sql.join(values.map(v => sql`${v}`), sql`, `);
+
+/**
+ * `getFailureAnalytics(...).totals`' failed, terminal and rate, counted in
+ * SQL over the same rows (the window's newest MAX_WORKER_ROWS workers in
+ * these workspaces) with the same rules (isChargeableFailure,
+ * countsAsTerminal), for a page that shows only the headline. One row back,
+ * never the workers.
+ */
+export async function getFailureTotals(
+  scopedWsIds: string[],
+  window: FailureWindow = '7d',
+  now: Date = new Date(),
+): Promise<FailureHeadline> {
+  if (scopedWsIds.length === 0) return { failed: 0, terminal: 0, failureRatePct: 0 };
+  const failedStatus = sql`w.status in (${sqlList(FAILED_WORKER_STATUSES)})`;
+  const bookkeeping = sql`coalesce(w.exit_cause, '') in (${sqlList(BOOKKEEPING_EXIT_CAUSES)})`;
+  const rows = await db.execute(sql`
+    select
+      count(*) filter (where ${failedStatus} and not ${bookkeeping})::int as failed,
+      count(*) filter (where w.status not in (${sqlList(IN_FLIGHT_WORKER_STATUSES)}) and not (${failedStatus} and ${bookkeeping}))::int as terminal
+    from (
+      select ${workers.status} as status, ${workers.exitCause} as exit_cause
+      from ${workers}
+      where ${inArray(workers.workspaceId, scopedWsIds)} and ${gte(workers.createdAt, windowStartFor(window, now))}
+      order by ${workers.createdAt} desc
+      limit ${MAX_WORKER_ROWS}
+    ) w`);
+  const row = ((rows as unknown as { rows?: Array<{ failed: number; terminal: number }> }).rows ?? [])[0];
+  const failed = Number(row?.failed ?? 0);
+  const terminal = Number(row?.terminal ?? 0);
+  return { failed, terminal, failureRatePct: pct(failed, terminal) };
 }
 
 export interface SupersededErrorLookup {
