@@ -171,6 +171,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   close_pr: one(deferred(KEY_ONLY)),
   update_pr: one(deferred(KEY_ONLY)),
   request_pr_review: one(deferred(KEY_ONLY)),
+  approve_pr_override: one(deferred('a person approves past findings from the task page\'s decision card, which shows the findings first')),
   list_releases: one(read('GET /api/releases')),
   get_release: one(read('GET /api/releases/:id')),
   release_status: one(read('GET /api/releases/status')),

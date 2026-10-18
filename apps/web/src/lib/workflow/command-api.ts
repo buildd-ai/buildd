@@ -81,6 +81,8 @@ export interface KernelOps {
   abandon: { input: Parameters<Seam['abandonDelivery']>[0]; result: Awaited<ReturnType<Seam['abandonDelivery']>> };
   /** §5: a person waives or defers one finding. Person-only: see PERSON_OPS. */
   dispose_finding: { input: Parameters<Seam['disposeFinding']>[0]; result: Awaited<ReturnType<Seam['disposeFinding']>> };
+  /** r7 AC-45: a person approves the head past remaining findings. Person-only: see PERSON_OPS. */
+  approve_override: { input: Parameters<Seam['approveOverrideThroughKernel']>[0]; result: Awaited<ReturnType<Seam['approveOverrideThroughKernel']>> };
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
@@ -153,6 +155,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   record_supersession: (s, i) => s.recordSupersession(i),
   abandon: (s, i) => s.abandonDelivery(i),
   dispose_finding: (s, i) => s.disposeFinding(i),
+  approve_override: (s, i) => s.approveOverrideThroughKernel(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
@@ -214,7 +217,7 @@ const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drai
  * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
  * session is refused here, before the reach check, whatever actor string its input names.
  */
-export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding']);
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
 /** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
 export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
   if (!PERSON_OPS.has(op)) return null;
