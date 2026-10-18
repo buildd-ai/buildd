@@ -79,9 +79,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, projectOwnerEnd, recordLocalHead, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -624,6 +624,70 @@ async function recordPostSupersessionError(
 /** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
 // `since`: when a pause began (a timestamp, not prose), for "Paused for 40m" (R-38).
 const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId', 'since']);
+
+/** The task fields a requeue reads: its delivery, if it has one, decides who moves it. */
+interface RequeueTask { id: string; workspaceId: string; deliveryId: string | null; deliveryRole: string | null; context: unknown }
+
+/**
+ * AC-1 slice 6 (workflow-kernel-library.md §9): the owner attempt of a kernel delivery is put
+ * back in the queue by the kernel (AttemptRequeued), never by this route's own status write. The
+ * door submits it where the kernel is hosted; then the route projects it here too
+ * (`projectRequeue`), so a control plane that is down, refusing or too old still leaves the task
+ * pending. Both carry the same guard: only an open task, only while `workerId` is its current
+ * attempt, never over a kernel-merged completion. Answers whether the task is back in the queue.
+ */
+async function requeueOwnerAttempt(p: { task: RequeueTask; workerId: string; reason: string; principal: KernelPrincipal | null }): Promise<boolean> {
+  const { task } = p;
+  try {
+    const r = await workflowAttemptRequeued({ task, workerId: p.workerId, reason: p.reason, source: 'runner' }, { principal: p.principal });
+    if (r.requeued) return true;
+  } catch (err) {
+    console.error(`[Worker ${p.workerId}] AttemptRequeued(${p.reason}) for task ${task.id} did not reach the kernel; projecting it here:`, err);
+    void reportOps({ source: 'worker-completion:workflow-attempt-requeued', severity: 'error', message: 'workflow-attempt-requeued failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+  return projectRequeue({ deliveryId: task.deliveryId!, taskId: task.id, workerId: p.workerId }).catch((err) => {
+    console.error(`[Worker ${p.workerId}] requeue projection failed for task ${task.id}:`, err);
+    return false;
+  });
+}
+
+/**
+ * The worker PATCH's requeues that are not a completion (a budget wall, a codex deferral, a sandbox
+ * mount gap, an auth failover): the worker's task goes back to `pending` with the fields `set`
+ * (context, backend, start floor). A task with no delivery (or not its owner) keeps this route's
+ * one write. A kernel owner's fields land under the requeue's own guard, then the kernel moves its
+ * status (`requeueOwnerAttempt`). Never a cancelled task, never one the kernel finished.
+ * Answers whether the task is back in the queue.
+ */
+async function requeueWorkerTask(p: {
+  taskId: string; workerId: string; reason: string; principal: KernelPrincipal | null;
+  set?: Partial<Pick<typeof tasks.$inferInsert, 'context' | 'backend' | 'startAt'>>;
+}): Promise<boolean> {
+  // Read here, not from the request's earlier reads: whether the task has a delivery decides the writer.
+  const row = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, p.taskId)),
+    columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+  });
+  const task: RequeueTask = { id: p.taskId, workspaceId: row?.workspaceId ?? '', deliveryId: row?.deliveryId ?? null, deliveryRole: row?.deliveryRole ?? null, context: row?.context ?? null };
+  if (!task.deliveryId || task.deliveryRole !== 'owner') {
+    await db
+      .update(tasks)
+      .set({ ...(p.set ?? {}), status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .where(and(eq(tasks.id, task.id), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+    // As before this helper: the caller already skipped a cancelled task, so the requeue is assumed.
+    return true;
+  }
+  if (p.set && Object.keys(p.set).length > 0) {
+    const kept = await db
+      .update(tasks)
+      .set({ ...p.set, updatedAt: new Date() })
+      .where(and(eq(tasks.id, task.id), notKernelMergedTaskSql(), requeueingAttemptIsCurrentSql(p.workerId, 'tasks')))
+      .returning({ id: tasks.id });
+    // Not the task's current attempt any more (a late report after a re-claim): nothing to requeue.
+    if (kept.length === 0) return false;
+  }
+  return requeueOwnerAttempt({ task, workerId: p.workerId, reason: p.reason, principal: p.principal });
+}
 
 export async function GET(
   req: NextRequest,
@@ -2972,10 +3036,7 @@ export async function PATCH(
       columns: { status: true },
     });
     if (deferralTask?.status !== 'cancelled') {
-      await db
-        .update(tasks)
-        .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+      await requeueWorkerTask({ taskId: worker.taskId, workerId: id, reason: 'codex_deferral', principal: kernelPrincipalOf({ account }) });
       // An enforce-mode path collision: make the requeue wait for the holder
       // (collided path joins the manifest, so the claim route's lease
       // backstop defers it) and resume from the pushed checkpoint.
@@ -3260,14 +3321,12 @@ export async function PATCH(
       // An explicit deferral floor already on the task still wins.
       return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
     })();
-    if (taskForBudget?.status !== 'cancelled') await db
-      .update(tasks)
-      .set({
-        status: 'pending',
-        claimedBy: null,
-        claimedAt: null,
-        expiresAt: null,
-        updatedAt: new Date(),
+    if (taskForBudget?.status !== 'cancelled') await requeueWorkerTask({
+      taskId: worker.taskId,
+      workerId: id,
+      reason: 'budget',
+      principal: kernelPrincipalOf({ account }),
+      set: {
         ...(failoverBackend && { backend: failoverBackend }),
         ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
@@ -3281,8 +3340,8 @@ export async function PATCH(
           previousWorkerId: id,
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
-      })
-      .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+      },
+    });
 
     // A failover is claimable on the other provider now. A deferral wakes at
     // the reset and not before: an instant wake would re-claim straight into
@@ -3362,11 +3421,9 @@ export async function PATCH(
 
     if (!sandboxGapMissionExhausted) {
       if (gapTask?.status !== 'cancelled') {
-        await db
-          .update(tasks)
-          .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
-        await wakeTask(worker.taskId, 'task.requeued');
+        if (await requeueWorkerTask({ taskId: worker.taskId, workerId: id, reason: 'mount_gap', principal: kernelPrincipalOf({ account }) })) {
+          await wakeTask(worker.taskId, 'task.requeued');
+        }
       }
       isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
     }
@@ -3440,15 +3497,13 @@ export async function PATCH(
             });
             const authFailoverBackend = authDecision.backend;
             if (authFailoverBackend) {
-              await db
-                .update(tasks)
-                .set({
-                  status: 'pending',
+              await requeueWorkerTask({
+                taskId: worker.taskId,
+                workerId: id,
+                reason: 'auth_failover',
+                principal: kernelPrincipalOf({ account }),
+                set: {
                   backend: authFailoverBackend,
-                  claimedBy: null,
-                  claimedAt: null,
-                  expiresAt: null,
-                  updatedAt: new Date(),
                   context: {
                     ...authTaskCtx,
                     authFailoverApplied: true,
@@ -3456,8 +3511,8 @@ export async function PATCH(
                     failoverReason: 'auth_failure',
                     previousWorkerId: id,
                   },
-                })
-                .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+                },
+              });
 
               // Another provider can carry it now; no delay to honour.
               await wakeTask(worker.taskId, 'task.requeued');
@@ -4214,6 +4269,16 @@ export async function PATCH(
       const ownerEndProjects = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner'
         && !shouldAutoRetry && !contractViolation && loop?.kind !== 'fail' && loop?.kind !== 'hold';
       if (ownerEndProjects) delete taskUpdate.status;
+      // AC-1 slice 6: a kernel owner's requeue (a retry, a loop hold) is the kernel's move
+      // (AttemptRequeued, `requeueOwnerAttempt` below): this statement writes its context, start
+      // floor and loop fields, under the requeue's own guard, but not its status or claim.
+      const ownerRequeue = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner' && intendedTaskStatus === 'pending';
+      if (ownerRequeue) {
+        delete taskUpdate.status;
+        delete taskUpdate.claimedBy;
+        delete taskUpdate.claimedAt;
+        delete taskUpdate.expiresAt;
+      }
 
       // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
       // its terminal status overridden by a worker that was aborted mid-flight. Nor may a
@@ -4226,7 +4291,16 @@ export async function PATCH(
           eq(tasks.id, worker.taskId),
           not(eq(tasks.status, 'cancelled')),
           ...(intendedTaskStatus === 'completed' ? [] : [notKernelMergedTaskSql()]),
+          ...(ownerRequeue ? [requeueingAttemptIsCurrentSql(id, 'tasks')] : []),
         ));
+      if (ownerRequeue) {
+        await requeueOwnerAttempt({
+          task: { id: worker.taskId, workspaceId: worker.workspaceId, deliveryId: terminalRow!.deliveryId, deliveryRole: terminalRow!.deliveryRole ?? null, context: terminalRow!.context },
+          workerId: id,
+          reason: loop?.kind === 'hold' ? 'loop_hold' : 'retry',
+          principal: kernelPrincipalOf({ account }),
+        });
+      }
 
       // The routing-outcome analytics row this report produces, minus the
       // outcome. Built here so a release held for CI can keep it on the task:

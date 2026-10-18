@@ -339,6 +339,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
     case 'HeadObserved': return pr && d ? headObservationKey(pr, d.currentHeadSha, cmd.live.headSha, d.version) : null;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
+    case 'AttemptRequeued': return `requeue:${cmd.workerId}`;
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
@@ -684,6 +685,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
 
     // T4 — §6.5
     case 'AttemptEnded': return attemptEnded(c, cmd);
+
+    // AC-1 slice 6 (workflow-kernel-library.md §9)
+    case 'AttemptRequeued': return attemptRequeued(c, cmd);
 
     // T5
     case 'ReviewRequested': {
@@ -2078,6 +2082,32 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       // CLOSED_UNMERGED: record the head; T19 re-evaluates.
       return record();
   }
+}
+
+// ── AC-1 slice 6: an attempt's task goes back to the queue ──────────────────
+
+/**
+ * AttemptRequeued: the attempt the delivery is bound to is retried on the same task (a retry, a
+ * loop hold, a budget or credential wall, a stalled repair recovered). The delivery keeps its
+ * state; the transition records the requeue (`requeue:<workerId>`, so a re-sent requeue is a
+ * duplicate) and its statement moves the task back to `pending` (the host's projection, guarded
+ * on the task's current attempt). An owner requeue binds while the delivery is `WORKING` on that
+ * owner task; a repair requeue while `FIXING` / `REPAIRING` is bound to that open attempt.
+ * Anything else is `attempt_not_bound`: the delivery has nothing to record, and the host's own
+ * guarded projection decides whether the task still moves.
+ */
+function attemptRequeued(c: Ctx, cmd: Extract<Command, { type: 'AttemptRequeued' }>): Decision {
+  const d = c.d!;
+  const key = `requeue:${cmd.workerId}`;
+  const evidence = { requeue: true, reason: cmd.reason, workerId: cmd.workerId, ...(cmd.attemptId ? { attemptId: cmd.attemptId } : { taskId: cmd.taskId }) };
+  if (!cmd.taskId && !cmd.attemptId) return c.rejected('attempt_not_named');
+  if (cmd.attemptId) {
+    const a = c.attempt(cmd.attemptId);
+    if ((d.state !== 'FIXING' && d.state !== 'REPAIRING') || !a || a.id !== d.boundAttemptId || !OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_bound');
+    return c.apply(key, d.state, { evidence });
+  }
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(key, 'WORKING', { evidence });
 }
 
 // ── T4 ──────────────────────────────────────────────────────────────────────

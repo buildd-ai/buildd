@@ -2714,4 +2714,53 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(openHeadStatus({ sha: 'C1', candidate: { checks, review: { verdict: 'changes_requested', reason: 'x' } } }).status.state, 'failure', 'review stands against it');
     },
   },
+  {
+    name: 'AC-1 slice 6: a requeued owner attempt records the requeue in place, a re-send is a duplicate, and its later end still hands on',
+    async run(host) {
+      const s = await new Delivery(host, 83).open();
+      const before = await s.d();
+      const requeue = (o: Partial<Extract<Command, { type: 'AttemptRequeued' }>> = {}) =>
+        s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-r1', taskId: s.ownerTaskId, reason: 'retry', ...o });
+      applied(await requeue(), 'WORKING', 'the requeue applies in place');
+      eq(pick(await s.d(), ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), pick(before, ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), 'the delivery itself does not move');
+      eq((await s.d()).version, before.version + 1, 'one version for the requeue');
+      const after = { version: (await s.d()).version, effects: await s.effectKinds() };
+      notApplied(await requeue(), 'duplicate', 'idempotency_key_seen', 'the same requeue re-sent (a parked re-submit)');
+      notApplied(await requeue({ reason: 'loop_hold' }), 'duplicate', 'idempotency_key_seen', 'the same worker, whatever the reason');
+      eq({ version: (await s.d()).version, effects: await s.effectKinds() }, after, 'nothing more written');
+      eq((await host.transitions(s.deliveryId)).at(-1)?.command, 'AttemptRequeued', 'the requeue is in the log');
+      // The retry's own attempt ends later and hands the head on as usual.
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the next attempt\'s end hands on');
+      eq((await s.view()).rounds.length, 1, 'one round, nothing doubled by the requeue');
+    },
+  },
+  {
+    name: 'AC-1 slice 6: a requeue that arrives after the delivery moved on, or for a task that is not the owner, records nothing',
+    async run(host) {
+      const s = await new Delivery(host, 84).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-late', taskId: s.ownerTaskId, reason: 'loop_hold' }), 'stale', 'attempt_not_bound', 'a late requeue after the hand-off');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-other', taskId: host.newId(), reason: 'retry' }), 'stale', 'attempt_not_bound', 'not the owner task');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-none', reason: 'retry' }), 'rejected', 'attempt_not_named', 'no attempt named');
+      eq((await s.d()).version, v, 'nothing applied');
+      eq((await s.d()).state, 'AWAITING_REVIEW', 'the delivery is where it was');
+      applied(await s.merged('H1'), 'MERGED', 'merged');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-after', taskId: s.ownerTaskId, reason: 'retry' }), 'stale', 'attempt_not_bound', 'terminal: a requeue after the merge');
+    },
+  },
+  {
+    name: 'AC-1 slice 6: a stalled repair requeued binds to the open attempt the delivery is bound to, and only that one',
+    async run(host) {
+      const s = await (await new Delivery(host, 85).open()).approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red: a repair');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: ci.id, revalidation: { live: s.live('H1'), approved: false } }), 'REPAIRING', 'the repair is claimed');
+      applied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-fix', attemptId: ci.id, reason: 'stalled' }), 'REPAIRING', 'the stalled repair is requeued in place');
+      eq(pick((await s.view()).attempts.find((a) => a.id === ci.id), ['status']), { status: 'running' }, 'its ledger row is untouched');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-fix', attemptId: ci.id, reason: 'stalled' }), 'duplicate', 'idempotency_key_seen', 'the same requeue twice');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-x', attemptId: host.newId(), reason: 'stalled' }), 'stale', 'attempt_not_bound', 'an attempt the delivery is not bound to');
+      notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: ci.id, revalidation: { live: s.live('H1'), approved: false } }), 'duplicate', 'idempotency_key_seen', 'the re-claim of the requeued repair is answered by its first claim: still running, nothing re-allocated');
+    },
+  },
 ];
