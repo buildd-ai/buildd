@@ -45,6 +45,62 @@ export function openRequiredFindings(view: Pick<KernelView, 'findings'>): Findin
   return openFindings(view).filter((f) => f.required);
 }
 
+/**
+ * Living Spec r7 AC-47: where every required finding stands, each counted exactly once.
+ *  - `open`: nothing has answered it yet;
+ *  - `addressedAwaitingVerification`: a push touched it, and no review has verified that push
+ *    (a pushed fix is not verified, so this is never folded into `verifiedResolved`);
+ *  - `verifiedResolved`: a later review round verified it;
+ *  - `waived`: a person waived it: closed, not verified;
+ *  - `deferred`: deferred to a named task: closed here, not verified.
+ * `total` is their sum. `advisory` counts the optional findings, which block nothing and are
+ * kept out of the partition. `open + addressedAwaitingVerification` is what still blocks
+ * landing (`openRequiredFindings`).
+ */
+export interface FindingTotals {
+  open: number;
+  addressedAwaitingVerification: number;
+  verifiedResolved: number;
+  waived: number;
+  deferred: number;
+  total: number;
+  advisory: number;
+}
+
+/** The one partition of a delivery's findings every surface counts from (AC-47). */
+export function findingTotals(findings: ReadonlyArray<Pick<FindingSnapshot, 'status' | 'required'>> | null | undefined): FindingTotals {
+  const t: FindingTotals = { open: 0, addressedAwaitingVerification: 0, verifiedResolved: 0, waived: 0, deferred: 0, total: 0, advisory: 0 };
+  for (const f of findings ?? []) {
+    if (!f.required) { t.advisory++; continue; }
+    t.total++;
+    if (f.status === 'open') t.open++;
+    else if (f.status === 'addressed') t.addressedAwaitingVerification++;
+    else if (f.status === 'resolved') t.verifiedResolved++;
+    else if (f.status === 'waived') t.waived++;
+    else t.deferred++;
+  }
+  return t;
+}
+
+/**
+ * The partition in words, zeros left out: "1 open finding, 2 with a fix awaiting verification,
+ * 3 verified resolved, 1 advisory". With nothing left blocking: "no open findings (3 verified resolved)".
+ */
+export function findingTotalsLine(t: FindingTotals): string {
+  if (t.total === 0 && t.advisory === 0) return 'no open findings';
+  const closed: string[] = [];
+  if (t.verifiedResolved) closed.push(`${t.verifiedResolved} verified resolved`);
+  if (t.waived) closed.push(`${t.waived} waived`);
+  if (t.deferred) closed.push(`${t.deferred} deferred`);
+  // Optional findings block nothing; they are named, apart, so the reader still sees them.
+  if (t.advisory) closed.push(`${t.advisory} advisory`);
+  if (t.open + t.addressedAwaitingVerification === 0) return `no open findings (${closed.join(', ')})`;
+  const parts: string[] = [];
+  if (t.open) parts.push(`${t.open} open ${t.open === 1 ? 'finding' : 'findings'}`);
+  if (t.addressedAwaitingVerification) parts.push(`${t.addressedAwaitingVerification} with a fix awaiting verification`);
+  return [...parts, ...closed].join(', ');
+}
+
 /** How a finding reads in one line: where it is and what it asks. */
 export function describeFinding(f: Pick<FindingSnapshot, 'path' | 'line' | 'title'>): string {
   const where = f.path ? `${f.path}${f.line != null ? `:${f.line}` : ''}` : null;

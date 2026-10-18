@@ -7,9 +7,18 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { DELIVERABLE_ROLE_CONTEXT_KEYS } from '@buildd/core/mission-helpers';
-import { LATEST_WORKERS_PER_TASK, stageContextSql, stageWorkersPredicate } from './mission-stage-sql';
+import { LATEST_WORKERS_PER_TASK, stageContextSql, stageDependencyFailedSql, stageWorkersPredicate } from './mission-stage-sql';
 
 const dialect = new PgDialect();
+
+describe('stageDependencyFailedSql', () => {
+  const { sql: text } = dialect.sqlToQuery(stageDependencyFailedSql);
+  it('is one boolean over two result keys, never the whole result', () => {
+    expect(text).toContain(`"tasks"."result" ->> 'errorType' = 'dependency_failed'`);
+    expect(text).toContain(`"tasks"."result" ->> 'error' like 'Blocked: dependency %'`);
+    expect(text.match(/"result"(?!\s*->>)/g) ?? []).toEqual([]);
+  });
+});
 
 describe('stageContextSql', () => {
   const { sql: text, params } = dialect.sqlToQuery(stageContextSql);

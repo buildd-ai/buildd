@@ -1,7 +1,8 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 const mockTaskSchedulesFindMany = mock(() => [] as any[]);
-const mockMissionsFindFirst = mock(() => null as any);
+// The linked missions, read in one query for every alerting schedule.
+const mockMissionsFindMany = mock(() => [] as any[]);
 const mockNotify = mock(() => {});
 const mockIsOverdue = mock(() => false);
 const mockEstimateCronIntervalMs = mock(() => 30 * 60 * 1000);
@@ -19,7 +20,7 @@ mock.module('@buildd/core/db', () => ({
           return mockTaskSchedulesFindMany(...(args as []));
         },
       },
-      missions: { findFirst: mockMissionsFindFirst },
+      missions: { findMany: mockMissionsFindMany },
     },
     update: mock((table: any) => ({
       set: mock((vals: any) => {
@@ -39,6 +40,8 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ raw: strings.join(''), values }), { raw: (s: string) => s }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -70,7 +73,9 @@ function makeSchedule(overrides: Partial<any> = {}): any {
     // 90 min in the past → 3x the 30-min interval
     nextRunAt: new Date(NOW.getTime() - 90 * 60 * 1000),
     lastOverdueAlertAt: null,
-    taskTemplate: { title: 'Heartbeat', context: { heartbeat: true } },
+    // The read picks taskTemplate.context.heartbeat in SQL (cron-schedules-selection.test.ts
+    // pins the predicate on real Postgres); the row carries only that value.
+    heartbeat: true,
     ...overrides,
   };
 }
@@ -87,8 +92,8 @@ describe('runOverdueHeartbeatAlerts', () => {
   beforeEach(() => {
     mockTaskSchedulesFindMany.mockReset();
     mockTaskSchedulesFindMany.mockResolvedValue([] as any);
-    mockMissionsFindFirst.mockReset();
-    mockMissionsFindFirst.mockResolvedValue(null as any);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([] as any);
     mockNotify.mockReset();
     mockIsOverdue.mockReset();
     mockIsOverdue.mockReturnValue(false);
@@ -101,7 +106,7 @@ describe('runOverdueHeartbeatAlerts', () => {
   it('alerts and stamps lastOverdueAlertAt for an overdue heartbeat schedule', async () => {
     mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()] as any);
     mockIsOverdue.mockReturnValue(true);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Example Mission' } as any);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-1', scheduleId: 'sched-overdue', title: 'Example Mission' }] as any);
 
     expect(await runOverdueHeartbeatAlerts(NOW)).toBe(1);
 
@@ -120,7 +125,7 @@ describe('runOverdueHeartbeatAlerts', () => {
   it('falls back to the schedule id, never its name, when no mission is linked', async () => {
     mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()] as any);
     mockIsOverdue.mockReturnValue(true);
-    mockMissionsFindFirst.mockResolvedValue(null as any);
+    mockMissionsFindMany.mockResolvedValue([] as any);
 
     expect(await runOverdueHeartbeatAlerts(NOW)).toBe(1);
     const arg = (mockNotify.mock.calls[0] as any[])[0];
@@ -130,7 +135,7 @@ describe('runOverdueHeartbeatAlerts', () => {
 
   it('ignores non-heartbeat schedules even when they are overdue', async () => {
     mockTaskSchedulesFindMany.mockResolvedValue([
-      makeSchedule({ taskTemplate: { title: 'Plain', context: {} } }),
+      makeSchedule({ heartbeat: null }),
     ] as any);
     mockIsOverdue.mockReturnValue(true);
 

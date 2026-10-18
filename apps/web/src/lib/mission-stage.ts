@@ -55,6 +55,8 @@ export interface MissionStageTask {
   context: unknown;
   /** Orders the visual audits: the newest one words the wait. */
   createdAt?: string | Date | null;
+  /** Failed only because a task it depends on failed (`dependencyFailureOf`): it never ran. */
+  dependencyFailed?: boolean;
   /** The task's workers that carry a PR. */
   prs: MissionStagePr[];
 }
@@ -108,8 +110,10 @@ function latestAudit(tasks: MissionStageTask[]): MissionStageTask | null {
  * The visual review row's words (`visualCheck`) for what the task alone shows.
  * A completed audit is a pass or findings, which only the page can tell.
  */
-function auditWaitingOn(status: string): string {
+function auditWaitingOn(status: string, dependencyFailed = false): string {
   if (status === 'pending') return 'queued';
+  // Never ran: build work it checks failed. Not the check's failure (spec 072de598 I-14).
+  if (status === 'failed' && dependencyFailed) return 'waiting on failed work';
   if (status === 'failed') return 'unable to run';
   if (status === 'waiting_input') return 'a question for you';
   if (status === 'completed') return 'see the mission page';
@@ -144,7 +148,7 @@ export function missionStage(input: MissionStageInput): MissionStage {
   // and a completed audit may hold findings. So an audit keeps the mission
   // verifying until the mission itself completes, whatever the rest says.
   const audit = latestAudit(input.tasks);
-  if (audit) return { step: 'verifying', waitingOn: auditWaitingOn(audit.status) };
+  if (audit) return { step: 'verifying', waitingOn: auditWaitingOn(audit.status, audit.dependencyFailed) };
   if (checks.checkpoint === 'done') return { step: 'delivered', waitingOn: null };
   const step = checks.rail.find(s => s.key === checks.checkpoint)!;
   return { step: STEP[checks.checkpoint], waitingOn: step.text };

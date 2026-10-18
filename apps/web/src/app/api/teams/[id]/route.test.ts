@@ -26,7 +26,26 @@ mock.module('@buildd/core/db', () => ({
     }),
     delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return 'delete-team'; } }),
     batch: (stmts: any[]) => { batches.push(stmts); return Promise.resolve(stmts.map(() => [])); },
+    // The delete reads who was in the team and what it held (to clear their cached callers).
+    select: (cols: any) => ({
+      from: (_t: any) => ({ where: (_c: any) => Promise.resolve('userId' in cols ? [{ userId: 'user-1' }] : [{ id: 'ws-1' }]) }),
+    }),
   },
+}));
+
+const callerClears: string[][] = [];
+mock.module('@/lib/caller-cache', () => ({
+  clearCallerCache: async (...deps: string[]) => { callerClears.push(deps); return true; },
+  callerDep: {
+    team: (id: string) => `team:${id}`,
+    user: (id: string) => `user:${id}`,
+    workspace: (id: string) => `workspace:${id}`,
+  },
+}));
+
+const teamClears: string[] = [];
+mock.module('@/lib/team-cache', () => ({
+  clearTeamCache: async (teamId: string) => { teamClears.push(teamId); return true; },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -118,6 +137,12 @@ describe('PATCH /api/teams/[id] — timezone', () => {
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(200);
     expect(capturedUpdates[0].timezone).toBe('America/New_York');
+  });
+
+  it('a change clears the team\'s cached reads (lib/team-cache.ts)', async () => {
+    teamClears.length = 0;
+    expect((await PATCH(patchReq({ timezone: 'Europe/Paris' }), ctx)).status).toBe(200);
+    expect(teamClears).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('accepts null to clear the zone back to UTC', async () => {
@@ -485,6 +510,14 @@ describe('DELETE /api/teams/[id]', () => {
     expect(deletedTeams).toBe(1);
     // Its conversations cascade; their chat attachments are removed in the same request.
     expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('deleting the team ends the cached callers of its members and workspaces', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    callerClears.length = 0;
+    expect((await del()).status).toBe(200);
+    expect(callerClears).toEqual([['team:11111111-1111-4111-8111-111111111111', 'user:user-1', 'workspace:ws-1']]);
+    expect(teamClears).toContain('11111111-1111-4111-8111-111111111111');
   });
 
   it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {
