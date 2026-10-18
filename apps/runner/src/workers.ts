@@ -72,7 +72,8 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
+import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp, commitMessageOf } from './tool-milestones';
+import { describeInjectedMessage } from '@buildd/core/worker-message-format';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { claudeSessionSandbox, decideConfinementRestart, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, isolationModeLabel, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
@@ -269,8 +270,14 @@ export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
-  // even if the env var is set after the first call.
-  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+  // even if the env var is set after the first call. The opt-out is a decided
+  // state, so it gets a probe time too: the heartbeat sends the isolation
+  // record only once one is set, and without it Health read an opted-out
+  // runner as "never confirmed".
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') {
+    _bwrapProbeAt ??= new Date().toISOString();
+    return false;
+  }
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     _bwrapProbeAt = new Date().toISOString();
@@ -7114,16 +7121,13 @@ export class WorkerManager {
 
             // Detect git commits — standalone status milestone
             if ((cmd as string).includes('git commit')) {
-              const heredocMatch = (cmd as string).match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
-              const simpleMatch = (cmd as string).match(/-m\s+["']([^"']+)["']/);
-              const message = heredocMatch
-                ? heredocMatch[1].split('\n')[0].trim()
-                : simpleMatch ? simpleMatch[1] : 'commit';
+              const parsed = commitMessageOf(cmd as string);
+              const message = parsed ?? 'commit';
               worker.commits.push({ sha: 'pending', message });
               if (worker.commits.length > 50) {
                 worker.commits.shift();
               }
-              this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
+              this.addMilestone(worker, { type: 'status', label: parsed ? `Commit: ${parsed}` : 'Committed changes', ts: Date.now() });
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
@@ -7791,7 +7795,7 @@ export class WorkerManager {
       worker.lastActivity = Date.now();
       worker.completedAt = undefined;
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
+      this.addMilestone(worker, { type: 'status', label: describeInjectedMessage(message).label, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);
 
@@ -7892,7 +7896,7 @@ export class WorkerManager {
         worker.currentAction = 'Processing message...';
       }
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
+      this.addMilestone(worker, { type: 'status', label: describeInjectedMessage(message).label, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
       // Immediately sync cleared waiting state to server
       if (wasWaiting) {

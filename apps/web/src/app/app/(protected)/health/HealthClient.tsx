@@ -6,7 +6,7 @@ import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { isolationProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
+import { isolationProblem, isolationStrandedProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
@@ -17,6 +17,7 @@ import type {
   StrandedBackendRow,
   BudgetForecast,
   FailureAnalytics,
+  FailureHeadline,
   FailureWindow,
   GateAnalytics,
   OrphanedPrRow,
@@ -272,6 +273,8 @@ interface Props {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
+  /** Failures' headline rate, counted in SQL; else read from failureAnalytics. */
+  failureHeadline?: FailureHeadline | null;
   gateAnalytics: GateAnalytics | null;
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
@@ -294,6 +297,8 @@ interface Props {
    * stale sandbox probe is a Problem only while this holds.
    */
   protectedWorkPending?: boolean;
+  /** Pending tasks every online runner refuses for isolation: a Problem of its own. */
+  isolationStranded?: number;
   /** May read teammates' work in expanded runner detail; false shows other people's runs unnamed. */
   seesTeamWork?: boolean;
   /**
@@ -337,6 +342,7 @@ export function HealthClient({
   wsFilter,
   budgetForecast,
   failureAnalytics,
+  failureHeadline = null,
   gateAnalytics,
   window: activeWindow,
   subagentDelegation,
@@ -348,6 +354,7 @@ export function HealthClient({
   runnerLanes = null,
   claimPlans = null,
   protectedWorkPending = false,
+  isolationStranded = 0,
   seesTeamWork = false,
   now,
   page = 'all',
@@ -468,6 +475,9 @@ export function HealthClient({
     const problem = isolationProblem(r, { protectedWorkPending });
     return problem ? [{ id: r.id, ...problem }] : [];
   });
+  // Work no online runner's sandbox lets it take: one line for the fleet, not one per runner.
+  const strandedIsolation = isolationStrandedProblem(isolationStranded);
+  if (strandedIsolation) isolationProblems.push({ id: 'isolation-stranded', ...strandedIsolation });
   // The four seat-auth confessions collapse into ONE page-level sentence. The
   // per-stat markers stay where they are; this only names the shared cause once
   // instead of four times.
@@ -859,23 +869,18 @@ export function HealthClient({
                 // state and count are the ones Running now and Settings print.
                 const fleetRow = fleetById.get(hb.id) ?? null;
                 const online = fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now);
-                const busyNow = fleetRow ? fleetRow.slots.filter(s => s.worker).length : hb.activeWorkerCount;
-                const idle = online && busyNow === 0;
                 const name = fleetRow?.name ?? hb.accountName ?? 'Runner';
                 const tokenName = fleetRow && hb.accountName && hb.accountName !== fleetRow.name ? hb.accountName : null;
                 const busyLine = fleetRow
                   ? runnerBusyLine({ ...fleetRow, online: true })
                   : `${hb.activeWorkerCount} of ${hb.maxConcurrentWorkers} busy`;
                 const health = runnerHealth.get(hb.id);
-                const statusLabel = online ? (idle ? 'idle' : 'working') : 'offline';
-                const statusClass = online
-                  ? idle ? 'text-text-muted' : 'text-status-success'
-                  : 'text-text-muted';
                 // Green means ENFORCED (namespace + mount allowlist), never merely
                 // "bwrap is installed here" — see deriveSandboxPosture.
                 const posture = deriveSandboxPosture(hb);
-                // Plain words; an unknown posture says nothing rather than "sandbox unknown".
-                const sandboxLabel = SANDBOX_PLAIN_LABEL[posture.label] ?? null;
+                // Plain words, and only for a checked sandbox: every other state
+                // has its own line under the row (RunnerIsolation), said once.
+                const sandboxLabel = runnerIsolationDetail(hb).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
                 const sandboxClass = posture.tier === 'success'
                   ? 'text-status-success'
                   : posture.tier === 'warning'
@@ -899,9 +904,8 @@ export function HealthClient({
                               {hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.mine ? 'personal' : 'teammate\'s'}
                             </span>
                           )}
-                          <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
-                            {statusLabel}
-                          </span>
+                          {/* The dot and the busy line already say working or idle; only offline needs words. */}
+                          {!online && <span className="text-[11px] md:text-[10px] font-mono text-text-muted">offline</span>}
                           {sandboxLabel && (
                             <span
                               className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
@@ -1057,7 +1061,7 @@ export function HealthClient({
         {show('failureGroups') && (
           <FailureGroupsSection
             groups={failureGroupsView}
-            headline={failureAnalytics ? { failureRatePct: failureAnalytics.totals.failureRatePct, failed: failureAnalytics.totals.failed, terminal: failureAnalytics.totals.terminal } : null}
+            headline={failureHeadline ?? (failureAnalytics ? { failureRatePct: failureAnalytics.totals.failureRatePct, failed: failureAnalytics.totals.failed, terminal: failureAnalytics.totals.terminal } : null)}
             windowLabel={activeWindow}
             now={now}
           />

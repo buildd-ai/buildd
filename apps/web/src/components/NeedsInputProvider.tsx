@@ -30,10 +30,11 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
   const initialFetchDone = useRef(false);
   const router = useRouter();
 
-  // Fetch waiting-input tasks
-  const fetchWaitingTasks = useCallback(async () => {
+  // Fetch waiting-input tasks. The server keeps the answer 30 s per user;
+  // `fresh` is for an event that says a task started or stopped waiting.
+  const fetchWaitingTasks = useCallback(async (fresh = false) => {
     try {
-      const res = await fetch('/api/tasks/waiting-input');
+      const res = await fetch(fresh ? '/api/tasks/waiting-input?fresh=1' : '/api/tasks/waiting-input');
       if (res.ok) {
         const data = await res.json();
         const newTasks: WaitingTask[] = data.tasks || [];
@@ -88,7 +89,7 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
     const handlers = events.map(event => [event, (data: unknown) => {
       const action = needsInputEventAction(event, data, prevTaskIdsRef.current);
       if (action.kind === 'refetch') {
-        fetchWaitingTasks();
+        fetchWaitingTasks(true);
       } else if (action.kind === 'remove') {
         setTasks(prev => {
           const filtered = prev.filter(t => t.id !== action.taskId);

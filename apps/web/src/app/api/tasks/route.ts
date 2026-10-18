@@ -38,7 +38,6 @@ import { overlapTouchesSerializedSurface, resolveAnchorInjections } from '@/lib/
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
-import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -250,15 +249,6 @@ export async function GET(req: NextRequest) {
       const total = countsResult[0]?.total ?? 0;
       const pendingCount = countsResult[0]?.pendingCount ?? 0;
 
-      try {
-        after(() =>
-          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
-            console.error('[pr-state-refresh] task list refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
-      }
 
       return jsonResponse({
         tasks: leanTasks,
@@ -346,22 +336,29 @@ export async function GET(req: NextRequest) {
       : [];
     const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
-    // Stale-while-revalidate: refresh stale PR state for workers in these
-    // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
-    if (workspaceIds.length > 0) {
+    // include=missionStages: each listed mission's stage in this same reply, so
+    // `buildd top` makes one read where it made two (/api/tasks, then
+    // /api/missions/stages; spec 3ef37387 AC-5). The stage is the missions
+    // module's projection, so core reaches it through the composition root,
+    // loaded only when asked. Best effort: a failure answers without stages.
+    const wantsStages = (req.nextUrl.searchParams.get('include') ?? '').split(',').includes('missionStages');
+    let missionStages: Record<string, unknown> | undefined;
+    if (wantsStages) {
+      const ids = [...new Set(listedTasks.map((t: { missionId?: string | null }) => t.missionId).filter((id): id is string => !!id))];
       try {
-        after(() =>
-          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
-            console.error('[pr-state-refresh] task list refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
+        const { TASK_LIST_MISSION_STAGES } = await import('@/modules');
+        missionStages = Object.fromEntries(await TASK_LIST_MISSION_STAGES(ids, workspaceIds));
+      } catch (err) {
+        console.error('[tasks] mission stages failed:', err);
       }
     }
 
+    // No PR refresh per poll (spec 3ef37387 R-24): the webhook and the
+    // pr-reconcile cron keep PR state fresh.
+
     return jsonResponse({
       tasks: listedTasks,
+      ...(missionStages ? { missionStages } : {}),
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,

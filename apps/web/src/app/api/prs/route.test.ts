@@ -68,9 +68,9 @@ describe('GET /api/prs', () => {
     expect(before - since.getTime()).toBeLessThan(7 * 864e5 + 60_000);
   });
 
-  it('heals stale PR state for the listed workspaces after responding', async () => {
+  it('starts no GitHub refresh per poll (R-24: the webhook and pr-reconcile cron heal PR state)', async () => {
     await GET(req('?workspaceId=ws-a'));
-    expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 });
 
@@ -94,7 +94,6 @@ describe('per-task token', () => {
     expect(res.status).toBe(200);
     expect(mockListReachable).not.toHaveBeenCalled();
     expect(mockListPrs.mock.calls[0][0]).toMatchObject({ workspaceIds: ['ws-a'], limit: 30 });
-    expect(mockRefresh.mock.calls[0][0]).toEqual(['ws-a']);
   });
 
   it('retains its bound workspace when absent from account reach', async () => {

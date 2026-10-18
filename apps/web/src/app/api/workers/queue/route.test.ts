@@ -89,6 +89,13 @@ describe('GET /api/workers/queue', () => {
     expect(mockLoadQueue.mock.calls[0]![0].caller).toEqual({ accountType: 'service', runner: null, availableSkills: [], executor: 'host' });
   });
 
+  it("names the person behind the runner key, so the queue can mark that person's own work (R-58)", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account, createdByUserId: 'user-1' });
+    mockClaimable.mockResolvedValue(['ws-1']);
+    await GET(req());
+    expect(mockLoadQueue.mock.calls[0]![0].viewerUserId).toBe('user-1');
+  });
+
   it('400 on an executor it does not know, as the claim route refuses one', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account);
     mockClaimable.mockResolvedValue(['ws-1']);

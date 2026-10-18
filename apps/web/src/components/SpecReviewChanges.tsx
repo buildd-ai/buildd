@@ -113,6 +113,13 @@ function AddedRange({ line }: { line: Extract<ChangeLine, { kind: 'added-range' 
   );
 }
 
+/** The other-text changes grouped by kind, in the order each kind first appears, sections in their order. */
+export function otherByKind(otherText: SectionTextChange[]): Array<[SectionTextChange['kind'], string[]]> {
+  const by = new Map<SectionTextChange['kind'], string[]>();
+  for (const o of otherText) by.set(o.kind, [...(by.get(o.kind) ?? []), o.section]);
+  return [...by];
+}
+
 export interface SpecReviewChangesProps {
   summary: string | null;
   lines: ChangeLine[];
@@ -146,10 +153,15 @@ export default function SpecReviewChanges({ summary, lines, otherText, mismatch 
         <h3 id="spec-review-other-heading" className="text-meta font-semibold text-text-secondary">Other text</h3>
         {otherText.length ? (
           <ul className="mt-1 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-review-other">
-            {otherText.map((o) => (
-              <li key={`${o.kind}:${o.section}`} className="flex items-baseline gap-2 py-2 md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-other-row">
-                <span className="text-meta text-text-muted">{OTHER[o.kind]}</span>
-                <span className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]"><Heading path={o.section} /></span>
+            {/* One row per kind, its sections under it: twelve added sections are one "Added", not twelve. */}
+            {otherByKind(otherText).map(([kind, sections]) => (
+              <li key={kind} className="flex flex-col gap-0.5 py-2 md:grid md:grid-cols-[5.5rem_minmax(0,1fr)] md:gap-3" data-testid="spec-review-other-row" data-kind={kind}>
+                <span className="text-meta text-text-muted">{OTHER[kind]}</span>
+                <ul className="flex min-w-0 flex-col gap-0.5">
+                  {sections.map((section) => (
+                    <li key={section} className="text-body text-text-primary [overflow-wrap:anywhere]"><Heading path={section} /></li>
+                  ))}
+                </ul>
               </li>
             ))}
           </ul>

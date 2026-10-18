@@ -1,12 +1,14 @@
-import { currentFiling, filingViews, type FilingView } from './filings';
+import { currentFiling, filingViews, filingViewsFrom, type FilingRow, type FilingView } from './filings';
 import { organizeWorkspace } from './organize';
 import { db } from '@buildd/core/db';
-import { artifacts, specFilings, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
+import { artifactRevisions, artifacts, specFilings, specRevisions, specs, users } from '@buildd/core/db/schema';
+import { readRound } from '@/lib/read-round';
 import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
-import { fail, listSpecs, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
-import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { fail, importedRefusal, listSpecIndexRows, personReach, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { after } from 'next/server';
+import { TTLCache } from '@/lib/cache';
 import { commentsOnRevision, type CommentView } from './comments';
 import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
 import { outlineOf } from '@buildd/core/artifact-read';
@@ -23,6 +25,7 @@ import { readSpecDelivery, type SpecDelivery } from './delivery';
 import { specRetirement, type RetirementView } from './retire';
 import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
+import { importConfirmPath } from './import';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -97,8 +100,7 @@ export type SpecListView =
   | {
     state: 'ok';
     workspace: { id: string; name: string };
-    specs: SpecListItem[];
-    /** The same specs flat, for the index (§19): filings, suggestions and all. */
+    /** The specs flat, for the index (§19): filings, suggestions and all. */
     index: SpecIndexInput[];
     /** A cold-start taxonomy proposal's areas (§17 R-4), shown as possible areas. */
     proposals: AreaProposal[];
@@ -113,44 +115,88 @@ export type SpecListView =
 /** Unfiled specs with no filing row that get a `suggestParent` guess on one page load; the sweep (§17 R-10) records the rest. */
 export const MAX_LIST_SUGGESTIONS = 12;
 
-/** The newest filed or suggested placement still in effect, per spec, in one workspace (§17). */
-async function liveFilings(workspaceId: string): Promise<Map<string, FilingView>> {
-  const rows = await db.select().from(specFilings)
+/**
+ * The newest filed or suggested placement still in effect, per spec, in one
+ * workspace (§17): one row per spec (DISTINCT ON), and of the proposal only
+ * the keys a filing's view reads. A parent is named from `titles` (the specs
+ * the page already holds) when given, else read.
+ */
+async function liveFilings(workspaceId: string, titles?: ReadonlyMap<string, string>): Promise<Map<string, FilingView>> {
+  const rows = await db.selectDistinctOn([specFilings.specId], {
+    id: specFilings.id, workspaceId: specFilings.workspaceId, specId: specFilings.specId, kind: specFilings.kind,
+    status: specFilings.status, parentSpecId: specFilings.parentSpecId, previousParentId: specFilings.previousParentId,
+    source: specFilings.source, createdAt: specFilings.createdAt,
+    proposal: sql<Record<string, unknown> | null>`jsonb_build_object('p', ${specFilings.proposal}->'p', 'answer', ${specFilings.proposal}->'answer', 'title', ${specFilings.proposal}->'title', 'charter', ${specFilings.proposal}->'charter')`,
+  }).from(specFilings)
     .where(and(eq(specFilings.workspaceId, workspaceId), inArray(specFilings.kind, ['filed', 'suggested']), inArray(specFilings.status, ['applied', 'open'])))
-    .orderBy(desc(specFilings.createdAt));
-  const newest = new Map<string, (typeof rows)[number]>();
-  for (const r of rows) if (!newest.has(r.specId)) newest.set(r.specId, r);
-  const views = await filingViews([...newest.values()]);
+    .orderBy(specFilings.specId, desc(specFilings.createdAt));
+  const newest = new Map(rows.map((r) => [r.specId, r as unknown as FilingRow]));
+  const views = titles ? filingViewsFrom([...newest.values()], titles) : await filingViews([...newest.values()]);
   return new Map(views.map((v, i) => [[...newest.keys()][i], v]));
 }
+
+/**
+ * Parent guesses for unfiled specs no filing names (§14 `suggestParent`):
+ * they ask the embedding service, so a page never computes them before it
+ * responds (spec 3ef37387 R-14). The page shows the guesses this server
+ * worked out after an earlier load, and works out the missing ones after it
+ * responds.
+ */
+const parentGuesses = new TTLCache<SpecSuggestion | null>({ maxSize: 5000, ttlMs: 10 * 60 * 1000 });
+const guessKey = (workspaceId: string, r: { id: string; title: string }) => `${workspaceId}:${r.id}:${r.title}`;
+
+/** A row the index reads: the index listing, or a whole spec row. */
+type IndexInputRow = Pick<SpecRow, 'id' | 'title' | 'scope' | 'parentSpecId' | 'status' | 'approvedRevision' | 'headRevision' | 'updatedAt'>
+  & { repoSourceState?: string | null; repoSource?: SpecRow['repoSource'] };
 
 /**
  * The index rows (§19). Placement comes from `spec_filings` (§17): a filing
  * in effect is "Filed by buildd" with its undo, an open suggestion is the
  * unfiled spec's suggestion. An unfiled spec with no filing row at all gets
  * `suggestParent` (§14) on its title, fail-open, for at most
- * MAX_LIST_SUGGESTIONS of them. Every read fails open: a missing filing never
- * hides a spec.
+ * MAX_LIST_SUGGESTIONS of them, worked out after the response (parentGuesses).
+ * Every read fails open: a missing filing never hides a spec.
  */
-export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<SpecIndexInput[]> {
+export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<IndexInputRow>): Promise<SpecIndexInput[]> {
   const ids = new Set(rows.map((r) => r.id));
-  const filings = await liveFilings(workspaceId).catch(() => new Map<string, FilingView>());
+  const titles = new Map(rows.map((r) => [r.id, r.title]));
+  const filings = await liveFilings(workspaceId, titles).catch(() => new Map<string, FilingView>());
   const unfiled = rows.filter((r) => !(r.scope === 'product' || r.scope === 'domain') && !(r.parentSpecId && ids.has(r.parentSpecId)));
   const guesses = new Map<string, SpecSuggestion>();
-  await Promise.all(unfiled.filter((r) => !filings.has(r.id)).slice(0, MAX_LIST_SUGGESTIONS).map(async (r) => {
-    const s = await suggestParent(workspaceId, r.id, r.title).catch(() => null);
-    if (s && ids.has(s.specId)) guesses.set(r.id, { kind: 'parent', specId: s.specId, title: s.title, reason: s.reason });
-  }));
+  const toGuess: IndexInputRow[] = [];
+  for (const r of unfiled.filter((x) => !filings.has(x.id)).slice(0, MAX_LIST_SUGGESTIONS)) {
+    const g = parentGuesses.get(guessKey(workspaceId, r));
+    if (g === undefined) toGuess.push(r);
+    else if (g && g.kind === 'parent' && ids.has(g.specId)) guesses.set(r.id, g);
+  }
+  if (toGuess.length) {
+    afterResponse(async () => {
+      await Promise.all(toGuess.map(async (r) => {
+        const s = await suggestParent(workspaceId, r.id, r.title).catch(() => null);
+        parentGuesses.set(guessKey(workspaceId, r), s ? { kind: 'parent', specId: s.specId, title: s.title, reason: s.reason } : null);
+      }));
+    });
+  }
   return rows.map((r) => {
     const facts = filingFacts(r, filings.get(r.id));
     return {
       id: r.id, title: r.title, scope: r.scope, parentSpecId: r.parentSpecId, status: r.status,
       approvedRevision: r.approvedRevision, headRevision: r.headRevision, updatedAt: new Date(r.updatedAt).toISOString(),
-      imported: r.repoSource?.state === 'imported',
+      imported: (r.repoSourceState ?? r.repoSource?.state) === 'imported',
       filedBy: facts.filedBy ?? null, filingId: facts.filingId ?? null,
       suggestion: facts.suggestion ?? guesses.get(r.id) ?? null,
     };
   });
+}
+
+/** Run after the response when there is a request (Next's after()); else now, in the background. */
+function afterResponse(fn: () => Promise<void>): void {
+  const run = () => fn().catch((err) => console.warn('[specs] deferred work failed:', (err as Error)?.message ?? err));
+  try {
+    after(run);
+  } catch {
+    void run();
+  }
 }
 
 /**
@@ -159,7 +205,7 @@ export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<S
  * without it, or any error, gets none. Each area carries which proposal it
  * came from, so accepting it re-reads that same proposal.
  */
-async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<AreaProposal[]> {
+async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows: ReadonlyArray<Pick<SpecRow, 'status' | 'scope'>>): Promise<AreaProposal[]> {
   const open = rows.filter((r) => r.status !== 'retired' && r.status !== 'superseded');
   if (open.some((r) => r.scope === 'product' || r.scope === 'domain') || open.length === 0) return [];
   // Never waits on the model: its proposal when organize already asked it, else the word-based one.
@@ -169,17 +215,20 @@ async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows:
 
 export async function specListView(userId: string, workspaceId: string): Promise<SpecListView> {
   const caller: SpecCaller = { kind: 'user', userId };
-  const r = await listSpecs(caller, workspaceId);
-  if (!r.ok) return { state: 'not_found' };
-  const [ws] = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+  // A person's reach, once for the request: the workspace's name comes with it.
+  const ws = await personReach(userId, workspaceId);
   if (!ws) return { state: 'not_found' };
+  const r = await listSpecIndexRows(caller, workspaceId);
+  if (!r.ok) return { state: 'not_found' };
   // The approver confirms imports and sees what waits for their approval first.
-  const [index, canAct, approver] = await Promise.all([
-    specIndexInputs(workspaceId, r.specs), reach(caller, workspaceId, true),
+  // For a person, write reach is the read reach above (workspace-access.ts).
+  const canAct = true;
+  const [index, approver] = await Promise.all([
+    specIndexInputs(workspaceId, r.specs),
     specApprover(caller, workspaceId).catch(() => null),
   ]);
   const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
-  return { state: 'ok', workspace: ws, specs: specTree(r.specs), index, proposals, canAct, canConfirm: !!approver, now: Date.now() };
+  return { state: 'ok', workspace: ws, index, proposals, canAct, canConfirm: !!approver, now: Date.now() };
 }
 
 /**
@@ -295,6 +344,13 @@ export type SpecPageView =
     retireTargets?: Array<{ id: string; title: string }>;
     /** With `history`: that criterion's wordings ("Reviewing a spec revision" R-12); null when the spec never had it. */
     criterionHistory?: { criterionId: string; history: CriterionHistory | null } | null;
+    /**
+     * An import waiting for a person's confirmation (§18, R-19). While it is
+     * set the repo file is the source: nothing waits for approval, there is no
+     * review, and confirming is the one act. `previous` is the earlier
+     * import a re-import replaced, to compare the repo's own change against.
+     */
+    importConfirmation?: { revision: number; path: string; commit: string; href: string | null; canConfirm: boolean; batchHref: string; previous: number | null } | null;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -314,10 +370,12 @@ type Reading = { revision: SpecRevisionRow; body: string };
 
 /** One revision of a spec row the caller already holds, and its text; null when there is no such revision. */
 async function readRevision(spec: SpecRow, n: number): Promise<Reading | null> {
-  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, spec.id), eq(specRevisions.revision, n))).limit(1);
-  if (!revision) return null;
-  const body = (await getArtifactRevision(spec.bodyArtifactId, revision.artifactRevision))?.content ?? '';
-  return { revision, body };
+  // One statement: the revision and its body.
+  const [row] = await db.select({ revision: specRevisions, content: artifactRevisions.content }).from(specRevisions)
+    .leftJoin(artifactRevisions, and(eq(artifactRevisions.artifactId, spec.bodyArtifactId), eq(artifactRevisions.revision, specRevisions.artifactRevision)))
+    .where(and(eq(specRevisions.specId, spec.id), eq(specRevisions.revision, n))).limit(1);
+  if (!row) return null;
+  return { revision: row.revision, body: row.content ?? '' };
 }
 
 /**
@@ -353,6 +411,8 @@ export async function specReviewView(caller: SpecCaller, specId: string): Promis
   const [ok, approver] = await Promise.all([reached, specApprover(caller, row.workspaceId, reached)]);
   if (!ok) return fail(404, 'Spec not found');
   if (!approver) return fail(403, 'Only someone who may approve specs here can review a revision for approval.');
+  const importRefused = importedRefusal(row);
+  if (importRefused) return importRefused;
   const pending = row.approvedRevision == null || row.headRevision > row.approvedRevision;
   if (!pending || row.status === 'retired' || row.status === 'superseded') return fail(409, 'No revision of this spec waits for approval.');
   const review = await reviewPanes(row, null);
@@ -389,22 +449,49 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const caller: SpecCaller = { kind: 'user', userId };
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec) return { state: 'not_found' };
-  const reached = reach(caller, spec.workspaceId, false);
+  // The person's reach, once: it carries the workspace's name and Living Specs settings.
+  const wsRowP = personReach(userId, spec.workspaceId);
+  const reached = wsRowP.then((w) => !!w);
   const approverP = specApprover(caller, spec.workspaceId, reached);
   if (!(await reached)) {
     await approverP.catch(() => null);
     return { state: 'not_found' };
   }
 
-  const pending = spec.approvedRevision == null || spec.headRevision > spec.approvedRevision;
   const open = spec.status !== 'retired' && spec.status !== 'superseded';
+  // An unconfirmed import is not waiting for approval (approve refuses it, store.ts importedRefusal): it waits for confirm_import.
+  const imported = spec.repoSource?.state === 'imported' ? spec.repoSource : null;
+  const pending = !imported && (spec.approvedRevision == null || spec.headRevision > spec.approvedRevision);
   const readN = opts.revision ?? spec.approvedRevision ?? spec.headRevision;
   const readP = readRevision(spec, readN);
-  const wsP = db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
-  const revRowsP = db.select({
-    id: specRevisions.id, revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
-    approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
-  }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision));
+  const wsP = wsRowP.then((w) => [w ? { name: w.name, gitConfig: { livingSpecs: w.livingSpecs } } : undefined] as const);
+  // One round trip for the reads that need only the spec row and who is asking
+  // (readRound): revisions, parent, siblings, children and, for someone who may
+  // retire it, the replacements they may pick (§22: live specs of the workspace).
+  const roundP = approverP.catch(() => null).then((approver) => readRound({
+    revRows: db.select({
+      id: specRevisions.id, revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
+      approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
+    }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision)),
+    // Parent, siblings and children only from the same workspace (a parent is always there, §1).
+    parent: spec.parentSpecId
+      ? db.select({ id: specs.id, title: specs.title }).from(specs)
+        .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.id, spec.parentSpecId))).limit(1)
+      : null,
+    siblings: spec.parentSpecId
+      ? db.select({ id: specs.id, title: specs.title }).from(specs)
+        .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.parentSpecId), ne(specs.id, spec.id)))
+        .orderBy(specs.title).limit(MAX_SIBLINGS)
+      : null,
+    children: db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title),
+    retireTargets: approver && open
+      ? db.select({ id: specs.id, title: specs.title }).from(specs)
+        .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
+        .orderBy(specs.title).limit(200)
+      : null,
+  }));
+  const revRowsP = roundP.then((r) => r.revRows);
   const namesP = revRowsP.then(async (revRows) => {
     const approverIds = [...new Set(revRows.map((r) => personLabel(r.approvedBy)).filter((v): v is string => !!v && isUuid(v)))];
     const names = new Map<string, string>();
@@ -415,19 +502,9 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     }
     return names;
   });
-
-  // Parent, siblings and children only from the same workspace (a parent is always there, §1).
-  const parentP = spec.parentSpecId
-    ? db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.id, spec.parentSpecId))).limit(1)
-    : Promise.resolve([]);
-  const siblingsP = spec.parentSpecId
-    ? db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.parentSpecId), ne(specs.id, spec.id)))
-      .orderBy(specs.title).limit(MAX_SIBLINGS)
-    : Promise.resolve([]);
-  const childrenP = db.select({ id: specs.id, title: specs.title }).from(specs)
-    .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title);
+  const parentP = roundP.then((r) => r.parent ?? []);
+  const siblingsP = roundP.then((r) => r.siblings ?? []);
+  const childrenP = roundP.then((r) => r.children);
 
   const repoRefsP = readP.then(async (read) => {
     const refs = read?.revision.repoRefs ?? [];
@@ -455,7 +532,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const commentsP = Promise.all([readP, revRowsP])
     .then(([read, revs]) => (read ? commentsOnRevision(spec.id, read.revision.revision, read.body, revs) : []))
     .catch(() => [] as CommentView[]);
-  const nearbyP = readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+  const nearbyP = readSpecNeighbours(spec.id, undefined, spec.workspaceId).catch(() => [] as NearbySpec[]);
   const filingP = currentFiling(spec.id).catch(() => null);
 
   const compareP: Promise<Extract<SpecPageView, { state: 'ok' }>['compare']> = opts.from !== undefined && opts.to !== undefined
@@ -469,11 +546,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
 
   const retirementP = open ? Promise.resolve(null) : specRetirement(spec.id).catch(() => null);
   // The replacements a person may pick (§22): live specs of the workspace, by title.
-  const retireTargetsP = approverP.then((approver) => (approver && open
-    ? db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
-      .orderBy(specs.title).limit(200)
-    : []));
+  const retireTargetsP = roundP.then((r) => r.retireTargets ?? []);
   // The repo checks (R-34) are not read here: they ask GitHub, so the panel fetches them on its own (/api/specs/[id]/preflight).
   const reviewP = opts.review && pending && open
     ? Promise.all([approverP, readP]).then(([approver, read]) => (approver ? reviewPanes(spec, read) : null))
@@ -510,10 +583,14 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const approver = !!approverId;
   const native = nativeSourceOn(ws?.gitConfig);
   const source: (ReturnType<typeof repoCopyLine> & { href?: string }) | null = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
-  if (source?.path) {
-    const fullName = await linkedRepoFullName(spec.workspaceId);
-    if (fullName) source.href = `https://github.com/${fullName}/blob/HEAD/${source.path.split('/').map(encodeURIComponent).join('/')}`;
-  }
+  const fullName = source?.path || imported ? await linkedRepoFullName(spec.workspaceId) : null;
+  if (source?.path && fullName) source.href = `https://github.com/${fullName}/blob/HEAD/${source.path.split('/').map(encodeURIComponent).join('/')}`;
+  const importConfirmation = imported && open ? {
+    revision: imported.revision, path: imported.path, commit: imported.commitSha.slice(0, 7),
+    href: fullName ? `https://github.com/${fullName}/blob/${imported.commitSha}/${imported.path.split('/').map(encodeURIComponent).join('/')}` : null,
+    canConfirm: approver, batchHref: importConfirmPath(spec.workspaceId),
+    previous: imported.revision > 1 ? imported.revision - 1 : null,
+  } : null;
 
   return {
     state: 'ok',
@@ -524,7 +601,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     repoChecks: native && pending && open && approver,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
-    standing: specStanding(spec).standing,
+    standing: importConfirmation ? 'imported, awaiting confirmation' : specStanding(spec).standing,
     reading: { revision: readRev, approved: spec.approvedRevision === readRev, isHead: readRev === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     // With the review open the page shows the review panel, which carries its own text: the read revision's is not sent twice.
@@ -537,5 +614,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     compare, canApprove: pending && open && approver, review,
     retirement, canRetire: approver, retireTargets,
     criterionHistory,
+    importConfirmation,
   };
 }

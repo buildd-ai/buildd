@@ -1,14 +1,12 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, accounts, teamMembers, workerHeartbeats, workers, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { accountReachesWorkspace, type ReachWorkspace } from './workspace-reach';
 import type { BrowserRunnerHeartbeat } from './visual-audit-runner';
 import {
   isPushOnlyRunner,
   isRunnerOnline,
-  isSharedRunner,
   mountAllowlistEnforcedFrom,
-  selectRelevantRunnerAccounts,
   RUNNER_ONLINE_WINDOW_MS,
   type RunnerHeartbeat,
 } from './runner-heartbeats-shared';
@@ -47,53 +45,49 @@ export async function getRunnerHeartbeats(
   if (workspaceIds.length === 0) return [];
 
   // "Not dead" window — see the window table in @buildd/shared runner-liveness.
+  // Relevance (selectRelevantRunnerAccounts) is decided in the query itself
+  // (spec 3ef37387 R-23): the account is this team's, holds a live claim link
+  // to a scoped workspace, or has worked in one. Only the columns the page
+  // shows come back; of the environment, only the two keys it reads.
   const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
-  const hbs = await db.query.workerHeartbeats.findMany({
-    where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
-    orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
-    with: { account: { columns: { name: true, teamId: true, createdByUserId: true, managedRunner: true, hostRunner: true, authType: true } } },
-  });
-  if (hbs.length === 0) return [];
-
-  const hbAccountIds = [...new Set((hbs as any[]).map((hb: any) => hb.accountId as string))];
-
-  const [links, worked] = await Promise.all([
-    db
-      .select({ accountId: accountWorkspaces.accountId })
-      .from(accountWorkspaces)
-      .where(and(
-        inArray(accountWorkspaces.accountId, hbAccountIds),
-        inArray(accountWorkspaces.workspaceId, workspaceIds),
-        liveLinkCondition(),
-      )),
-    db
-      .selectDistinct({ accountId: workers.accountId })
-      .from(workers)
-      .where(and(
-        inArray(workers.accountId, hbAccountIds),
-        inArray(workers.workspaceId, workspaceIds),
-      )),
-  ]);
-
-  const relevant = selectRelevantRunnerAccounts(
-    (hbs as any[]).map((hb: any) => ({
-      accountId: hb.accountId as string,
-      accountTeamId: (hb.account?.teamId as string | undefined) ?? null,
-    })),
-    {
-      teamId,
-      linkedAccountIds: new Set((links as any[]).map((r: any) => r.accountId as string)),
-      workedAccountIds: new Set(
-        (worked as any[]).map((r: any) => r.accountId as string | null).filter(Boolean) as string[],
+  const wsList = sql.join(workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
+  const kept = await db
+    .select({
+      id: workerHeartbeats.id,
+      accountId: workerHeartbeats.accountId,
+      localUiUrl: workerHeartbeats.localUiUrl,
+      lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
+      activeWorkerCount: workerHeartbeats.activeWorkerCount,
+      maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
+      sandboxEnabled: workerHeartbeats.sandboxEnabled,
+      sandboxProbeAt: workerHeartbeats.sandboxProbeAt,
+      modelAuthSource: workerHeartbeats.modelAuthSource,
+      codexAuthSource: workerHeartbeats.codexAuthSource,
+      // isSharedRunner in SQL: more than one person across the runner's own
+      // team and the team it serves here.
+      shared: sql<boolean>`(select count(distinct ${teamMembers.userId}) from ${teamMembers} where ${teamMembers.teamId} in (${accounts.teamId}, ${teamId}::uuid)) > 1`,
+      environment: sql<{ envKeys?: string[]; isolation?: unknown } | null>`jsonb_build_object('envKeys', ${workerHeartbeats.environment}->'envKeys', 'isolation', ${workerHeartbeats.environment}->'isolation')`,
+      account: {
+        name: accounts.name,
+        teamId: accounts.teamId,
+        createdByUserId: accounts.createdByUserId,
+        managedRunner: accounts.managedRunner,
+        hostRunner: accounts.hostRunner,
+        authType: accounts.authType,
+      },
+    })
+    .from(workerHeartbeats)
+    .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
+    .where(and(
+      gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      or(
+        eq(accounts.teamId, teamId),
+        sql`exists (select 1 from ${accountWorkspaces} where ${accountWorkspaces.accountId} = ${workerHeartbeats.accountId} and ${accountWorkspaces.workspaceId} in (${wsList}) and ${liveLinkCondition()})`,
+        sql`exists (select 1 from ${workers} where ${workers.accountId} = ${workerHeartbeats.accountId} and ${workers.workspaceId} in (${wsList}))`,
       ),
-    },
-  );
-
-  const kept = (hbs as any[]).filter((hb: any) => relevant.has(hb.accountId));
-  const membersByTeam = await teamMemberIds([
-    teamId,
-    ...kept.map((hb: any) => hb.account?.teamId as string | undefined).filter(Boolean) as string[],
-  ]);
+    ))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt));
+  if (kept.length === 0) return [];
 
   return kept
     .map((hb: any) => ({
@@ -113,30 +107,11 @@ export async function getRunnerHeartbeats(
       isolation: readIsolationRecord(hb.environment),
       modelAuthSource: hb.modelAuthSource ?? null,
       codexAuthSource: hb.codexAuthSource ?? null,
-      shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
+      shared: hb.shared !== false,
       runnerClass: classifyRunnerOwnership(hb.account),
       authType: hb.account?.authType === 'oauth' || hb.account?.authType === 'api' ? hb.account.authType : undefined,
       mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
-}
-
-/** Members of each team, for isSharedRunner. On failure every runner reads as shared. */
-async function teamMemberIds(teamIds: string[]): Promise<Map<string, Set<string>> | null> {
-  const ids = [...new Set(teamIds)];
-  try {
-    const rows = await db
-      .select({ teamId: teamMembers.teamId, userId: teamMembers.userId })
-      .from(teamMembers)
-      .where(inArray(teamMembers.teamId, ids));
-    const byTeam = new Map<string, Set<string>>();
-    for (const r of rows) {
-      if (!byTeam.has(r.teamId)) byTeam.set(r.teamId, new Set());
-      byTeam.get(r.teamId)!.add(r.userId);
-    }
-    return byTeam;
-  } catch {
-    return null;
-  }
 }
 
 /**

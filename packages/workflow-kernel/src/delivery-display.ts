@@ -28,6 +28,8 @@ export interface DeliveryDisplay {
   attemptLine: string | null;
   /** The next transition a person can trigger (S37's "Run fix"), the one Home's card offers. */
   cta: DeliveryCta | null;
+  /** A review escalation's cause label ("Automated fixes exhausted · 2 of 2 used"); null for any other state. */
+  escalationTitle?: string | null;
 }
 
 export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
@@ -43,6 +45,7 @@ export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
     prState: v.prState,
     attemptLine: attemptLine(v.attempts),
     cta: v.cta,
+    escalationTitle: v.escalation?.title ?? null,
   };
 }
 
@@ -115,7 +118,7 @@ export interface DeliveryReading {
   action: { label: string; taskId: string } | null;
 }
 
-export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null };
+export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null; escalationTitle?: string | null; prState?: DeliveryDisplay['prState'] };
 
 const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['action'] = null): DeliveryReading =>
   ({ label, tone, needsYou: tone === 'needs', failed: tone === 'failed', action });
@@ -130,7 +133,9 @@ const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['act
  *
  * An approved PR needs you only when the owner is a person (the policy leaves
  * the merge to them): it is the Merge card Home shows and reads "Ready to
- * merge", never "in review". When the landing path merges it, it reads live. A repair reads the kernel's headline
+ * merge", never "in review". It reads "Ready to merge" only once the checks
+ * on its head passed; while they run it reads "Approved · checking". When the
+ * landing path merges it, it reads live, and "Merging" only once that begins. A repair reads the kernel's headline
  * ("Conflict fix stalled", "Fixing CI"). Labels are the terms catalog's words
  * (packages/shared/src/terms.ts); the kernel imports nothing of buildd, so they
  * are literals here and apps/web/src/lib/workflow/delivery-display.test.ts
@@ -150,9 +155,23 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
     case 'blocked': return reading('Blocked on base', 'stalled');
     // Only a person's merge reads as needs-you; under approve-and-merge or
     // auto-threshold the landing path merges it, so it is live (S35).
-    case 'approved': return d.owner === 'human' ? reading('Ready to merge', 'needs') : reading('Approved · merging', 'live');
+    // Approval is not a merge. The reading says what the PR waits on: required
+    // checks first (the stage stays Verify), then the merge. "Merging" is the
+    // LANDING stage only, once the merge operation has started.
+    case 'approved': {
+      // A person's merge keeps its tone whatever the checks say (Home counts it
+      // as theirs); only the words change, so no surface promises a merge.
+      const person = d.owner === 'human';
+      if (d.prState === 'awaiting_ci' || d.prState === 'ci_running') return reading('Approved · checking', person ? 'needs' : 'live');
+      if (d.prState === 'ci_failed') return reading('Approved · checks failing', person ? 'needs' : 'stalled');
+      if (d.prState === 'conflict') return reading('Approved · merge conflict', person ? 'needs' : 'stalled');
+      if (person) return reading('Ready to merge', 'needs');
+      // Without a CI fact on this head, claim nothing beyond the approval.
+      return d.prState === 'ci_passed' ? reading('Ready to merge', 'live') : reading('Approved', 'live');
+    }
     case 'landing': return reading('Merging', 'live');
-    case 'needs_you': return reading('Waiting on you', 'needs');
+    // A review escalation names its cause; only an escalation with no brief keeps the generic words.
+    case 'needs_you': return reading(d.escalationTitle ?? 'Waiting on you', 'needs');
     case 'merged': return reading('Merged', 'landed');
     // Not "Merged in #N": the task header pill's input does not carry the
     // successor PR, and every surface must read the same label (S17).

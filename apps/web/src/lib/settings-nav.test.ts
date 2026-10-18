@@ -32,7 +32,7 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'apps', 'features',
+      'team', 'agents', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations', 'apps',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
   });

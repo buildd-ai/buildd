@@ -44,7 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, notOwnerTaskSql, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectReopenSql, projectRequeueSql, projectWithdrawSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -517,6 +517,101 @@ export async function attemptStarted(p: {
   }
   const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }, deps.exec);
   return { handled: true, started, ...(result ? { result } : {}) };
+}
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──
+
+/** The predicate an attempt writer's own (non-owner) status write carries (task-projection.ts). */
+export { notOwnerTaskSql };
+
+/**
+ * Project a reopen onto its task outside a transition (task-projection.ts `projectReopenSql`), then
+ * answer whether the task is open again as `to` says: moved here, or already by `t_reopen`.
+ */
+export async function projectReopen(
+  p: { deliveryId: string; taskId: string; workerId: string | null; endedAt: string | null; to: 'pending' | 'assigned' },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectReopenSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.to}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptReopened from the recovery doors (credential, GitHub access, an incident's recovery) and
+ * the worker PATCH's resume: the owner task's ended attempt is opened again, for a new attempt
+ * (`pending`) or the same worker running again (`assigned`), the move the kernel makes in the
+ * transition's own statement (`t_reopen`). A reopen the reducer does not bind (the delivery handed
+ * on, or is terminal) is still projected under the same guard, so the task moves exactly when the
+ * named worker is still its latest attempt and its end is the one named. `handled` false: the task
+ * is no delivery's owner (the caller writes it itself).
+ */
+export async function attemptReopened(p: {
+  task: AttemptTask;
+  workerId: string | null;
+  endedAt: string | null;
+  to: 'pending' | 'assigned';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; reopened: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, reopened: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptReopened', actor: p.source, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptReopened(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const reopened = await projectReopen({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, endedAt: p.endedAt, to: p.to }, deps.exec);
+  return { handled: true, reopened, ...(result ? { result } : {}) };
+}
+
+/**
+ * Project a withdrawal onto its task outside a transition (task-projection.ts `projectWithdrawSql`),
+ * then answer whether the task now has the outcome's status: moved here, or already by `t_withdraw`.
+ */
+export async function projectWithdraw(
+  p: { deliveryId: string; taskId: string; claim: { claimedBy: string; claimedAt: string } | null; outcome: 'requeued' | 'failed'; reason?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectWithdrawSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = ${p.outcome === 'requeued' ? 'pending' : 'failed'}::text`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptWithdrawn from the claim route (the account cap refused the claim's worker; a workspace
+ * that lacks the task's project), the cleanup route (a claim with no attempt row) and the worker
+ * PATCH (a mount gap that ran its mission out of budget): a claim that runs no attempt gives its
+ * start back or ends the task, or a queued task is refused, the move the kernel makes in the
+ * transition's own statement (`t_withdraw`). Projected under the same guard when not bound.
+ * `handled` false: the task is no delivery's owner.
+ */
+export async function attemptWithdrawn(p: {
+  task: AttemptTask;
+  claim: { claimedBy: string; claimedAt: string } | null;
+  outcome: 'requeued' | 'failed';
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; withdrawn: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, withdrawn: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptWithdrawn', actor: p.source, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptWithdrawn(${p.reason}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const withdrawn = await projectWithdraw({ deliveryId: p.task.deliveryId, taskId: p.task.id, claim: p.claim, outcome: p.outcome, reason: p.reason }, deps.exec);
+  return { handled: true, withdrawn, ...(result ? { result } : {}) };
 }
 
 // ── T4: an attempt ended ────────────────────────────────────────────────────

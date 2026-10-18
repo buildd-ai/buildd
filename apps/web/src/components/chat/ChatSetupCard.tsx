@@ -18,6 +18,19 @@ export const CHAT_SETTINGS_HREF = {
   ownKey: '/app/settings/account',
 } as const;
 
+/** What the create buttons need from a chat availability answer (components/chat/ChatEntry.tsx). */
+export function chatEntryFromAvailability(
+  avail: { available: boolean; canManageTeamKeys?: boolean } | null,
+  teamId: string | null,
+): { available: boolean; teamId: string | null; setupHref: string | null } {
+  return {
+    available: avail?.available === true,
+    teamId,
+    // The missing key is an owner's or admin's to fix.
+    setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
+  };
+}
+
 type SetupCopy = { title: string; body: string; cta: { href: string; label: string } | null; secondary: { href: string; label: string } | null };
 
 /**

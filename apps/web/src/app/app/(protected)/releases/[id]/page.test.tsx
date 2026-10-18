@@ -44,6 +44,8 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: async () => null },
     },
     select: (cols: Record<string, unknown>) => chain(() => ('version' in cols ? (successor ? [successor] : []) : [])),
+    // The page's independent reads go out as one batch (readRound).
+    batch: async (queries: PromiseLike<unknown>[]) => Promise.all(queries),
   },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => ({ id: 'demo-user' }) }));

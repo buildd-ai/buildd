@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 function normaliseEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
@@ -93,6 +94,8 @@ export async function POST(
       columns: { id: true, name: true, slug: true },
     });
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    invalidateAppChrome(user.id);
     return NextResponse.json({ team });
   } catch (error) {
     console.error('Accept invitation error:', error);

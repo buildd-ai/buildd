@@ -20,6 +20,7 @@
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
 import { openRequiredFindings } from './findings';
+import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
 import { attemptOrdinal, attemptView } from './reducer';
@@ -83,6 +84,8 @@ export interface DeliveryViewInput {
    * open at the current head. Computed once in the loader (`landingNeedsPerson`).
    */
   approvedNeedsPerson?: boolean;
+  /** What the viewer may do on a review escalation (policy override, repo merge permission). */
+  escalationPermissions?: EscalationBriefPermissions;
   /**
    * A behind refresh parked in the landing lane (lib/workflow/landing-lane.ts):
    * the PR holding the lane on this base, when known. Absent or null = not parked.
@@ -160,6 +163,8 @@ export interface DeliveryView {
    * when nothing is published (no PR head, or the delivery is over).
    */
   reviewApproval?: { state: 'success' | 'failure' | 'pending'; description: string } | null;
+  /** What a person is asked to decide on a review escalation: its cause, findings by state, and the actions open to them. Null otherwise. */
+  escalation?: EscalationBrief | null;
 }
 
 /**
@@ -389,7 +394,12 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
           : 'every change in it was reviewed at its own head; nothing new was added';
       } else {
         // Approved is not merged: the header says what it waits on until the merge fact.
-        headline = d.approvalBasis === 'policy' ? 'Ready to merge' : 'Approved · awaiting merge';
+        // Ready only once the required checks passed on this head; until then
+        // the approval waits on them, not on a merge.
+        const ci = deliveryPrState(d);
+        headline = ci === 'awaiting_ci' || ci === 'ci_running' ? 'Approved · checking'
+          : ci === 'ci_failed' ? 'Approved · checks failing'
+          : d.approvalBasis === 'policy' || ci === 'ci_passed' ? 'Ready to merge' : 'Approved · awaiting merge';
       }
       break;
     case 'LANDING': headline = 'Merging'; break;
@@ -468,6 +478,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     openFindings: openRequiredFindings(input.view).length,
     addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
     reviewApproval: reviewApprovalOf(input.view),
+    escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
   };
 }
 

@@ -1,5 +1,11 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
+import { resetPageRefreshGate } from '@/lib/page-refresh';
+import { realClock } from '@/lib/realtime-throttle';
+
+// The debounce under test sits in front of the page's 5 s gate
+// (lib/page-refresh.ts, tested there), switched off here.
+beforeEach(() => resetPageRefreshGate(realClock, 0));
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

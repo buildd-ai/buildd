@@ -22,9 +22,7 @@ export function PlanShell({ children }: { children: React.ReactNode }) {
 export function PlanOff() {
   return (
     <p data-testid="plan-off" className="text-body text-text-secondary">
-      Plan needs task estimates, which are off for this team. Turn them on in{' '}
-      <Link href="/app/settings/team" data-testid="plan-off-cta" className="underline hover:text-text-primary">team settings</Link>{' '}
-      and finish dates will show here.
+      Mission forecasts are unavailable while estimates are being calibrated.
     </p>
   );
 }

@@ -128,7 +128,7 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
         return;
       }
       try {
-        const res = await fetch(`/api/tasks/${taskId}`);
+        const res = await fetch(`/api/tasks/${taskId}?view=status`);
         if (!res.ok) return;
         const task = await res.json();
         if (task?.status && task.status !== 'pending') claimed();

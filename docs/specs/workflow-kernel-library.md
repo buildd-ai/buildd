@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -510,7 +510,7 @@ the control plane, authenticated as the caller).
   due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
   there. An unconfirmed heal is re-marked while the delivery is still owed,
   and the floor backs it. GitHub sends `synchronize` and a retarget once, so
-  an unanswered `observe_head` or `observe_base` is parked (AC-35); unanswered,
+  an unanswered `observe_head` or `observe_base` is parked (AC-74); unanswered,
   refused or failed, ownership is read on the web host so legacy never acts
   beside the kernel. `recordLocalHead` is one provenance
   statement on an attempt row, not a command. `cancelSkippedTask` writes a
@@ -660,7 +660,7 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
-- AC-35 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
+- AC-74 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
   unreachable for a door's whole budget WHEN an attempt end, a reviewer's
   verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control
   plane answers the floor applies it exactly once (a repeat is answered from
@@ -669,10 +669,18 @@ the web host.
   stale (a verdict) or as for another head (a green) and settled, never
   applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
   `command-outbox.test.ts`, `kernel-client.test.ts`).
+  replaces: AC-35
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
 keeps AC-13; evidence tables below reference criteria rather than define them.
+
+Criterion numbering note, second: the Living Spec of this library and `workflow-state-kernel.md`
+both own AC-31 to AC-42 (state-kernel §13.13 rules and the review-approval criteria), so this
+file's own landing, epoch, projection and open-PR-status criteria, once numbered AC-31 to AC-39,
+are AC-70 to AC-78 (31 to 70, 32 to 71, 33 to 72, 34 to 73, 35 to 74, 36 to 75, 37 to 76,
+38 to 77, 39 to 78), each with a `replaces:` line. A test tagged AC-31 to AC-42 now means the
+Living Spec's criterion of that number.
 
 ## 4. One landing authority
 
@@ -720,6 +728,27 @@ recorded as such, never as an approval.
   `release candidate verified`, `dev` has no rule, and admins are not
   enforced, so a manual GitHub merge on `dev` over an open finding is not
   blocked; it is recorded as an external merge, AC-15), taken once every open PR carries it.
+- The verdict is the kernel's record for one commit and round, never the GitHub
+  review's state or prose. buildd's App opens the PRs it reviews and GitHub
+  refuses it an approval or request-changes on them, so such a review is posted
+  as a comment and reads COMMENTED whatever it says; nothing reads that state,
+  or the words in its body, as a verdict (`github-approval.test.ts`). Native
+  approve / request-changes are used when the reviewing account is not the PR's
+  author; otherwise the review body says so, in a fixed note, and the merge is
+  gated on the kernel verdict alone. Every posted review ends with a line
+  naming its verdict, head and round, and, when it replaces an earlier decision,
+  that decision: `supersedes the approval of <sha> (round N)`, `clears the
+  request for changes of round N at <sha>`. A verdict that blocks a head its
+  own `verdict` approval covered withdraws that approval (`approved_heads`
+  emptied, `approval_basis` cleared, recorded in the transition's evidence as
+  `withdrewApproval`); a person's approval is theirs to withdraw. An approval
+  at one commit never covers another: the review status of a head whose
+  predecessor was approved says "the approval of <sha> does not cover it", and
+  a blocking status after an approval says it supersedes it
+  (`review-verdict-authority.test.ts`). A new blocking finding in code the
+  reviewer already approved is reported as a finding, never absorbed; the
+  reviewer prompt asks for edge-case tracing and every blocking issue in the
+  one review, to keep rounds to what is new.
 - A merge GitHub holds on a required check is a wait, never a person's (merge
   holds). GitHub's 405 "Required status check ... is expected / in progress /
   pending" is the outcome `held`, not a refusal: the delivery stays `LANDING`
@@ -733,7 +762,7 @@ recorded as such, never as an approval.
   doors hold on the same answer instead of failing the release.
 - Every open PR head in a linked repo carries `Buildd / Review approval`,
   not only a kernel-owned one, so a required check never waits on a context
-  nothing will publish (AC-37). A head the kernel answers for (a live
+  nothing will publish (AC-76). A head the kernel answers for (a live
   delivery at that head) gets the kernel's answer above, written by its own
   effect. A frozen release candidate gets the release gate's answer at its
   SHA: `success` only when every required candidate check passed on that SHA
@@ -744,7 +773,7 @@ recorded as such, never as an approval.
   over while its PR stays open) is `pending`, "Review not requested" or
   "Review in progress", and never `success`: only a delivery's gate says a
   head may merge. A success given to one head never carries over to another
-  (AC-38).
+  (AC-77).
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
@@ -822,7 +851,7 @@ recorded as such, never as an approval.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
-- Events publish it without waiting for the floor (AC-39):
+- Events publish it without waiting for the floor (AC-78):
   `publishOpenPrHead` (`apps/web/src/lib/workflow/open-pr-status.ts`), called
   through `republishPrHeads` (`open-pr-events.ts`) from the `pull_request`
   (opened, reopened, synchronize, ready_for_review), `check_suite` and
@@ -838,7 +867,7 @@ recorded as such, never as an approval.
   later verdict flips a verified candidate at once. On the web host it writes
   commit statuses only; a head a delivery owns is republished by the kernel
   through its own door and by the floor, never by this path.
-- Every open PR carries it (AC-37, AC-38): `openHeadStatus`,
+- Every open PR carries it (AC-76, AC-77): `openHeadStatus`,
   `releaseCandidateStatus`, `unownedPrStatus` and `statusCoverage`
   (`packages/workflow-kernel/src/open-pr-status.ts`) decide; the host's
   `publishOpenPrStatuses` (`apps/web/src/lib/workflow/open-pr-status.ts`) is a
@@ -883,12 +912,13 @@ recorded as such, never as an approval.
 - AC-16 (failure): GIVEN the release executor merging a release PR WHEN its
   head moved after verification THEN the merge is refused, not merged
   unpinned.
-- AC-31 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
+- AC-70 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
   lasting WHEN the sweep or any door asks to land it THEN the delivery is
   `ESCALATED(landing_needs_human)` once with the hold named, nothing merges,
   and the sweep does not request landing again for that head; a CI-fix
   attempt's worker on the PR gets the same answer as its owner.
-- AC-36 (failure): GIVEN an approved kernel-owned PR WHEN GitHub refuses the
+  replaces: AC-31
+- AC-75 (failure): GIVEN an approved kernel-owned PR WHEN GitHub refuses the
   merge because a required check has not passed yet THEN the delivery stays
   `LANDING` with the approval standing and nobody notified, the merge is asked
   again once a check reports on that head (or after its backoff), and only a
@@ -896,8 +926,9 @@ recorded as such, never as an approval.
   merge call never runs before the head's own `Buildd / Review approval`
   success is on GitHub; a release door holds the release on the same answer
   instead of failing it.
+  replaces: AC-36
 
-- AC-37: GIVEN open PRs in a linked repo with no delivery (a dependency bot's,
+- AC-76: GIVEN open PRs in a linked repo with no delivery (a dependency bot's,
   a draft), a kernel-owned PR whose head shows a status other than the
   kernel's answer, and a frozen release candidate WHEN the kernel floor runs
   THEN each head carries `Buildd / Review approval` (pending "Review not
@@ -905,26 +936,29 @@ recorded as such, never as an approval.
   effect, the release gate's answer at the candidate SHA), a second pass
   writes nothing, and a head still without it is listed and counted as an
   error of the run.
-- AC-38 (failure): GIVEN a head approved at H1 WHEN H2 is pushed and the
+  replaces: AC-37
+- AC-77 (failure): GIVEN a head approved at H1 WHEN H2 is pushed and the
   kernel has not seen it, or the delivery is over while the PR stays open,
   THEN the open head's status is `pending`, never H1's `success`; a release
   candidate is `success` only with every required check passed on its SHA
   and no review standing against it.
-- AC-39 (event; implements Living Spec criteria AC-40 and AC-42 of the
+  replaces: AC-38
+- AC-78 (event; implements Living Spec criteria AC-40 and AC-42 of the
   workflow kernel spec): GIVEN a PR opened or pushed, or a release candidate's
   check re-run, review requested or review verdict changed WHEN the event
   arrives THEN the head's status is rewritten at once to the answer true now
   (a verified candidate flips to `failure` or `pending`), a duplicate or older
   event changes nothing, and a check event on a PR that cannot be a candidate
   reads nothing from GitHub.
+  replaces: AC-39
 
 | AC | Test |
 | --- | --- |
-| Criterion AC-39 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/src/lib/reviewer.test.ts` › "a stored review request republishes"; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-39" |
-| Criterion AC-36 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
-| Criterion AC-37 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-37" |
-| Criterion AC-38 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-38"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-38" |
-| Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
+| Criterion AC-78 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/src/lib/reviewer.test.ts` › "a stored review request republishes"; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-78" |
+| Criterion AC-75 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
+| Criterion AC-76 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-76" |
+| Criterion AC-77 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-77"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-77" |
+| Criterion AC-70 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
 
@@ -1290,19 +1324,21 @@ later work and nothing refreshes or re-ships a branch that already landed.
   refresh task is filed (the ecea17f3 sequence).
 - AC-22: GIVEN a refresh builder whose branch already contains trunk WHEN it
   completes THEN completion succeeds with the ancestry evidence and no PR.
-- AC-32: GIVEN a refresh whose task was requeued after an infra failure WHEN
+- AC-71: GIVEN a refresh whose task was requeued after an infra failure WHEN
   any door asks whether its PR may land THEN the branch it was filed for is
   the mission branch, never its own head, and a refresh retargeted to trunk is
   still refused.
+  replaces: AC-32
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
-- AC-34: GIVEN an open delivery whose integration PR closed unmerged, with an
+- AC-73: GIVEN an open delivery whose integration PR closed unmerged, with an
   open refresh PR on its branch WHEN the delivery is reconciled THEN the
   refresh PR stays open while the closed PR's work is neither recorded as
   landed elsewhere nor in trunk, and is closed with a comment (and recorded as
   superseded by that merged PR, when there is one) once it is; a successor PR
   from the branch keeps it open (the #4909/#4913 sequence).
+  replaces: AC-34
 
 | AC | Test |
 | --- | --- |
@@ -1310,8 +1346,8 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
-| Criterion AC-32 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
-| Criterion AC-34 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
+| Criterion AC-71 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
+| Criterion AC-73 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
@@ -1357,11 +1393,12 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
 - AC-26 (failure): GIVEN a worker row that says merged and a delivery that says
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
-- AC-33 (failure): GIVEN a CI fix that pushed a new head and is still open
+- AC-72 (failure): GIVEN a CI fix that pushed a new head and is still open
   WHEN one check fails on that head while others run THEN the PR reads CI
   failed, not running; WHEN that check is re-run THEN it reads running, and
   WHEN everything passes THEN it reads passed with no state change; a green
   for the older head changes nothing, and the next commit reads running.
+  replaces: AC-33
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
 requested · 1 open finding") and a repair's phase are pure readings in the
@@ -1381,7 +1418,7 @@ as a candidate whatever its worker row says.
 | Criterion AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
 | Criterion AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
-| Criterion AC-33 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
+| Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
 ## 8. Order of work
 
@@ -1664,7 +1701,8 @@ column outside the kernel; S3 and S4 remove or route each one.
     duplicate when the hold already sent it), then completes the parked task
     under one guard (`projectLoopExit`): only the delivery's owner task, still
     `pending` with the loop satisfied by the exit's own compare-and-set, no
-    live attempt on it, never over a kernel-merged completion. A claim of the
+    live attempt on it, no other PR of the task still open, never over a
+    kernel-merged completion. A claim of the
     next iteration keeps its task.
   - The worker PATCH's silent-completion retry is a requeue (`AttemptRequeued`)
     and its spent retry the attempt's failed end (`AttemptEnded`, then
@@ -1686,17 +1724,79 @@ column outside the kernel; S3 and S4 remove or route each one.
     it is a repair task, never the delivery's owner, and with no worker row
     no attempt exists to requeue (`AttemptRequeued` names a worker). One with
     a worker row is requeued through the kernel (slice 6).
-  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`, AC-1 slice 9, task
-  6ab39c29): twelve attempt statements still set a kernel owner task's
-  status themselves, each listed as debt in the guard: the worker PATCH's reactivation of a resumed worker,
-  the output-contract and loop-exhausted overrides in its completion
-  statement, a failed release, and a mount-gap requeue failed by its
-  mission's budget; the claim's rollback of its own assigned claim and its
-  workspace-mismatch failure; the cleanup route's retry-cap failure, requeue
-  and completed-worker promotion; the reaper's failure of an unanswered
-  question superseded by recovery; and credential and repo-access recovery,
-  which requeue a task that already failed (a new attempt, not a requeue of a
-  current one). Person writers (task PATCH, bulk, reassign, attach-PR,
+  The last twelve attempt statements go through the kernel too (AC-1 slice
+  9), each tested against a real Postgres late (after the task was claimed
+  again) and twice (`tests/db/attempt-writers-slice9.test.ts`). Two commands
+  cover what no earlier one fits; like `AttemptStarted`, neither is an end
+  and neither moves the delivery's state: while the delivery is `WORKING` on
+  that owner task the transition records it and moves the task in its own
+  statement (`t_reopen`, `t_withdraw`, task-projection.ts); otherwise it
+  records nothing, and the caller projects the same move under the same guard
+  (`projectReopen`, `projectWithdraw`). Both are doors on the start's small
+  budget and breaker (`ATTEMPT_START_BUDGET_MS`, `ATTEMPT_START_SKIP_MS`), so a
+  recovery reopening many tasks through an outage waits once, not once per
+  task; never parked; never run on the web host in own mode, not even during
+  release skew, where an older control plane's refusal is one more door error.
+  - `AttemptReopened` opens a settled owner task again. `pending` is a new
+    attempt of a failed task: the credential, GitHub-access and incident
+    recoveries (`requeueFailedTasks`, `resumeRepoAccessBlockedTasks`), which
+    name the task's latest attempt row and its end (`reopen:<task>:<worker>:
+    <completed_at>`). `assigned` is the same worker running again after a
+    person's follow-up (the worker PATCH's reactivation). It moves the task
+    only while that worker is still its latest attempt row and its end is the
+    one named, and a new attempt also needs no live attempt on the task, so a
+    reopen that lands after the task was claimed again, or after the worker
+    ended once more, moves nothing.
+  - `AttemptWithdrawn` is a claim that does not run the attempt. With its claim
+    (`claimed_by`, `claimed_at` as Postgres renders it) it gives the start back
+    to the queue (`requeued`: the claim route's rollback when the account cap
+    refused its worker, a claim the cleanup finds with no attempt row) or ends
+    the task (`failed`: that claim at the cleanup's retry cap), only while the
+    task is `assigned` under exactly that claim with no attempt row made since.
+    With no claim it refuses a queued task for good (`failed`: a workspace that
+    lacks the project the task is pinned to, a sandbox mount gap that ran its
+    mission out of budget), only while the task is `pending`, no live claim
+    holds it and no attempt runs. The claim route's rollback tells the tasks
+    trigger not to wake dispatch, as its legacy write does (a transaction-local
+    hint the guard's WHERE sets), so a refused claim does not loop.
+  The other sites use the commands already there, for the current attempt
+  only:
+  - The worker PATCH's completion statement takes `status` out of its fields
+    and sets it only for a task that is no delivery's owner. An output-contract
+    or loop-exhausted failure override is the owner attempt's end, sent
+    `failed` and projected (`t_attempt`, `projectOwnerEnd` with `failed`), and a
+    failed release the same: the release statement writes its record only.
+  - The cleanup route moves an owner task by its current attempt (its latest
+    attempt row made at or after `claimed_at`): a requeue is `AttemptRequeued`,
+    the retry-cap failure `AttemptEnded(lost)`, the promotion of a completed
+    worker that worker's `AttemptEnded(success)`; with no attempt row since the
+    claim, `AttemptWithdrawn` on that claim. Its stalled-worker pass moves the
+    task only when a worker it timed out is that current attempt, and it
+    promotes only the current attempt's completed worker, so an older worker
+    that went quiet after the task was claimed again leaves the new attempt
+    its task. The cap's reason is recorded on the task once the kernel failed
+    it.
+  - The reaper's unanswered question superseded by recovery is the attempt's
+    end like any other (`AttemptEnded(lost)`): the worker failed. The incident's
+    recovery then reopens the task (`AttemptReopened`).
+  Every attempt writer's remaining status write is for a task that is no
+  delivery's owner and says so in its own WHERE (`notOwnerTaskSql`: no
+  delivery, or a repair or review of one; broader than
+  `notDeliveryOwnedTaskSql` so the owner of a delivery the kill switch
+  released is still moved by the guarded projection), or sits on a branch only
+  a non-owner reaches. A loop's exit (`projectLoopExit`) also leaves a task with
+  another PR still open (T17's rule: a stacked series completes with its last
+  merge).
+  The guard can no longer be passed by a status supplied through a pre-built
+  object: at a routed or result-only statement every top-level spread
+  (`...fields`, `...(p.set ?? {})`) and every `.set(fields)` must resolve, in
+  the same file, to an object literal with no status key or to a rest binding
+  that takes `status` out, and nothing may assign `fields.status`; a member,
+  a parameter or anything else fails.
+  With that, AC-1 is done for `tasks.status`: no attempt statement sets a kernel owner
+  task's status itself (`ATTEMPT_SITE_CEILING` is 0), and a direct status write
+  put back at any routed site fails CI (the guard's self-tests revert each one
+  on the real file). Person writers (task PATCH, bulk, reassign, attach-PR,
   visual-review decisions, waivers, tracker webhooks) still write it as a
   person's act.
 - Mission completion: `completeMissionIfVerified` from subscribers,

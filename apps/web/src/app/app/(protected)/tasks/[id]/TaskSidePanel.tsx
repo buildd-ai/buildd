@@ -30,6 +30,14 @@ export interface DeliveryPillState {
   prState?: PrDisplayState | null;
   /** The delivery state (WORKING, AWAITING_PUSH, etc.) for tone computation. */
   state: string;
+  /** A review escalation's cause label, so the pill says why instead of "Waiting on you". */
+  escalationTitle?: string | null;
+}
+
+/** The delivery's own reading as a label ("Approved · checking"), or null while the owner's attempt is the reading. */
+export function deliveryPillLabel(delivery: DeliveryPillState | null | undefined): string | null {
+  if (!delivery) return null;
+  return deliveryReading({ stage: delivery.stage as never, state: delivery.state as never, headline: delivery.headline, owner: delivery.owner as never, escalationTitle: delivery.escalationTitle, prState: delivery.prState })?.label ?? null;
 }
 
 export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {
@@ -39,7 +47,7 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
   if (delivery && !merged) {
     // The canonical reading (S17): every surface's label and tone. Null while
     // the owner's attempt is still working, which reads live.
-    const reading = deliveryReading({ stage: delivery.stage as never, state: delivery.state as never, headline: delivery.headline, owner: delivery.owner as never });
+    const reading = deliveryReading({ stage: delivery.stage as never, state: delivery.state as never, headline: delivery.headline, owner: delivery.owner as never, escalationTitle: delivery.escalationTitle, prState: delivery.prState });
     const tone: DeliveryTone = delivery.needsYou ? 'needs' : reading?.tone ?? 'live';
     const pulse = (tone === 'live' || tone === 'stalled') && (delivery.owner === 'worker' || delivery.owner === 'reviewer');
     return <span data-owner={delivery.owner} className={`${base} ${HEADER_TONE[tone]}`} title={delivery.headline}>{dot(pulse ? 'animate-status-pulse' : '')}{reading?.label ?? delivery.headline}</span>;
