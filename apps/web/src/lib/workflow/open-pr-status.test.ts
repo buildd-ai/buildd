@@ -43,6 +43,7 @@ function harness(o: {
     drain: async (id) => { o.onDrain?.(id); },
     reviews: async () => ({
       isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
+      mayBeCandidate: () => true,
       review: async () => o.review ?? 'not_requested',
       candidate: async () => ({ checks: [{ name: 'build', state: 'passing' }, { name: 'release candidate verified', state: 'passing' }], review: { verdict: 'pass' } }),
     }),

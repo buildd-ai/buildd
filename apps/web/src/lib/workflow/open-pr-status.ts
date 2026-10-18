@@ -23,7 +23,6 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
-import { classifyReleasePr } from '@buildd/core/release-candidate';
 import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
 import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHeadAnswer, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import type { KernelView } from '@buildd/workflow-kernel/types';
@@ -57,6 +56,8 @@ export interface OpenPull {
 export interface OpenPrReviews {
   /** Whether the PR is a frozen release candidate under this workspace's release config (`classifyReleasePr`). */
   isCandidate(releaseConfig: WorkspaceReleaseConfig | null, pr: ReleasePrFacts): boolean;
+  /** Whether a PR could be one, from its branches alone (no GitHub read); true when the refs are unknown and the config declares candidates. */
+  mayBeCandidate(releaseConfig: WorkspaceReleaseConfig | null, refs: { headRef?: string | null; baseRef?: string | null }): boolean;
   review(p: { workspaceId: string; prNumber: number }): Promise<UnownedReview>;
   candidate(p: { workspaceId: string; installationId: number; repoFullName: string; prNumber: number; sha: string }): Promise<Omit<CandidateGateInput, 'sha'>>;
 }
@@ -283,18 +284,6 @@ function prFacts(pr: OpenPull, sha: string, repoFullName: string): ReleasePrFact
   };
 }
 
-/**
- * Whether a PR could be a release candidate under `config`, from its branches alone (no GitHub read):
- * the workspace declares candidates, and, when the refs are known, the base is the prod branch and the
- * head matches a candidate branch. `classifyReleasePr` passes the shape check first, so any rejection
- * other than `not_release_shape` (here, the cross-repository one: no repos are given) means the shape fits.
- */
-export function mayBeCandidate(config: WorkspaceReleaseConfig | null, refs: { headRef?: string | null; baseRef?: string | null }): boolean {
-  if (!config?.candidate) return false;
-  if (refs.headRef == null || refs.baseRef == null) return true;
-  const c = classifyReleasePr(config, { headRef: refs.headRef, baseRef: refs.baseRef });
-  return c.kind === 'candidate' || (c.kind === 'none' && c.reason !== 'not_release_shape');
-}
 
 /** The PR as GitHub shows it now (null: gone). */
 async function getPullLive(installationId: number, repoFullName: string, prNumber: number): Promise<OpenPull & { state?: string } | null> {
@@ -334,8 +323,8 @@ export async function publishOpenPrHead(
   const exec = deps.exec ?? dbExec;
   const links = (await (deps.repos ?? (() => linkedRepos(exec)))()).filter((r) => r.repoFullName.toLowerCase() === p.repoFullName.toLowerCase());
   if (!links.length) return 'skipped_unlinked';
-  if (p.candidatesOnly && !links.some((l) => mayBeCandidate(l.releaseConfig, p))) return 'skipped_not_candidate';
   const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
+  if (p.candidatesOnly && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, p))) return 'skipped_not_candidate';
   const linked = [{ ...links[0]!, installationId: p.installationId }, ...links.slice(1)];
   const getPull = deps.getPull ?? getPullLive;
   const run: HeadRun = { deps, exec, reviews, kernelRepublish: false };

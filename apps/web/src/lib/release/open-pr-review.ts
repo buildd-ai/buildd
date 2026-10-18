@@ -38,6 +38,8 @@ type Api = (installationId: number, path: string, options?: RequestInit) => Prom
 export interface OpenPrReviewReads {
   /** Whether the PR is a frozen release candidate under this release config. */
   isCandidate(releaseConfig: WorkspaceReleaseConfig | null, pr: ReleasePrFacts): boolean;
+  /** Whether a PR could be one, from its branches alone (no GitHub read). */
+  mayBeCandidate(releaseConfig: WorkspaceReleaseConfig | null, refs: { headRef?: string | null; baseRef?: string | null }): boolean;
   /** A PR no delivery owns: was a buildd review asked for? */
   review(p: { workspaceId: string; prNumber: number }): Promise<UnownedReview>;
   /** A frozen release candidate: its required checks and review at `sha`. */
@@ -64,11 +66,25 @@ export function candidateReviewOf(status: PrReviewStatus, sha: string): Candidat
   return { verdict: 'pending', reason: null };
 }
 
+/**
+ * Whether a PR could be a release candidate under `config`, from its branches alone (no GitHub read):
+ * the workspace declares candidates, and, when the refs are known, the base is the prod branch and the
+ * head matches a candidate branch. `classifyReleasePr` checks the shape first, so any rejection other
+ * than `not_release_shape` (here the cross-repository one: no repos are given) means the shape fits.
+ */
+export function mayBeCandidate(config: WorkspaceReleaseConfig | null, refs: { headRef?: string | null; baseRef?: string | null }): boolean {
+  if (!config?.candidate) return false;
+  if (refs.headRef == null || refs.baseRef == null) return true;
+  const c = classifyReleasePr(config, { headRef: refs.headRef, baseRef: refs.baseRef });
+  return c.kind === 'candidate' || (c.kind === 'none' && c.reason !== 'not_release_shape');
+}
+
 export function openPrReviewReads(deps: OpenPrReviewDeps = {}): OpenPrReviewReads {
   const api = deps.api ?? (githubApi as Api);
   const read = deps.read ?? ((p) => readPrReviewStatus(p));
   return {
     isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
+    mayBeCandidate,
     async review(p) {
       return unownedReviewOf((await read(p)).state);
     },

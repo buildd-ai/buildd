@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { KernelView } from '@buildd/workflow-kernel/types';
-import { mayBeCandidate, publishOpenPrHead, type LinkedRepo, type OpenPrStatusDeps } from './open-pr-status';
+import { publishOpenPrHead, type LinkedRepo, type OpenPrStatusDeps } from './open-pr-status';
 import { republishPrHeads } from './open-pr-events';
+import { mayBeCandidate } from '../release/open-pr-review';
 
 const H = (n: number) => `${n}`.repeat(40).slice(0, 40);
 const REPO = 'acme/app';
@@ -29,6 +30,7 @@ function harness(o: { sha: string; state?: string; candidate?: boolean; candidat
     owned: async () => null,
     reviews: async () => ({
       isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
+      mayBeCandidate,
       review: async () => 'not_requested',
       candidate: async () => ({ checks: (o.checks ?? (() => passing))(), review: { verdict: (o.verdict ?? (() => 'pass'))() } as never }),
     }),
