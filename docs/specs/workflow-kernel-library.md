@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1703,7 +1703,8 @@ column outside the kernel; S3 and S4 remove or route each one.
     duplicate when the hold already sent it), then completes the parked task
     under one guard (`projectLoopExit`): only the delivery's owner task, still
     `pending` with the loop satisfied by the exit's own compare-and-set, no
-    live attempt on it, never over a kernel-merged completion. A claim of the
+    live attempt on it, no other PR of the task still open, never over a
+    kernel-merged completion. A claim of the
     next iteration keeps its task.
   - The worker PATCH's silent-completion retry is a requeue (`AttemptRequeued`)
     and its spent retry the attempt's failed end (`AttemptEnded`, then
@@ -1725,17 +1726,79 @@ column outside the kernel; S3 and S4 remove or route each one.
     it is a repair task, never the delivery's owner, and with no worker row
     no attempt exists to requeue (`AttemptRequeued` names a worker). One with
     a worker row is requeued through the kernel (slice 6).
-  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`, AC-1 slice 9, task
-  6ab39c29): twelve attempt statements still set a kernel owner task's
-  status themselves, each listed as debt in the guard: the worker PATCH's reactivation of a resumed worker,
-  the output-contract and loop-exhausted overrides in its completion
-  statement, a failed release, and a mount-gap requeue failed by its
-  mission's budget; the claim's rollback of its own assigned claim and its
-  workspace-mismatch failure; the cleanup route's retry-cap failure, requeue
-  and completed-worker promotion; the reaper's failure of an unanswered
-  question superseded by recovery; and credential and repo-access recovery,
-  which requeue a task that already failed (a new attempt, not a requeue of a
-  current one). Person writers (task PATCH, bulk, reassign, attach-PR,
+  The last twelve attempt statements go through the kernel too (AC-1 slice
+  9), each tested against a real Postgres late (after the task was claimed
+  again) and twice (`tests/db/attempt-writers-slice9.test.ts`). Two commands
+  cover what no earlier one fits; like `AttemptStarted`, neither is an end
+  and neither moves the delivery's state: while the delivery is `WORKING` on
+  that owner task the transition records it and moves the task in its own
+  statement (`t_reopen`, `t_withdraw`, task-projection.ts); otherwise it
+  records nothing, and the caller projects the same move under the same guard
+  (`projectReopen`, `projectWithdraw`). Both are doors on the start's small
+  budget and breaker (`ATTEMPT_START_BUDGET_MS`, `ATTEMPT_START_SKIP_MS`), so a
+  recovery reopening many tasks through an outage waits once, not once per
+  task; never parked; never run on the web host in own mode, not even during
+  release skew, where an older control plane's refusal is one more door error.
+  - `AttemptReopened` opens a settled owner task again. `pending` is a new
+    attempt of a failed task: the credential, GitHub-access and incident
+    recoveries (`requeueFailedTasks`, `resumeRepoAccessBlockedTasks`), which
+    name the task's latest attempt row and its end (`reopen:<task>:<worker>:
+    <completed_at>`). `assigned` is the same worker running again after a
+    person's follow-up (the worker PATCH's reactivation). It moves the task
+    only while that worker is still its latest attempt row and its end is the
+    one named, and a new attempt also needs no live attempt on the task, so a
+    reopen that lands after the task was claimed again, or after the worker
+    ended once more, moves nothing.
+  - `AttemptWithdrawn` is a claim that does not run the attempt. With its claim
+    (`claimed_by`, `claimed_at` as Postgres renders it) it gives the start back
+    to the queue (`requeued`: the claim route's rollback when the account cap
+    refused its worker, a claim the cleanup finds with no attempt row) or ends
+    the task (`failed`: that claim at the cleanup's retry cap), only while the
+    task is `assigned` under exactly that claim with no attempt row made since.
+    With no claim it refuses a queued task for good (`failed`: a workspace that
+    lacks the project the task is pinned to, a sandbox mount gap that ran its
+    mission out of budget), only while the task is `pending`, no live claim
+    holds it and no attempt runs. The claim route's rollback tells the tasks
+    trigger not to wake dispatch, as its legacy write does (a transaction-local
+    hint the guard's WHERE sets), so a refused claim does not loop.
+  The other sites use the commands already there, for the current attempt
+  only:
+  - The worker PATCH's completion statement takes `status` out of its fields
+    and sets it only for a task that is no delivery's owner. An output-contract
+    or loop-exhausted failure override is the owner attempt's end, sent
+    `failed` and projected (`t_attempt`, `projectOwnerEnd` with `failed`), and a
+    failed release the same: the release statement writes its record only.
+  - The cleanup route moves an owner task by its current attempt (its latest
+    attempt row made at or after `claimed_at`): a requeue is `AttemptRequeued`,
+    the retry-cap failure `AttemptEnded(lost)`, the promotion of a completed
+    worker that worker's `AttemptEnded(success)`; with no attempt row since the
+    claim, `AttemptWithdrawn` on that claim. Its stalled-worker pass moves the
+    task only when a worker it timed out is that current attempt, and it
+    promotes only the current attempt's completed worker, so an older worker
+    that went quiet after the task was claimed again leaves the new attempt
+    its task. The cap's reason is recorded on the task once the kernel failed
+    it.
+  - The reaper's unanswered question superseded by recovery is the attempt's
+    end like any other (`AttemptEnded(lost)`): the worker failed. The incident's
+    recovery then reopens the task (`AttemptReopened`).
+  Every attempt writer's remaining status write is for a task that is no
+  delivery's owner and says so in its own WHERE (`notOwnerTaskSql`: no
+  delivery, or a repair or review of one; broader than
+  `notDeliveryOwnedTaskSql` so the owner of a delivery the kill switch
+  released is still moved by the guarded projection), or sits on a branch only
+  a non-owner reaches. A loop's exit (`projectLoopExit`) also leaves a task with
+  another PR still open (T17's rule: a stacked series completes with its last
+  merge).
+  The guard can no longer be passed by a status supplied through a pre-built
+  object: at a routed or result-only statement every top-level spread
+  (`...fields`, `...(p.set ?? {})`) and every `.set(fields)` must resolve, in
+  the same file, to an object literal with no status key or to a rest binding
+  that takes `status` out, and nothing may assign `fields.status`; a member,
+  a parameter or anything else fails.
+  With that, AC-1 is done for `tasks.status`: no attempt statement sets a kernel owner
+  task's status itself (`ATTEMPT_SITE_CEILING` is 0), and a direct status write
+  put back at any routed site fails CI (the guard's self-tests revert each one
+  on the real file). Person writers (task PATCH, bulk, reassign, attach-PR,
   visual-review decisions, waivers, tracker webhooks) still write it as a
   person's act.
 - Mission completion: `completeMissionIfVerified` from subscribers,

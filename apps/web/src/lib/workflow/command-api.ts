@@ -106,6 +106,10 @@ export interface KernelOps {
    * attempt (the task to `assigned`). As attempt_ended, the task's workspace rides at the top level.
    */
   attempt_started: { input: Parameters<Seam['attemptStarted']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptStarted']>> };
+  /** AC-1 slice 9: a settled owner task opens again (recovery, a resumed session). As attempt_ended, the task's workspace rides at the top level. */
+  attempt_reopened: { input: Parameters<Seam['attemptReopened']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptReopened']>> };
+  /** AC-1 slice 9: a claim that runs no attempt gives its start back, or a queued task is refused. */
+  attempt_withdrawn: { input: Parameters<Seam['attemptWithdrawn']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptWithdrawn']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
   /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
@@ -164,6 +168,14 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     // As attempt_ended: the start it applies must be for a task of the workspace the reach check judged.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_started: input.workspaceId is not the task\'s workspace');
     return s.attemptStarted(p);
+  },
+  attempt_reopened: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_reopened: input.workspaceId is not the task\'s workspace');
+    return s.attemptReopened(p);
+  },
+  attempt_withdrawn: (s, { workspaceId, ...p }) => {
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_withdrawn: input.workspaceId is not the task\'s workspace');
+    return s.attemptWithdrawn(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
   observe_ci_green: (s, i) => s.observeCiGreen(i),

@@ -31,41 +31,41 @@ exports[`list view 120x40 1`] = `
 " buildd · laptop-1234                                                         2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
- ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
-   Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
-   Specs import         1/2 │ Working now                                                                               
-   Other tasks       1 open │›● name override               Builder     12m Edit config.ts                       41k tok
-                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
-                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
-                            │ ● heartbeat name              Builder         running on another runner                   
-                            │ Waiting                                                                                   
-                            │ ○ buildd top                  Builder         waits on: name override                     
-                            │ ○ docs page                   Writer          starts in 2h                                
-                            │ Done today                                                                                
-                            │ ✓ spec draft                                  done                                        
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ MISSIONS                     │ Runner TUI                                                        4 running · 2 waiting 
+ ▸ Runner TUI             2/8 │ 2 of 8 tasks done                                                                       
+   Local on… your session 0/1 │─────────────────────────────────────────────────────────────────────────────────────────
+   Specs import           1/2 │ Working now                                                                             
+   Other tasks         1 open │›● name override              Builder     12m Edit config.ts                      41k tok
+                              │ ? installer hint             Builder      9m asks: "Print the URL or open the …         
+                              │ ● single instance            Builder      4m bun run test __tests__/unit/runne…   8k tok
+                              │ ● heartbeat name             Builder         running on another runner                  
+                              │ Waiting                                                                                 
+                              │ ○ buildd top                 Builder         waits on: name override                    
+                              │ ○ docs page                  Writer          starts in 2h                               
+                              │ Done today                                                                              
+                              │ ✓ spec draft                                 done                                       
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
@@ -130,10 +130,10 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`]
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runn… building 2/8 │ Building · 8 of 13 merged                               
-   Local only     0/1 │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
-   Specs import   1/2 │─────────────────────────────────────────────────────────
-   Other tasks 1 open │ Working now                                             
-                      │›● name override    Builder     12m Edit config.ts       
+   TUI                │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
+   Local only     0/1 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ Working now                                             
+   Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ? installer hint   Builder      9m asks: "Print the URL…
                       │ ● single instance  Builder      4m bun run test __tests…
                       │ ● heartbeat name   Builder         running on another r…
@@ -155,41 +155,41 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`
 " buildd · laptop-1234                                                         2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
- ▸ Runner TUI  building 2/8 │ Building · 8 of 13 merged                                                                 
-   Local … your session 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                          
-   Specs import         1/2 │───────────────────────────────────────────────────────────────────────────────────────────
-   Other tasks       1 open │ Working now                                                                               
-                            │›● name override               Builder     12m Edit config.ts                       41k tok
-                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
-                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
-                            │ ● heartbeat name              Builder         running on another runner                   
-                            │ Waiting                                                                                   
-                            │ ○ buildd top                  Builder         waits on: name override                     
-                            │ ○ docs page                   Writer          starts in 2h                                
-                            │ Done today                                                                                
-                            │ ✓ spec draft                                  done                                        
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ MISSIONS                     │ Runner TUI                                                        4 running · 2 waiting 
+ ▸ Runner TUI    building 2/8 │ Building · 8 of 13 merged                                                               
+   Local on… your session 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                        
+   Specs import           1/2 │─────────────────────────────────────────────────────────────────────────────────────────
+   Other tasks         1 open │ Working now                                                                             
+                              │›● name override              Builder     12m Edit config.ts                      41k tok
+                              │ ? installer hint             Builder      9m asks: "Print the URL or open the …         
+                              │ ● single instance            Builder      4m bun run test __tests__/unit/runne…   8k tok
+                              │ ● heartbeat name             Builder         running on another runner                  
+                              │ Waiting                                                                                 
+                              │ ○ buildd top                 Builder         waits on: name override                    
+                              │ ○ docs page                  Writer          starts in 2h                               
+                              │ Done today                                                                              
+                              │ ✓ spec draft                                 done                                       
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;

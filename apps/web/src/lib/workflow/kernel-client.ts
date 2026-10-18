@@ -700,6 +700,15 @@ export function resetAttemptStartBreaker(): void {
  * without a request, so an outage costs one claim the budget, not every claim.
  */
 export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_started']['result']> {
+  return shortDoor('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c, 'claim_start');
+}
+
+/**
+ * A door on the start's small budget and breaker: for an op whose caller projects the same move on
+ * its own host on any door error (a claim's start, a withdrawal, a reopen), so waiting longer buys
+ * nothing and one outage costs the budget once per breaker window, not once per call.
+ */
+async function shortDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, label: string): Promise<KernelOps[K]['result']> {
   const now = c.deps?.now ?? Date.now;
   if (now() < attemptStartSkipUntil) {
     throw new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
@@ -707,12 +716,33 @@ export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input
   const env = c.deps?.env ?? process.env;
   const budgetMs = Number(env.KERNEL_START_BUDGET_MS) || ATTEMPT_START_BUDGET_MS;
   try {
-    const { value } = await withControlPlaneBudget('claim_start', budgetMs, () => door('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c), { now });
+    const { value } = await withControlPlaneBudget(label, budgetMs, () => door(op, input, c), { now });
     return value;
   } catch (err) {
     if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
     throw err;
   }
+}
+
+/**
+ * AttemptReopened from the web host (AC-1 slice 9): a settled owner task opens again, applied where
+ * the kernel is hosted. Never run on the web host in own mode, not even during release skew, and
+ * never parked: the caller projects the reopen on its own host (`projectReopen`) on any door error,
+ * under the same guard. On the start's small budget and breaker, so a recovery reopening many tasks
+ * through an outage pays the budget once, not once per task.
+ */
+export async function attemptReopened(p: Omit<KernelOps['attempt_reopened']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_reopened']['result']> {
+  return shortDoor('attempt_reopened', { ...p, workspaceId: p.task.workspaceId }, c, 'reopen');
+}
+
+/**
+ * AttemptWithdrawn from the web host (AC-1 slice 9): a claim that runs no attempt gives its start
+ * back, or a queued task is refused. As AttemptStarted (a claim waits on it): the start's small
+ * budget and breaker, never run on the web host in own mode, never parked; the caller projects it
+ * on its own host (`projectWithdraw`) on any door error.
+ */
+export async function attemptWithdrawn(p: Omit<KernelOps['attempt_withdrawn']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_withdrawn']['result']> {
+  return shortDoor('attempt_withdrawn', { ...p, workspaceId: p.task.workspaceId }, c, 'claim_withdraw');
 }
 
 /**

@@ -16,6 +16,7 @@ import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { syncInstallationRepos } from '@/lib/github-repo-link';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { wakeTasks } from '@/lib/dispatch-authority';
+import { notOwnerTaskSql, reopenFailedOwners } from '@/lib/workflow/owner-attempt';
 import {
   describeRepoAccessProblem,
   diagnoseRepoAccess,
@@ -319,6 +320,23 @@ export async function resumeRepoAccessBlockedTasks(workspaceId: string): Promise
   if (!diagnosis.ok) return { verified: false, resumed: [], diagnosis, healed };
 
   const now = new Date().toISOString();
+  const waiting = () => db.select({ id: tasks.id }).from(tasks).where(and(
+    eq(tasks.workspaceId, workspaceId),
+    eq(tasks.status, 'failed'),
+    sql`${tasks.context} ? 'githubAccessBlock'`,
+    sql`(${tasks.context}->'githubAccessBlock'->>'resumedAt') IS NULL`,
+    gt(tasks.updatedAt, sql`NOW() - MAKE_INTERVAL(days => ${BLOCK_WINDOW_DAYS})`),
+  )).limit(MAX_RESUME);
+  // AC-1 slice 9: a delivery's owner task is reopened through the kernel (AttemptReopened, naming the
+  // failed attempt) and stamped resumed once it is back in the queue. This write is every other task's.
+  const owners = (await waiting()).map(r => r.id);
+  const reopened = await reopenFailedOwners(owners, { reason: 'repo_access_verified', source: 'github-repo-access' });
+  if (reopened.length > 0) {
+    await db
+      .update(tasks)
+      .set({ context: sql`jsonb_set(${tasks.context}, '{githubAccessBlock,resumedAt}', to_jsonb(${now}::text))` })
+      .where(and(inArray(tasks.id, reopened), eq(tasks.status, 'pending')));
+  }
   const rows = await db
     .update(tasks)
     .set({
@@ -327,21 +345,13 @@ export async function resumeRepoAccessBlockedTasks(workspaceId: string): Promise
       updatedAt: new Date(),
     })
     .where(and(
-      inArray(
-        tasks.id,
-        db.select({ id: tasks.id }).from(tasks).where(and(
-          eq(tasks.workspaceId, workspaceId),
-          eq(tasks.status, 'failed'),
-          sql`${tasks.context} ? 'githubAccessBlock'`,
-          sql`(${tasks.context}->'githubAccessBlock'->>'resumedAt') IS NULL`,
-          gt(tasks.updatedAt, sql`NOW() - MAKE_INTERVAL(days => ${BLOCK_WINDOW_DAYS})`),
-        )).limit(MAX_RESUME),
-      ),
+      inArray(tasks.id, waiting()),
       eq(tasks.status, 'failed'),
+      notOwnerTaskSql(),
     ))
     .returning({ id: tasks.id });
 
-  const resumed = rows.map(r => r.id);
+  const resumed = [...reopened, ...rows.map(r => r.id)];
   if (resumed.length > 0) {
     await wakeTasks(resumed, 'credential.restored');
     console.log(`[github-repo-access] resumed ${resumed.length} task(s) in workspace ${workspaceId} after GitHub access was verified`);

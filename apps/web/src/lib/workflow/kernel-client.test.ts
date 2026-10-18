@@ -660,6 +660,55 @@ describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner
   });
 });
 
+describe('AttemptReopened and AttemptWithdrawn are doors too (AC-1 slice 9)', () => {
+  const task = { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null };
+  const reopen = { task, workerId: 'w-1', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending' as const, reason: 'credential_restored', source: 'credential-recovery' };
+  const withdraw = { task, claim: { claimedBy: USER, claimedAt: '2026-10-18 08:00:00.123456+00' }, outcome: 'requeued' as const, reason: 'claim_rollback', source: 'claim' };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+  const ops = [
+    ['attempt_reopened', async (deps: never) => (await import('./kernel-client')).attemptReopened(reopen, { principal: runner, deps }), reopen],
+    ['attempt_withdrawn', async (deps: never) => (await import('./kernel-client')).attemptWithdrawn(withdraw, { principal: runner, deps }), withdraw],
+  ] as const;
+
+  for (const [op, call, input] of ops) {
+    it(`${op}: in own mode it is submitted with the task's workspace on the input, and nothing runs here`, async () => {
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+      const l = local();
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op, result: { handled: true } }); }) as unknown as typeof fetch;
+      await call({ ...l.deps, env: OWN, fetch: fetchSpy } as never);
+      expect(l.ran).toEqual([]);
+      expect(bodies[0]).toMatchObject({ op, input: { ...input, workspaceId: WS } });
+    });
+
+    it(`${op}: in shadow the web host runs it itself`, async () => {
+      const l = local();
+      await call({ ...l.deps, env: {} } as never);
+      expect(l.ran).toEqual([op]);
+    });
+
+    it(`${op}: release skew is one more door error: an older control plane refuses it and the web host never runs it, and nothing parks`, async () => {
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+      const l = local();
+      const parked: unknown[] = [];
+      const older = (async () => Response.json({ v: 1, code: 'bad_request', error: `unknown op "${op}"` }, { status: 400 })) as unknown as typeof fetch;
+      expect(await call({ ...l.deps, env: OWN, fetch: older, park: (async (p: unknown) => { parked.push(p); return true; }) } as never).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+      let t = 0;
+      const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+      const err = await call({ ...l.deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: (async (p: unknown) => { parked.push(p); return true; }) } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect({ ran: l.ran, parked }).toEqual({ ran: [], parked: [] });
+      (await import('./kernel-client')).resetAttemptStartBreaker();
+    });
+
+    it(`${op}: the host moves only a task of the workspace the reach check judged, and the endpoint knows the op`, async () => {
+      const { runKernelOp, isKernelOp } = await import('./command-api');
+      await expect(runKernelOp(op, { ...input, workspaceId: '44444444-4444-4444-8444-444444444444' } as never)).rejects.toThrow(/not the task's workspace/);
+      expect(isKernelOp(op)).toBe(true);
+    });
+  }
+});
+
 describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the landing path\'s CI failure', () => {
   const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3, source: 'cron:ci-red' };
   const sweep = { kind: 'system' as const, id: 'system:cron:ci-red' };

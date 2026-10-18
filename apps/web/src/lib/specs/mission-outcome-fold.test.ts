@@ -43,6 +43,31 @@ describe('foldMissionSpec', () => {
     expect(moved.standings.every((s) => s.standing === 'stale')).toBe(true);
   });
 
+  // c5a2c67b R-4 / AC-2: a fail judged a commit the target has moved past is re-checked, not kept.
+  it('reads a fail on an older integration head as stale once the target moves, so it is checked again', () => {
+    const rows = [row('R-1', 'pass', A), row('R-2', 'fail', A)];
+    expect(foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], rows, target: integration(A) }).verdict).toBe('fail');
+    const moved = foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], rows, target: integration(B) });
+    expect(moved.verdict).toBe('UNVERIFIED');
+    expect(moved.standings.find((s) => s.criterionId === 'R-2')?.standing).toBe('stale');
+    expect(moved.evidence).toContain('R-2 failed on an older commit');
+    expect(moved.evidence).toContain('R-1 passed on an older commit');
+  });
+
+  it('direct missions: a fail at a commit missing a newer merged mission PR reads stale', () => {
+    const target: MissionTarget = { kind: 'direct', mergeShas: ['c'.repeat(40)], validHeads: new Set([B]) };
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'fail', A)], target });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings[0].standing).toBe('stale');
+    const still = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'fail', B)], target });
+    expect(still.verdict).toBe('fail');
+  });
+
+  it('a fail with no target to compare against still fails', () => {
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'fail', A)], target: { kind: 'unknown', reason: 'the integration branch could not be read' } });
+    expect(r.verdict).toBe('fail');
+  });
+
   it('the newest verdict stands: a re-check that passes clears an earlier fail', () => {
     const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [row('R-1', 'fail', A, '2026-10-14T09:00:00Z'), row('R-1', 'pass', B, '2026-10-14T11:00:00Z')], target: integration(B) });
     expect(r.verdict).toBe('pass');
