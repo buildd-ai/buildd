@@ -13,7 +13,7 @@
  * the rules already chose, and only when its answer was made for the same
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
-import { waitingOnFailedCopy } from './task-failure-kind';
+import { waitingOnFailedCopy } from '@buildd/core/dependency-failure';
 import type { TaskMismatch } from '@buildd/shared';
 import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './task-result';
 

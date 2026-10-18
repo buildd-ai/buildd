@@ -82,7 +82,6 @@ import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import { auditTaskIdFor, loadTaskFailure } from '@/lib/task-failure-kind-load';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
@@ -924,7 +923,7 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
-    waitingOnFailed: failureWaitingOn ? { ...failureWaitingOn, requeuesItself: isSurfaceAuditTask(task.title) } : null,
+    waitingOnFailed: failureWaitingOn,
     escalation: deliveryView?.escalation
       ? {
           title: deliveryView.escalation.title,

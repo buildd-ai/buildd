@@ -79,13 +79,4 @@ export function verificationFailedCopy(): { state: string; cause: string } {
   return { state: 'Implementation complete, verification failed', cause: 'The visual audit found issues.' };
 }
 
-/**
- * The copy for a task waiting on a failed dependency: the state, then its
- * cause. An audit is re-queued by the system; any other task offers Retry
- * again once its dependency recovers, and the copy says which.
- */
-export function waitingOnFailedCopy(dep: { title: string | null } | null, opts: { requeuesItself: boolean }): { state: string; cause: string } {
-  const title = dep?.title?.trim();
-  const then = opts.requeuesItself ? 'This starts once it completes.' : 'It can run again once that task completes.';
-  return { state: 'Waiting on failed work', cause: `${title ? `“${title}”` : 'A task this one needs'} failed. ${then}` };
-}
+export { waitingOnFailedCopy } from '@buildd/core/dependency-failure';

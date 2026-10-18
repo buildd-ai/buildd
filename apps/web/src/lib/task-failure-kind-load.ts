@@ -7,8 +7,11 @@ import { sqlExtras, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sq
 
 export interface TaskFailure {
   kind: TaskFailureKind | null;
-  /** For `dependency`: the failed task it waits on, where the recovery is. */
-  waitingOn: { taskId: string; title: string | null } | null;
+  /**
+   * For `dependency`: the failed task it waits on, where the recovery is, and
+   * whether this task (a surface audit) is re-queued by the system once it completes.
+   */
+  waitingOn: { taskId: string; title: string | null; requeuesItself: boolean } | null;
 }
 
 /**
@@ -35,7 +38,11 @@ export async function loadTaskFailure(task: { id: string; title: string; status:
     },
   });
   const self = rows.find(r => r.id === task.id) ?? { ...task, workers: [] };
-  return { kind: classifyTaskFailure(self, rows), waitingOn: failedDependencyOf(self, rows) };
+  const dep = failedDependencyOf(self, rows);
+  return {
+    kind: classifyTaskFailure(self, rows),
+    waitingOn: dep ? { ...dep, requeuesItself: isSurfaceAuditTask(task.title) } : null,
+  };
 }
 
 export async function loadTaskFailureKind(task: { id: string; title: string; status: string; missionId: string | null }): Promise<TaskFailureKind | null> {
