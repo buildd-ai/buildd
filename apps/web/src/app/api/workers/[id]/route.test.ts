@@ -121,8 +121,13 @@ mock.module('@/lib/mission-budget', () => ({
   exhaustMissionBudget: mockExhaustMissionBudget,
 }));
 
+// hasVisibleWorkerChange: re-export the real pure function so the route's
+// no-op suppression logic runs in tests exactly as it does in production.
+const { hasVisibleWorkerChange: realHasVisibleWorkerChange } = await import('@/lib/pusher');
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
+  hasVisibleWorkerChange: realHasVisibleWorkerChange,
   channels: {
     workspace: (id: string) => `workspace-${id}`,
     task: (id: string) => `task-${id}`,
@@ -12319,6 +12324,8 @@ describe('PATCH /api/workers/[id]', () => {
       expect(masked?.[2]?.currentAction).toBe('working');
       expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain('customer ledger');
 
+      // A second PATCH with the same status and no currentAction is a no-op:
+      // hasVisibleWorkerChange suppresses the event to avoid Pusher quota burn.
       mockTriggerEvent.mockReset();
       mockTriggerEvent.mockResolvedValue(undefined);
       await PATCH(createMockRequest({
@@ -12327,8 +12334,7 @@ describe('PATCH /api/workers/[id]', () => {
         body: { status: 'running' },
       }), { params: mockParams });
       const bare = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
-      expect(bare?.[2]).toBeDefined();
-      expect('currentAction' in bare![2]).toBe(false);
+      expect(bare).toBeUndefined(); // no-op suppressed
     });
 
     it('redacts a registered secret before DB persistence and Pusher emission', async () => {
@@ -12365,6 +12371,79 @@ describe('PATCH /api/workers/[id]', () => {
       expect(JSON.stringify(capturedSet)).not.toContain(exposed);
       expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain(exposed);
       expect(capturedSet.currentAction).toContain('[REDACTED:DISPATCH_API_KEY]');
+    });
+  });
+
+  describe('Pusher no-op suppression', () => {
+    // Regression: every worker PATCH used to fire 2 Pusher events (worker +
+    // workspace channel) even when nothing visible changed. With 30 s sync
+    // cycles this exhausted Pusher's daily message quota.
+
+    it('suppresses WORKER_PROGRESS when neither status nor currentAction changed', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        currentAction: 'Building feature', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Building feature' },
+      }), { params: mockParams });
+
+      const progressCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress');
+      expect(progressCalls.length).toBe(0);
+    });
+
+    it('fires WORKER_PROGRESS when currentAction changes', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        currentAction: 'Building feature', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Running tests' },
+      }), { params: mockParams });
+
+      const progressCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress');
+      expect(progressCalls.length).toBeGreaterThanOrEqual(1);
+      expect(progressCalls[0][2].currentAction).toBe('Running tests');
+    });
+
+    it('always fires terminal events (WORKER_COMPLETED) even when status is unchanged', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      const completedCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:completed');
+      expect(completedCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
 
