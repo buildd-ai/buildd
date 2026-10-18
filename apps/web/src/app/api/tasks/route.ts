@@ -74,7 +74,7 @@ import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -481,7 +481,10 @@ async function withTaskListAggregates<T extends { id: string; status: string; mi
   }
 }
 
-async function postHandler(req: NextRequest) {
+export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   // Dev mode returns mock
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ id: 'dev-task', title: 'Dev Task' });
@@ -2124,7 +2127,5 @@ async function postHandler(req: NextRequest) {
     console.error('Create task error:', error);
     return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
-
-// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
-export const POST = settlesWorkChanges(postHandler);

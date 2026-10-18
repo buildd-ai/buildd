@@ -73,7 +73,7 @@ import {
 import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
 import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -1283,9 +1283,15 @@ export async function GET(_req: Request): Promise<Response> {
   return new Response("SSE not supported on stateless server", { status: 405 });
 }
 
-// Read-your-writes for writes an in-process tool made (spec 3ef37387 R-20);
-// tool calls that go through an API route settle in that route.
-export const POST = settlesWorkChanges(async (req: Request): Promise<Response> => handleMcpRequest(req));
+export async function POST(req: Request): Promise<Response> {
+  try {
+    return await handleMcpRequest(req);
+  } finally {
+    // Read-your-writes for writes an in-process tool made (spec 3ef37387 R-20);
+    // tool calls that go through an API route settle in that route.
+    await settleWorkChanges();
+  }
+}
 
 export async function DELETE(req: Request): Promise<Response> {
   return handleMcpRequest(req);

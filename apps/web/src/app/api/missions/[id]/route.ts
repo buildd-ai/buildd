@@ -53,7 +53,7 @@ import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { armedAtForStartGate } from '@/lib/mission-start-state';
 import { noteWorkChanged } from '@/lib/work-changed';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -242,10 +242,13 @@ export async function GET(
 }
 
 // PATCH /api/missions/[id]
-async function patchHandler(
+export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -1125,13 +1128,17 @@ async function patchHandler(
     console.error('Update mission error:', error);
     return NextResponse.json({ error: 'Failed to update mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
 
 // DELETE /api/missions/[id]
-async function delHandler(
+export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -1172,8 +1179,5 @@ async function delHandler(
     console.error('Delete mission error:', error);
     return NextResponse.json({ error: 'Failed to delete mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
-
-// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
-export const PATCH = settlesWorkChanges(patchHandler);
-export const DELETE = settlesWorkChanges(delHandler);

@@ -35,7 +35,7 @@ import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/li
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { noteWorkChanged } from '@/lib/work-changed';
 
 // GET /api/missions — list missions for the user's team(s)
@@ -167,7 +167,10 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/missions — create mission
-async function postHandler(req: NextRequest) {
+export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -435,7 +438,7 @@ async function postHandler(req: NextRequest) {
       .returning();
     // Stored summary, and through it the mission lists' change version (R-13, R-20).
     refreshMissionSummary(mission.id);
-    // Bumped before the response too (settlesWorkChanges), so the creator's next list read sees it.
+    // Bumped before the response too (settleWorkChanges), so the creator's next list read sees it.
     noteWorkChanged({ missionIds: [mission.id] });
 
     // Every new auto mission gets a check-in (heartbeat) schedule by default.
@@ -631,7 +634,5 @@ async function postHandler(req: NextRequest) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
-
-// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
-export const POST = settlesWorkChanges(postHandler);

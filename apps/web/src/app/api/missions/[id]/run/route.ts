@@ -10,7 +10,7 @@ import { eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -21,10 +21,13 @@ const resolveTeamIds = resolveAccountTeamIds;
  * Builds rich mission context (task history, active tasks, failures)
  * and creates + dispatches a planning task.
  */
-async function postHandler(
+export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -110,7 +113,5 @@ async function postHandler(
     console.error('Run mission error:', error);
     return NextResponse.json({ error: 'Failed to run mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
-
-// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
-export const POST = settlesWorkChanges(postHandler);

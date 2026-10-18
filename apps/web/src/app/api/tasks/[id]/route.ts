@@ -49,7 +49,7 @@ import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
-import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
@@ -284,10 +284,13 @@ export async function GET(
  */
 const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl']);
 
-async function patchHandler(
+export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns mock
@@ -879,13 +882,17 @@ async function patchHandler(
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
 
 // DELETE /api/tasks/[id] - Delete a task (only pending tasks)
-async function delHandler(
+export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns success
@@ -948,8 +955,5 @@ async function delHandler(
     console.error('Delete task error:', error);
     return NextResponse.json({ error: 'Failed to delete task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
-
-// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
-export const PATCH = settlesWorkChanges(patchHandler);
-export const DELETE = settlesWorkChanges(delHandler);
