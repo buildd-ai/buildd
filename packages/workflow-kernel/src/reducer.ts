@@ -341,6 +341,8 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'AttemptStarted': return `start:${cmd.taskId}:${cmd.claimedAt}`;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
     case 'AttemptRequeued': return `requeue:${cmd.workerId}`;
+    case 'AttemptReopened': return reopenKey(cmd);
+    case 'AttemptWithdrawn': return withdrawKey(cmd);
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
@@ -692,6 +694,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
 
     // AC-1 slice 6 (workflow-kernel-library.md §9)
     case 'AttemptRequeued': return attemptRequeued(c, cmd);
+
+    // AC-1 slice 9 (workflow-kernel-library.md §9)
+    case 'AttemptReopened': return attemptReopened(c, cmd);
+    case 'AttemptWithdrawn': return attemptWithdrawn(c, cmd);
 
     // T5
     case 'ReviewRequested': {
@@ -2131,6 +2137,49 @@ function attemptStarted(c: Ctx, cmd: Extract<Command, { type: 'AttemptStarted' }
   if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
   return c.apply(`start:${cmd.taskId}:${cmd.claimedAt}`, 'WORKING', {
     evidence: { start: true, taskId: cmd.taskId, claimedBy: cmd.claimedBy, claimedAt: cmd.claimedAt },
+  });
+}
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──
+
+/** One reopen per ended attempt: a re-send is a duplicate, the next end of the same worker is a new key. */
+const reopenKey = (cmd: Extract<Command, { type: 'AttemptReopened' }>): string =>
+  `reopen:${cmd.taskId}:${cmd.workerId ?? 'none'}:${cmd.endedAt ?? 'none'}`;
+/** One withdrawal per claim and outcome (a queued task no claim holds is `queued`). */
+const withdrawKey = (cmd: Extract<Command, { type: 'AttemptWithdrawn' }>): string =>
+  `withdraw:${cmd.taskId}:${cmd.claim?.claimedAt ?? 'queued'}:${cmd.outcome}`;
+
+/**
+ * AttemptReopened: the owner task's ended attempt is opened again, for a new attempt (`pending`) or
+ * the same worker running again (`assigned`). No end and no state change, as AttemptStarted: while
+ * the delivery is `WORKING` on that owner task the transition records it (`reopen:...`) and its
+ * statement moves the task, guarded on the named worker still being the task's latest attempt.
+ * Anything else (the delivery handed on, or is terminal) is `attempt_not_bound`: the host's guarded
+ * projection still decides whether the task moves.
+ */
+function attemptReopened(c: Ctx, cmd: Extract<Command, { type: 'AttemptReopened' }>): Decision {
+  const d = c.d!;
+  if (!cmd.taskId || (cmd.to !== 'pending' && cmd.to !== 'assigned') || (cmd.to === 'assigned' && !cmd.workerId)) return c.rejected('reopen_not_named');
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(reopenKey(cmd), 'WORKING', {
+    evidence: { reopen: true, taskId: cmd.taskId, workerId: cmd.workerId, endedAt: cmd.endedAt, to: cmd.to, reason: cmd.reason },
+  });
+}
+
+/**
+ * AttemptWithdrawn: a claim that does not run the owner attempt gives its start back (`requeued`)
+ * or ends the task for good (`failed`); with no claim, a queued task is refused for good. No attempt
+ * ran, so it is no end and moves no state: while the delivery is `WORKING` on that owner task the
+ * transition records it (`withdraw:...`) and its statement moves the task, guarded on exactly that
+ * claim. Anything else is `attempt_not_bound`, and the host's guarded projection decides.
+ */
+function attemptWithdrawn(c: Ctx, cmd: Extract<Command, { type: 'AttemptWithdrawn' }>): Decision {
+  const d = c.d!;
+  if (!cmd.taskId || (cmd.outcome !== 'requeued' && cmd.outcome !== 'failed')) return c.rejected('withdrawal_not_named');
+  if (cmd.claim ? !cmd.claim.claimedBy || !cmd.claim.claimedAt : cmd.outcome !== 'failed') return c.rejected('claim_not_named');
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(withdrawKey(cmd), 'WORKING', {
+    evidence: { withdraw: true, taskId: cmd.taskId, claim: cmd.claim, outcome: cmd.outcome, reason: cmd.reason },
   });
 }
 

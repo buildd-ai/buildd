@@ -63,6 +63,10 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // Never: the claim projects its own start on the web host when unanswered, and gives the claim back
   // if that does not hold. A late re-send could only find a claim that already moved on.
   attempt_started: false,
+  // Never: the caller projects a reopen and a withdrawal on its own host on any door error, under a
+  // guard keyed on the exact end or claim, so a late re-send could only find a task that moved on.
+  attempt_reopened: false,
+  attempt_withdrawn: false,
   // The red-PR sweep reads a red head again on its own tick.
   observe_ci_failure: false,
   // The conflict door reads the live PR on every sweep, so the sweeps are its re-sender.

@@ -26,7 +26,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
-import { attemptEndTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes } from './task-projection';
+import { attemptEndTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, reopenTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -302,6 +302,10 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   ctes.push(...requeueTaskProjectionCtes(d, 'd'));
   // AC-1 slice 8: a CI escalation (its repairs spent) fails the owner task, in this statement.
   ctes.push(...escalationTaskProjectionCtes(d, 'd'));
+  // AC-1 slice 9: AttemptReopened opens a settled owner task again, AttemptWithdrawn gives a claim's
+  // start back (or refuses a queued task), in this statement.
+  ctes.push(...reopenTaskProjectionCtes(d, 'd'));
+  ctes.push(...withdrawTaskProjectionCtes(d, 'd'));
 
   ctes.push(sql`t AS (
   INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)
