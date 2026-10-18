@@ -19,7 +19,7 @@ describe('status tone', () => {
 
   it('the mission page chip reads RUNNING in the progress colour, not green', () => {
     const chip = getMissionStateChip('running');
-    expect(chip.label).toBe('RUNNING');
+    expect(chip.label).toBe('Running');
     expect(chip.cls).toBe(STATUS_TONE_CHIP.accent);
     expect(chip.cls).not.toContain('status-success');
   });

@@ -89,6 +89,6 @@ describe('deriveMissionStateView with a landing blocker', () => {
   it('without a blocker the ordinary ready-to-merge reading is unchanged', () => {
     const view = deriveMissionStateView({ ...base, unmergedPrs: [PR], landingBlocked: [] });
     expect(view.kind).toBe('awaiting_merge');
-    expect(view.chip.label).toBe('READY FOR REVIEW');
+    expect(view.chip.label).toBe('In review');
   });
 });

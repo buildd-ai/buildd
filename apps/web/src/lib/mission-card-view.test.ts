@@ -100,7 +100,7 @@ describe('D8: a paused mission that is waiting on you is grouped, and counted, a
   it('escalated criteria with no work left → attention (the owner must decide)', () => {
     const row = mission({ status: 'paused', criteriaEscalatedAt: new Date(NOW - 60_000), tasks: done() });
     const v = view(row);
-    expect(v.chip.label).toBe('AWAITING DECISION');
+    expect(v.chip.label).toBe('Waiting on you');
     expect(v.group).toBe('attention');
   });
 
@@ -199,7 +199,7 @@ describe('buildMissionCardView', () => {
   it('a started task with nothing running it reads STALLED on the card', () => {
     const row = mission({ tasks: [task('a', { status: 'assigned' })] });
     const view = buildMissionCardView(row, { from: 'missions', now: NOW });
-    expect(view.chip.label).toBe('STALLED');
+    expect(view.chip.label).toBe('Stalled');
   });
 
   it('the pulse is one segment per deliverable in strip order (creation order among independent tasks, not phase); attempts are not segments', () => {
@@ -291,7 +291,7 @@ describe('buildMissionCardView', () => {
       status: 'completed', goalCriteria: [{ type: 'x' }], goalCriteriaState: { overall: 'UNVERIFIED', criteria: [] },
       tasks: [task('a', { status: 'completed' })],
     });
-    expect(buildMissionCardView(row, { from: 'missions' }).chip.label).toBe('COMPLETE');
+    expect(buildMissionCardView(row, { from: 'missions' }).chip.label).toBe('Done');
   });
 });
 

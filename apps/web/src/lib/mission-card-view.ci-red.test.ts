@@ -32,14 +32,14 @@ describe('a red PR after the CI-fix chain ended', () => {
       fixTask(1), fixTask(2), fixTask(3),
     ]);
     const v = view(row);
-    expect(v.chip.label).toBe('BLOCKED');
+    expect(v.chip.label).toBe('Blocked');
     expect(v.chip.label).not.toBe('READY FOR REVIEW');
     expect(summarizeMissionForCard(row, { now: NOW }).state.situation.headline).toContain('CI red after 3 fix attempts');
   });
 
   it('a red PR with no fix attempt keeps the ordinary reading', () => {
     const v = view(mission([task('owner', { workers: [ownerWorker('ci_failed')] })]));
-    expect(v.chip.label).toBe('READY FOR REVIEW');
+    expect(v.chip.label).toBe('In review');
   });
 
   it('a fix still open is not an exhausted chain', () => {

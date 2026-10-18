@@ -38,7 +38,7 @@ describe('deriveMissionStateView — an open question', () => {
     expect(view.situation.focus).toMatchObject({ kind: 'human_decision', question: { taskIds: ['t1'] } });
     expect(view.situation.nextAction).toBe('Answer it on the task page to continue.');
     // The chip still says who runs the work.
-    expect(view.chip.label).toBe('LOCAL');
+    expect(view.chip.label).toBe('Run from your session');
   });
 
   it('the same question on a runner mission needs the person too', () => {

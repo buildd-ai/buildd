@@ -120,7 +120,7 @@ describe('size="sticky" (W2/W3)', () => {
   it('shows back label, title, chip, verified slot and the header pulse on first paint', () => {
     expect(html).toContain('‹ Home');
     expect(html).toContain('href="/app/home"');
-    expect(html).toContain('>STALLED<');
+    expect(html).toContain('>Stalled<');
     expect(html).toContain('data-testid="verified-slot"');
     expect(html).toContain('data-variant="header"');
   });
