@@ -37,13 +37,8 @@ export interface DeployState {
   error: string | null;
   /** Notes from the deploy (e.g. about the runner key). */
   notes: string[];
-<<<<<<< HEAD
   /** Steps `check` found already current, so they were not run. */
   skipped: DeployStep[];
-}
-
-const INITIAL: DeployState = { phase: 'idle', currentStep: null, label: '', progress: 0, workerUrl: null, error: null, notes: [], skipped: [] };
-=======
   /** The workspace the last deploy ran for. */
   workspaceId: string | null;
   /** The step that failed, so Retry resumes there instead of redoing finished steps. */
@@ -52,15 +47,18 @@ const INITIAL: DeployState = { phase: 'idle', currentStep: null, label: '', prog
 
 const INITIAL: DeployState = {
   phase: 'idle', currentStep: null, label: '', progress: 0, workerUrl: null, error: null, notes: [],
-  workspaceId: null, failedStep: null,
+  skipped: [], workspaceId: null, failedStep: null,
 };
->>>>>>> origin/dev
 
 export function useCloudRunnerDeploy() {
   const [state, setState] = useState<DeployState>(INITIAL);
   const abortRef = useRef<AbortController | null>(null);
   // Notes the finished steps returned, per workspace, so a resumed deploy keeps them.
   const notesRef = useRef<{ workspaceId: string | null; notes: string[] }>({ workspaceId: null, notes: [] });
+  // The steps `check` left to run, per workspace, so a resumed deploy still skips the current ones.
+  const planRef = useRef<{ workspaceId: string | null; steps: DeployStep[]; workerUrl: string | null }>({
+    workspaceId: null, steps: [...DEPLOY_STEPS], workerUrl: null,
+  });
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -76,31 +74,27 @@ export function useCloudRunnerDeploy() {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-<<<<<<< HEAD
-    setState({ ...INITIAL, phase: 'running', currentStep: 'check', label: LABELS.check });
-    const allNotes: string[] = [];
-    let steps: DeployStep[] = [...DEPLOY_STEPS];
-    let workerUrl: string | null = null;
-
-    for (let i = 0; i < steps.length; i++) {
-=======
-    const start = Math.max(0, DEPLOY_STEPS.indexOf(from));
-    const startStep = DEPLOY_STEPS[start];
-    // Resuming the same workspace keeps the notes the finished steps returned.
+    // Resuming the same workspace keeps the plan `check` made and the notes the finished steps returned.
+    const resuming = from !== 'check' && planRef.current.workspaceId === workspaceId;
+    let steps: DeployStep[] = resuming ? planRef.current.steps : [...DEPLOY_STEPS];
+    let workerUrl: string | null = resuming ? planRef.current.workerUrl : null;
+    const start = Math.max(0, steps.indexOf(from));
+    const startStep = steps[start];
     const allNotes = start > 0 && notesRef.current.workspaceId === workspaceId ? [...notesRef.current.notes] : [];
     notesRef.current = { workspaceId, notes: allNotes };
+    planRef.current = { workspaceId, steps, workerUrl };
     setState({
       ...INITIAL,
       phase: 'running',
       currentStep: startStep,
       label: LABELS[startStep],
-      progress: start / DEPLOY_STEPS.length,
+      progress: start / steps.length,
       notes: allNotes,
+      skipped: DEPLOY_STEPS.filter((s) => !steps.includes(s)),
       workspaceId,
     });
 
-    for (let i = start; i < DEPLOY_STEPS.length; i++) {
->>>>>>> origin/dev
+    for (let i = start; i < steps.length; i++) {
       if (ac.signal.aborted) return;
       const step = steps[i];
       setState((s) => ({
@@ -122,12 +116,8 @@ export function useCloudRunnerDeploy() {
             ...s,
             phase: 'error',
             error: body.error ?? `Step "${step}" failed (HTTP ${res.status}).`,
-<<<<<<< HEAD
-            progress: i / steps.length,
-=======
             failedStep: step,
-            progress: i / DEPLOY_STEPS.length,
->>>>>>> origin/dev
+            progress: i / steps.length,
           }));
           return;
         }
@@ -140,6 +130,7 @@ export function useCloudRunnerDeploy() {
           const skipped = DEPLOY_STEPS.filter((s) => !steps.includes(s));
           setState((s) => ({ ...s, skipped }));
         }
+        planRef.current = { workspaceId, steps, workerUrl };
         // Last step done: extract the Worker URL.
         if (!body.next || i === steps.length - 1) {
           setState({
@@ -150,12 +141,9 @@ export function useCloudRunnerDeploy() {
             workerUrl,
             error: null,
             notes: allNotes,
-<<<<<<< HEAD
             skipped: DEPLOY_STEPS.filter((s) => !steps.includes(s)),
-=======
             workspaceId,
             failedStep: null,
->>>>>>> origin/dev
           });
           return;
         }
@@ -165,12 +153,8 @@ export function useCloudRunnerDeploy() {
           ...s,
           phase: 'error',
           error: err instanceof Error ? err.message : 'Deploy failed.',
-<<<<<<< HEAD
-          progress: i / steps.length,
-=======
           failedStep: step,
-          progress: i / DEPLOY_STEPS.length,
->>>>>>> origin/dev
+          progress: i / steps.length,
         }));
         return;
       }
