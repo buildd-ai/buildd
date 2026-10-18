@@ -1409,9 +1409,10 @@ exit" and "review, refresh and landing while a coordination owner keeps running"
 
 ### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
 
-**Status.** Every rule below is the target. Where the code differs today, the rule
-says so under "Today" or "As built". Rule 1 (composition) is checked by AC-20 to AC-23
-(§19). The findings, repair, landing, GitHub-status, projection and external-merge
+**Status.** Rule 1 (composition) is built and checked by AC-20 to AC-23 (§19):
+`packages/workflow-kernel/src/reducer.test.ts` ("composition attestation") and
+`apps/web/src/lib/workflow/review-composition.test.ts`. Where the code differs today,
+a rule says so under "Today" or "As built". The findings, repair, landing, GitHub-status, projection and external-merge
 rules (2 to 10) are owned by the native spec "Workflow kernel" (fa62b865,
 `workflow-kernel-library.md` §4, §5 and §7), which carries their criteria and what has
 shipped (S3b, S5); §19 maps the old ids to it.
@@ -1466,8 +1467,14 @@ type".
    `approve` and its delivery is not `CHANGES_REQUESTED`/`ESCALATED` at that head. An
    approve round that a later request-changes round superseded at the same head does
    not count.
-   *Today:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
-   (`reducer.ts`) accept any decided approve round at the head and ignore later rounds.
+   *As built:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
+   (kernel `reducer.ts`) take only a constituent's latest decided round at the head, and
+   refuse one whose delivery is `CHANGES_REQUESTED`/`ESCALATED` at that head or has an open
+   required finding (`constituent_approval_superseded`, `constituent_delivery_blocked`,
+   `constituent_open_findings`). An attestation on a PR with its own open finding is
+   rejected (`open_findings`). The attesting effect writes a four-part composition block
+   into the PR description (`composition-description.ts`): reviewed constituent work,
+   composition verification, uncovered-delta review, final policy gate.
    A mission integration PR is composed like any other since S6 gave it a delivery
    (it had none at #4686 and was reviewed whole).
 2. **Findings are durable.** A request-changes verdict creates findings, one per

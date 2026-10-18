@@ -1510,6 +1510,39 @@ describe('composition attestation: release PRs from already-reviewed changes', (
     const dec = applied(run(view, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
     expect(dec.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
   });
+  // §13.13 rule 1, AC-20..AC-23.
+  test('AC-20: every constituent latest-approved, composition equal, no delta: APPROVED by composition and no round is started', () => {
+    const dec = applied(ca(v(), {}, [{ ...attEv[0], latestDecidedVerdictAtHead: 'approve', deliveryState: 'APPROVED', deliveryHeadSha: 'C1', openFindings: 0 }]));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvalBasis: 'composition' });
+    expect(dec.rounds.some((r) => r.op === 'insert')).toBe(false);
+  });
+  test('AC-21: a novel delta starts exactly one delta round scoped to its paths', () => {
+    const dec = applied(ca(v(), { novelDelta: { result: 'present', paths: ['a.ts', 'b.ts'] } }));
+    const inserts = dec.rounds.filter((r) => r.op === 'insert');
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]).toMatchObject({ kind: 'delta', scope: { novelDeltaPaths: ['a.ts', 'b.ts'], composition: true } });
+  });
+  test('AC-22: unknown composition or an unresolved constituent is never approval', () => {
+    expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'landed_patch_unreadable:S1' } }), 'rejected', 'composition_unverifiable');
+    expectResult(ca(v(), {}, []), 'rejected', 'composition_not_verified');
+  });
+  test('AC-23: an approve that a later request-changes at the same head superseded does not compose', () => {
+    const bad = ca(v(), {}, [{ ...attEv[0], latestDecidedVerdictAtHead: 'request_changes' }]);
+    expectResult(bad, 'rejected', 'composition_not_verified');
+    expect((bad as { missing: string[] }).missing).toEqual(['constituent_approval_superseded:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'CHANGES_REQUESTED', deliveryHeadSha: 'C1' }]).reasons).toEqual(['constituent_delivery_blocked:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'ESCALATED', deliveryHeadSha: 'C1' }]).reasons).toEqual(['constituent_delivery_blocked:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], openFindings: 2 }]).reasons).toEqual(['constituent_open_findings:rx']);
+    // A block at a different head of that delivery does not unseat an approval at the reviewed head.
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'CHANGES_REQUESTED', deliveryHeadSha: 'C9' }]).ok).toBe(true);
+  });
+  test('AC-24: a composition attestation never closes or lifts an open finding on the composed PR', () => {
+    const f: import('./types').FindingSnapshot = { id: 'f1', originRoundId: 'r0', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'a.ts', line: 1, title: 'x', required: true, status: 'open', lastRound: 1 } as never;
+    expectResult(ca({ ...v(), findings: [f] }), 'rejected', 'open_findings');
+    // A delta round may still run; it leaves the finding open.
+    expect(ca({ ...v(), findings: [f] }, { novelDelta: { result: 'present', paths: ['a.ts'] } }).result).toBe('apply');
+  });
   test('unverifiable, wrong PR, wrong head, wrong state and failed verification claim nothing', () => {
     expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'tree mismatch' } }), 'rejected', 'composition_unverifiable');
     expectResult(ca(v(), { prNumber: 8 }), 'rejected', 'attestation_pr_mismatch');

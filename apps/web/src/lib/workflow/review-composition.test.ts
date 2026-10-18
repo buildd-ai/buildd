@@ -112,6 +112,22 @@ describe('buildCompositionAttestation', () => {
       .toEqual({ result: 'unverifiable', reason: 'reviewed_patch_unreadable:S1' });
   });
 
+  test('AC-23: a constituent whose approve was superseded by a later request-changes at its head, or that has an open finding, is not a constituent', () => {
+    const ids = (b: CompositionInput) => buildCompositionAttestation(b).attestation.constituents.map((c) => c.prNumber);
+    const superseded = base();
+    superseded.constituentsByCommit!.S1.delivery.rounds = [
+      { id: 'r-11', round: 1, headSha: 'P11', status: 'decided', effectiveVerdict: 'approve' },
+      { id: 'r-11b', round: 2, headSha: 'P11', status: 'decided', effectiveVerdict: 'request_changes' },
+    ];
+    expect(ids(superseded)).toEqual([12]);
+    const open = base();
+    open.constituentsByCommit!.S2.delivery.openFindings = 1;
+    expect(ids(open)).toEqual([11]);
+    const blocked = base();
+    Object.assign(blocked.constituentsByCommit!.S1.delivery, { state: 'CHANGES_REQUESTED', currentHeadSha: 'P11' });
+    expect(ids(blocked)).toEqual([12]);
+  });
+
   test('patch-id ignores hunk positions and context, not content', () => {
     const a = patchIdOf([{ filename: 'x.ts', status: 'modified', patch: '@@ -10,3 +10,3 @@ fn\n ctx one\n-old\n+new\n ctx two' }]);
     const moved = patchIdOf([{ filename: 'x.ts', status: 'modified', patch: '@@ -42,3 +42,3 @@ other\n different ctx\n-old\n+new\n more ctx' }]);
