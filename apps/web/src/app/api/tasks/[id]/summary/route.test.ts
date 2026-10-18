@@ -56,6 +56,7 @@ mock.module('@/lib/agent-capabilities/access-log', () => ({ loadTaskAccess: mock
 
 mock.module('@buildd/core/db', () => ({
   db: {
+    batch: async (qs: Array<Promise<unknown>>) => Promise.all(qs),
     query: {
       tasks: { findFirst: mockTasksFindFirst, findMany: mockDepTasksFindMany },
       workers: { findMany: mockWorkersFindMany },

@@ -1,4 +1,4 @@
-import { CRITERIA_ESCALATION_NOTE_TITLE } from './criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 
 /**
  * Whether MissionFeed should show Reply/Skip for this note.

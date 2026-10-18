@@ -368,7 +368,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               eq(taskSchedules.nextRunAt, schedule.nextRunAt!)
             )
           )
-          .returning();
+          // Only whether this tick won the row: the template is KBs (R-25).
+          .returning({ id: taskSchedules.id });
 
         if (!claimed) {
           // Another invocation already processed this schedule
