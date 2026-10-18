@@ -100,11 +100,7 @@ describe('runnerIsolationDetail: plain-word runner detail (R-10)', () => {
   it('states platform, each backend and mode, and no cause on a confined macOS host', () => {
     const d = runnerIsolationDetail(runner({ isolation: record('darwin', seatbelt), mountAllowlistEnforced: false }));
     expect(d.platform).toBe('macOS');
-    expect(d.backends.map(b => `${b.label}: ${b.value}`)).toEqual([
-      'Claude: macOS Seatbelt',
-      'Codex, read-only: macOS Seatbelt',
-      'Codex, can edit files: macOS Seatbelt',
-    ]);
+    expect(d.backends.map(b => `${b.label}: ${b.value}`)).toEqual(['Claude and Codex: macOS Seatbelt']);
     expect(d.cause).toBeNull();
     expect(d.fixer).toBeNull();
     expect(d.steps).toEqual([]);
@@ -115,7 +111,7 @@ describe('runnerIsolationDetail: plain-word runner detail (R-10)', () => {
   it('gives the cause, who fixes it and the operator steps when confinement is lost', () => {
     const d = runnerIsolationDetail(runner({ isolation: record('linux-container', none('probe_exec_failed')) }));
     expect(d.platform).toBe('Linux container');
-    expect(d.backends.every(b => b.value === 'none' && !b.confined)).toBe(true);
+    expect(d.backends).toEqual([{ label: 'Claude and Codex', value: 'none', confined: false }]);
     expect(d.cause).toMatch(/container/);
     expect(d.fixer).toMatch(/operator/);
     expect(d.fixer).toMatch(/buildd never changes/);
