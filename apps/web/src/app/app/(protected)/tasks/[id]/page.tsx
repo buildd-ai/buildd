@@ -154,7 +154,7 @@ const ROLE_INFERRED_EXTRAS = {
 
 
 /** Characters of an artifact body the page sends for its card; the viewer loads the rest on open. */
-const ARTIFACT_PREVIEW_CHARS = 400;
+const ARTIFACT_PREVIEW_CHARS = 250;
 /** A summary artifact read whole, to tell whether it only repeats the result's summary. */
 const SUMMARY_WHOLE_MAX_CHARS = 8000;
 
