@@ -132,7 +132,8 @@ describe('CloudRunnerDeploy', () => {
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.click(); });
     for (let i = 0; i < 10; i++) await flush();
     expect(calls.map((c) => c.step)).toEqual(['check', 'bucket', 'worker']);
-    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toContain('Upload failed');
+    // The failure names the step in words, not by its id.
+    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toBe('Worker upload failed: Upload failed');
 
     calls.length = 0;
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-retry"]')!.click(); });
@@ -173,7 +174,7 @@ describe('CloudRunnerDeploy', () => {
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.click(); });
     for (let i = 0; i < 10; i++) await flush();
     expect(calls.map((c) => c.step)).toEqual(['check', 'bucket', 'worker', 'containers']);
-    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toContain('Network request failed');
+    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toBe('Container applications failed: Network request failed');
 
     calls.length = 0;
     await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-retry"]')!.click(); });
