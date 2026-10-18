@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
+import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -94,5 +94,75 @@ describe('ownerAttemptEndOf (AC-1 slice 2): the end is read from the worker row'
     expect(ownerAttemptEndOf({ status: 'pending' }, wk('failed'), NOW)).toBeNull();
     expect(ownerAttemptEndOf({ status: 'pending' }, wk('completed'), NOW)).toBeNull();
     expect(ownerAttemptEndOf({ status: 'cancelled' }, wk('completed'), NOW)).toBeNull();
+  });
+});
+
+describe('AC-1 slice 3: the owner end projection', () => {
+  const ended = (evidence: Record<string, unknown>, fromState: 'WORKING' | 'FIXING' = 'WORKING') =>
+    attemptEndTaskProjectionCtes({ command: 'AttemptEnded', fromState, evidence, idempotencyKey: 'end:w1' }, 'd').map((c) => render(c));
+
+  test('t_attempt sets the owner task from the end, reading the delivery CTE, open tasks only', () => {
+    const [c] = ended({ outcome: 'success' });
+    expect(c.sql).toContain('t_attempt AS (\n  UPDATE tasks tk SET status = $1::text, updated_at = now()\n  FROM d JOIN workflow_deliveries od ON od.id = d.id');
+    expect(c.params[0]).toBe('completed');
+    expect(c.sql).toContain('tk.id = od.owner_task_id');
+    expect(c.sql).toContain('tk.status IN ($2::text, $3::text)');
+    expect(c.params.slice(1, 3)).toEqual(['assigned', 'in_progress']);
+    expect(c.sql).toContain("NOT (tk.status = 'completed' AND EXISTS");
+    expect(ended({ outcome: 'lost' })[0].params[0]).toBe('failed');
+    // Only for the task's current attempt: the worker the end's key names.
+    expect(c.sql).toContain('ew.id::text = $4::text AND ew.task_id = tk.id');
+    expect(c.params[3]).toBe('w1');
+  });
+
+  test('endingWorkerIsCurrentSql: the latest worker row, not older than claimed_at less the skew', () => {
+    const { sql: t, params } = render(endingWorkerIsCurrentSql('w9'));
+    expect(t).toContain('ew.id::text = $1::text');
+    expect(params[0]).toBe('w9');
+    expect(t).toContain('tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => $2::double precision)');
+    expect(params[1]).toBe(CLAIM_CLOCK_SKEW_MS / 1000);
+    expect(t).toContain('nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id)');
+  });
+
+  test('no CTE for a requeue, a repair\'s end, another command, or an end with no outcome', () => {
+    expect(ended({ outcome: 'unproven', requeue: true })).toEqual([]);
+    expect(ended({ outcome: 'success' }, 'FIXING')).toEqual([]);
+    expect(ended({})).toEqual([]);
+    expect(attemptEndTaskProjectionCtes({ command: 'PrMerged', fromState: 'WORKING', evidence: { outcome: 'success' }, idempotencyKey: 'merged:1' })).toEqual([]);
+    expect(attemptEndTaskProjectionCtes({ command: 'AttemptEnded', fromState: 'WORKING', evidence: { outcome: 'success' }, idempotencyKey: 'other' })).toEqual([]);
+  });
+
+  test('ownerEndTaskStatus: success completes, every other end fails, a requeue is none', () => {
+    expect(ownerEndTaskStatus({ outcome: 'success' })).toBe('completed');
+    for (const o of ['failed', 'lost', 'unproven']) expect(ownerEndTaskStatus({ outcome: o })).toBe('failed');
+    expect(ownerEndTaskStatus({ outcome: 'success', requeue: true })).toBeNull();
+    expect(ownerEndTaskStatus(null)).toBeNull();
+  });
+
+  test('projectOwnerEndSql: the ledger\'s recorded end wins over the end sent', () => {
+    const { sql: t, params } = render(projectOwnerEndSql({ deliveryId: 'd1', taskId: 't1', workerId: 'w1', fallback: 'failed' }));
+    expect(t).toContain('WHERE delivery_id = $1::uuid AND idempotency_key = $2::text');
+    expect(params.slice(0, 2)).toEqual(['d1', 'end:w1']);
+    expect(t).toContain("WHEN (SELECT (evidence->>'requeue') = 'true' FROM rec) THEN NULL");
+    expect(t).toContain("WHEN (SELECT evidence->>'outcome' FROM rec) = 'success' THEN 'completed'");
+    expect(t).toContain('od.owner_task_id = tk.id');
+    expect(t).toContain('RETURNING tk.status');
+  });
+});
+
+describe('attempt rows (review of #5049, round 2)', () => {
+  test('isAttemptRowSql excludes the placeholder runners; a NULL runner is an attempt', () => {
+    const { sql: t, params } = render(isAttemptRowSql('nw'));
+    expect(t).toBe('(nw.runner IS NULL OR nw.runner NOT IN ($1::text, $2::text, $3::text))');
+    expect(params).toEqual(['system', 'external', 'openclaw']);
+    expect(render(endingWorkerIsCurrentSql('w1')).sql).toContain('nw.task_id = tk.id AND (nw.runner IS NULL OR nw.runner NOT IN');
+  });
+
+  test('isAttemptRow mirrors it', () => {
+    expect(isAttemptRow({ runner: 'external' })).toBe(false);
+    expect(isAttemptRow({ runner: 'system' })).toBe(false);
+    expect(isAttemptRow({ runner: 'mcp' })).toBe(true);
+    expect(isAttemptRow({ runner: 'runner-1' })).toBe(true);
+    expect(isAttemptRow({ runner: null })).toBe(true);
   });
 });

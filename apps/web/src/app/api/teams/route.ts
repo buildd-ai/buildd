@@ -6,6 +6,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { emit } from '@/lib/core-emit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
 
 export async function GET(req: NextRequest) {
   const principal = await getRequestPrincipal(req);
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
       const team = await db.query.teams.findFirst({
         where: sqlWhere(eq(teams.id, teamId)),
         columns: {
-          id: true, name: true, slug: true, plan: true,
+          id: true, name: true, slug: true, personalUserId: true, plan: true,
           createdAt: true, updatedAt: true,
         },
       });
@@ -47,7 +48,7 @@ export async function GET(req: NextRequest) {
         // looking only for `db.query.teams` without `columns:` will not see it.
         team: {
           columns: {
-            id: true, name: true, slug: true, plan: true,
+            id: true, name: true, slug: true, personalUserId: true, plan: true,
             createdAt: true, updatedAt: true,
           },
         },
@@ -98,6 +99,11 @@ export async function POST(req: NextRequest) {
     // Validate slug format
     if (!/^[a-z0-9-]+$/.test(slug)) {
       return NextResponse.json({ error: 'Slug must contain only lowercase letters, numbers, and hyphens' }, { status: 400 });
+    }
+
+    // Reserved for the slug sign-up gives a personal team (lib/personal-team).
+    if (isReservedTeamSlug(slug)) {
+      return NextResponse.json({ error: RESERVED_TEAM_SLUG_ERROR }, { status: 400 });
     }
 
     // Check slug uniqueness

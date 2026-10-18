@@ -17,8 +17,17 @@ import { describeFinding, openRequiredFindings } from './findings';
 import { headCoverage, openVerdict } from './reducer';
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
-/** The commit status context the kernel publishes on every kernel-owned PR head. */
-export const LANDING_STATUS_CONTEXT = 'buildd/landing';
+/** The commit status context the kernel publishes on every kernel-owned PR head: the one a trunk rule requires. */
+export const LANDING_STATUS_CONTEXT = 'Buildd / Review approval';
+
+/**
+ * The name it was published under before the rename. Still written with the same answer, so a
+ * rule or tool that already reads it keeps working until nothing does; never read as CI.
+ */
+export const LEGACY_LANDING_STATUS_CONTEXT = 'buildd/landing';
+
+/** Every context carrying the kernel's verdict, the legacy name first so the current one is the last write. */
+export const LANDING_STATUS_CONTEXTS: readonly string[] = [LEGACY_LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXT];
 
 /** GitHub caps a status description at 140 characters. */
 const MAX_DESCRIPTION = 140;
@@ -91,16 +100,19 @@ function notApprovedReason(d: DeliverySnapshot): string {
 }
 
 export interface LandingStatus {
-  state: 'success' | 'failure';
+  /** `pending` while review is still running (not a failure, but it still blocks a required check). */
+  state: 'success' | 'failure' | 'pending';
   description: string;
   /** The head the status belongs on. */
   sha: string;
 }
 
 /**
- * The `buildd/landing` status for the delivery's current head: `success` only
+ * The `Buildd / Review approval` status for the delivery's current head: `success` only
  * when the kernel would land that head (approved or landing, covered, no open
- * verdict), `failure` with the blocker otherwise. Null when there is nothing
+ * verdict), `pending` while review of it has not finished (work running, review
+ * awaited), `failure` with the blocker otherwise (an open finding, a verdict
+ * against it, a person's decision). Null when there is nothing
  * to publish on (no PR or head, or the delivery is over: a merged or closed
  * PR's head keeps the last status it was given).
  */
@@ -113,6 +125,10 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
   if (g.ok) {
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
     return { state: 'success', sha: d.currentHeadSha, description: clip(`buildd would land ${at}: approved by ${by}`) };
+  }
+  // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
+  if ((g.blocker === 'not_approved' && (d.state === 'WORKING' || d.state === 'AWAITING_PUSH' || d.state === 'AWAITING_REVIEW')) || g.blocker === 'review_missing') {
+    return { state: 'pending', sha: d.currentHeadSha, description: clip(`buildd review of ${at} is pending: ${g.reason}`) };
   }
   // The detail the transition named (a lasting rail's refusal), while the delivery still waits on a person for it.
   const why = o.detail && d.state === 'ESCALATED' ? o.detail : g.reason;

@@ -333,6 +333,19 @@ describe('evaluateAutoMergeSafety CI verification', () => {
     });
   });
 
+  it('does not read buildd\'s own Buildd / Review approval status as CI (it follows the verdict, not the build)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 1, statuses: [{ context: 'Buildd / Review approval', state: 'pending' }] });
+    // Past the CI rail: the next refusal is the mergeable-state one, not "CI checks still pending or failed".
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
   it('refuses when the commit-status read fails', async () => {
     mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
     mockStatusApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));

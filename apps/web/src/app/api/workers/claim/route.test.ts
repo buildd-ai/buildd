@@ -587,11 +587,11 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
   }),
 }));
 import { POST } from './route';
-import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
+import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { claudeLoginSeatKey, runnerSeatKey } from '@/lib/runner-seat-wall';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -1312,7 +1312,7 @@ describe('POST /api/workers/claim', () => {
   // apply (lib/personal-workspace-links), so these prove the end-to-end rule.
   describe("fresh user's login token and their auto-created workspace", () => {
     const userId = 'user-fresh';
-    const personalTeam = { id: 'team-personal', slug: personalTeamSlug(userId) };
+    const personalTeam = { id: 'team-personal', personalUserId: userId };
     const myWorkspace = { id: 'ws-mine', teamId: 'team-personal', accessMode: 'restricted' };
     const pendingTask = () => ({
       id: 'task-1',
@@ -2258,6 +2258,37 @@ describe('POST /api/workers/claim', () => {
         && n.args.some((a: any) => a.type === 'eq' && a.value === runnerSeatKey(RUNNER_B)));
       expect(seatOr).toBeTruthy();
       expect(nodes.some(n => n.type === 'eq' && n.value === runnerSeatKey(RUNNER_A))).toBe(false);
+    });
+
+    // Two runners on one Claude login share its limit: a wall keyed on the
+    // login holds every runner that reports that login, and no other.
+    it('holds two runners on one login identity, and not a runner on another login', async () => {
+      const LOGIN = 'a'.repeat(32);
+      const claimOn = (runner: string, claudeLoginId: string) => POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner, claudeLoginId, capabilities: ['backend:codex'] },
+      }));
+      for (const runner of [RUNNER_A, RUNNER_B]) {
+        wallOn(claudeLoginSeatKey(LOGIN));
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        const data = await (await claimOn(runner, LOGIN)).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics.budgetBlock.walls[0].kind).toBe('runner_seat');
+      }
+      wallOn(claudeLoginSeatKey(LOGIN));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const other = await (await claimOn(RUNNER_B, 'b'.repeat(32))).json();
+      expect(other.workers).toHaveLength(1);
+    });
+
+    it("still holds a runner that reports a login on a wall keyed to its own runner id", async () => {
+      wallOn(runnerSeatKey(RUNNER_A));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const data = await (await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: RUNNER_A, claudeLoginId: 'a'.repeat(32), capabilities: ['backend:codex'] },
+      }))).json();
+      expect(data.workers).toHaveLength(0);
     });
 
     // Fail-safe: a wall whose login identity is unknown (an old runner, a team

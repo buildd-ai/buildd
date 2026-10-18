@@ -546,6 +546,8 @@ mock.module('@/lib/runner-seat-wall', () => ({
   resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
   runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
   isMachineLoginWallError: () => true,
+  parseRunLoginUsed: (v: unknown) => (v === 'machine_login' || v === 'machine_token' || v === 'stored' ? v : null),
+  parseClaudeLoginId: (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null),
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -737,6 +739,8 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 // suite (apps/web/tests/db/workflow-seam.test.ts). Here: that the route calls
 // it at the right points and that the legacy write does not run beside it.
 const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: false }));
+/** AC-1 slice 3: the route's own projection of an owner end it left the status out for. */
+const mockProjectOwnerEnd = mock(async (_p: any): Promise<'completed' | 'failed' | null> => null);
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
@@ -755,6 +759,7 @@ mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemp
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
+  projectOwnerEnd: mockProjectOwnerEnd,
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
@@ -3927,6 +3932,56 @@ describe('PATCH /api/workers/[id]', () => {
       });
       // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
       expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
+    });
+
+    // AC-1 slice 3 (workflow-kernel-library.md §9): an owner's plain end is the kernel's to project.
+    const ownerTaskRow = { ...fixTaskRow, id: 'fix-task-1', deliveryRole: 'owner', context: {} };
+    const endOwner = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = ownerTaskRow) => {
+      const taskSets: Record<string, unknown>[] = [];
+      const order: string[] = [];
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(taskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockImplementation(async () => { order.push('end'); return { handled: true }; });
+      mockProjectOwnerEnd.mockReset();
+      mockProjectOwnerEnd.mockImplementation(async () => { order.push('project'); return null; });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: body.status }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock((u: Record<string, unknown>) => { taskSets.push(u); return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'fix-task-1' }])), then: (r: (v: unknown) => unknown) => Promise.resolve().then(r) })) }; }) });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), { params: mockParams });
+      return { res, taskSets, order };
+    };
+
+    it('AC-1 slice 3: an owner\'s completion writes its result but not its status; the end goes to the kernel, then the route projects it', async () => {
+      const { res, taskSets, order } = await endOwner({ status: 'completed', lastCommitSha: 'pushed-l2', commitCount: 1, summary: 'done' });
+      expect(res.status).toBe(200);
+      const completion = taskSets.find((u) => 'result' in u);
+      expect(completion).toBeDefined();
+      expect('status' in completion!).toBe(false);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { deliveryRole: 'owner' }, status: 'completed' });
+      expect(mockProjectOwnerEnd.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-1', taskId: 'fix-task-1', workerId: (await mockParams).id, status: 'completed' });
+      // The end before the projection, both before anything reads the status.
+      expect(order).toEqual(['end', 'project']);
+    });
+
+    it('AC-1 slice 3: an owner\'s failure without a retry is projected as failed', async () => {
+      const { taskSets } = await endOwner({ status: 'failed', error: 'boom' });
+      expect(taskSets.some((u) => 'status' in u)).toBe(false);
+      expect(mockProjectOwnerEnd.mock.calls[0][0]).toMatchObject({ status: 'failed' });
+    });
+
+    it('AC-1 slice 3: an owner retry stays the route\'s own requeue to pending, with no projection', async () => {
+      const { taskSets } = await endOwner({ status: 'failed', error: 'boom' }, { ...ownerTaskRow, missionId: 'mission-1', status: 'assigned' });
+      expect(taskSets.find((u) => 'status' in u)?.status).toBe('pending');
+      expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
+    });
+
+    it('AC-1 slice 3: a repair attempt keeps the route\'s status write; nothing is projected for it', async () => {
+      const { taskSets } = await endOwner({ status: 'completed', lastCommitSha: 'pushed-l2', commitCount: 1 }, fixTaskRow);
+      expect(taskSets.find((u) => 'status' in u)?.status).toBe('completed');
+      expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
     });
 
     it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
@@ -7665,6 +7720,26 @@ describe('PATCH /api/workers/[id]', () => {
         expect(requeue.backend).toBeUndefined();
         expect(requeue.context?.budgetExhausted).toBeUndefined();
         expect(wakeCausesFor('task-1')).toContain('task.requeued');
+      });
+
+      it("passes the run's reported login identity to the decision, and drops a malformed one", async () => {
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginUsed: 'machine_login', claudeLoginId: 'a'.repeat(32) },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          loginUsed: 'machine_login', loginId: 'a'.repeat(32),
+        }));
+
+        setup();
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: WEEKLY, budgetExhausted: true, claudeLoginId: 'not-a-hash' },
+        }), { params: mockParams });
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenLastCalledWith(expect.objectContaining({ loginId: null }));
       });
 
       it('keeps the account-wide wall when the login identity is unknown', async () => {

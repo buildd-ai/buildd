@@ -48,6 +48,8 @@ describe('the floor reads the owner attempt end from the worker row (task assign
     await w.floor(pr);
     expect((await w.delivery(pr)).state).toBe('AWAITING_REVIEW');
     expect(await endCommands(pr.deliveryId)).toBe(1);
+    // AC-1 slice 3: the re-sent end projects onto the task, so it no longer strands assigned.
+    expect(await w.taskStatus(pr.ownerTaskId)).toBe('completed');
   });
 
   test('the worker of this claim failed: its end is re-sent', async () => {
@@ -58,6 +60,7 @@ describe('the floor reads the owner attempt end from the worker row (task assign
     await w.floor(pr);
     expect((await w.delivery(pr)).state).not.toBe('WORKING');
     expect(await endCommands(pr.deliveryId)).toBe(1);
+    expect(await w.taskStatus(pr.ownerTaskId)).toBe('failed');
   });
 
   test('claimed_at newer than the latest worker: a claim whose new worker row is not inserted yet sends no end', async () => {

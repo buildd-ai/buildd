@@ -30,8 +30,17 @@
  * that runner, whatever the team stores; a stored team credential is shared.
  *
  * Anything else, including any lookup failure, answers "shared": today's
- * account-wide and team-wide behaviour. The key is a hash of the runner id: no
- * credential and no login is read, stored or sent.
+ * account-wide and team-wide behaviour.
+ *
+ * Which key: the limit belongs to the login, and two runners can share one
+ * (two processes on one host reading one ~/.claude). A runner on its machine's
+ * `claude login` reports `claudeLoginId`, a one-way hash it computes locally
+ * from the login's account id (apps/runner/src/host-seat.ts
+ * claudeLoginIdentity); the wall is keyed on that, so it holds every runner on
+ * the login. With no identity (a CLAUDE_CODE_OAUTH_TOKEN, which says nothing
+ * about its account offline, or an older runner) the key is a hash of the
+ * runner id, as before. A claim reads walls under both its login key and its
+ * runner key. No credential is read, stored or sent.
  */
 import { createHash } from 'crypto';
 import { INTERACTIVE_RUNNER, UNVERIFIED_INTERACTIVE_RUNNER } from './interactive-session';
@@ -57,6 +66,28 @@ export function runnerSeatKey(runner: string | null | undefined): string | null 
   const id = (runner ?? '').trim();
   if (!id || NOT_A_RUNNER_ID.has(id)) return null;
   return `runner:${createHash('sha256').update(id).digest('hex').slice(0, 32)}`;
+}
+
+/** A runner-reported login identity: the 32-hex-character hash, or null. */
+export function parseClaudeLoginId(v: unknown): string | null {
+  return typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null;
+}
+
+/** The seat key for a login identity (parseClaudeLoginId's output). */
+export function claudeLoginSeatKey(loginId: string): string {
+  return `login:${loginId}`;
+}
+
+/**
+ * Every seat key a claiming runner answers to: its login's (when it reported
+ * one), then its runner's. Null when the caller is not one named runner, so it
+ * reads every wall.
+ */
+export function callerSeatKeys(runner: string | null | undefined, loginId: string | null | undefined): string[] | null {
+  const runnerKey = runnerSeatKey(runner);
+  if (!runnerKey) return null;
+  const id = parseClaudeLoginId(loginId);
+  return id ? [claudeLoginSeatKey(id), runnerKey] : [runnerKey];
 }
 
 /** Claude subscription walls: what a machine login can run into. */
@@ -95,6 +126,11 @@ export interface RunnerSeatWallInput {
    * credential checks below decide instead.
    */
   loginUsed?: RunLoginUsed | null;
+  /**
+   * The run's login identity (parseClaudeLoginId), when its runner could tell:
+   * a machine-login wall is keyed on it so it holds every runner on the login.
+   */
+  loginId?: string | null;
 }
 
 /** Which Claude login a run used, as the runner reports it. */
@@ -178,8 +214,10 @@ export async function resolveRunnerSeatWallKey(
   if (input.claimedByCloud) return shared('cloud run: no machine login');
   if (!input.teamId || !input.workspaceId) return shared('no team or workspace');
   const runner = (input.runner ?? '').trim();
-  const seatKey = runnerSeatKey(runner);
-  if (!seatKey) return shared('the worker names no runner');
+  const runnerKey = runnerSeatKey(runner);
+  if (!runnerKey) return shared('the worker names no runner');
+  const loginId = parseClaudeLoginId(input.loginId);
+  const seatKey = loginId ? claudeLoginSeatKey(loginId) : runnerKey;
   // The run's own report beats every inference below: a stored team
   // credential existing does not mean this run used it.
   if (input.loginUsed === 'stored') return shared("the run used the team's stored Claude credential");
