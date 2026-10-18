@@ -45,6 +45,26 @@ export const STALE_DAYS = 90;
 /** Longer than this and it is not a summary; it is the spec. */
 export const SUMMARY_MAX = 220;
 
+/** A metadata summary is one non-empty sentence on one line. Terminal punctuation is optional. */
+export function validSpecSummary(value: unknown): value is string {
+  return typeof value === 'string' && !!value.trim() && value.length <= SUMMARY_MAX
+    && !/[\r\n]/.test(value) && !/[.!?]\s+\S/.test(value.trim());
+}
+
+/** Decode YAML quoted scalars without interpreting plain strings as YAML types. */
+function unquoteScalar(value: string): string {
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
+  if (!value.startsWith('"') || !value.endsWith('"')) return value;
+  const escapes: Record<string, string> = { '0': '\0', a: '\x07', b: '\b', t: '\t', n: '\n', v: '\v', f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"', '/': '/', '\\': '\\', N: '\u0085', _: '\u00a0', L: '\u2028', P: '\u2029' };
+  return value.slice(1, -1).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (raw, code: string) => {
+    if (/^[xuU]/.test(code)) {
+      const point = parseInt(code.slice(1), 16);
+      return point <= 0x10ffff ? String.fromCodePoint(point) : raw;
+    }
+    return escapes[code] ?? raw;
+  });
+}
+
 // Specs use a flat YAML block: string scalars, ISO dates, and one-line arrays
 // (`supersedes: [a, b]`). No nesting — a full YAML dep would be overkill.
 export function parseSpecFrontmatter(raw: string): { fm: SpecFrontmatter | null; body: string } {
@@ -63,10 +83,10 @@ export function parseSpecFrontmatter(raw: string): { fm: SpecFrontmatter | null;
       fm[key!] = val
         .slice(1, -1)
         .split(',')
-        .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+        .map((s) => unquoteScalar(s.trim()))
         .filter(Boolean);
     } else {
-      fm[key!] = val.replace(/^["']|["']$/g, '');
+      fm[key!] = unquoteScalar(val);
     }
   }
   return { fm: fm as SpecFrontmatter, body };

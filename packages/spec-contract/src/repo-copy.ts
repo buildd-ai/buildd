@@ -155,7 +155,7 @@ export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' |
   };
   const lines = [`status: ${input.status}`];
   if (!skip.has('owner')) lines.push(`owner: ${one(m.owner ?? input.defaultOwner, 'owner')}`);
-  if (!skip.has('title')) lines.push(`title: ${one(input.title, 'title')}`);
+  if (!skip.has('title')) lines.push(`title: ${quoted(one(input.title, 'title'))}`);
   // specs:lint requires a summary; a native body rarely states one in its own frontmatter.
   if (!skip.has('summary')) {
     const summary = m.summary?.trim() || firstProseSentence(input.body) || input.title.trim();
