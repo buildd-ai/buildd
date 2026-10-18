@@ -821,7 +821,7 @@ describe('a green head from the check_suite webhook is a door too (AC-9): CiGree
   });
 });
 
-describe('AC-35: a door command the control plane never answered is parked for the floor, under its own key', () => {
+describe('AC-74: a door command the control plane never answered is parked for the floor, under its own key', () => {
   const end = {
     task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } },
     workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',

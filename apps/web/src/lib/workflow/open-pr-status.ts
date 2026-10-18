@@ -1,7 +1,7 @@
 /**
  * Every open PR head in a linked repo carries `Buildd / Review approval`
  * (docs/specs/workflow-kernel-library.md §4, "Every open PR carries it";
- * AC-37, AC-38). One step of the kernel floor (kernel-floor.ts), so it runs
+ * AC-76, AC-77). One step of the kernel floor (kernel-floor.ts), so it runs
  * hourly on whichever host runs the floor, and its first pass is the one-off
  * republish onto heads opened before the context existed: no manual migration.
  *
@@ -296,7 +296,7 @@ const MAX_SETTLE = 3;
 
 /**
  * An event (a PR opened or pushed, a check finished, a review verdict recorded) re-derives one open
- * head's `Buildd / Review approval` now instead of at the next hourly floor (AC-39).
+ * head's `Buildd / Review approval` now instead of at the next hourly floor (AC-78).
  *
  * Ordered by construction, never by the event's arrival: the answer is derived from what GitHub and
  * the review state show *now*, not from the payload, so a late or duplicate event repeats the newest
