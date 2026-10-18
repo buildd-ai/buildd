@@ -63,7 +63,7 @@ import {
   type DispatchProposal,
   type SubjectEvent,
 } from '@/lib/supersession';
-import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -6003,7 +6003,7 @@ async function handleReviewerOutcomeIfNeeded(
   // escalationReason, which is downstream of an untrusted diff.
   let effectiveVerdict = output.verdict;
   let serverOverrideReason: string | null = null;
-  let serverOverrideSource: 'files' | 'confidence' | null = null;
+  let serverOverrideSource: 'files' | 'confidence' | 'evidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
     // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
     let currentFiles: Array<{ filename: string }> | null = null;
@@ -6107,9 +6107,33 @@ async function handleReviewerOutcomeIfNeeded(
     }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
   }
 
+  // The reviewer's evidence: the commit its checkout was at when it judged. It is
+  // recorded with the verdict, and a verdict read at any other commit than the
+  // round's head (or with none reported) is inconclusive: it never approves.
+  // Checked last, so it wins over every other reason: no gate above judged the
+  // head the reviewer actually read. A kernel round's reducer applies the same
+  // rule to `evidenceSha` and asks a reviewer again at the head (T6 → T27).
+  const evidenceSha = reviewerEvidenceSha(output);
+  const evidenceGate = applyEvidenceGate({ verdict: effectiveVerdict, evidenceSha, headSha });
+  await db
+    .update(tasks)
+    .set({
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('evidenceSha', ${evidenceSha}::text, 'evidenceAtHead', ${evidenceGate.overrideReason === null}::boolean)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, reviewerTaskId))
+    .catch((err: unknown) =>
+      console.error(`[reviewer] could not record the evidence commit for PR #${prNumber}:`, err),
+    );
+  if (evidenceGate.overrideReason) {
+    effectiveVerdict = evidenceGate.verdict;
+    serverOverrideReason = evidenceGate.overrideReason;
+    serverOverrideSource = 'evidence';
+  }
+
   if (serverOverrideReason) {
     console.warn(
-      `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
+      `[reviewer] PR #${prNumber}: model said ${output.verdict}, server escalated — ${serverOverrideReason}`,
     );
     // Persist the verdict that ACTUALLY applies, alongside (never over) the
     // agent's own output. Without this the stored review still reads
@@ -6147,6 +6171,7 @@ async function handleReviewerOutcomeIfNeeded(
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
+      evidenceSha,
       output,
     }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
@@ -6178,7 +6203,7 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, evidenceSha, output,
       }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
@@ -6238,7 +6263,9 @@ async function handleReviewerOutcomeIfNeeded(
       // A server override says so explicitly: the reviewer's own summary would
       // otherwise read as an approval on a card that escalated.
       body: (serverOverrideReason
-        ? `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+        ? serverOverrideSource === 'evidence'
+          ? `The reviewer's verdict (${output.verdict}) was read at another commit than this PR's head, so it counts for nothing and the server escalated the PR to a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+          : `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
         : (output.feedback ?? output.escalationReason ?? output.summary))
         + ledeNote
         + (effectiveVerdict === 'escalate' && output.recommendation
