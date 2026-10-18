@@ -7,6 +7,10 @@
  *   they decided on; the same decision again is answered by the first and files nothing.
  * - AC-46: a decision for a head that moved, or one an agent makes, is refused and moves nothing.
  * - AC-47: the read model counts each finding once.
+ * - Approve and override (follow-up 22): a person with merge permission, under a policy that
+ *   allows it, approves the head past its findings once; Buildd / Review approval turns success
+ *   for that head and it lands once. A stale head, an agent, no merge permission or a policy
+ *   that does not allow it are refused and move nothing.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
@@ -117,5 +121,47 @@ describe('r7 §7: findings after a spent review budget, and a person\'s decision
     const f2 = await fix();
     expect(f2?.result).toMatchObject({ result: 'duplicate', reason: 'idempotency_key_seen' });
     expect(await w.tasksOf(pr, 'fix')).toHaveLength(1);
+  }, 90_000);
+
+  test('approve and override: refused when stale, by an agent, without permission; once allowed it approves the head, publishes success and lands once', async () => {
+    w = await world();
+    const pr = await exhausted(w);
+    const h2 = await pushFixToA(w, pr);
+    const v = (await w.delivery(pr)).version;
+    const approve = (o: Partial<Parameters<typeof seam.approveOverrideThroughKernel>[0]> = {}) => seam.approveOverrideThroughKernel({
+      workspaceId: w.workspaceId, prNumber: pr.prNumber, actor: 'human:u1', decision: { headSha: h2, version: v },
+      reason: 'accepted as is', hasMergePermission: true, overridePermitted: true, ...o,
+    });
+
+    expect((await approve({ decision: { headSha: pr.head, version: v } }))?.result).toMatchObject({ result: 'rejected', reason: 'decision_head_stale' });
+    expect((await approve({ actor: 'agent:t9' }))?.result).toMatchObject({ result: 'rejected', reason: 'human_required' });
+    expect((await approve({ hasMergePermission: false }))?.result).toMatchObject({ result: 'rejected', reason: 'no_merge_permission' });
+    expect((await approve({ overridePermitted: false }))?.result).toMatchObject({ result: 'rejected', reason: 'override_not_permitted' });
+    expect(await w.delivery(pr)).toMatchObject({ state: 'ESCALATED', stateReason: 'review_exhausted', version: v });
+
+    const first = await approve();
+    expect(first?.result.result).toBe('applied');
+    expect(await w.delivery(pr)).toMatchObject({ approvedHeads: [h2], approvalBasis: 'human' });
+    expect((await approve())?.result).toMatchObject({ result: 'duplicate', reason: 'idempotency_key_seen' });
+    const audits = await q<{ bypass: Record<string, unknown> }>(sql`
+      SELECT bypass FROM workflow_transitions WHERE delivery_id = ${pr.deliveryId}::uuid AND command = 'HumanResolve'`);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.bypass).toMatchObject({ choice: 'approve', actor: 'human:u1', reason: 'accepted as is', headSha: h2 });
+    expect((audits[0]!.bypass.overriddenFindings as string[]).length).toBe(2);
+    // The findings stay listed: an override is not a fix.
+    expect(await statesOf(w, pr)).toEqual({ 'src/a.ts': 'addressed', 'src/b.ts': 'open' });
+
+    // The required check reflects it: success for this head, naming the person's override.
+    const { githubReader } = await import('../../src/lib/workflow/github-facts');
+    const shown = await githubReader(w.installationId).statusOf!(w.repo, h2, 'Buildd / Review approval');
+    expect(shown).toMatchObject({ state: 'success' });
+    expect(shown?.description ?? '').toContain('approved by a person over 2 open findings');
+
+    w.gh.greenCi(w.repo, h2, ['build', 'test']);
+    await w.deliver();
+    await w.land(pr, h2);
+    await w.deliver();
+    expect((await approve())?.result.result).toBe('duplicate');
+    expect(w.mergeCalls(pr)).toHaveLength(1);
   }, 90_000);
 });

@@ -40,6 +40,10 @@ const REFUSED_CALLS: Record<string, Record<string, string>> = {
     'apps/web/src/app/api/prs/[prNumber]/merge/route.ts':
       'only chat (a signed-in person, in process) takes this branch; it is a session route, and a task token never reaches it',
   },
+  approve_pr_override: {
+    'apps/web/src/app/api/prs/[prNumber]/approve-override/route.ts':
+      'only a person takes this decision (their own OAuth session or the dashboard); the route refuses a task token as human_required',
+  },
   manage_experiments: {
     'apps/web/src/app/api/experiments/[id]/readout/route.ts':
       'a readout counts tasks across every workspace on the team; narrowing it to one would change what it measures',
