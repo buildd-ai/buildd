@@ -123,7 +123,7 @@ const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => 
 const roleChanged = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.role_changed');
 const joinedMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.joined_mission');
 const mockAnswerScope = mock(async (_p: any) => {});
-mock.module('@/lib/mission-epoch-door', () => ({ answerMissionTaskScopeQuietly: mockAnswerScope }));
+mock.module('@/modules', () => ({ MISSION_SCOPE_ANSWER: { answerQuietly: mockAnswerScope } }));
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));

@@ -25,7 +25,7 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: () => Promise.resolve(access),
 }));
 mock.module('@/lib/workflow/kernel-client', () => ({ kernelPrincipalOf: ({ person }: any) => ({ kind: 'user', id: person }) }));
-mock.module('@/lib/mission-epoch-door', () => ({ answerMissionTaskScope: mockAnswer }));
+mock.module('@/modules', () => ({ MISSION_SCOPE_ANSWER: { answer: mockAnswer } }));
 mock.module('@/lib/task-cancel', () => ({ applyTaskCancelSideEffects: mockCancelEffects }));
 
 const { POST } = await import('./route');

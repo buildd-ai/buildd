@@ -841,8 +841,8 @@ export async function PATCH(
     if (held === false && task.missionId && updated?.missionId === task.missionId
       && isOwnScopeHold((task.context as Record<string, unknown> | null)?.heldBy, task.missionId)) {
       const person = requestingPerson(user, apiAccount);
-      const { answerMissionTaskScopeQuietly } = await import('@/lib/mission-epoch-door');
-      await answerMissionTaskScopeQuietly({
+      const { MISSION_SCOPE_ANSWER } = await import('@/modules');
+      await MISSION_SCOPE_ANSWER.answerQuietly({
         taskId: id, workspaceId: updated.workspaceId, missionId: task.missionId, answer: 'in_scope',
         actor: person ? `human:${person}` : `agent:${apiAccount?.id ?? 'unknown'}`,
         principal: kernelPrincipalOf({ person, account: apiAccount }),

@@ -77,8 +77,8 @@ export async function POST(
     if (!task || !hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     if (!task.missionId) return NextResponse.json(REFUSED.not_in_mission, { status: 409 });
 
-    const { answerMissionTaskScope } = await import('@/lib/mission-epoch-door');
-    const result = await answerMissionTaskScope({
+    const { MISSION_SCOPE_ANSWER } = await import('@/modules');
+    const result = await MISSION_SCOPE_ANSWER.answer({
       taskId: task.id, workspaceId: task.workspaceId, missionId: task.missionId, answer: answer as Answer,
       actor: `human:${person}`, principal: kernelPrincipalOf({ person, account: apiAccount }),
     });
