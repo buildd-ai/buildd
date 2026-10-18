@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Select } from '@/components/ui/Select';
 
 /**
  * Waive or defer one finding, from the task page. A reason is required, and a deferral names the
@@ -39,12 +40,18 @@ export default function FindingDisposeForm({ prNumber, workspaceId, findingId, d
   }
   return (
     <div data-testid="finding-dispose-form" className="mt-2 flex flex-col gap-2 border border-border-default p-3">
-      <label className="flex flex-col gap-1 text-meta">Action
-        <select value={disposition} onChange={(e) => setDisposition(e.target.value as 'waived' | 'deferred')} className="min-h-11 border border-border-default bg-surface-1 px-2 text-body">
-          <option value="waived">Waive: this finding does not need a change</option>
-          <option value="deferred">Defer: another task takes it</option>
-        </select>
-      </label>
+      <div className="flex flex-col gap-1 text-meta">
+        <span id="finding-dispose-action">Action</span>
+        <Select<'waived' | 'deferred'>
+          value={disposition}
+          onChange={setDisposition}
+          aria-labelledby="finding-dispose-action"
+          options={[
+            { value: 'waived', label: 'Waive: this finding does not need a change' },
+            { value: 'deferred', label: 'Defer: another task takes it' },
+          ]}
+        />
+      </div>
       {disposition === 'deferred' && (
         <label className="flex flex-col gap-1 text-meta">Task that takes it (full task id)
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} className="min-h-11 border border-border-default bg-surface-1 px-2 font-mono text-body" />
