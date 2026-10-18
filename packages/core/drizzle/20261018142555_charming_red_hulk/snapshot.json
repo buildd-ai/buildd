@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "2886e871-a0a9-4dfd-a355-8928fa6b8141",
+  "id": "20017760-35c1-4ae1-aef7-3948bf21c9bf",
   "prevIds": [
-    "50361ad3-fa83-4ca8-ade0-15f44fda4e9f"
+    "f4639099-29e6-4d47-aa1f-b56db0ddfa2c"
   ],
   "ddl": [
     {
@@ -40162,6 +40162,34 @@
       "method": "btree",
       "concurrently": false,
       "name": "tasks_release_run_id_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "tasks"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "workspace_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "((context->>'releaseId'))",
+          "isExpression": true,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "(context->>'type') = 'degradation'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "tasks_degradation_release_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "tasks"
