@@ -17,7 +17,7 @@ import { db } from '@buildd/core/db';
 import { missionNotes, missions } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import { missionStatusNoteIntoPattern, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
-import { RECENTLY_DELIVERED_WINDOW_MS } from '@/lib/mission-delivered';
+import { RECENTLY_DELIVERED_WINDOW_MS } from '@/lib/recently-delivered';
 import type { RecentMission } from '@buildd/shared';
 
 export const RECENT_DAYS = RECENTLY_DELIVERED_WINDOW_MS / 86_400_000;

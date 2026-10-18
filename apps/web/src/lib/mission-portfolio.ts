@@ -8,7 +8,7 @@
  * Design: docs/prototypes/cross-surface-delivery (`#missions`).
  */
 import type { StateKey } from '@/components/ui/states';
-import { RECENTLY_DELIVERED_WINDOW_MS, isRecentlyDelivered } from './mission-delivered';
+import { RECENTLY_DELIVERED_WINDOW_MS, isRecentlyDelivered } from './recently-delivered';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
 import { sectionOf, type MissionSectionKey } from './mission-sections';
 

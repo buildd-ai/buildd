@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { HOME_JUST_LANDED_WINDOW_MS, RECENTLY_DELIVERED_WINDOW_MS, deliveredAtMs, isRecentlyDelivered } from './mission-delivered';
+import { HOME_JUST_LANDED_WINDOW_MS, RECENTLY_DELIVERED_WINDOW_MS, deliveredAtMs, isRecentlyDelivered } from './recently-delivered';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
 const ago = (h: number) => new Date(NOW - h * 3_600_000);

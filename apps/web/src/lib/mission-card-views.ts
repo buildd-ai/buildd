@@ -8,7 +8,7 @@
  * Callers select `MISSION_CARD_TASK_COLUMNS` / `MISSION_CARD_WORKER_COLUMNS` on
  * their own mission query, so the card never costs a second task fan-out.
  */
-import { RECENTLY_DELIVERED_WINDOW_MS } from './mission-delivered';
+import { RECENTLY_DELIVERED_WINDOW_MS } from './recently-delivered';
 import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadHumanSteeringMarksByMission } from './mission-steering-notes';
 import { adaptFlightStripInputs, MISSION_TASK_REFRESH_EXTRAS } from './missions-query';

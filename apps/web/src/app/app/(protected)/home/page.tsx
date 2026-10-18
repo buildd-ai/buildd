@@ -83,7 +83,7 @@ import { agentCredentialProbe } from '@/lib/getting-started-load';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { missionCardHref, type MissionCardRow } from '@/lib/mission-card-view';
 import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
-import { HOME_JUST_LANDED_WINDOW_MS, isRecentlyDelivered } from '@/lib/mission-delivered';
+import { HOME_JUST_LANDED_WINDOW_MS, isRecentlyDelivered } from '@/lib/recently-delivered';
 
 export const dynamic = 'force-dynamic';
 
