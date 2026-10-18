@@ -1749,7 +1749,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-66: a merge of the base while a review fix runs is a foreign push: never credited to the fix, the fix cannot complete on it, and a delta round scoped to the refresh is queued',
+    name: 'AC-79: a merge of the base while a review fix runs is a foreign push: never credited to the fix, the fix cannot complete on it, and a delta round scoped to the refresh is queued',
     async run(host) {
       const s = await new Delivery(host, 61).open();
       await s.ownerPushed('H1');
@@ -1775,7 +1775,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-66: a fix push followed by a merge of the base: the fix is credited with its own push only, and completes on the head that contains it',
+    name: 'AC-79: a fix push followed by a merge of the base: the fix is credited with its own push only, and completes on the head that contains it',
     async run(host) {
       const s = await new Delivery(host, 62).open();
       await s.ownerPushed('H1');

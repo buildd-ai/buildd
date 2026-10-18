@@ -754,7 +754,7 @@ export async function attemptEnded(p: {
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
-  // AC-66: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
+  // AC-79: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
   // its own: the PR's diff at the live head, against the base, is the diff at the bound head.
   const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
     ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
@@ -1001,7 +1001,7 @@ export async function fixCompletionGate(p: {
     // re-review, which verifies it like any fix.
     const ctx = ctxOf(p.task);
     const human = ctx.trigger === 'human';
-    // AC-66: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
+    // AC-79: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
     // it is the fix's own work, so it cannot complete on it.
     if (p.task.deliveryRole === 'fix' && !human && attempt.boundHeadSha && await baseOnlyMove(p.task.workspaceId, d.repoFullName, attempt.boundHeadSha, live, deps, repo)) {
       return {
@@ -1047,7 +1047,7 @@ export async function fixCompletionGate(p: {
 }
 
 /**
- * AC-66: did the PR move from `fromSha` to the live head only by base commits? True only on a read
+ * AC-79: did the PR move from `fromSha` to the live head only by base commits? True only on a read
  * that says the PR's diff against the base is the same at both (`contentEquivalent`); unread is false.
  */
 async function baseOnlyMove(

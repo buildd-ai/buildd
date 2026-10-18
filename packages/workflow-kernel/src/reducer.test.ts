@@ -696,7 +696,7 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(unsafe.toState).toBe('AWAITING_PUSH');
     expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
   });
-  test('AC-66: a merge of the base while the fix runs is a foreign push, never credited, and addresses nothing', () => {
+  test('AC-79: a merge of the base while the fix runs is a foreign push, never credited, and addresses nothing', () => {
     const findings = [{ id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 't', required: true, status: 'open' as const, lastRound: 1 }];
     const v = { ...fixing(), findings } as never;
     for (const baseOnly of ['own_refresh', 'compare'] as const) {
@@ -714,7 +714,7 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const reported = applied(run({ ...fixing({ reportedShas: ['H2'] }), findings } as never, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), baseOnly: 'compare' }));
     expect(reported.evidence.foreignPush).toBeUndefined();
   });
-  test('AC-66: a fix that ends on a head moved only by a base merge does not complete; a delta round scoped to the refresh is queued', () => {
+  test('AC-79: a fix that ends on a head moved only by a base merge does not complete; a delta round scoped to the refresh is queued', () => {
     const merged = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running' })]);
     for (const outcome of ['success', 'failed'] as const) {
       const dec = applied(end(merged, { attemptId: 'a1', outcome, localHeadSha: null, commitCount: 0, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true, changedPaths: ['src/a.ts'] }));

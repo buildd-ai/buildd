@@ -75,7 +75,7 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
   const gate = (o: {
     head: string; changed?: string[] | null; findings?: unknown[]; noop?: { findingIds: string[]; evidence: string } | null;
     elsewhere?: { findingIds: string[]; files: string[]; reason: string } | null; context?: Record<string, unknown>;
-    /** AC-66: the (from, to) pairs whose PR diff against the base is the same. */
+    /** AC-79: the (from, to) pairs whose PR diff against the base is the same. */
     equivalent?: Array<[string, string]>;
   }) =>
     fixCompletionGate(
@@ -115,7 +115,7 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
     expect((await gate({ head: 'H2', changed: ['lib/z.ts'], elsewhere: { findingIds: ['someone-else:0'], files: ['lib/z.ts'], reason: 'x' } }))?.code).toBe('repair_unrelated_diff');
     expect((await gate({ head: 'H2', changed: ['lib/z.ts'], noop: { findingIds: ['r1:0'], evidence: 'absent' } }))?.code).toBe('repair_unrelated_diff');
   });
-  test('AC-66: a head moved only by a merge of the base is refused, even when the base touched the finding\'s file', async () => {
+  test('AC-79: a head moved only by a merge of the base is refused, even when the base touched the finding\'s file', async () => {
     const r = await gate({ head: 'H2', changed: ['src/a.ts'], equivalent: [['H1', 'H2']] });
     expect(r).toMatchObject({ code: 'repair_base_only', boundHeadSha: 'H1', liveHeadSha: 'H2' });
     expect(r?.hint).toContain('push your own commits');

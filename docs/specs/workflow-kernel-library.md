@@ -1069,7 +1069,7 @@ push, refresh, completion or owner change can make it disappear.
   finding's, with nothing the feedback names, needs the `fixedElsewhere`
   claim; a finding on a file at the repository root accepts any change (its
   directory is the root); legacy review fixes have no gate.
-- Completion, a head moved only by a merge of the base (AC-66): refused
+- Completion, a head moved only by a merge of the base (AC-79): refused
   (`repair_base_only`) when the PR's diff against the base is the same at the
   bound head and the live one (`contentEquivalent`): nothing on the head is
   the fix's own work. A `fixedElsewhere` claim does not excuse it; a person's
@@ -1142,7 +1142,7 @@ push, refresh, completion or owner change can make it disappear.
   is dispatched at all is not built: the green re-run is what clears it.
 
 - A merge of the base while a review fix runs is never the fix's push
-  (AC-66). §6.9 credits a running attempt with any push that descends from
+  (AC-79). §6.9 credits a running attempt with any push that descends from
   its bound head, and a merge of the base does. The head fact reads whether
   the move from the held head brought only base commits (`baseOnly`: the
   platform's own `refresh_branch` pinned to the held head updated the
@@ -1171,7 +1171,7 @@ push, refresh, completion or owner change can make it disappear.
   no-op evidence WHEN it tries to complete THEN completion is refused, the
   attempt counts against the round limit, the findings stay `open`, and the
   attempt is shown as "no change".
-- AC-66 (failure; implements Living Spec criterion AC-36): GIVEN a running
+- AC-79 (failure; implements Living Spec criterion AC-36): GIVEN a running
   review fix WHEN the PR head moves by a merge of the base only THEN the push
   is recorded as foreign and not credited to the fix, the fix cannot complete
   on it (`repair_base_only`; its end is "no change"), and a delta round scoped
@@ -1180,7 +1180,7 @@ push, refresh, completion or owner change can make it disappear.
 
 | Criterion | Verified by |
 |---|---|
-| Criterion AC-66 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-66"; `packages/workflow-kernel/src/reducer.test.ts` › "AC-66"; `apps/web/src/lib/workflow/fix-completion-gate.test.ts` › "AC-66"; `apps/web/tests/db/workflow-seam.test.ts` › "AC-66" |
+| Criterion AC-79 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-79"; `packages/workflow-kernel/src/reducer.test.ts` › "AC-79"; `apps/web/src/lib/workflow/fix-completion-gate.test.ts` › "AC-79"; `apps/web/tests/db/workflow-seam.test.ts` › "AC-79" |
 
 ## 6. Mission deliveries and epochs
 

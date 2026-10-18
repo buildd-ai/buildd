@@ -618,7 +618,7 @@ describe('S5 re-review: the red-PR sweep ends a CI repair only on every check pa
   });
 });
 
-describe('AC-66: a merge of the base while a review fix runs (workflow-kernel-library.md §5)', () => {
+describe('AC-79: a merge of the base while a review fix runs (workflow-kernel-library.md §5)', () => {
   const transitionsOf = (deliveryId: string) => q<{ command: string; to_state: string; evidence: Record<string, unknown> }>(
     sql`SELECT command, to_state, evidence FROM workflow_transitions WHERE delivery_id = ${deliveryId}::uuid ORDER BY to_version`);
   const roundRows = (deliveryId: string) => q<{ round: number; head_sha: string; kind: string; status: string; scope: Record<string, unknown> | null }>(

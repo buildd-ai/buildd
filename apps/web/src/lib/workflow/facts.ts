@@ -284,7 +284,7 @@ export async function readDeltaForApproval(
 }
 
 /**
- * AC-66 (workflow-kernel-library.md §5): did the move from the head a FIXING delivery holds to
+ * AC-79 (workflow-kernel-library.md §5): did the move from the head a FIXING delivery holds to
  * `live` bring only base commits? `own_refresh` when the platform's own `refresh_branch`, pinned
  * to the held head, updated the branch; `compare` when the PR's diff against the base is the same
  * at both heads (a merge of the base, by anyone). Null when it is not read (another state, the
@@ -391,7 +391,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         : null;
       // 58c8961e: what changed since the approval, read only when the next round could be a delta review.
       const delta = live && !carryForward ? await readDeltaForApproval(view, fact.repoFullName, live, github) : null;
-      // AC-66: while a review fix runs, a push that brought only base commits is foreign (never the fix's).
+      // AC-79: while a review fix runs, a push that brought only base commits is foreign (never the fix's).
       const baseOnly = live ? await baseOnlyReading(view, fact.repoFullName, live, exec, github) : null;
       return {
         command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}), ...(baseOnly ? { baseOnly } : {}) },
