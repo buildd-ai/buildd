@@ -52,10 +52,11 @@ export function compositionBlock(i: CompositionBlockInput): string {
   lines.push('### 3. Uncovered-delta review');
   if (unverifiable || i.rejectedBecause?.length) lines.push('The whole PR (full review).');
   else if (a.novelDelta.result === 'none') lines.push('No uncovered delta: nothing here needs its own review.');
-  else {
+  else if (a.novelDelta.result === 'present') {
+    const paths = a.novelDelta.paths;
     lines.push(`Paths no earlier review covers (${i.deltaReview === 'approved' ? 'reviewed and approved' : i.deltaReview === 'changes_requested' ? 'reviewed, changes requested' : 'review owed'}):`);
-    for (const p of a.novelDelta.paths.slice(0, 30)) lines.push(`- \`${p}\``);
-    if (a.novelDelta.paths.length > 30) lines.push(`- and ${a.novelDelta.paths.length - 30} more`);
+    for (const p of paths.slice(0, 30)) lines.push(`- \`${p}\``);
+    if (paths.length > 30) lines.push(`- and ${paths.length - 30} more`);
   }
   lines.push('');
 

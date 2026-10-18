@@ -2312,10 +2312,14 @@ exit" and "review, refresh and landing while a coordination owner keeps running"
 
 ### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
 
-**Status: contract written, implementation pending.** Every rule below is the target.
-Where the code differs today, the rule says so under "Today". AC-20 to AC-37 (§19) are
-the checks the follow-up tasks link their tests to. Until a rule's test exists and
-passes, the rule is not a claim about the code.
+**Status: partly implemented.** Met, each with a test citing its ID: AC-20, AC-21, AC-22
+(`review-composition.test.ts`), AC-23, AC-24, AC-25, AC-31, AC-32, AC-37
+(`findings-reducer.test.ts`, `tests/db/review-findings.test.ts`), AC-30, AC-33, AC-34
+(`landing-authority.test.ts`), AC-35 (`review-findings-effects.test.ts`). **Not yet
+implemented, still only the target:** AC-26 to AC-29 (repair builders, zero-diff and
+refresh-push handling of a review fix) and AC-36 (`get_pr` / `get_pr_review` projections).
+Where the code differs today, the rule says so under "Today". Until a rule's test exists
+and passes, the rule is not a claim about the code.
 
 **The incident.** A mission integration PR into trunk was owned by the mission's
 `bookkeeping` task (`openMissionIntegrationPr`, `mission-pr.ts`). No delivery was ever

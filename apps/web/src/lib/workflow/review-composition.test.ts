@@ -59,7 +59,7 @@ describe('isCompositionPr', () => {
 });
 
 describe('buildCompositionAttestation', () => {
-  test('zero novel delta: constituents at their reviewed (or recorded-equivalent) heads, the version bump an artifact', () => {
+  test('AC-20: zero novel delta: constituents at their reviewed (or recorded-equivalent) heads, the version bump an artifact', () => {
     const b = buildCompositionAttestation(base());
     expect(b.attestation.novelDelta).toEqual({ result: 'none' });
     expect(b.attestation.method).toBe('patch_set_equal');
@@ -74,7 +74,7 @@ describe('buildCompositionAttestation', () => {
     }
   });
 
-  test('regression: a squash commit whose patch differs from the reviewed head (conflict resolved while merging) is novel, not a constituent', () => {
+  test('AC-21: regression: a squash commit whose patch differs from the reviewed head (conflict resolved while merging) is novel, not a constituent', () => {
     // C = S1 is associated with PR #11 (approved at P11), but what landed is not what was reviewed.
     const b = buildCompositionAttestation(base({
       commits: [{ ...base().commits![0], diff: [fd('a.ts', '@@ -1 +1 @@\n-old a.ts\n+resolved by hand')] }, ...base().commits!.slice(1)],
@@ -104,7 +104,7 @@ describe('buildCompositionAttestation', () => {
     expect(missing.attestation.novelDelta).toEqual({ result: 'present', paths: ['a.ts'] });
   });
 
-  test('a patch read that is unavailable fails closed, never none', () => {
+  test('AC-22: a patch read that is unavailable fails closed, never none', () => {
     const noLanded = base();
     noLanded.commits![0] = { ...noLanded.commits![0], diff: null };
     expect(buildCompositionAttestation(noLanded).attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'landed_patch_unreadable:S1' });
