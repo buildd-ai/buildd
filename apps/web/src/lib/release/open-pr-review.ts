@@ -16,13 +16,22 @@
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { classifyReleasePr, type ReleasePrFacts } from '@buildd/core/release-candidate';
 import { REQUIRED_CANDIDATE_CHECKS } from '@buildd/core/release-compose';
-import type { CandidateCheckState, CandidateGateInput, UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import { githubApi } from '@/lib/github';
 import { listAllCheckRuns } from '@/lib/ci-verdict';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import type { PrReviewStatus } from '@/lib/pr-review-status';
 import { evaluateReviewVerdictGate } from '@/lib/review-verdict-gate';
 import { toCandidateChecks, type CheckRunFact } from './compose-source';
+
+// The shapes of packages/workflow-kernel/src/open-pr-status.ts, restated: outside the kernel only its
+// entry points are imported (packages/core/__tests__/workflow-write-sites.test.ts, S14).
+export type UnownedReview = 'not_requested' | 'in_progress';
+export type CandidateCheckState = 'passing' | 'pending' | 'failing' | 'missing';
+export interface CandidateGateInput {
+  sha: string;
+  checks: ReadonlyArray<{ name: string; state: CandidateCheckState }>;
+  review: { verdict: 'pass' } | { verdict: 'pending' | 'changes_requested' | 'blocked'; reason?: string | null };
+}
 
 type Api = (installationId: number, path: string, options?: RequestInit) => Promise<unknown>;
 
