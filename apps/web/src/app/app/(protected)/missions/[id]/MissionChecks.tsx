@@ -174,7 +174,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
                         {onOpenTask
                           ? <button type="button" onClick={() => onOpenTask(f.id)} className="min-h-11 min-w-0 text-left md:min-h-0 text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{f.title}</button>
                           : <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{f.title}</span>}
-                        <span className="ml-auto shrink-0 font-mono text-meta text-text-muted">{f.done ? 'landed' : 'fixing'}</span>
+                        <span className="ml-auto shrink-0 font-mono text-meta text-text-muted">{f.done ? 'merged' : 'fixing'}</span>
                       </li>
                     ))}
                   </ul>

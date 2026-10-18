@@ -90,6 +90,11 @@ export async function loadPolicyRules(teamId: string): Promise<PolicyRule[]> {
 }
 
 /** Granted rows past their expiry become `expired`, so the dedupe slot frees up. */
+/** Expire the team's lapsed grants: a write, so a page runs it after its response. */
+export async function expireLapsedTeamGrants(teamId: string, now: Date = new Date()): Promise<void> {
+  await expireLapsed(eq(capabilityGrants.teamId, teamId), now);
+}
+
 async function expireLapsed(where: ReturnType<typeof eq>, now: Date) {
   await db.update(capabilityGrants)
     .set({ status: 'expired' })

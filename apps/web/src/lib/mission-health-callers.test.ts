@@ -51,10 +51,10 @@ describe('deriveMissionHealth call sites', () => {
     expect(callers.some(f => f.endsWith('mission-card-view.ts'))).toBe(true);
   });
 
-  it('Home and the missions list build their cards with the shared builder', () => {
-    const home = readFileSync(join(APP_ROOT, 'app', '(protected)', 'home', 'page.tsx'), 'utf8');
+  it('Home (through the stored summary) and the missions list build their cards with the shared builder', () => {
+    const summary = readFileSync(join(import.meta.dir, 'mission-summary.ts'), 'utf8');
     const list = readFileSync(join(APP_ROOT, 'app', '(protected)', 'missions', 'page.tsx'), 'utf8');
-    expect(home).toContain('summarizeMissionForCard(');
+    expect(summary).toContain('summarizeMissionForCard(');
     expect(list).toContain('summarizeMissionForCard(');
   });
 

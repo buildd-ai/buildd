@@ -18,13 +18,28 @@ import { escalationRuleExecutor } from './merge-policy-rule-executor';
 import { dispatchVerdictAction } from './pr-landing-verdict-dispatch';
 import { insertDecisionReceipts } from './memory-decisions';
 import { fileRecoverableBlockerRepair } from './recoverable-blocker-repair';
+import { noteWorkChanged } from './work-changed';
+
+/**
+ * A verdict on a PR changes what its mission's stored summary reads (a mission
+ * PR's verdict decides whose next step it is): note the PR so it is refreshed.
+ */
+function notePrVerdict(input: { subjectType?: string | null; subjectId?: string | null }): void {
+  if (input.subjectType !== 'pr' || !input.subjectId) return;
+  const m = /^pr:([0-9a-f-]{36}):(\d+)$/i.exec(input.subjectId);
+  if (m) noteWorkChanged({ workspacePrs: [{ workspaceId: m[1]!, prNumber: Number(m[2]) }] });
+}
 
 export function escalationGateDeps(): EscalationGateDeps {
   return {
     decide: true,
     resolveAccess: s => resolveDecisionAccess({ capability: 'escalation_gate', ...s }),
     run: ESCALATION_GATE_DECISION.run,
-    record: input => recordDecision(input),
+    record: async input => {
+      const id = await recordDecision(input);
+      notePrVerdict(input);
+      return id;
+    },
     recordReceipts: (receipts, scope) => insertDecisionReceipts(receipts, scope),
     act: escalationActionFiler(fileRecoverableBlockerRepair),
     // A rule verdict's step starts on the look that files it, once per state
