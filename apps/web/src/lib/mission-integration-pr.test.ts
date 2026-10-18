@@ -269,3 +269,9 @@ describe('a closed mission PR whose work landed elsewhere', () => {
     expect(describeMissionDelivery(v).line).toBe('The mission PR closed without merging and its work landed in #61.');
   });
 });
+
+describe('a merged mission PR never reads open (spec 3ef37387 R-24)', () => {
+  it('lifecycle merged with no merge stamp yet reads merged', () => {
+    expect(deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [missionPrTask({ mergedAt: null, prLifecycleStatus: 'merged' })] })!.state).toBe('merged');
+  });
+});

@@ -8,6 +8,7 @@
  * Design: docs/prototypes/cross-surface-delivery (`#missions`).
  */
 import type { StateKey } from '@/components/ui/states';
+import { RECENTLY_DELIVERED_WINDOW_MS, isRecentlyDelivered } from './recently-delivered';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
 import { sectionOf, type MissionSectionKey } from './mission-sections';
 
@@ -44,7 +45,7 @@ export interface PortfolioRow {
 }
 
 /** Completed missions inside this window show in the history disclosure; older ones sit behind "show older". */
-export const COMPLETED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const COMPLETED_HISTORY_WINDOW_MS = RECENTLY_DELIVERED_WINDOW_MS;
 
 export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
   const open: PortfolioRow[] = [];
@@ -53,7 +54,7 @@ export function splitPortfolio(rows: readonly PortfolioRow[], now: number) {
   // archived mission is history, not an open row the counter skips.
   for (const r of rows) (r.delivery.open ? open : done).push(r);
   done.sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0) || a.delivery.id.localeCompare(b.delivery.id));
-  const recent = (r: PortfolioRow) => r.completedAt != null && now - r.completedAt < COMPLETED_HISTORY_WINDOW_MS;
+  const recent = (r: PortfolioRow) => isRecentlyDelivered({ completedAt: r.completedAt }, now, COMPLETED_HISTORY_WINDOW_MS);
   return { open, recentDone: done.filter(recent), olderDone: done.filter(r => !recent(r)) };
 }
 

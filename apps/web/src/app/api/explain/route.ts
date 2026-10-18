@@ -130,6 +130,18 @@ export async function GET(req: NextRequest) {
         ? await resolveWorkerByPrNumber(account, prNumber, workspaceId)
         : await resolveWorkerByPrNumberInWorkspaces(teamWsIds, prNumber, workspaceId);
       if (typeof resolved.status === 'number') {
+        // No worker row holds this number. That is not "nothing": an agent PR
+        // opened outside create_pr (a plain `gh pr create`) has no row until
+        // the orphan sweep adopts it, so the answer is UNKNOWN, not absent.
+        if (resolved.status === 404 && resolved.error === 'PR not found') {
+          return NextResponse.json({
+            error: `PR #${prNumber}: UNKNOWN - check GitHub. buildd holds no worker or delivery row for it, so it cannot say who owns it or what it waits on.`,
+            scope: 'pr',
+            state: 'UNKNOWN',
+            prNumber,
+            hint: 'If it is an open buildd/<task> branch, the orphan sweep adopts it onto its task within the hour and files a needs-you item. To record it now, the owning task can call create_pr with prUrl.',
+          }, { status: 404 });
+        }
         return NextResponse.json(
           { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
           { status: resolved.status },
