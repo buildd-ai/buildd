@@ -1441,7 +1441,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'refresh_branch'), ['ok:escalated:update-branch kept failing'], 'a person lands it');
       eq((await c.d()).state, 'ESCALATED', 'escalated');
-      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: landing needs a person`], 'and the team is told');
+      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: merge needs a person`], 'and the team is told');
       eq(fc.work.requested.filter((w) => w.role === 'conflict_fix').length, 0, 'no agent');
     },
   },
