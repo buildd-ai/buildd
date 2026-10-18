@@ -3,7 +3,7 @@ import { missions, specCriterionRecords, specOutcomeVerdicts, specs, tasks, user
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { readGovernedOutcome, type OutcomeView } from './outcome';
+import { governedOutcomesFor, taskVerdictRows, type OutcomeView } from './outcome';
 import { reach, type SpecCaller, type SpecRow } from './store';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import type { GoalCriteriaState, LivingSpecCriterionStanding } from '@buildd/shared';
@@ -106,7 +106,9 @@ const selectsSpec = (specId: string) => sql`exists (
  */
 export async function pinnedTaskRows(workspaceId: string, specId: string, opts: { limit: number; cursor?: Cursor | null }) {
   return db.select({
-    id: tasks.id, title: tasks.title, status: tasks.status, context: tasks.context, createdAt: tasks.createdAt,
+    id: tasks.id, title: tasks.title, status: tasks.status, createdAt: tasks.createdAt,
+    // Only the pin: the rest of a task's context is never shown here.
+    context: sql<Record<string, unknown>>`jsonb_build_object('specSource', ${tasks.context}->'specSource')`,
   })
     .from(tasks)
     .where(and(
@@ -138,19 +140,13 @@ export function evidenceLinks(evidence: unknown): DeliveryEvidence[] {
   return out.slice(0, 4);
 }
 
-/** The newest verdict's evidence per criterion, for these tasks on their pinned revisions. */
-async function newestEvidence(pins: Array<{ taskId: string; specRevisionId: string }>): Promise<Map<string, unknown>> {
+/** The newest verdict's evidence per criterion, for these tasks on their pinned revisions, from their verdicts (oldest first). */
+function newestEvidenceOf(rows: ReadonlyArray<{ taskId: string | null; specRevisionId: string; criterionId: string; evidence: unknown }>, pins: Array<{ taskId: string; specRevisionId: string }>): Map<string, unknown> {
   const out = new Map<string, unknown>();
   if (!pins.length) return out;
-  const rows = await db.select({
-    taskId: specOutcomeVerdicts.taskId, specRevisionId: specOutcomeVerdicts.specRevisionId,
-    criterionId: specOutcomeVerdicts.criterionId, evidence: specOutcomeVerdicts.evidence,
-  })
-    .from(specOutcomeVerdicts)
-    .where(inArray(specOutcomeVerdicts.taskId, pins.map((p) => p.taskId)))
-    .orderBy(desc(specOutcomeVerdicts.createdAt));
   const want = new Map(pins.map((p) => [p.taskId, p.specRevisionId]));
-  for (const r of rows) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
     // A mission-subject verdict has no task; it is not a task's delivery evidence.
     if (!r.taskId || want.get(r.taskId) !== r.specRevisionId) continue;
     const k = `${r.taskId}:${r.criterionId}`;
@@ -194,19 +190,26 @@ function wordingChanged(w: Map<number, Map<string, string>>, approved: number | 
 
 async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, approved: number | null, w: Map<number, Map<string, string>>): Promise<DeliveryEntry[]> {
   const ids = rows.map((r) => r.id);
-  const views = await getDeliveryViewsForTasks(ids).catch(() => new Map());
+  // The delivery views and every verdict on these tasks, read together, once.
+  const [views, verdictRows] = await Promise.all([
+    getDeliveryViewsForTasks(ids).catch(() => new Map()),
+    taskVerdictRows(ids).catch(() => null),
+  ]);
   const pins = rows.map((r) => ({ taskId: r.id, pin: asRecord(asRecord(r.context)?.specSource) ?? {} }));
-  const evidence = await newestEvidence(pins
+  const evidence = newestEvidenceOf(verdictRows ?? [], pins
     .filter((p) => typeof p.pin.specRevisionId === 'string')
-    .map((p) => ({ taskId: p.taskId, specRevisionId: p.pin.specRevisionId as string }))).catch(() => new Map<string, unknown>());
+    .map((p) => ({ taskId: p.taskId, specRevisionId: p.pin.specRevisionId as string })));
+
+  // Every task's governed outcome in one batch, its PR head from the views just read (not a read per task).
+  const heads = new Map(rows.map((r) => [r.id, (views.get(r.id) as { headSha?: string | null } | undefined)?.headSha ?? null]));
+  const outcomes = await governedOutcomesFor(rows, heads, verdictRows ?? undefined).catch(() => new Map<string, OutcomeView>());
 
   return Promise.all(rows.map(async (r, i): Promise<DeliveryEntry> => {
     const pin = pins[i].pin;
     const view = views.get(r.id);
     // The kernel's reading when the task has a PR delivery; a task without one delivered by completing.
     const delivered = view ? view.state === 'MERGED' || !!view.supersededBy : r.status === 'completed';
-    const read = await readGovernedOutcome(null, r.id).catch(() => null);
-    const outcome = read && read.ok ? read.outcome : null;
+    const outcome = outcomes.get(r.id) ?? null;
     const builtTo = outcome?.revision ?? (typeof pin.revision === 'number' ? pin.revision : 0);
     const provisional = pin.provisional === true;
     const criteria: DeliveryCriterion[] = ((outcome?.criteria ?? []) as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({
