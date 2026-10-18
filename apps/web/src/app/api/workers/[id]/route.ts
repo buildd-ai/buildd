@@ -140,6 +140,7 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
 import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
@@ -809,7 +810,11 @@ export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ id: string }> },
 ) {
-  return withLoaderLabel('workers.patch', () => patchWorker(req, context));
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
+  return await withLoaderLabel('workers.patch', () => patchWorker(req, context));
+  } finally { await settleWorkChanges(); }
 }
 
 async function patchWorker(
