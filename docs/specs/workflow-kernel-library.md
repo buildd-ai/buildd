@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -712,6 +712,20 @@ recorded as such, never as an approval.
   stays a refusal. The merge is never asked for before the head's own
   `Buildd / Review approval` success is on GitHub and read back. The release
   doors hold on the same answer instead of failing the release.
+- Every open PR head in a linked repo carries `Buildd / Review approval`,
+  not only a kernel-owned one, so a required check never waits on a context
+  nothing will publish (AC-37). A head the kernel answers for (a live
+  delivery at that head) gets the kernel's answer above, written by its own
+  effect. A frozen release candidate gets the release gate's answer at its
+  SHA: `success` only when every required candidate check passed on that SHA
+  and buildd's review gate for releases does not hold it, `failure` when a
+  required check failed there or a review stands against it, `pending`
+  otherwise. Any other open head (a PR no delivery owns, such as a dependency
+  bot's or a draft; a push the delivery has not seen yet; a delivery that is
+  over while its PR stays open) is `pending`, "Review not requested" or
+  "Review in progress", and never `success`: only a delivery's gate says a
+  head may merge. A success given to one head never carries over to another
+  (AC-38).
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
@@ -786,6 +800,29 @@ recorded as such, never as an approval.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
+- Every open PR carries it (AC-37, AC-38): `openHeadStatus`,
+  `releaseCandidateStatus`, `unownedPrStatus` and `statusCoverage`
+  (`packages/workflow-kernel/src/open-pr-status.ts`) decide; the host's
+  `publishOpenPrStatuses` (`apps/web/src/lib/workflow/open-pr-status.ts`) is a
+  step of the kernel floor, so it runs hourly wherever the floor runs and its
+  first pass is the one-off republish onto heads opened before the context
+  existed. It lists each linked repo's open PRs (drafts included, up to 300 per
+  repo). A kernel-owned head showing something other than the kernel's answer
+  gets a `publish_landing_status` effect at the delivery's version (key
+  `landing_status:<delivery>:<version>:open-pr-sweep`), drained at once, so the
+  effect's newest-version rule decides the write and the sweep never writes a
+  kernel head itself. Other heads are written by the host, under both names,
+  only when GitHub shows something else; if a delivery took the PR while the
+  host wrote, the kernel republishes after it. The review reads (was a review
+  asked for; a candidate's checks and review verdict, using the pure
+  `evaluateReviewVerdictGate` so a sweep records no gate event) are the
+  releases module's (`apps/web/src/lib/release/open-pr-review.ts`), reached
+  through the composition root. Coverage is re-read on every head after the
+  pass: each head still without the context is an error of the floor's
+  `kernel-floor` run, and a pass that read no head reports `nothing_checked`,
+  never covered. Not yet: a webhook trigger, so a new PR or a candidate whose
+  checks just finished waits for the next floor tick; until then the
+  context is absent or pending on it, never a stale success.
 - D4 refuses when no workspace resolves; D5 `force` no longer skips the review
   verdict. `apps/web/src/lib/workflow/merge-door-inventory.test.ts` fails on
   any merge call not in the inventory.
@@ -822,9 +859,25 @@ recorded as such, never as an approval.
   success is on GitHub; a release door holds the release on the same answer
   instead of failing it.
 
+- AC-37: GIVEN open PRs in a linked repo with no delivery (a dependency bot's,
+  a draft), a kernel-owned PR whose head shows a status other than the
+  kernel's answer, and a frozen release candidate WHEN the kernel floor runs
+  THEN each head carries `Buildd / Review approval` (pending "Review not
+  requested" / "Review in progress", the kernel's answer through its own
+  effect, the release gate's answer at the candidate SHA), a second pass
+  writes nothing, and a head still without it is listed and counted as an
+  error of the run.
+- AC-38 (failure): GIVEN a head approved at H1 WHEN H2 is pushed and the
+  kernel has not seen it, or the delivery is over while the PR stays open,
+  THEN the open head's status is `pending`, never H1's `success`; a release
+  candidate is `success` only with every required check passed on its SHA
+  and no review standing against it.
+
 | AC | Test |
 | --- | --- |
 | Criterion AC-36 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
+| Criterion AC-37 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-37" |
+| Criterion AC-38 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-38"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-38" |
 | Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
@@ -1488,6 +1541,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/modules.ts` (handler composition replaced in S2)
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
+- `packages/workflow-kernel/src/open-pr-status.ts`, `apps/web/src/lib/workflow/open-pr-status.ts`, `apps/web/src/lib/release/open-pr-review.ts` (every open PR carries the review status)
 - `packages/core/pr-facts.ts` (S4)
 - `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
 - `packages/core/__tests__/workflow-write-sites.test.ts`,
