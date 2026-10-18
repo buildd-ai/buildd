@@ -167,6 +167,8 @@ describe('collision wording', () => {
     expect(msg).toContain('a.ts');
     expect(msg).toContain('12345678');
     expect(msg).not.toContain('1234567890ab');
+    expect(msg).toContain('a.ts is being changed by task "other" (12345678)');
+    expect(msg).not.toMatch(/\bheld\b/);
   });
   test('malformed server entries are dropped', () => {
     expect(toCollision({ path: 'a' }, 'sync')).toBeNull();

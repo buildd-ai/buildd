@@ -72,10 +72,10 @@ function waivedSentence(w: ReadonlyArray<{ criterionId: string; by: string }>): 
   return [...byWho].map(([by, ids]) => `${list(ids)} waived by ${by}.`).join(' ');
 }
 
-/** The revision the work was built to and whether it shipped. Never a verdict. */
+/** The revision the work was built to and whether it is done (merged, or finished with nothing to merge). Never a verdict. */
 export function deliveredSentence(d: { builtTo: number; provisional: boolean; delivered: boolean }): string {
   const built = d.provisional ? `Built to revision ${d.builtTo} ahead of its approval` : `Built to revision ${d.builtTo}`;
-  return `${built} and ${d.delivered ? 'delivered' : 'not delivered'}.`;
+  return `${built}. ${d.delivered ? 'Done' : 'Not done'}.`;
 }
 
 /** One criterion's mark in the drill-down: the task page's words, plus waived. */

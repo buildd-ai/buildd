@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'bun:test';
-import { shippedGeometry } from './ShippedChart';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ShippedChart, shippedGeometry } from './ShippedChart';
 import type { DayBar } from './insights-summary';
 
 const D = 24 * 3_600_000;
@@ -26,5 +28,16 @@ describe('shippedGeometry on a phone width', () => {
   it('carries the partial flag through so the bar can be drawn as such', () => {
     const g = shippedGeometry([bar(0), bar(1, { partial: true })], 360, 180);
     expect(g.bars.map(b => b.partial)).toEqual([false, true]);
+  });
+});
+
+describe('ShippedChart words', () => {
+  it('says Done, never Shipped', () => {
+    const html = renderToStaticMarkup(createElement(ShippedChart, { days: [bar(1, { prevShipped: 1, prevLost: 0 })], previousLabel: 'The 7 days before' }));
+    expect(html).toContain('>Done</li>');
+    expect(html).toContain('>Done</th>');
+    expect(html).toContain('(done / failed)');
+    expect(html).toContain('1 done, 1 failed or abandoned');
+    expect(html).not.toContain('Shipped');
   });
 });

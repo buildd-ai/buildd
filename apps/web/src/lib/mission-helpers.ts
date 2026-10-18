@@ -1,4 +1,4 @@
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES, TERMS } from '@buildd/shared';
 import { isDeliverableTask, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { STATUS_TONE_CHIP, missionStateTone } from './status-tone';
 import { isGateSatisfied } from './task-presentation';
@@ -802,9 +802,9 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   active: { label: 'Active', colorClass: 'health-pill-active' },
   'on-schedule': { label: 'On schedule', colorClass: 'health-pill-on-schedule' },
   stalled: { label: 'Stalled', colorClass: 'health-pill-stalled' },
-  shipped: { label: 'Shipped', colorClass: 'health-pill-shipped' },
+  shipped: { label: TERMS['mission.done'].word, colorClass: 'health-pill-shipped' },
   paused: { label: 'Paused', colorClass: 'health-pill-paused' },
-  held: { label: 'Not started', colorClass: 'health-pill-paused' },
+  held: { label: TERMS['mission.not_started'].word, colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
   'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
   escalated: { label: 'Needs decision', colorClass: 'health-pill-escalated' },

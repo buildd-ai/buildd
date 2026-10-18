@@ -1461,7 +1461,7 @@ async function handleReleasePrCiFailure(
 
       void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release CI failed in ${repoFullName}`,
-        message: `CI is red on release PR #${pr.number}. Prod has not shipped.`,
+        message: `CI is red on release PR #${pr.number}. Production is unchanged.`,
         priority: 1,
         url: prUrl || `https://github.com/${repoFullName}/pull/${pr.number}`,
         urlTitle: `PR #${pr.number}`,

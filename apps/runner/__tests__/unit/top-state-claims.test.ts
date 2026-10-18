@@ -23,8 +23,9 @@ describe('waiting reasons from the last claim (R-25)', () => {
     const cases: Array<[Partial<ClaimOutcome>, string | RegExp]> = [
       [{ exclusion: 'runner_cooldown' }, 'cooldown, 1 min'],
       [{ exclusion: 'mission_local' }, 'local session'],
-      [{ exclusion: 'mission_held' }, 'mission is on hold'],
-      [{ exclusion: 'task_held' }, 'held by a person'],
+      [{ exclusion: 'mission_held' }, 'mission is paused'],
+      [{ exclusion: 'task_held' }, 'paused by a person'],
+      [{ exclusion: 'budget_paused' }, 'usage limit'],
       [{ exclusion: 'task_reserved' }, 'reserved by a local session'],
       [{ exclusion: 'already_claimed' }, 'another runner has it'],
       [{ exclusion: 'active_worker' }, 'another runner has it'],
@@ -198,12 +199,14 @@ describe('what the last claim did not see (R-25, AC-11)', () => {
       expect(got).not.toMatch(/budget paused|oauth parallelism|duplicate worker|sibling retry/);
     }
     const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 3 } });
-    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim (runner-wide): held by a usage limit');
+    expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim (runner-wide): usage limit');
+    const unknown = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { a_code_from_the_future: 2 } });
+    expect(waitingReason(loose(), unknown, NOW)).toBe('skipped at the last claim (runner-wide): reason unknown');
   });
 
   test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
     let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
-    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim, for reasons it did not tie to this task');
+    expect(waitingReason(loose(), s, NOW)).toBe('skipped at the last claim, for reasons it did not tie to this task');
     s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
     expect(waitingReason(loose(), s, NOW)).toBe('local session');
   });

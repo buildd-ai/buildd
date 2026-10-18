@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StripState } from '@/lib/mission-task-strip';
+import { TERMS } from '@buildd/shared';
 import { STATES, STATE_KEYS, STATUS_PILL, statusPill, type StripDisplayState } from './states';
 
 // The table's copy of the strip states must stay the strip's own union (type-checked both ways).
@@ -52,6 +53,17 @@ describe('state table', () => {
     }
   });
 
+  // The PR words come from the terms catalog (packages/shared/src/terms.ts).
+  it('reads the PR words from the terms catalog', () => {
+    expect(STATES.landing.word).toBe('Merging');
+    expect(STATES.landed.word).toBe('Merged');
+    expect(STATES.not_landed.word).toBe('Closed without merging');
+    expect(STATES.landing.means).toBe(TERMS['pr.merging'].means);
+    expect(STATES.landed.means).toBe(TERMS['pr.merged'].means);
+    expect(STATES.not_landed.means).toBe(TERMS['pr.closed'].means);
+    expect(STATES.landed.glyph).toBe(TERMS['pr.merged'].glyph!);
+  });
+
   it('ready, blocked and queued are three textures (strip R-8)', () => {
     expect(STATES.ready.pattern).toBe('empty');
     expect(STATES.blocked.pattern).toBe('hatch-dense');
@@ -68,6 +80,8 @@ describe('statusPill', () => {
     expect(statusPill('in_progress')).toEqual({ state: 'running', label: 'Running' });
     expect(statusPill('waiting_on_you').state).toBe('needs_you');
     expect(statusPill('completed').state).toBe('landed');
+    // A finished task says Done (work.done), never Completed.
+    expect(statusPill('completed').label).toBe('Done');
   });
 
   it('falls back to the neutral pill with the status as its word', () => {

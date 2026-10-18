@@ -22,7 +22,7 @@
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
-import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
@@ -49,17 +49,18 @@ export type DeliveryTone = 'success' | 'info' | 'warning' | 'ink' | 'muted' | 'e
 
 /** Glyph + word for every kind: never colour alone. */
 export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string; tone: DeliveryTone }> = {
-  landed: { label: 'Landed', glyph: '■', tone: 'success' },
-  landing: { label: 'Landing', glyph: '▲', tone: 'success' },
+  // The PR words come from the terms catalog (packages/shared/src/terms.ts).
+  landed: { label: TERMS['pr.merged'].word, glyph: '■', tone: 'success' },
+  landing: { label: TERMS['pr.merging'].word, glyph: '▲', tone: 'success' },
   audit: { label: 'In audit', glyph: '◐', tone: 'info' },
   repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
   build: { label: 'Building', glyph: '▶', tone: 'ink' },
   waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
   // A held start gate; deliveryKindLabel says Paused for one that ran before.
-  held: { label: 'Not started', glyph: '‖', tone: 'muted' },
+  held: { label: TERMS['mission.not_started'].word, glyph: '‖', tone: 'muted' },
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
-  notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
+  notlanded: { label: TERMS['pr.closed'].word, glyph: '✕', tone: 'error' },
   needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
 };
 

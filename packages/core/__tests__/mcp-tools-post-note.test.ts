@@ -63,7 +63,18 @@ describe('post_note', () => {
     const out = JSON.stringify(res);
     expect(out).toContain('not shown to a person');
     expect(out).toContain('repair task r-1 was filed');
-    expect(out).not.toContain('User reply will be delivered');
+    expect(out).not.toContain('User reply reaches you');
+  });
+
+  it('a question says when the reply reaches the agent, without "delivered"', async () => {
+    const api = mock(async (endpoint: string) => {
+      if (endpoint === '/api/workers/worker-1') return { taskId: 'task-1', task: { id: 'task-1', missionId: null } };
+      return { id: 'note-1' };
+    });
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'post_note', { type: 'question', title: 'Which one?' }, context());
+    const out = res.content[0].text;
+    expect(out).toContain('User reply reaches you at your next turn boundary (or call receive_messages).');
+    expect(out).not.toMatch(/delivered/);
   });
 
   it('posts to the mission feed when the current task has a mission', async () => {
