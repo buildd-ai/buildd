@@ -8,7 +8,8 @@
 import { afterEach, beforeAll, describe, test } from 'bun:test';
 import { db } from '@buildd/core/db';
 import { sql } from 'drizzle-orm';
-import { CONFORMANCE_SCENARIOS, type ConformanceHost } from '@buildd/workflow-kernel/conformance/scenarios';
+import { ALL_CONFORMANCE_SCENARIOS as CONFORMANCE_SCENARIOS } from '@buildd/workflow-kernel/conformance/all';
+import type { ConformanceHost } from '@buildd/workflow-kernel/conformance/scenarios';
 import type { EffectKind } from '@buildd/workflow-kernel/commands';
 import { postgresStore } from '../../src/lib/workflow/postgres-store';
 import { builddPolicy } from '../../src/lib/workflow/kernel-policy';
@@ -49,6 +50,7 @@ function postgresHost(): ConformanceHost {
     transitions: async (deliveryId) => (await q<{ from_version: number; to_version: number; command: string; to_state: string }>(
       sql`SELECT from_version, to_version, command, to_state FROM workflow_transitions WHERE delivery_id = ${deliveryId}::uuid ORDER BY to_version`,
     )).map((r) => ({ fromVersion: Number(r.from_version), toVersion: Number(r.to_version), command: r.command, toState: r.to_state })),
+    passTime: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     setKernelEnabled: async (workspaceId, on) => {
       await q(sql`UPDATE workspaces SET git_config = jsonb_set(COALESCE(git_config, '{}'::jsonb), '{workflowKernel}', ${JSON.stringify(on)}::jsonb) WHERE id = ${workspaceId}::uuid`);
     },

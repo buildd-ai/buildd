@@ -9,7 +9,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { Command, LivePr } from '../commands';
 import { InMemoryKernel, memoryHost, type CommandResult, type DeliveryRef } from './harness';
-import { CONFORMANCE_SCENARIOS, ConformanceFailure } from './scenarios';
+import { ALL_CONFORMANCE_SCENARIOS as CONFORMANCE_SCENARIOS } from './all';
+import { ConformanceFailure } from './scenarios';
 
 const REPO = 'acme/widgets';
 const WS = 'w1';

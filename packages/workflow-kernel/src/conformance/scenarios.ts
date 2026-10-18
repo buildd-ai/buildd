@@ -54,6 +54,8 @@ export interface ConformanceHost {
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
+  /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
+  passTime(ms: number): Promise<void>;
 }
 
 export interface ConformanceScenario {
