@@ -4,20 +4,20 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
 " buildd · laptop-1234 · 2 workspaces · 2 teams   2 of 3 slots in use · ● online 
  Missions  [ Queue ]   t team: all · w workspace: all          3 slots · 1 free 
 ────────────────────────────────────────────────────────────────────────────────
- Team One · next for this runner     mission          starts                    
-› 1 fix(kernel): review composition  Workflow kernel  Thu 00:00                 
-  2 feat(intake): one intake door    Bug intake       now                       
-  3 chore(web): cache /fonts         -                when a slot frees         
-  4 docs: kernel commands            Workflow kernel  after its dependency      
+ Next: #2 (Team One) starts now · 1 waits for its dependency · 1 waits for a se…
+ Team One · next for this runner  by    mission       starts                    
+› 1 fix(kernel): review composit… -     Workflow ker… Thu 00:00                 
+  2 feat(intake): one intake door -     Bug intake    now                       
+  3 chore(web): cache /fonts      -     -             when a slot frees         
+  4 docs: kernel commands         -     Workflow ker… after its dependency      
  Not yet                                                                        
-    chore: rotate the logs           Workflow kernel  17:00 · scheduled         
+    chore: rotate the logs        -     Workflow ker… 17:00 · scheduled         
  Not for this runner                                                            
-    Runner terminal: round 3 audit   Workflow kernel  runs from your session    
-    fix(supersession): close the ol… Workflow kernel  another runner takes it   
-    design: the queue tab            Workflow kernel  needs Designer            
- Team Two · next for this runner     mission          starts                    
-  1 fix(billing): round half up      -                when a slot frees         
-                                                                                
+    Runner terminal: round 3 aud… -     Workflow ker… runs from your session    
+    fix(supersession): close the… -     Workflow ker… another runner takes it   
+    design: the queue tab         -     Workflow ker… needs Designer            
+ Team Two · next for this runner  by    mission       starts                    
+  1 fix(billing): round half up   -     -             when a slot frees         
                                                                                 
                                                                                 
                                                                                 
@@ -31,20 +31,20 @@ exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on
 " buildd · laptop-1234 · 2 workspaces · 2 teams                                2 of 3 slots in use · ● online · v0.340.0 
  Missions  [ Queue ]   t team: all · w workspace: all                    3 slots · 2 running · 1 free   - fewer  + more 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Team One · next for this runner                workspace    mission          est.  starts                              
-› 1 fix(kernel): review composition             alpha        Workflow kernel  40m   Thu 00:00                           
-  2 feat(intake): one intake door               alpha        Bug intake       1h    now                                 
-  3 chore(web): cache /fonts                    alpha        -                15m   when a slot frees                   
-  4 docs: kernel commands                       alpha        Workflow kernel  -     after its dependency                
+ Next: #2 (Team One) starts now · 1 waits for its dependency · 1 waits for a set time                                   
+ Team One · next for this runner       by       workspace    mission          est.  starts                              
+› 1 fix(kernel): review composition    -        alpha        Workflow kernel  40m   Thu 00:00                           
+  2 feat(intake): one intake door      -        alpha        Bug intake       1h    now                                 
+  3 chore(web): cache /fonts           -        alpha        -                15m   when a slot frees                   
+  4 docs: kernel commands              -        alpha        Workflow kernel  -     after its dependency                
  Not yet                                                                                                                
-    chore: rotate the logs                      alpha        Workflow kernel  -     17:00 · scheduled                   
+    chore: rotate the logs             -        alpha        Workflow kernel  -     17:00 · scheduled                   
  Not for this runner                                                                                                    
-    Runner terminal: round 3 audit              alpha        Workflow kernel  -     runs from your session              
-    fix(supersession): close the old PR         alpha        Workflow kernel  -     another runner takes it             
-    design: the queue tab                       alpha        Workflow kernel  -     needs Designer                      
- Team Two · next for this runner                      workspace    mission          starts                              
-  1 fix(billing): round half up                       bravo        -                when a slot frees                   
-                                                                                                                        
+    Runner terminal: round 3 audit     -        alpha        Workflow kernel  -     runs from your session              
+    fix(supersession): close the old … -        alpha        Workflow kernel  -     another runner takes it             
+    design: the queue tab              -        alpha        Workflow kernel  -     needs Designer                      
+ Team Two · next for this runner             by       workspace    mission          starts                              
+  1 fix(billing): round half up              -        bravo        -                when a slot frees                   
                                                                                                                         
                                                                                                                         
                                                                                                                         

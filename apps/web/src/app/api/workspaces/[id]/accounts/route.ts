@@ -135,7 +135,7 @@ export async function POST(
       });
     }
 
-    invalidateAccountWorkspaceCache(accountId);
+    await invalidateAccountWorkspaceCache(accountId);
 
     return NextResponse.json({
       success: true,
@@ -208,7 +208,7 @@ export async function DELETE(
         );
     }
 
-    invalidateAccountWorkspaceCache(accountId);
+    await invalidateAccountWorkspaceCache(accountId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

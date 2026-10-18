@@ -17,6 +17,11 @@ describe('a PR no delivery owns (spec §4, R-43)', () => {
     expect(s.description.startsWith('Review in progress: ')).toBe(true);
   });
 
+  test('a review that finished asking for changes says so, not "in progress"', () => {
+    const s = unownedPrStatus(H, 'changes_requested');
+    expect(s).toEqual({ state: 'failure', sha: H, description: 'Changes requested: a review asked for changes to abcdef1' });
+  });
+
   test('the description never uses the kernel\'s own word "land"', () => {
     for (const r of ['not_requested', 'in_progress'] as const) expect(unownedPrStatus(H, r).description).not.toMatch(/\bland/i);
   });

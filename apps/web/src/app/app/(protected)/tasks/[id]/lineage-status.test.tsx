@@ -132,8 +132,9 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(html).toContain('data-owner="human"');
   });
   it('maps approved PRs owned by platform to live tone with label from deliveryReading', () => {
-    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'landing', stage: 'approved' })} />);
-    expect(html).toContain('Approved · merging');
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'APPROVED', owner: 'landing', stage: 'approved', prState: 'ci_passed' })} />);
+    expect(html).toContain('Ready to merge');
+    expect(html).not.toContain('merging');
     expect(html).toContain('text-accent-text');
     expect(html).toContain('bg-accent-soft');
     expect(html).not.toContain('text-status-success');
@@ -177,7 +178,7 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
       { stage: 'review', state: 'AWAITING_REVIEW', owner: 'reviewer', headline: 'In review', expectedLabel: 'In review', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'fixing', state: 'FIXING', owner: 'worker', headline: 'Fixing', expectedLabel: 'Fixing', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'repairing', state: 'REPAIRING', owner: 'platform', headline: 'Fixing CI', expectedLabel: 'Fixing CI', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'approved', state: 'APPROVED', owner: 'landing', headline: 'APPROVED', expectedLabel: 'Approved · merging', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
+      { stage: 'approved', state: 'APPROVED', owner: 'landing', headline: 'APPROVED', expectedLabel: 'Approved', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'approved', state: 'APPROVED', owner: 'human', headline: 'APPROVED', expectedLabel: 'Ready to merge', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'landing', state: 'LANDING', owner: 'platform', headline: 'Merging', expectedLabel: 'Merging', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'merged', state: 'MERGED', owner: 'landing', headline: 'MERGED', expectedLabel: 'Merged', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },

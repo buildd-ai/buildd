@@ -62,7 +62,7 @@ function approvedView(id: string, sha: string, version = 5): KernelView {
   } as unknown as KernelView;
 }
 
-describe('every open PR head gets Buildd / Review approval (spec §4, AC-37)', () => {
+describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', () => {
   test('a PR no delivery owns (a dependency bot\'s, a draft): pending under both names, never success', async () => {
     const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }, { number: 8, sha: H(8), draft: true }] });
     const s = await publishOpenPrStatuses(h.deps);
@@ -110,7 +110,7 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-37)', (
     expect(s).toMatchObject({ unchanged: 1, coverage: { verdict: 'covered' } });
   });
 
-  test('AC-38: a push the delivery has not seen never keeps the old head\'s success: the new head is pending', async () => {
+  test('AC-77: a push the delivery has not seen never keeps the old head\'s success: the new head is pending', async () => {
     const view = approvedView('d1', H(1));
     const h = harness({ pulls: [{ number: 1, sha: H(2) }], owned: { 1: { id: 'd1', view } } });
     await publishOpenPrStatuses(h.deps);

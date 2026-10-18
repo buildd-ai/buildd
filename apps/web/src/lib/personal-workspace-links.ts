@@ -72,7 +72,7 @@ export async function linkAccountToPersonalWorkspaces(args: {
     });
     if (planned.length === 0) return 0;
     await db.insert(accountWorkspaces).values(planned).onConflictDoNothing();
-    invalidateAccountWorkspaceCache(account.id);
+    await invalidateAccountWorkspaceCache(account.id);
     return planned.length;
   } catch (err) {
     console.error('[personal-workspace-links] failed to link account to personal workspaces:', err);

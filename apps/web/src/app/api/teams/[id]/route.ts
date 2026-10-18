@@ -16,6 +16,8 @@ import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-tea
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam, isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
 import { invalidateAppChrome } from '@/lib/app-chrome';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
+import { clearTeamCache } from '@/lib/team-cache';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
 const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
@@ -348,6 +350,8 @@ export async function PATCH(
     }
 
     await db.update(teams).set(updates).where(eq(teams.id, id));
+    // Its cached reads (name on the runner list, settings) go now (lib/team-cache.ts).
+    await clearTeamCache(id);
 
     // The acting user's shell shows this at once (lib/app-chrome.ts).
     invalidateAppChrome(user.id);
@@ -396,9 +400,22 @@ export async function DELETE(
       return NextResponse.json({ error: 'Cannot delete personal team' }, { status: 400 });
     }
 
+    // Who was in it and what it held, so their cached callers end with it
+    // (lib/caller-cache.ts): the cascade below takes the rows.
+    const [formerMembers, formerWorkspaces] = await Promise.all([
+      db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, id)),
+      db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, id)),
+    ]);
+
     // Its artifacts cascade, their stored objects do not: detach the rows that
     // hold one in the same transaction as the delete, then remove them.
     await db.batch([detachTeamStoredFiles(id), db.delete(teams).where(eq(teams.id, id))]);
+    await clearCallerCache(
+      callerDep.team(id),
+      ...formerMembers.map((m) => callerDep.user(m.userId)),
+      ...formerWorkspaces.map((w) => callerDep.workspace(w.id)),
+    );
+    await clearTeamCache(id);
     // Its conversations went with it (cascade); their chat attachments do not
     // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
     await removeTeamChatAttachments(id);

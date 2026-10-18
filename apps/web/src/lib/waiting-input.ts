@@ -1,17 +1,25 @@
 /**
  * The questions waiting on a person: the shell's banner and its count
  * (components/NeedsInputProvider.tsx, via GET /api/tasks/waiting-input).
+ *
+ * With Redis, each team's questions are cached for 30 s and shared by every
+ * instance (lib/team-cache.ts), cleared when a worker asks or is answered;
+ * a user's list is their teams' lists. Without it, one statement scoped to
+ * the user's teams, kept 30 s in process.
  */
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
-import { userWorkspaceScope } from './team-access';
+import { getUserTeamIds, userWorkspaceScope } from './team-access';
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import type { WaitingFor } from '@buildd/shared';
 import { loadSupersededQuestionTaskIds } from './incident-recovery-load';
 import { TTLCache } from './cache';
+import { isRedisConfigured } from './redis';
+import { cachedCaller, callerDep } from './caller-cache';
+import { cachedTeamRead, clearTeamCache } from './team-cache';
 
 /** More waiting questions than this is a page, not a banner. */
 export const WAITING_INPUT_LIMIT = 100;
@@ -51,6 +59,27 @@ export function waitingInputQuery(userId: string, q: Selectable = db) {
     .where(and(
       eq(workers.status, 'waiting_input'),
       inArray(workers.workspaceId, qb.select({ id: workspaces.id }).from(workspaces).where(userWorkspaceScope(userId))),
+      notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+    ))
+    .limit(WAITING_INPUT_LIMIT);
+}
+
+/** The same read for one team: waiting workers in its workspaces, joined to their open tasks. */
+export function teamWaitingInputQuery(teamId: string, q: Selectable = db) {
+  return q
+    .select({
+      taskId: tasks.id,
+      waitingFor: workers.waitingFor,
+      title: tasks.title,
+      status: tasks.status,
+      workspaceId: tasks.workspaceId,
+      missionId: tasks.missionId,
+    })
+    .from(workers)
+    .innerJoin(tasks, eq(tasks.id, workers.taskId))
+    .where(and(
+      eq(workers.status, 'waiting_input'),
+      inArray(workers.workspaceId, qb.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, teamId))),
       notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
     ))
     .limit(WAITING_INPUT_LIMIT);
@@ -104,22 +133,52 @@ export function waitingTaskViews(rows: WaitingInputRow[], superseded: ReadonlySe
   });
 }
 
-/**
- * Kept 30 s per user. `fresh` skips the cached answer and refills it: the
- * provider asks that way only when an event says a task started or stopped
- * waiting (lib/realtime-throttle.ts needsInputEventAction).
- */
-export async function loadWaitingInput(userId: string, opts: { fresh?: boolean } = {}): Promise<WaitingTaskView[]> {
-  const hit = opts.fresh ? undefined : cached.get(userId);
-  if (hit) return hit;
-  const rows = (await waitingInputQuery(userId)) as WaitingInputRow[];
+async function viewsOf(rows: WaitingInputRow[]): Promise<WaitingTaskView[]> {
   // A question recovery has superseded (its task carries an incident ref and
   // the incident's assessment owns the next step) is not a banner or a
   // Needs You row: the incident's own status says what is happening.
   const superseded = rows.length > 0
     ? await loadSupersededQuestionTaskIds([...new Set(rows.map(r => r.taskId))])
     : new Set<string>();
-  const views = waitingTaskViews(rows, superseded, Date.now());
+  return waitingTaskViews(rows, superseded, Date.now());
+}
+
+/** One team's questions waiting, from the per-team cache. */
+export async function loadTeamWaitingInput(teamId: string, opts: { fresh?: boolean } = {}): Promise<WaitingTaskView[]> {
+  if (opts.fresh) await clearTeamCache(teamId, 'questions');
+  const views = await cachedTeamRead(teamId, 'questions',
+    async () => viewsOf((await teamWaitingInputQuery(teamId)) as WaitingInputRow[]),
+    { valid: Array.isArray });
+  return views ?? [];
+}
+
+/**
+ * The teams whose questions a user sees (the scope of userWorkspaceScope),
+ * cached with the caller and cleared with their memberships. None is never
+ * cached, so a membership added is seen on the next call.
+ */
+async function userTeamIds(userId: string): Promise<string[]> {
+  const ids = await cachedCaller(`user-teams:${userId}`,
+    async () => { const t = await getUserTeamIds(userId); return t.length > 0 ? t : null; },
+    { known: [callerDep.user(userId)], valid: Array.isArray });
+  return ids ?? [];
+}
+
+/**
+ * Kept 30 s: per team in Redis (cleared when a worker asks or is answered),
+ * else per user in process. `fresh` skips the cached answer and refills it:
+ * the provider asks that way only when an event says a task started or
+ * stopped waiting (lib/realtime-throttle.ts needsInputEventAction).
+ */
+export async function loadWaitingInput(userId: string, opts: { fresh?: boolean } = {}): Promise<WaitingTaskView[]> {
+  if (isRedisConfigured()) {
+    const teamIds = await userTeamIds(userId);
+    const lists = await Promise.all(teamIds.map(teamId => loadTeamWaitingInput(teamId, opts)));
+    return lists.flat().slice(0, WAITING_INPUT_LIMIT);
+  }
+  const hit = opts.fresh ? undefined : cached.get(userId);
+  if (hit) return hit;
+  const views = await viewsOf((await waitingInputQuery(userId)) as WaitingInputRow[]);
   cached.set(userId, views);
   return views;
 }

@@ -33,6 +33,7 @@ import {
   type McpGrantScope,
 } from '@buildd/core/db/schema';
 import { getActiveGrant, memberWorkspaces } from './mcp-grants';
+import { clearCallerCache, callerDep } from './caller-cache';
 import { grantedScopeString, type ConsentTeam } from './oauth/account-consent';
 import { ensureTeamSessionAccount } from './oauth/ensure-session-account';
 import {
@@ -239,6 +240,9 @@ export async function updateUserGrant(userId: string, grantId: string, patch: Gr
     .where(and(eq(mcpOauthGrants.id, grantId), eq(mcpOauthGrants.userId, userId), isNull(mcpOauthGrants.revokedAt)))
     .returning({ id: mcpOauthGrants.id });
   if (updated.length === 0) return GRANT_NOT_FOUND;
+  // Narrowing first, as the writes: a token on this grant stops using the old
+  // scopes now, and is cleared again once the workspaces have changed.
+  await clearCallerCache(callerDep.grant(grantId));
 
   if (remove.length > 0) {
     await db
@@ -262,6 +266,8 @@ export async function updateUserGrant(userId: string, grantId: string, patch: Gr
     .update(oauthRefreshTokens)
     .set({ scope: grantedScopeString(scopes, actsAs) })
     .where(and(eq(oauthRefreshTokens.grantId, grantId), eq(oauthRefreshTokens.userId, userId), isNull(oauthRefreshTokens.revokedAt)));
+  // Tokens on this grant re-read what it reaches on their next call.
+  await clearCallerCache(callerDep.grant(grantId));
 
   const [connection] = await summarise(userId, [grantId]);
   if (!connection) return GRANT_NOT_FOUND;

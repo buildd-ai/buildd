@@ -8,6 +8,7 @@
  * Callers select `MISSION_CARD_TASK_COLUMNS` / `MISSION_CARD_WORKER_COLUMNS` on
  * their own mission query, so the card never costs a second task fan-out.
  */
+import { RECENTLY_DELIVERED_WINDOW_MS } from './recently-delivered';
 import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadHumanSteeringMarksByMission } from './mission-steering-notes';
 import { adaptFlightStripInputs, MISSION_TASK_REFRESH_EXTRAS } from './missions-query';
@@ -115,7 +116,7 @@ export const MISSION_CARD_SCHEDULE_EXTRAS = {
  * section reads a completed mission for (Landed this week). Older ones are
  * never loaded.
  */
-export const HOME_COMPLETED_MISSION_WINDOW_MS = 7 * 86_400_000;
+export const HOME_COMPLETED_MISSION_WINDOW_MS = RECENTLY_DELIVERED_WINDOW_MS;
 
 /** Home's mission bound: every unfinished mission, and completed ones inside the window. */
 export function homeMissionRecencyWhere(now: number = Date.now()): SQL {

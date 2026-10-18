@@ -37,6 +37,8 @@ export interface QueueRow {
   missionId: string | null;
   roleSlug?: string | null;
   workspace: string;
+  /** Whose work it is (R-58): "you", a teammate's first name, or "-" when buildd cannot tell. */
+  by: string;
   /** The mission's title, or "-" for a task outside any mission. */
   mission: string;
   /** The estimate in words, "-" with none; null when the team has estimates off. */
@@ -55,6 +57,8 @@ export interface QueueRow {
   held?: boolean;
   /** "starts alongside #n (same files, merges at the end)" when it shares only mergeable files with other work. */
   alongside?: string;
+  /** On a queued row that waits: what kind of thing it waits for (the Next line counts these). */
+  wait?: WaitKind;
 }
 
 export interface QueueSection {
@@ -76,6 +80,13 @@ const EXCLUSION_WORDS: Record<RunnerQueueExclusion, string> = {
   workspace_executor: 'its workspace runs work elsewhere',
   subject_dead: 'its PR is closed',
 };
+
+/** Whose work a row is, in the by column (R-58); an older server sends no owner and reads "-". */
+export function ownerWords(t: RunnerQueueTask): string {
+  if (t.owner === 'you') return 'you';
+  if (t.owner === 'teammate') return t.ownerName || 'teammate';
+  return '-';
+}
 
 function exclusionWords(t: RunnerQueueTask & { reason: RunnerQueueExclusion }): string {
   if (t.reason === 'role_missing' && t.roleSlug) return `needs ${roleLabel(t.roleSlug)}`;
@@ -189,10 +200,7 @@ function refusalWords(o: ClaimOutcome, positions: Map<string, number>, state: To
   if (code && OVERLAP_CODES.has(code)) {
     // A runner from before the field sends only the server's sentence, which names the task.
     const holder = o.holderTaskId ?? (code === 'soft_overlap' || code === 'path_overlap' ? taskIdInSentence(o.detail) : null);
-    const at = holder ? positions.get(holder) : undefined;
-    if (at !== undefined) return `when #${at} ends (same files)`;
-    const title = holder ? titleOf(holder, state) : null;
-    return title ? `same files as "${clip(title, 18)}"` : 'when work on its files ends';
+    return holderWords(holder, positions, state);
   }
   if (code === 'deps_blocked') return 'after its dependency';
   if (code && CLAIM_EXCLUSION_WORDS[code]) return CLAIM_EXCLUSION_WORDS[code];
@@ -202,17 +210,38 @@ function refusalWords(o: ClaimOutcome, positions: Map<string, number>, state: To
   return null;
 }
 
-/** Why the row waits, in words, or null when nothing holds it (it starts on a free slot). */
-function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: TopState, holds: ProviderHold[], now: number): string | null {
-  if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return localLiftTime(t.holdUntil!, now);
+/** What kind of thing a row waits for: the Next line (R-59) counts rows by it. */
+export type WaitKind = 'same_files' | 'dependency' | 'time' | 'limit';
+
+/** The kind of a refusal's words, from the same code refusalWords read. */
+function refusalKind(o: ClaimOutcome): WaitKind {
+  const code = o.exclusion ?? null;
+  if (code && OVERLAP_CODES.has(code)) return 'same_files';
+  if (code === 'deps_blocked') return 'dependency';
+  return 'limit';
+}
+
+/** Words for the work an overlap waits for: its position here, else its title. */
+function holderWords(holder: string | null | undefined, positions: Map<string, number>, state: TopState): string {
+  const at = holder ? positions.get(holder) : undefined;
+  if (at !== undefined) return `when #${at} ends (same files)`;
+  const title = holder ? titleOf(holder, state) : null;
+  return title ? `same files as "${clip(title, 18)}"` : 'when work on its files ends';
+}
+
+/** Why the row waits, in words and kind, or null when nothing holds it (it starts on a free slot). */
+function waitWords(t: RunnerQueueTask, positions: Map<string, number>, state: TopState, holds: ProviderHold[], now: number): { text: string; kind: WaitKind } | null {
+  if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return { text: localLiftTime(t.holdUntil!, now), kind: 'time' };
   const own = runnerHoldTime(t, state, holds, now);
-  if (own) return own;
-  if (t.holds.includes('runner_cooldown')) return localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now);
+  if (own) return { text: own, kind: 'time' };
+  if (t.holds.includes('runner_cooldown')) return { text: localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now), kind: 'time' };
   const o = liveTaskOutcome({ id: t.id, title: t.title, status: 'pending', backend: t.backend }, state, now);
   const refused = o && o.reason !== 'claimed' ? refusalWords(o, positions, state) : null;
-  if (refused) return refused;
-  if (t.holds.includes('deps_blocked')) return 'after its dependency';
-  if (t.holds.includes('workspace_cap')) return CLAIM_EXCLUSION_WORDS.workspace_cap;
+  if (refused) return { text: refused, kind: refusalKind(o!) };
+  // The claim starts one task per mission that declares no files (the server's read of its serialization).
+  if (t.holds.includes('advisory_manifest')) return { text: holderWords(t.holderTaskId, positions, state), kind: 'same_files' };
+  if (t.holds.includes('deps_blocked')) return { text: 'after its dependency', kind: 'dependency' };
+  if (t.holds.includes('workspace_cap')) return { text: CLAIM_EXCLUSION_WORDS.workspace_cap, kind: 'limit' };
   return null;
 }
 
@@ -260,12 +289,14 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
     if (queued.length === 0 && heldTasks.length === 0 && notFor.length === 0) continue;
     const positions = new Map(queued.map((t, i) => [t.id, i + 1]));
     const waits: boolean[] = [];
+    const kinds: Array<WaitKind | undefined> = [];
     const starts = queued.map(t => {
       // R-33: runner paused, the order stays and nothing has a start time.
-      if (held) { waits.push(true); return TERMS['runner.paused'].short; }
+      if (held) { waits.push(true); kinds.push(undefined); return TERMS['runner.paused'].short; }
       const w = waitWords(t, positions, state, holds, now);
       waits.push(!!w);
-      if (w) return w;
+      kinds.push(w?.kind);
+      if (w) return w.text;
       if (free > 0) { free--; return 'now'; }
       const left = remaining[slotWait++];
       return left !== undefined ? `in ~${estimateWords(left)} (next free slot)` : 'when a slot frees';
@@ -281,9 +312,11 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
+        by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
         starts: starts[i],
+        ...(kinds[i] ? { wait: kinds[i] } : {}),
         // Only a row nothing else holds: one that waits says what it waits for.
         ...(t.alongside && !waits[i] ? { alongside: alongsideWords(t.alongside, state) } : {}),
       })),
@@ -296,6 +329,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
           missionId: t.missionId,
           roleSlug: t.roleSlug,
           workspace: t.workspaceName,
+          by: ownerWords(t),
           mission: t.missionTitle ?? '-',
           est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
           starts: w.starts,
@@ -310,6 +344,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
+        by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? '-' : null,
         starts: exclusionWords(t),
@@ -319,6 +354,57 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
     });
   }
   return out;
+}
+
+/** How each kind of wait reads in the Next line, singular then plural. */
+const WAIT_PHRASE: Record<WaitKind, [string, string]> = {
+  same_files: ['waits for work on the same files', 'wait for work on the same files'],
+  dependency: ['waits for its dependency', 'wait for their dependencies'],
+  time: ['waits for a set time', 'wait for a set time'],
+  limit: ['waits on a limit', 'wait on a limit'],
+};
+const WAIT_ORDER: WaitKind[] = ['same_files', 'dependency', 'time', 'limit'];
+
+/** "#1", "#1 and #2", "#1, #2 and #3", "#1, #2 and 3 more". */
+function positionList(ps: string[]): string {
+  if (ps.length <= 1) return ps.join('');
+  if (ps.length <= 3) return `${ps.slice(0, -1).join(', ')} and ${ps[ps.length - 1]}`;
+  return `${ps.slice(0, 2).join(', ')} and ${ps.length - 2} more`;
+}
+
+/**
+ * The line under the Queue header that says what runs next (R-59): the rows
+ * that start now, then how many wait and on what; "nothing can start" when
+ * none can; the first row and when a slot frees with every slot busy. Built
+ * from the rows' own starts and wait kinds, so it never disagrees with them.
+ * Null with nothing queued, and while the runner is paused (every row says so).
+ */
+export function queueNextLine(state: TopState, now: number): string | null {
+  if (heldNow(state, now)) return null;
+  const sections = queueSections(state, now);
+  const several = sections.length > 1;
+  const named = (sec: QueueSection, r: QueueRow) => `#${r.position}${several ? ` (${sec.teamName})` : ''}`;
+  const rows = sections.flatMap(sec => sec.rows.map(r => ({ sec, r })));
+  if (rows.length === 0) return null;
+  const starting = rows.filter(x => x.r.starts === 'now');
+  const counts = new Map<WaitKind, number>();
+  for (const { r } of rows) if (r.wait) counts.set(r.wait, (counts.get(r.wait) ?? 0) + 1);
+  const waits = WAIT_ORDER.filter(k => counts.has(k)).map(k => {
+    const n = counts.get(k)!;
+    return `${n} ${WAIT_PHRASE[k][n === 1 ? 0 : 1]}`;
+  });
+  if (starting.length > 0) {
+    const verb = starting.length === 1 ? 'starts' : 'start';
+    return ['Next: ' + `${positionList(starting.map(x => named(x.sec, x.r)))} ${verb} now`, ...waits].join(' · ');
+  }
+  // Every slot busy: the first row nothing holds waits only for a slot.
+  const slot = rows.find(x => !x.r.wait);
+  if (slot) {
+    const m = slot.r.starts.match(/^in ~(\S+) \(next free slot\)$/);
+    return `Next: ${named(slot.sec, slot.r)}, ${m ? `in ~${m[1]} when a slot frees` : 'when a slot frees'}`;
+  }
+  if (counts.size === 1) return `Next: nothing can start · every waiting task ${WAIT_PHRASE[[...counts.keys()][0]][0]}`;
+  return ['Next: nothing can start', ...waits].join(' · ');
 }
 
 /** Every row of the Queue view in drawn order: what ↑↓ moves over. */

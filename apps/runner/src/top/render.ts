@@ -10,11 +10,11 @@ import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
+import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
-  providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, loginsLine, selectedRow, spendTodayLine,
   isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -197,7 +197,7 @@ const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['s talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['b logins', 's talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -235,7 +235,9 @@ function footer(state: TopState, cols: number, p: Palette): string {
     return p.fg(token, fit(' ' + state.status.text, cols));
   }
   const hints = m.kind === 'detail' ? HINTS_DETAIL : m.kind === 'help' ? HINTS_HELP : state.view === 'queue' ? HINTS_QUEUE : HINTS_LIST;
-  return p.fg('muted', fit(fitHints(hints, cols), cols));
+  // b only where the runner has a login mode to switch (spec 34a48877 R-14), after +- slots.
+  const withLogins = (h: string[]) => state.runner.loginMode ? h.flatMap(x => x === '+- slots' ? [x, 'b logins'] : [x]) : h;
+  return p.fg('muted', fit(fitHints(m.kind === 'detail' || m.kind === 'help' ? hints : withLogins(hints), cols), cols));
 }
 
 /** The fewest title columns a mission row keeps before it drops its stage word: two letters and "…". */
@@ -460,6 +462,8 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
     const dollars = detailDollars(workerSpend(w), w.resultMeta?.actualModel ?? w.sessionModel);
     line('muted', ' ' + [runWords(w.route.backend, w.route), served, dollars].filter(Boolean).join(' · '));
   }
+  // Why it runs on that backend when the claim moved it (R-40): "Routed to Codex by this runner's balanced mode."
+  if (w?.routedWhy) line('muted', ` ${w.routedWhy.charAt(0).toUpperCase()}${w.routedWhy.slice(1)}.`);
   if (w?.prUrl) line('info', ` PR ${w.prUrl}`);
   if (row?.kind === 'asking' && row.question) {
     line('warning', ` asks: "${row.question}"`);
@@ -540,7 +544,11 @@ const HELP_KEYS: Array<[string, string]> = [
 function helpBody(state: TopState, cols: number, height: number, p: Palette): string[] {
   const out: string[] = [];
   out.push(p.fg('muted', fit(' KEYS', cols)));
-  for (const [k, what] of HELP_KEYS) out.push(p.fg('accent', fit(`  ${k}`, 10)) + p.fg('text', fit(what, cols - 10)));
+  // b only where the runner has a login mode to switch (spec 34a48877 R-14).
+  const keys = state.runner.loginMode
+    ? HELP_KEYS.flatMap(e => e[0] === 'h' ? [e, ['b', 'switch which login takes new work: balanced, claude-first, codex-first'] as [string, string]] : [e])
+    : HELP_KEYS;
+  for (const [k, what] of keys) out.push(p.fg('accent', fit(`  ${k}`, 10)) + p.fg('text', fit(what, cols - 10)));
   out.push(' '.repeat(cols));
   const served = workspaceSummary(state);
   out.push(p.fg('text', fit(` This view shows only the workspaces this runner serves${served ? ` (${served})` : ''}.`, cols)));
@@ -576,8 +584,11 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   // A route that does not work is a warning on its own line, with where to fix it.
   const runsOnText = runsOn(state, now);
   const todayText = spendTodayLine(state, now);
+  // R-60: what each login does now, and the login mode with b to change it.
+  const loginsText = loginsLine(state, now);
   const routeLines = [
     ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
+    ...(loginsText ? [p.fg('muted', fit(' ' + loginsText, cols))] : []),
     ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
     ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
   ];
@@ -621,7 +632,7 @@ const QEST_W = 6;
 /** The narrowest title the queue keeps before it drops a column. */
 const QTITLE_MIN = 30;
 
-interface QueueCols { est: boolean; workspace: boolean; mission: number; starts: number; title: number }
+interface QueueCols { est: boolean; workspace: boolean; by: number; mission: number; starts: number; title: number }
 
 /**
  * The queue's columns at `cols`: est. goes first, then workspace, and below 60
@@ -629,19 +640,23 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  * wide and never wraps.
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
-  const mission = cols < 60 ? 12 : 17;
+  const mission = cols < 60 ? 12 : cols < 110 ? 14 : 17;
+  // The by column (R-58): "you", a first name, or "-"; a long name is cut.
+  const by = cols < 110 ? 6 : 9;
   // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
   const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
-  const fixed = 1 + POS_W + mission + starts;
+  // The by column stays at every width (R-58); est. and workspace give way first.
+  const fixed = 1 + POS_W + by + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
   const title = Math.max(4, cols - fixed - (workspace ? QWS_W : 0) - (est ? QEST_W : 0));
-  return { est, workspace, mission, starts, title };
+  return { est, workspace, by, mission, starts, title };
 }
 
 function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Palette): string {
   const text =
-    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title) +
+    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title - 1) + ' ' +
+    fit('by', c.by) +
     (c.workspace ? fit('workspace', QWS_W) : '') +
     fit('mission', c.mission) +
     (c.est ? fit('est.', QEST_W) : '') +
@@ -661,6 +676,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
     p.fg(primary, col(row.title, c.title)) +
+    p.fg('muted', col(row.by, c.by)) +
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
@@ -678,6 +694,9 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   } else if (sections.length === 0) {
     lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing in the queue matches the filter.' : ' Nothing is waiting for this runner.', cols)) });
   }
+  // R-59: what runs next, from the rows' own reasons.
+  const next = queueNextLine(state, now);
+  if (next) lines.push({ text: p.fg('text', fit(' ' + next, cols)) });
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });

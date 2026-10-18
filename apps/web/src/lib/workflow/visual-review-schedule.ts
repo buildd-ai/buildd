@@ -15,7 +15,10 @@
  *  - a system failure (the audit task failed: browser, preview, runner) retries with
  *    exponential backoff, a bounded number of times, then names who acts next;
  *  - a product finding is never a retry: it is a `[surface fix]` and the findings loop's;
- *  - no browser to claim it names the owner rather than leaving the mission waiting unseen.
+ *  - no browser to claim it names the owner rather than leaving the mission waiting unseen;
+ *  - an audit failed only because build work it depends on failed never ran: it is not a
+ *    system failure, never retried or counted as an attempt, and it goes back to the queue
+ *    when that work completes (spec 072de598 I-14).
  */
 import { MAX_TOTAL_SURFACE_AUDIT_ROUNDS } from '@buildd/core/surface-audit';
 import type { MissionVisualReviewState, VisualReviewCaptureConfigError, VisualReviewNextActor } from './visual-review-state';
@@ -42,6 +45,8 @@ export interface ScheduleAudit {
   updatedAt: number;
   /** A named capture setup error in a failed audit's result (`captureConfigErrorFrom`). */
   captureConfigError?: VisualReviewCaptureConfigError | null;
+  /** The failed build task a failed audit waits on (`dependencyFailureOf`): it never ran. */
+  dependencyFailed?: { taskId: string; title: string | null } | null;
 }
 
 export interface ScheduleInput {
@@ -58,7 +63,7 @@ export interface ScheduleInput {
 export type BlockedCause = 'executor_local' | 'capture_config' | 'retries_exhausted' | 'audit_cancelled' | 'rereview_cap' | 'head_unknown';
 
 export type ScheduleAction =
-  | { action: 'none'; why: 'policy_off' | 'ask_policy' | 'not_applicable' | 'work_not_landed' | 'no_integration_head' | 'passed' | 'waived' | 'findings_open' | 'audit_live' }
+  | { action: 'none'; why: 'policy_off' | 'ask_policy' | 'not_applicable' | 'work_not_landed' | 'no_integration_head' | 'passed' | 'waived' | 'findings_open' | 'audit_live' | 'waiting_on_failed_work' }
   /** A live audit exists but is stamped for an older head and has not started: stamp it for this one. */
   | { action: 'restamp'; auditId: string; headSha: string }
   /** Backing off after a system failure. */
@@ -105,6 +110,9 @@ export function planVisualReviewSchedule(input: ScheduleInput): ScheduleAction {
     return { action: 'none', why: 'audit_live' };
   }
 
+  // It never ran: the failed build task holds it, and its recovery is there. A retry would skip that work.
+  if (latest?.status === 'failed' && latest.dependencyFailed) return { action: 'none', why: 'waiting_on_failed_work' };
+
   if (latest?.status === 'failed' && latest.captureConfigError) {
     return { action: 'blocked', cause: 'capture_config', nextActor: 'owner', reason: 'The workspace\'s page source needs setup before the screens can be captured.' };
   }
@@ -118,7 +126,7 @@ export function planVisualReviewSchedule(input: ScheduleInput): ScheduleAction {
   }
 
   const onHead = audits.filter(a => a.headSha === head);
-  const failedOnHead = onHead.filter(a => a.status === 'failed');
+  const failedOnHead = onHead.filter(a => a.status === 'failed' && !a.dependencyFailed);
   if (failedOnHead.length >= MAX_AUTO_ATTEMPTS_PER_HEAD) {
     return { action: 'blocked', cause: 'retries_exhausted', nextActor: 'owner', reason: `The visual review failed ${failedOnHead.length} times on this commit; automatic retries are used up.` };
   }

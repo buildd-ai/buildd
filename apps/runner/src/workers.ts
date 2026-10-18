@@ -20,7 +20,9 @@ import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, typ
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
 import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
-import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
+import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS, DEFAULT_LOGIN_MODE, type LoginMode, type RunnerLoginUse } from '@buildd/shared';
+import { loginUseFor } from './runner-logins';
+import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -72,7 +74,8 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
+import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp, commitMessageOf } from './tool-milestones';
+import { describeInjectedMessage } from '@buildd/core/worker-message-format';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { claudeSessionSandbox, decideConfinementRestart, detectHostPlatform, diagnoseClaudeBwrapFailure, isConfined, isolationModeLabel, probeIsolationRecord, probeSeatbelt, processStartedAt, type BwrapProbeFailure, type BwrapProbeResult } from './isolation-probe';
@@ -1309,6 +1312,8 @@ export class WorkerManager {
     env = withRunnerName(env, heartbeatRunnerName());
     // A person's hold (R-35): the server refuses broad claims and the dashboard shows it.
     if (!this.config.singleTask) env = withRunnerHold(env, currentRunnerHold());
+    // How this runner's own logins share its slots (spec 34a48877 R-14).
+    if (env && !this.config.singleTask) env = { ...env, loginMode: this.config.loginMode ?? DEFAULT_LOGIN_MODE };
     // The confinement per backend and mode (R-3); the probe has run by now.
     if (env && getBwrapProbeAt() !== null) env = { ...env, isolation: getIsolationRecord() };
     return withFleetIdentity(env, this.config.fleetIdentity);
@@ -1376,6 +1381,23 @@ export class WorkerManager {
       this.refusalBackoff.reset();
       this.claimPendingTasks().catch(() => {});
     }
+  }
+
+  /**
+   * How this runner's own logins share its slots (`buildd logins`, b in top;
+   * spec 34a48877 R-14, R-19). The caller saves it in config.json. The next
+   * heartbeat reports it and the next claim follows it; running agents keep
+   * their login.
+   */
+  setLoginMode(mode: LoginMode): void {
+    this.config.loginMode = mode;
+    this.emit({ type: 'logins', loginMode: mode });
+    void this.sendHeartbeat();
+  }
+
+  /** The claim's `loginUse`: this runner's mode, slots and working agents per backend (R-15). */
+  private claimLoginUse(): RunnerLoginUse {
+    return loginUseFor(this.config.loginMode ?? DEFAULT_LOGIN_MODE, this.config.maxConcurrent, Array.from(this.workers.values()));
   }
 
   /** Busy slots: working agents, plus slot-paused ones continuing right now. */
@@ -2061,7 +2083,7 @@ export class WorkerManager {
       this.lookingForWork = (this.lookingForWork || 0) + 1;
       this.emit({ type: 'claim_loop', looking: true });
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity() }));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.claimEnvironment(withRunnerHold(this.environment, currentRunnerHold())), { claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
       } catch (err: any) {
         this.lookingForWork = Math.max(0, (this.lookingForWork || 0) - 1);
         const { status, reason } = parseClaimError(err);
@@ -2512,7 +2534,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity() }));
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.claimEnvironment(this.environment), { byPerson: !!opts.byPerson, claudeLoginId: this.claimLoginIdentity(), loginUse: this.claimLoginUse() }));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -2662,7 +2684,9 @@ export class WorkerManager {
     // server-side check before either has actually claimed. Losing this backstop
     // would mean that race goes back to running two Codex workers on one 5-hour
     // window instead of costing one already-started worker.
-    if (fullTask.backend === 'codex') {
+    // On its own Codex login the runner's Codex share is its limit, not one per
+    // workspace (spec 34a48877 R-17): the server counted it against the share.
+    if (fullTask.backend === 'codex' && this.codexAuth === 'none') {
       const activeCodexWorker = Array.from(this.workers.values()).find(w =>
         w.workspaceId === fullTask.workspaceId &&
         w.taskBackend === 'codex' &&
@@ -2682,6 +2706,8 @@ export class WorkerManager {
     // Create local worker
     const worker: LocalWorker = {
       id: claimedWorker.id,
+      // Why it runs on this backend when the claim moved it (spec c7410e76 R-40, 34a48877 R-18).
+      routedWhy: describeBackendRouting(fullTask.context, fullTask.backend)?.summary ?? null,
       taskId: fullTask.id,
       taskTitle: fullTask.title,
       taskDescription: fullTask.description,
@@ -7125,16 +7151,13 @@ export class WorkerManager {
 
             // Detect git commits — standalone status milestone
             if ((cmd as string).includes('git commit')) {
-              const heredocMatch = (cmd as string).match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
-              const simpleMatch = (cmd as string).match(/-m\s+["']([^"']+)["']/);
-              const message = heredocMatch
-                ? heredocMatch[1].split('\n')[0].trim()
-                : simpleMatch ? simpleMatch[1] : 'commit';
+              const parsed = commitMessageOf(cmd as string);
+              const message = parsed ?? 'commit';
               worker.commits.push({ sha: 'pending', message });
               if (worker.commits.length > 50) {
                 worker.commits.shift();
               }
-              this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
+              this.addMilestone(worker, { type: 'status', label: parsed ? `Commit: ${parsed}` : 'Committed changes', ts: Date.now() });
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
@@ -7802,7 +7825,7 @@ export class WorkerManager {
       worker.lastActivity = Date.now();
       worker.completedAt = undefined;
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
+      this.addMilestone(worker, { type: 'status', label: describeInjectedMessage(message).label, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
       storeSaveWorker(worker);
 
@@ -7903,7 +7926,7 @@ export class WorkerManager {
         worker.currentAction = 'Processing message...';
       }
       this.addChatMessage(worker, { type: 'user', content: message, timestamp: Date.now() });
-      this.addMilestone(worker, { type: 'status', label: `User: ${message.slice(0, 30)}...`, ts: Date.now() });
+      this.addMilestone(worker, { type: 'status', label: describeInjectedMessage(message).label, ts: Date.now() });
       this.emit({ type: 'worker_update', worker });
       // Immediately sync cleared waiting state to server
       if (wasWaiting) {

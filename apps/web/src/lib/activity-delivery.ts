@@ -53,6 +53,13 @@ export interface ActivityTaskInput {
   waitingPrompt?: string | null;
 }
 
+/**
+ * What Activity reads of a mission: its header (chip, landed n/m, next step)
+ * and its tasks' deliveries. A `MissionDelivery` is one; the page builds it
+ * from the stored summary and the projection over the rows in view.
+ */
+export type ActivityMission = Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'next' | 'tasks'>;
+
 // ── Shared shapes ───────────────────────────────────────────────────────────
 
 export type RepairReason = 'ci' | 'conflict' | 'review';
@@ -446,7 +453,7 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
 export function buildActivityNow(input: {
   tasks: readonly ActivityTaskInput[];
   /** The projection Missions and Home read, for every mission in view. */
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
   now: number;
 }): ActivityNow {
@@ -506,12 +513,12 @@ export function buildActivityNow(input: {
 
 // ── Mission detail: one task's delivery ─────────────────────────────────────
 
-/** Build › Audit › Land, one short phrase per stage, for the Landed strip's drawer. */
+/** Build › Verify › Deliver, one short phrase per stage, for the Landed strip's drawer. */
 export interface StageNotes { build: string; audit: string; land: string }
 
 /**
  * A mission task's own delivery, for mission detail's drawer: where it is on
- * Build › Audit › Land and the evidence behind it. Mission dependency progress
+ * Build › Verify › Deliver and the evidence behind it. Mission dependency progress
  * (landed n/m, what unblocks what) stays the strip's; this is one task's flow.
  */
 export interface TaskDeliveryDetail {
@@ -545,8 +552,8 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
   } else if (delivery.kind === 'unavailable') audit = 'Could not run; retries on its own';
   else if (delivery.kind === 'needs') audit = 'Waiting on a decision';
   else audit = (cur && gateLine(cur.gates) ? `${gateLine(cur.gates)}${onHead}` : null)
-    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to audit');
-  const land = at < 2 ? 'After Audit'
+    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to verify');
+  const land = at < 2 ? 'After Verify'
     : delivery.kind === 'landing' ? 'Merging'
     : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without a change to merge')
     : prNumber ? 'Merged' : 'Nothing to merge';
@@ -631,7 +638,7 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
 
 export function buildActivityHistory(input: {
   tasks: readonly ActivityTaskInput[];
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
 }): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));

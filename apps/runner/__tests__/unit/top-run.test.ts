@@ -26,6 +26,8 @@ let serveMissions = false;
 let slowReads: Promise<void> | null = null;
 /** The next N task-list reads answer 429 (the server's read rate limit, passed through). */
 let rateLimitTasks = 0;
+/** The next N /api/config reads fail (a runner too busy to answer the first load). */
+let failConfig = 0;
 
 function push(event: unknown) {
   sse?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -41,6 +43,7 @@ beforeEach(() => {
   serveMissions = false;
   slowReads = null;
   rateLimitTasks = 0;
+  failConfig = 0;
   sse = null;
 });
 
@@ -62,7 +65,9 @@ function serveFakeRunner() {
     }
     switch (path) {
       case '/api/runner': return Response.json({ pid: 4242, version: '0.340.0' });
-      case '/api/config': return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
+      case '/api/config':
+        if (failConfig > 0) { failConfig--; return Response.json({ error: 'busy' }, { status: 503 }); }
+        return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
       case '/api/workers': return Response.json({ workers: WORKERS });
       case '/api/tasks':
         taskFetches++; if (slowReads) await slowReads;
@@ -501,6 +506,18 @@ describe('runTop', () => {
 
     release();
     await until(() => tasksServed > 0);
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('a first load the runner did not answer is taken again, while the stream stays up', async () => {
+    failConfig = 1;
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'test-host', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {} });
+    // Never stuck on the defaults: the snapshot is retried and the real slots arrive.
+    await until(() => t.screen().split('\n')[0].includes('of 3 slots in use'), 8_000);
+    expect(failConfig).toBe(0);
     t.type('q');
     expect(await done).toBe(0);
   });

@@ -103,6 +103,46 @@ describe('merge door inventory (§13.13)', () => {
     expect(gql).toEqual([]);
   });
 
+  /**
+   * AC-13 (§4): a PR with no delivery is adopted (open_delivery) before a worker door decides who
+   * owns it, so the door lands it through the kernel's gate; a refused adoption merges nothing.
+   * Each door asks `adoptBeforeMerge` before its kernel-ownership read and before its legacy merge
+   * call, and its legacy merge call is reachable only on the adoption's `legacy` answer (kill switch
+   * off, or a delivery released to legacy). The release doors D7–D10 keep the release gate (§4).
+   */
+  const ADOPTING_DOORS: Record<string, { door: string; ownership: RegExp }> = {
+    'apps/web/src/lib/pr-landing.ts': { door: 'D2/D3', ownership: /kernelView = await kernelStatus\(\);\n\s*if \(kernelView\?\.current\.state === 'REPAIRING'\)/ },
+    'apps/web/src/lib/auto-merge.ts': { door: 'D4', ownership: /const kernelLand = / },
+    'apps/web/src/app/api/github/pr/route.ts': { door: 'D5', ownership: /const kernelView = await kernelLandingView\(worker\.workspaceId, repo\.fullName, prNumber\)/ },
+    'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { door: 'D6', ownership: /const kernelView = await kernelLandingView\(worker\.workspaceId, repoFullName, prNumber\)/ },
+  };
+  for (const [file, { door, ownership }] of Object.entries(ADOPTING_DOORS)) {
+    test(`${door}: a PR with no delivery is adopted before the door reads who owns it or merges it`, () => {
+      const src = stripComments(readFileSync(join(ROOT, file), 'utf8'));
+      const adopt = src.indexOf('adoptBeforeMerge(');
+      expect(adopt, `${file} must call adoptBeforeMerge`).toBeGreaterThan(-1);
+      expect(src.match(/adoptBeforeMerge\(/g)?.length, `${file}: one adoption per door`).toBe(1);
+      const own = src.search(ownership);
+      expect(own, `${file}: the kernel-ownership read moved; update ADOPTING_DOORS`).toBeGreaterThan(-1);
+      expect(adopt, `${file}: adoption comes before the ownership read`).toBeLessThan(own);
+      expect(adopt, `${file}: adoption comes before the legacy merge call`).toBeLessThan(src.indexOf('mergePullRequest('));
+      // A refused adoption returns before anything else runs.
+      expect(src.slice(adopt, adopt + 1200)).toMatch(/adoption\.kind === 'refused'/);
+      // A release PR or a dependency bot's PR (adoption answers `gate`) opens no delivery and merges
+      // through the release gate, never the unpinned legacy call (review of #5167).
+      const gate = src.search(/adoption\??\.kind === 'gate'/);
+      expect(gate, `${file}: the gate answer must be routed`).toBeGreaterThan(adopt);
+      expect(gate).toBeLessThan(src.indexOf('mergePullRequest('));
+      expect(src.slice(gate, gate + 600)).toMatch(/mergeOutsideKernel|outside\(/);
+    });
+  }
+
+  test('the release doors D7–D10 do not adopt: their bookkeeping lives outside the kernel (§4)', () => {
+    for (const f of ['apps/web/src/lib/held-pr-tasks.ts', 'apps/web/src/lib/release/pinned-merge.ts', 'apps/web/src/lib/release-executor.ts']) {
+      expect(stripComments(readFileSync(join(ROOT, f), 'utf8')).includes('adoptBeforeMerge('), f).toBe(false);
+    }
+  });
+
   test('every door D1–D13 names the test that proves it reaches the gate, and that test exists', () => {
     for (let i = 1; i <= 13; i++) expect(PROVEN_BY[`D${i}`], `D${i}`).toBeDefined();
     for (const [door, where] of Object.entries(PROVEN_BY)) {

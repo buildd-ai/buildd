@@ -9,6 +9,7 @@ import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { readReachLink } from '@/lib/granted-links';
+import { cachedCaller, callerDep } from '@/lib/caller-cache';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
@@ -26,6 +27,20 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
   if (!UUID_RE.test(workspaceId)) return false;
   if (account.taskScope) return workspaceId === account.taskScope.workspaceId;
   if (account.workspaceIds != null && !account.workspaceIds.includes(workspaceId)) return false;
+  // Only an own-team workspace with no link at all is cached (lib/caller-cache.ts):
+  // a link's standing can rest on another person's membership, which this
+  // entry could not be cleared by. Any link write clears the account's links,
+  // and a team or access change clears the workspace.
+  let answer: Awaited<ReturnType<typeof workspaceInScopeUncached>> | undefined;
+  const ownTeamUnlinked = await cachedCaller(`ws-scope:${account.id}:${workspaceId}`, async () => {
+    answer = await workspaceInScopeUncached(workspaceId, account);
+    return answer === 'own-team-unlinked' ? { ok: true as const } : null;
+  }, { known: [callerDep.account(account.id), callerDep.accountLinks(account.id), callerDep.workspace(workspaceId)] });
+  if (ownTeamUnlinked) return true;
+  return (answer ?? (await workspaceInScopeUncached(workspaceId, account))) !== false;
+}
+
+async function workspaceInScopeUncached(workspaceId: string, account: McpAccount): Promise<false | 'linked' | 'own-team-unlinked'> {
   const ws = await db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
@@ -35,8 +50,8 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
   // rule (granted-links.ts readReachLink, workspace-reach.ts).
   const link = await readReachLink(account.id, workspaceId);
   if (link?.revoked) return false;
-  if (ws.teamId === account.teamId) return true;
-  return !!link;
+  if (ws.teamId === account.teamId) return link ? 'linked' : 'own-team-unlinked';
+  return link ? 'linked' : false;
 }
 
 /**
@@ -47,11 +62,7 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
  */
 export async function isWorkerInCallerScope(workerId: string, account: McpAccount): Promise<boolean> {
   if (!UUID_RE.test(workerId)) return false;
-  const worker = await db.query.workers.findFirst({
-    where: sqlWhere(eq(workers.id, workerId)),
-    columns: { accountId: true, taskId: true, workspaceId: true },
-    with: { workspace: { columns: { teamId: true } } },
-  });
+  const worker = await workerIdentity(workerId);
   if (!worker) return false;
   if (account.taskScope) {
     return worker.accountId === account.id && worker.taskId === account.taskScope.taskId;
@@ -59,6 +70,20 @@ export async function isWorkerInCallerScope(workerId: string, account: McpAccoun
   if (account.workspaceIds != null && !account.workspaceIds.includes(worker.workspaceId)) return false;
   if (worker.accountId === account.id) return true;
   return (worker as { workspace?: { teamId?: string } | null }).workspace?.teamId === account.teamId;
+}
+
+/**
+ * Which account, task and workspace a worker belongs to. None of the three
+ * changes after a worker is created, so the row is cached (lib/caller-cache.ts)
+ * until the workspace changes; a missing worker is not cached.
+ */
+export async function workerIdentity(workerId: string): Promise<{ accountId: string | null; taskId: string | null; workspaceId: string; workspace?: { teamId?: string } | null } | null> {
+  if (!UUID_RE.test(workerId)) return null;
+  return cachedCaller(`worker-identity:${workerId}`, () => db.query.workers.findFirst({
+    where: sqlWhere(eq(workers.id, workerId)),
+    columns: { accountId: true, taskId: true, workspaceId: true },
+    with: { workspace: { columns: { teamId: true } } },
+  }), { depsOf: (w) => [callerDep.workspace(w.workspaceId)] });
 }
 
 /**
@@ -74,20 +99,36 @@ export async function isWorkerInCallerScope(workerId: string, account: McpAccoun
  */
 export async function workerRunnerSupportsGroupTools(workerId: string): Promise<boolean> {
   if (!UUID_RE.test(workerId)) return false;
+  // Not an access decision: a runner that upgrades is seen within the TTL.
+  // Only a definite answer is kept; an error reads as false this call only.
+  try {
+    const hit = await cachedCaller(`worker-group-tools:${workerId}`, async () => {
+      const v = await runnerSupportsGroupToolsUncached(workerId);
+      return v === null ? null : { v };
+    });
+    return hit?.v ?? false;
+  } catch {
+    return false;
+  }
+}
+
+async function runnerSupportsGroupToolsUncached(workerId: string): Promise<boolean | null> {
   try {
     const worker = await db.query.workers.findFirst({
       where: sqlWhere(eq(workers.id, workerId)),
       columns: { accountId: true, localUiUrl: true },
     });
-    if (!worker?.accountId || !worker.localUiUrl) return false;
+    // No URL yet: not an answer to keep, the runner registers it shortly.
+    if (!worker?.accountId || !worker.localUiUrl) return null;
     const heartbeat = await db.query.workerHeartbeats.findFirst({
       where: sqlWhere(and(eq(workerHeartbeats.accountId, worker.accountId), eq(workerHeartbeats.localUiUrl, worker.localUiUrl))),
       columns: { environment: true },
     });
-    const envKeys = (heartbeat?.environment as { envKeys?: unknown } | null | undefined)?.envKeys;
+    if (!heartbeat) return null;
+    const envKeys = (heartbeat.environment as { envKeys?: unknown } | null | undefined)?.envKeys;
     return Array.isArray(envKeys) && envKeys.includes(CAPABILITY_MCP_GROUP_TOOLS);
   } catch {
-    return false;
+    return null;
   }
 }
 

@@ -652,7 +652,7 @@ export interface ActionQueueItem {
    * next move, its headline and evidence (workflow-state-kernel §17.5). The
    * card's chip was taken from it, not from raw worker/reviewer columns.
    */
-  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified' | 'prState'> | null;
   /**
    * Set on a mission's ship card when the same mission's refresh PR is also
    * queued: the refresh lands first (the ship PR cannot ship while its
@@ -778,7 +778,7 @@ const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
   v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
 
 const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
-  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
+  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified, prState: v.prState,
 });
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
