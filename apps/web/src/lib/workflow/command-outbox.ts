@@ -60,6 +60,9 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // A requeue is reported once too. The door's caller projects it on the web host meanwhile, so a
   // late re-send only records it: its guard moves nothing once the task was claimed again.
   attempt_requeued: true,
+  // Never: the claim projects its own start on the web host when unanswered, and gives the claim back
+  // if that does not hold. A late re-send could only find a claim that already moved on.
+  attempt_started: false,
   // The red-PR sweep reads a red head again on its own tick.
   observe_ci_failure: false,
   // The conflict door reads the live PR on every sweep, so the sweeps are its re-sender.

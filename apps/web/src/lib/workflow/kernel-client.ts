@@ -629,6 +629,42 @@ export async function attemptRequeued(p: Omit<KernelOps['attempt_requeued']['inp
   return doorOrHereOnSkew('attempt_requeued', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s requeue`);
 }
 
+/** AttemptStarted's own control-plane budget: a claim waits at most this long on the door (KERNEL_START_BUDGET_MS overrides). */
+export const ATTEMPT_START_BUDGET_MS = 750;
+/** After a start the control plane left unanswered, how long every start skips the door and the claim projects it at once. */
+export const ATTEMPT_START_SKIP_MS = 45_000;
+/** Process-level: until when starts skip the door (0: the door is tried). */
+let attemptStartSkipUntil = 0;
+/** Close the start breaker (tests). */
+export function resetAttemptStartBreaker(): void {
+  attemptStartSkipUntil = 0;
+}
+
+/**
+ * AttemptStarted from the claim route (AC-1 slice 7): a claim of a kernel owner task starts its
+ * attempt, applied where the kernel is hosted. Never run on the web host in own mode, not even
+ * during release skew: the claim projects the start on its own host (`projectAttemptStart`) on any
+ * door error, so an older control plane's refusal is just one more error. The door gets its own
+ * small budget (`ATTEMPT_START_BUDGET_MS`, apart from the fix claims'), and a start left
+ * unanswered opens a short breaker (`ATTEMPT_START_SKIP_MS`): the starts after it fail at once
+ * without a request, so an outage costs one claim the budget, not every claim.
+ */
+export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_started']['result']> {
+  const now = c.deps?.now ?? Date.now;
+  if (now() < attemptStartSkipUntil) {
+    throw new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
+  }
+  const env = c.deps?.env ?? process.env;
+  const budgetMs = Number(env.KERNEL_START_BUDGET_MS) || ATTEMPT_START_BUDGET_MS;
+  try {
+    const { value } = await withControlPlaneBudget('claim_start', budgetMs, () => door('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c), { now });
+    return value;
+  } catch (err) {
+    if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+    throw err;
+  }
+}
+
 /**
  * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
  * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it

@@ -44,7 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -460,6 +460,63 @@ export async function policyMergeThroughKernel(p: {
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
   return result;
+}
+
+// ── AC-1 slice 7: a claim starts the owner attempt ─────────────────────────
+
+/**
+ * The claim's compare-and-set guard for a kernel owner task, beside `status = 'pending'`: no other
+ * claim in flight on it (task-projection.ts). Not a command: the claim route's own race.
+ */
+export { ownerClaimOpenSql };
+
+/**
+ * Project a start onto its task outside a transition (task-projection.ts `projectAttemptStartSql`),
+ * then answer whether the task is now `assigned` under exactly this claim: moved here, or already
+ * by `t_start`. False means the claim was lost after its compare-and-set (a cancel, a requeue, a
+ * stale takeover), and the caller gives the claim back.
+ */
+export async function projectAttemptStart(
+  p: { deliveryId: string; taskId: string; claimedBy: string; claimedAt: string },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectAttemptStartSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk
+    WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'assigned'
+      AND tk.claimed_by::text = ${p.claimedBy}::text AND tk.claimed_at = ${p.claimedAt}::timestamptz`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptStarted from the claim route: the claim's compare-and-set won a kernel owner task (it
+ * stamped claimed_by / claimed_at and left the status `pending`), and the kernel moves the task to
+ * `assigned` in the transition's own statement (`t_start`). A start the reducer does not bind (the
+ * delivery moved on, as a loop task's next iteration does, a duplicate, a released delivery) is
+ * still projected under the same guard, so the task starts exactly when it still carries this
+ * claim. No inline drain: the start's effects are the floor's, never the claim's hot path.
+ * `handled` false: the task has no delivery to start through (the caller writes it itself).
+ */
+export async function attemptStarted(p: {
+  task: AttemptTask;
+  claimedBy: string;
+  /** tasks.claimed_at as Postgres renders it (`::text`, microseconds kept). */
+  claimedAt: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; started: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, started: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptStarted', actor: p.source, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptStarted for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }, deps.exec);
+  return { handled: true, started, ...(result ? { result } : {}) };
 }
 
 // ── T4: an attempt ended ────────────────────────────────────────────────────

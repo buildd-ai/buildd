@@ -26,7 +26,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
-import { attemptEndTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, requeueTaskProjectionCtes } from './task-projection';
+import { attemptEndTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -294,6 +294,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   // effect what it did (task-projection.ts), so runMergedPrWork performs only side effects.
   const projectsTask = projected === 'merged';
   if (projectsTask) ctes.push(...mergeTaskProjectionCtes('d'));
+  // AC-1 slice 7: AttemptStarted moves the claimed owner task to assigned, in this statement.
+  ctes.push(...startTaskProjectionCtes(d, 'd'));
   // AC-1 slice 3: T4 for an owner sets the owner task from the attempt's end, in this statement.
   ctes.push(...attemptEndTaskProjectionCtes(d, 'd'));
   // AC-1 slice 6: AttemptRequeued moves the attempt's task back to the queue, in this statement.
