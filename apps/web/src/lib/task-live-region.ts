@@ -42,7 +42,7 @@ export function pickTaskLiveRegion(
 ): TaskLiveRegion | null {
   if (task.status !== rendered.taskStatus || !rendered.workerId) return null;
   const active = selectTaskWorkers(
-    rows.map(w => ({ ...w, createdAt: w.createdAt ?? null })),
+    rows.map(w => ({ ...w, createdAt: w.createdAt ?? new Date(0) })),
     isLiveWorkerStatus,
   ).activeWorker;
   if (!active || active.id !== rendered.workerId) return null;
