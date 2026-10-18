@@ -98,6 +98,7 @@ describe('buildCIRetryTask', () => {
     });
     expect(t!.description).not.toContain('--log-failed');
     expect(t!.description).toContain('/repos/org/repo/actions/jobs/67890/logs');
+    expect(t!.description).not.toContain('--allow-escape-sequences');
     expect(t!.context.ciRunId).toBe(12345);
   });
 
