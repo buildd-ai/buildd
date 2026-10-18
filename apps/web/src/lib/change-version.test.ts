@@ -92,6 +92,49 @@ describe('listCallerKey', () => {
   });
 });
 
+describe('eviction-safe versions', () => {
+  it('an evicted or expired version never answers an old ETag with 304 or a cached body', async () => {
+    const store = memoryChangeVersionStore();
+    setChangeVersionStoreForTests(store);
+    let loads = 0;
+    const load = async () => { loads++; return ok({ n: loads })(); };
+    const first = await withChangeVersion(req('http://x/api/tasks'), { scopes: ['w1'], caller: 'a:1' }, load);
+    const etag = first.headers.get('etag')!;
+    expect((await withChangeVersion(req('http://x/api/tasks', etag), { scopes: ['w1'], caller: 'a:1' }, load)).status).toBe(304);
+
+    store.evict('w1');
+    const after = await withChangeVersion(req('http://x/api/tasks', etag), { scopes: ['w1'], caller: 'a:1' }, load);
+    expect(after.status).toBe(200);
+    expect(after.headers.get('x-buildd-list-cache')).toBeNull();
+    expect(after.headers.get('etag')).not.toBe(etag);
+    expect(loads).toBe(2);
+  });
+
+  it('the Redis store replaces a token on bump and seeds a missing key with a fresh one', async () => {
+    const { bumpVersionTokensWith, readVersionTokensWith } = await import('./redis');
+    const kv = new Map<string, string>();
+    const fake = {
+      pipeline() {
+        const ops: Array<() => void> = [];
+        const p = {
+          set(k: string, v: string, o: { nx?: boolean }) { ops.push(() => { if (!(o?.nx && kv.has(k))) kv.set(k, v); }); return p; },
+          async exec() { for (const op of ops) op(); return []; },
+        };
+        return p;
+      },
+      async mget(...keys: string[]) { return keys.map(k => kv.get(k) ?? null); },
+    };
+    const [v1] = (await readVersionTokensWith(fake, ['k'], 60))!;
+    expect((await readVersionTokensWith(fake, ['k'], 60))![0]).toBe(v1);
+    await bumpVersionTokensWith(fake, ['k'], 60);
+    const [v2] = (await readVersionTokensWith(fake, ['k'], 60))!;
+    expect(v2).not.toBe(v1);
+    kv.delete('k');
+    const [v3] = (await readVersionTokensWith(fake, ['k'], 60))!;
+    expect([v1, v2]).not.toContain(v3);
+  });
+});
+
 describe('reach', () => {
   it('a narrower reach never gets the wider reach\'s cached body (the scopes are in the key)', async () => {
     setChangeVersionStoreForTests(memoryChangeVersionStore());

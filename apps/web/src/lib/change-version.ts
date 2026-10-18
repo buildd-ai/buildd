@@ -31,17 +31,19 @@
  * finished tasks, a deferred task coming due, a 7-day delivered window). So a
  * 304 is never more than a minute behind; R-21 polls at most once a minute.
  *
- * Counters live in Upstash (lib/redis.ts `bumpVersionCounters` /
- * `readVersionCounters`): a missing counter starts at the current epoch ms,
- * never at 0, so one that expired cannot repeat a value a client still holds.
+ * Versions live in Upstash (lib/redis.ts `bumpVersionTokens` /
+ * `readVersionTokens`) as a random token per scope, replaced on every bump,
+ * never incremented: a key that expired or was evicted is seeded with a fresh
+ * random token, so it cannot repeat a value a client's old ETag was built on
+ * (that would be a false 304 or a stale cached body).
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { union } from 'drizzle-orm/pg-core';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { isUuid } from './uuid';
-import { bumpVersionCounters, getKey, readVersionCounters, setWithTtl } from './redis';
+import { bumpVersionTokens, getKey, readVersionTokens, setWithTtl } from './redis';
 import type { WorkChangeBatch } from './work-changed';
 
 /** How long a counter lives after its last bump or read-init. */
@@ -63,8 +65,8 @@ export interface ChangeVersionStore {
 const bodyKey = (key: string) => `buildd:lc:${key}`;
 
 const redisStore: ChangeVersionStore = {
-  bump: (ids) => bumpVersionCounters(ids.map(keyOf), Date.now(), CHANGE_VERSION_TTL_SEC),
-  read: (ids) => readVersionCounters(ids.map(keyOf), Date.now(), CHANGE_VERSION_TTL_SEC),
+  bump: (ids) => bumpVersionTokens(ids.map(keyOf), CHANGE_VERSION_TTL_SEC),
+  read: (ids) => readVersionTokens(ids.map(keyOf), CHANGE_VERSION_TTL_SEC),
   // Wrapped in an object: the Upstash client JSON-decodes what it reads back, so a bare JSON string would come back parsed.
   getBody: async (key) => {
     const got = await getKey<{ b?: unknown }>(bodyKey(key));
@@ -80,15 +82,17 @@ export function setChangeVersionStoreForTests(next: ChangeVersionStore | null): 
   store = next ?? redisStore;
 }
 
-/** An in-memory store, for tests and scripts. */
-export function memoryChangeVersionStore(): ChangeVersionStore & { counters: Map<string, number>; bodies: Map<string, string> } {
-  const counters = new Map<string, number>();
+/** An in-memory store, for tests and scripts: Redis's semantics (a random token per scope; a missing one is seeded fresh). */
+export function memoryChangeVersionStore(): ChangeVersionStore & { counters: Map<string, string>; bodies: Map<string, string>; evict(id: string): void } {
+  const counters = new Map<string, string>();
   const bodies = new Map<string, string>();
+  const fresh = () => `v${randomBytes(12).toString('base64url')}`;
   return {
     counters,
     bodies,
-    async bump(ids) { for (const id of ids) counters.set(id, (counters.get(id) ?? 0) + 1); return true; },
-    async read(ids) { return ids.map(id => String(counters.get(id) ?? 0)); },
+    evict(id) { counters.delete(id); },
+    async bump(ids) { for (const id of ids) counters.set(id, fresh()); return true; },
+    async read(ids) { return ids.map(id => { if (!counters.has(id)) counters.set(id, fresh()); return counters.get(id)!; }); },
     async getBody(key) { return bodies.get(key) ?? null; },
     async setBody(key, body) { bodies.set(key, body); },
   };
