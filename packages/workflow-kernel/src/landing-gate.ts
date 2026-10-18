@@ -193,7 +193,11 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
   const status = (state: LandingStatus['state'], term: string, text: string): LandingStatus => ({ state, sha: d.currentHeadSha!, description: clip(`${term}: ${text}`) });
   if (g.ok) {
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
-    return status('success', T.ready, `${at} approved by ${by}`);
+    // A person's approval past required findings (approve and override) says so: the success is theirs, not a clean review's.
+    const over = g.coverage === 'human'
+      ? (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed')).length : 0;
+    const overText = over ? ` over ${over} open ${over === 1 ? 'finding' : 'findings'}` : '';
+    return status('success', T.ready, `${at} approved by ${by}${overText}`);
   }
   const gateFailure = (r: ReviewGate): LandingStatus | null => {
     if (r.ok) return null;
