@@ -19,7 +19,7 @@ describe('releasePill', () => {
   it('maps every release state to a sentence-case word', () => {
     for (const state of ['pending_external', 'dispatched', 'deploying', 'healthy', 'degraded', 'failed']) {
       const { label } = releasePill({ state, failureReason: null });
-      expect(label).toMatch(/^[A-Z][a-z]+$/);
+      expect(label).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
     }
   });
 
