@@ -25,7 +25,7 @@ import { toCandidateChecks, type CheckRunFact } from './compose-source';
 
 // The shapes of packages/workflow-kernel/src/open-pr-status.ts, restated: outside the kernel only its
 // entry points are imported (packages/core/__tests__/workflow-write-sites.test.ts, S14).
-export type UnownedReview = 'not_requested' | 'in_progress';
+export type UnownedReview = 'not_requested' | 'in_progress' | 'changes_requested';
 export type CandidateCheckState = 'passing' | 'pending' | 'failing' | 'missing';
 export interface CandidateGateInput {
   sha: string;
@@ -51,8 +51,9 @@ export interface OpenPrReviewDeps {
   read?: (p: { workspaceId: string; prNumber: number }) => Promise<PrReviewStatus>;
 }
 
-/** The review state as the status reads it: anything past "nobody asked" is a review in progress until a delivery owns it. */
+/** The review state as the status reads it: past "nobody asked", a review is in progress until a delivery owns it, unless it finished asking for changes. */
 export function unownedReviewOf(state: PrReviewStatus['state']): UnownedReview {
+  if (state === 'changes_requested') return 'changes_requested';
   return state === 'not_requested' ? 'not_requested' : 'in_progress';
 }
 

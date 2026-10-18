@@ -37,6 +37,19 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('workspace-restricted tokens reach the all-workspace lists, which scope to their own workspaces', () => {
+    // /api/workspaces/across/* is not a workspace id: the route narrows the
+    // list to the token's workspaceIds (listReachableWorkspaceIds) instead.
+    const reader = { level: 'worker', scopes: ['tasks:read'], workspaceIds: ['ws-a'] };
+    for (const list of ['artifacts', 'schedules', 'skills']) {
+      expect(canAccessTokenRoute(reader, request(`/api/workspaces/across/${list}`)), list).toBe(true);
+    }
+    expect(hasTokenRouteAdminAccess(reader, request('/api/workspaces/across/skills'), 'tasks:read')).toBe(true);
+    // Only reads: no write reaches a path named for no workspace.
+    expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/across/skills', 'POST'))).toBe(false);
+    // A real other workspace is still refused.
+    expect(canAccessTokenRoute(reader, request('/api/workspaces/ws-b/skills'))).toBe(false);
+  });
   test('workspace-restricted tokens can list workspaces but not create one', () => {
     // The listing filters to the token's own workspaces, so resolving a
     // workspace by name works; creating one would escape the restriction.
