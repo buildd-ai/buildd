@@ -157,8 +157,11 @@ describe('seams that have shipped stay cut', () => {
     expect(writers).toEqual([]);
   });
 
-  test('the composition root is the only exempt importer', () => {
-    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts']);
+  test('the composition roots are the only exempt importers', () => {
+    // mcp-read-routes.ts names route handlers for in-process MCP reads. It is
+    // not in modules.ts because dozens of routes import modules.ts, and each
+    // would then bundle every route it names (next build ran out of memory).
+    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts', 'apps/web/src/mcp-read-routes.ts']);
   });
 });
 
