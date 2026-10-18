@@ -19,7 +19,7 @@ export function ClaimabilitySection({ health, now }: { health: ClaimPlanHealth |
       </p>
       {health.plans === 0 ? (
         <p data-testid="claimability-empty" className="text-xs text-text-muted">
-          No claim plans recorded in this window. That is unknown, not “nothing claimable”: the planner may be off or nothing was polled.
+          No claim plans recorded in this window. Claimability unknown.
         </p>
       ) : (
         <div className="card p-4 space-y-3">
