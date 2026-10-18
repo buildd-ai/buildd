@@ -6,7 +6,7 @@
  * cost column goes first, then the route words, then the role column (R-7,
  * R-41), and text is cut with "…".
  */
-import { TERMS } from '@buildd/shared';
+import { TERMS, titleWithAttempt } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
@@ -227,7 +227,7 @@ function footer(state: TopState, cols: number, p: Palette): string {
     return p.fg('accent', prefix) + p.fg('text', text) + p.fg('accent', '▏') + ' '.repeat(Math.max(0, cols - textWidth(prefix) - textWidth(text) - 1));
   }
   if (m.kind === 'confirm') {
-    const t = state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle ?? 'this task';
+    const t = titleWithAttempt(state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle) || 'this task';
     return p.fg('accent', fit(` Stop the agent on "${t}"? y stops it, any other key keeps it running`, cols));
   }
   if (state.status) {
@@ -257,7 +257,7 @@ function foldTitle(m: MissionRow, room: number): string {
  * "Done this week · N" row. Opened, it lists the missions done in
  * the last 7 days under it, dimmed, each with its day on its own row ("Oct
  * 14"), so a full pane cannot drop the day. A mission managed from a local
- * session says so in its stage words ("building locally"), on its own row.
+ * session says so in its stage words ("building in your session"), on its own row.
  * When the pane is too short it scrolls to keep the selected mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
@@ -284,7 +284,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       const tally = isLooseKey(m.key) ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
       const stage = missionRowStage(m);
       const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? TERMS['mission.paused'].short : '');
-      // Widest that leaves the title room: the stage with "locally", then without it, then the tally alone.
+      // Widest that leaves the title room: the stage with "in your session", then without it, then the tally alone.
       const fits = (c: string) => lw - 3 - (c.length + 2) >= MIN_MISSION_TITLE;
       const plain = [missionStageWord(m), tally].filter(Boolean).join(' ');
       const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
@@ -406,7 +406,7 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
   const push = (s: string) => out.push(s);
   const line = (token: PaletteToken, s: string) => push(p.fg(token, fit(s, cols)));
 
-  const title = row?.title ?? task?.title ?? w?.taskTitle ?? taskId;
+  const title = row?.title ?? (titleWithAttempt(task?.title ?? w?.taskTitle) || taskId);
   const g = row ? GLYPH[row.kind] : GLYPH.waiting;
   const meta = [
     row?.role,

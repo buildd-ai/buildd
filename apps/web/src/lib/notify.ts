@@ -20,6 +20,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { decrypt, encrypt } from '@buildd/core/secrets';
 import {
   resolveNotifyPlan,
+  readableTitles,
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotifyEvent,
   type TeamAlertEvent,
@@ -174,8 +175,10 @@ async function sendWebhook(url: string, event: TeamAlertEvent, payload: NotifyPa
  * a team's alerts never leak to another team. Fire-and-forget: failures are
  * swallowed and never block the caller.
  */
-export async function notifyTeam(teamId: string, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
+export async function notifyTeam(teamId: string, event: TeamAlertEvent, raw: NotifyPayload): Promise<void> {
   if (!teamId) return;
+  // A person reads it: a retry key reads as its attempt (terms catalog).
+  const payload = { ...raw, title: readableTitles(raw.title), message: readableTitles(raw.message) };
   try {
     const [channel, prefs] = await Promise.all([getTeamChannel(teamId), getTeamPreferences(teamId)]);
     const plan = resolveNotifyPlan(event, channel, prefs);

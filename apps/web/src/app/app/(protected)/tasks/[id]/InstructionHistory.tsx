@@ -90,7 +90,7 @@ export default function InstructionHistory({
               >
                 <p className="break-words [overflow-wrap:anywhere]">{entry.message ?? '(hidden in a sensitive workspace)'}</p>
                 <p className={`text-meta mt-1 flex flex-wrap items-center gap-x-1.5 ${isInstruction ? 'text-primary/60' : 'text-text-muted'}`}>
-                  <span>{isInstruction ? 'You' : 'Worker'} · {formatTime(entry.timestamp)}</span>
+                  <span>{isInstruction ? 'You' : 'Agent'} · {formatTime(entry.timestamp)}</span>
                   {state && <DeliveryStateChip state={state} />}
                 </p>
                 {state === 'undelivered' && onResend && entry.message && (

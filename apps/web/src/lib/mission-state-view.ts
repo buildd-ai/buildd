@@ -1106,7 +1106,7 @@ function strandFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'warning',
-      label: `Stranded: ${n === 1 ? '1 claimable task' : `${n} claimable tasks`} and no local session for ${quietLabel(s.quietMs)}`,
+      label: `Stranded: ${n === 1 ? '1 claimable task' : `${n} claimable tasks`} and no session for ${quietLabel(s.quietMs)}`,
       count: n,
       taskIds: s.claimableTaskIds,
       byStatus: { pending: n },
@@ -1924,7 +1924,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, waiting for a runner)`;
       }
       if (d.stranded) {
-        return `stranded: no local session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
+        return `stranded: no session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
       }
       if (d.blockedBy) {
         return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
@@ -2115,15 +2115,15 @@ function inProgressCount(input: MissionStateInput): number {
 
 /**
  * The lead of a running mission's headline. "1 task in progress" (in a local
- * session, when the mission runs there); "Ready to start from a local session"
+ * session, when the mission runs there); "Ready to start from your session"
  * when a local mission's session has claimed nothing yet. That is the honest
  * answer for a queued task, never "stalled" or "dispatch a worker".
  */
 function runningLead(input: MissionStateInput): string {
-  const where = isLocal(input) ? ' in a local session' : '';
+  const where = isLocal(input) ? ' in your session' : '';
   if (isLocal(input) && localAwaitingClaim(input)) {
     const n = (input.openTasks ?? []).length;
-    return n === 1 ? 'Ready to start from a local session' : `${n} tasks ready to start from a local session`;
+    return n === 1 ? 'Ready to start from your session' : `${n} tasks ready to start from your session`;
   }
   const n = inProgressCount(input);
   if (n === 0) return `In progress${where}`;
@@ -2170,7 +2170,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       if (waitingOn.stranded) {
         return waitingOn.stranded.flipBlockedReason
-          ? `Can't continue on a runner: ${waitingOn.stranded.flipBlockedReason} Claim the open task(s) from a local session with claim_task {taskId}, or cancel them if you no longer want the work.`
+          ? `Can't continue on a runner: ${waitingOn.stranded.flipBlockedReason} Claim the open task(s) from your session with claim_task {taskId}, or cancel them if you no longer want the work.`
           : 'Continue on a runner: switch the mission to runners and its open task(s) are dispatched to them. Or keep it local and claim them from a session with claim_task {taskId}.';
       }
       if (waitingOn.blockedBy) {
@@ -2188,10 +2188,10 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {
         return waitingOn.count === 1
-          ? 'Start it from a local session with claim_task {taskId}, or cancel it if you no longer want the work.'
-          : 'Start them from a local session with claim_task {taskId}, or cancel the ones you no longer want.';
+          ? 'Start it from your session with claim_task {taskId}, or cancel it if you no longer want the work.'
+          : 'Start them from your session with claim_task {taskId}, or cancel the ones you no longer want.';
       }
-      return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
+      return 'Start an agent on the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
       return waitingOn.infra
         ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'

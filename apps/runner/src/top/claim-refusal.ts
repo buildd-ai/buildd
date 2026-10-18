@@ -45,15 +45,15 @@ export function claimRefusalBody(err: any): ClaimRefusalBody {
 const REASON_WORDS: Record<string, string> = {
   race_lost: 'another runner took it first',
   no_pending_tasks: 'it is no longer waiting (taken or finished)',
-  no_slots: "the account's worker limit is reached",
+  no_slots: "every slot the account may use is in use",
   budget_exhausted: 'a plan or rate limit holds it',
   context_paused: 'claims are paused after repeated failures',
   runner_held: `this runner is ${TERMS['runner.paused'].short}`,
 };
 
 const EXCLUSION_OVERRIDES: Record<string, string> = {
-  mission_local: 'its mission is managed from a local session',
-  task_reserved: 'a local session reserved it',
+  mission_local: 'its mission runs from your session',
+  task_reserved: 'your session took it',
 };
 
 /** Why the claim was refused, in words, without the task's title. */
@@ -64,7 +64,7 @@ export function claimRefusalWords(body: unknown, status: number): string {
       const busy = typeof b.current === 'number' ? b.current : b.limit;
       return `your account allows ${b.limit} at once and ${busy === b.limit ? `all ${busy}` : busy} are busy`;
     }
-    return "the account's worker limit is reached";
+    return "every slot the account may use is in use";
   }
   if (b.exclusion) return EXCLUSION_OVERRIDES[b.exclusion] ?? EXCLUSION_WORDS[b.exclusion] ?? b.exclusion.replace(/_/g, ' ');
   if (b.claimReason && REASON_WORDS[b.claimReason]) return REASON_WORDS[b.claimReason];

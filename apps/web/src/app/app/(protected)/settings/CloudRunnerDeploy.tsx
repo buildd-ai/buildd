@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Select } from '@/components/ui/Select';
-import { useCloudRunnerDeploy, DEPLOY_STEPS, type DeployStep } from './_lib/use-cloud-runner-deploy';
+import { useCloudRunnerDeploy, DEPLOY_STEPS, stepLabel } from './_lib/use-cloud-runner-deploy';
 import { missingDeployPermissions, type CloudflareCapabilities } from '@/lib/cloudflare-credential-shared';
 
 interface Props {
@@ -173,14 +173,4 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
       )}
     </div>
   );
-}
-
-function stepLabel(s: DeployStep): string {
-  switch (s) {
-    case 'check': return 'Pre-flight check';
-    case 'bucket': return 'Snapshot bucket';
-    case 'worker': return 'Worker upload';
-    case 'containers': return 'Container applications';
-    case 'connect': return 'Connect workspace';
-  }
 }
