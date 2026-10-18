@@ -28,6 +28,7 @@ import { disposeParkedWaitingFor } from '@/lib/park-disposition';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -980,6 +981,14 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+
+  // A report that moves the worker (status, a question, a PR) moves its
+  // mission: the summary is refreshed once, after the response, whichever
+  // branch below writes (lib/work-changed.ts). A bare progress heartbeat does
+  // not; what it ages the reconcile catches.
+  if (reportedStatus !== undefined || waitingFor !== undefined || body.prUrl !== undefined || body.prNumber !== undefined) {
+    noteWorkChanged({ workerIds: [id] });
+  }
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
