@@ -381,7 +381,7 @@ its own cell (pattern, frame) pair, so it reads in greyscale
 
 All in `components/ui/`, from the refined-UI prototype:
 
-- `Lifecycle`: `Build → Audit → Land` with the current step, and its repair /
+- `Lifecycle`: `Build → Verify → Deliver` with the current step, and its repair /
   recovering / needs-you variants. It is the only drawing of that track:
   Activity rows and Home's delivery rows (`lifecycleState(kind)` maps a
   delivery kind onto it), the mission drawer (with `notes`, one phrase per

@@ -40,7 +40,7 @@ export function taskHeading(task: { title: string; label?: string | null }, role
 export type LifecycleInput = Pick<DeliveryView, 'stage' | 'state' | 'stateReason' | 'prState' | 'headSha' | 'rounds'> & { headline?: string };
 
 /**
- * Where the delivery sits on the one Lifecycle track (Build → Audit → Land),
+ * Where the delivery sits on the one Lifecycle track (Build → Verify → Deliver),
  * and the short phrase its current step carries, for the header of a task
  * that is not running (a live run's own view leads with the track already).
  * The vocabulary is docs/specs/task-page.md's State mapping, shared with the
@@ -68,7 +68,13 @@ export function headerLifecycle(v: LifecycleInput | null | undefined): { state: 
       return at('fixing', 'repairing');
     case 'blocked': return at('recovering', 'base branch is red');
     case 'needs_you': return at('needs_you');
-    case 'approved': return at('landing', v.prState === 'awaiting_ci' ? 'approved · checking' : 'awaiting merge');
+    // Approved is a Verify fact. The track enters Deliver only when the required
+    // checks on this head passed; until then the merge is not what it waits on.
+    case 'approved':
+      if (v.prState === 'awaiting_ci' || v.prState === 'ci_running') return at('review', 'approved · checking');
+      if (v.prState === 'ci_failed') return at('review', 'approved · checks failing');
+      if (v.prState === 'conflict') return at('review', 'approved · merge conflict');
+      return at('landing', v.prState === 'ci_passed' ? 'ready to merge' : 'approved');
     case 'landing': return at('landing', 'merging');
     case 'merged': return at('landed');
     case 'closed':

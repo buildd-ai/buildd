@@ -105,7 +105,7 @@ async function dispatchEvent(event: string, data: any): Promise<void> {
         break;
 
       case 'check_run':
-        // A required candidate check re-ran or finished: its head's approval status follows now (AC-39).
+        // A required candidate check re-ran or finished: its head's approval status follows now (AC-78).
         // Only a release candidate's answer reads checks, so any other PR is skipped unread.
         if (data?.installation?.id && ['completed', 'rerequested'].includes(data.action)) {
           await republishPrHeads(data.installation.id, data.repository?.full_name, checkEventHeads(data.check_run?.pull_requests, data.check_run?.head_sha), { candidatesOnly: true });
@@ -444,7 +444,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     return;
   }
 
-  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-39).
+  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-78).
   // Only a release candidate's answer reads checks, so any other PR is skipped unread.
   await republishPrHeads(installation.id, repository.full_name, checkEventHeads(check_suite.pull_requests, check_suite.head_sha), { candidatesOnly: true });
 

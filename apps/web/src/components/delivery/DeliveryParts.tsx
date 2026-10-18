@@ -1,7 +1,7 @@
 /**
  * The delivery chip and the audit evidence cards, shared by every surface that renders lib/delivery-projection.ts
  * (Home, Activity, mission detail). One vocabulary, one rendering: glyph and
- * word, never colour alone. The Build → Audit → Land track is the shared
+ * word, never colour alone. The Build → Verify → Deliver track is the shared
  * `Lifecycle` (components/ui), fed by `lifecycleState`.
  */
 import type { EvidenceEntry } from '@/lib/activity-delivery';

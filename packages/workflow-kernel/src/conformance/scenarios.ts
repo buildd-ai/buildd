@@ -54,6 +54,8 @@ export interface ConformanceHost {
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
+  /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
+  passTime(ms: number): Promise<void>;
 }
 
 export interface ConformanceScenario {
@@ -2684,7 +2686,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    name: 'AC-76: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-77: never a stale success)',
     async run(host) {
       const s = await new Delivery(host, 81).open();
       const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;
