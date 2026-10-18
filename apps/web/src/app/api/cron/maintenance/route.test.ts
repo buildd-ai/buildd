@@ -7,6 +7,9 @@ import { NextRequest } from 'next/server';
 // path-claims.test.ts). This file is about the trigger: auth, that both sweeps
 // run on every tick, and that the run row carries what they did.
 
+const mockPrune = mock(async () => 2);
+mock.module('@/lib/oauth/prune-clients', () => ({ pruneUnusedClients: mockPrune }));
+
 let cronRunRows: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -97,9 +100,9 @@ describe('maintenance cron — the core sweeps', () => {
     const uploads = { finalized: 2, removed: 1, waiting: 0 };
     const chatAttachments = { removed: 4, objectsRemoved: 2 };
     const teamFiles = { removed: 5, objectsRemoved: 5 };
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 18, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles } });
+    expect(row).toMatchObject({ ok: true, changed: 20, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1, uploads, chatAttachments, teamFiles, oauthClientsPruned: 2 } });
   });
 
   it('a failing chat attachment sweep is logged and reads as nothing removed', async () => {
