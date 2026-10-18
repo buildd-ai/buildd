@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import { STATES, TONE_TEXT, type StateKey, type StateTone } from './states';
 
-/** Which of Build (0) → Audit (1) → Land (2) a state sits on; 3 = all done, -1 = not started. */
+/** Which of Build (0) → Verify (1) → Deliver (2) a state sits on; 3 = all done, -1 = not started. */
 export const STEP_OF: Record<StateKey, number> = {
   ready: -1, blocked: -1, queued: -1,
   running: 0, waiting: 0, failed: 0,
@@ -10,9 +10,9 @@ export const STEP_OF: Record<StateKey, number> = {
   landed: 3,
 };
 
-const STEPS = ['Build', 'Audit', 'Land'] as const;
+const STEPS = ['Build', 'Verify', 'Deliver'] as const;
 
-/** Repair rounds already taken on Audit, as ` ↻N`; empty at zero. */
+/** Repair rounds already taken in Verify, as ` ↻N`; empty at zero. */
 const rounds = (n: number | undefined) => (n ? ` ↻${n}` : '');
 
 /** The current step's own glyph, tone and suffix: the variants (repair, paused, needs you…) live here. */
@@ -60,16 +60,16 @@ export interface LifecycleProps {
    * never reads as "repair N".
    */
   phrase?: string | null;
-  /** One short phrase per step (Build, Audit, Land), shown under each step's label. */
+  /** One short phrase per step (Build, Verify, Deliver), shown under each step's label. */
   notes?: readonly [string, string, string];
   className?: string;
 }
 
 /**
- * `✓ Build → ◐ Audit → Land`: where one task is in delivery. Done steps are
+ * `✓ Build → ◐ Verify → Deliver`: where one task is in delivery. Done steps are
  * ticked, the current step carries the state's glyph (and its variant: repair
  * count, paused, needs you), later steps are plain sub text. The one Build →
- * Audit → Land track: every surface that shows a delivery's stage draws this.
+ * Verify → Deliver track: every surface that shows a delivery's stage draws this.
  * With `notes`, each step also carries its own phrase below the label.
  */
 export default function Lifecycle({ state, repairs, phrase, notes, className = '' }: LifecycleProps) {
