@@ -4,7 +4,7 @@
  * refuses a rule the runner would drop instead of storing it silently.
  */
 
-import type { DerivedFileRule } from './types.js';
+import type { DerivedFileRule } from './types';
 
 export type NormalizedDerivedFileRule = Required<DerivedFileRule>;
 

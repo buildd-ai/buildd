@@ -20,7 +20,7 @@ import {
   type CodexSandboxMode,
   type IsolationReason,
   type RunnerIsolationRecord,
-} from './runner-isolation.js';
+} from './runner-isolation';
 
 export type IsolationRequirement = 'protected' | 'trusted_local';
 export const ISOLATION_REQUIREMENTS: readonly IsolationRequirement[] = ['protected', 'trusted_local'];

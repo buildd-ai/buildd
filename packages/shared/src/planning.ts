@@ -20,8 +20,8 @@
 // forever. Keep this contract here, imported by both the runner and the web
 // app, so the boundaries cannot drift apart again.
 
-import type { GoalCriterion } from './types.js';
-import { shippedOutputSchema, type ShippedOutput } from './shipped.js';
+import type { GoalCriterion } from './types';
+import { shippedOutputSchema, type ShippedOutput } from './shipped';
 
 /**
  * A single step in an orchestrator plan. Superset of the fields the agent can

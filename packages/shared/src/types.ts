@@ -1,8 +1,8 @@
-import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status.js';
-import type { RunnerFleetIdentity } from './runner-fleet.js';
-import type { RunnerHold } from './runner-hold.js';
-import type { RunnerIsolationRecord } from './runner-isolation.js';
-import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts.js';
+import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
+import type { RunnerFleetIdentity } from './runner-fleet';
+import type { RunnerHold } from './runner-hold';
+import type { RunnerIsolationRecord } from './runner-isolation';
+import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
 // UTILS
