@@ -9,7 +9,9 @@
 import { describe, expect, test } from 'bun:test';
 import type { Command, LivePr } from '../commands';
 import { InMemoryKernel, memoryHost, type CommandResult, type DeliveryRef } from './harness';
-import { CONFORMANCE_SCENARIOS, ConformanceFailure } from './scenarios';
+import { ALL_CONFORMANCE_SCENARIOS as CONFORMANCE_SCENARIOS } from './all';
+import { ConformanceFailure, type EpochHost } from './scenarios';
+import type { EpochOp, EpochSnapshot } from '../delivery-epochs';
 
 const REPO = 'acme/widgets';
 const WS = 'w1';
@@ -189,4 +191,60 @@ describe('the scenarios can fail', () => {
     const s5 = CONFORMANCE_SCENARIOS.find((s) => s.name.startsWith('S5:'))!;
     await expect(s5.run(host)).rejects.toThrow();
   });
+
+  // The incident sequences (incident-scenarios.ts), each against the adapter fault it guards.
+  const incident = (prefix: string) => CONFORMANCE_SCENARIOS.find((s) => s.name.startsWith(prefix))!;
+
+  test('#3787: an epoch store with no compare-and-set or unique index writes a second successor, and the double-ingest scenario fails', async () => {
+    const host = memoryHost();
+    host.epochs = laxEpochs();
+    await expect(incident('#3787').run(host)).rejects.toThrow(/compare-and-set/);
+  });
+  test('#4663/#4670: an epoch store that drops the settlement it was given lets the held branch retire, and the refresh scenario fails', async () => {
+    const host = memoryHost();
+    const apply = host.epochs.apply;
+    host.epochs.apply = (ops) => apply(ops.map((o) => (o.op === 'update' ? { ...o, set: { ...o.set, settlement: undefined } } : o)));
+    await expect(incident('#4663/#4670').run(host)).rejects.toThrow(/settlement/);
+  });
+  test('§15: a store that loses the decided round at H1 lets the #3754 re-review in, and the replay fails', async () => {
+    const host = memoryHost();
+    const load = host.store.loadView.bind(host.store);
+    // Only on the delivery that replays step 6 after a refused completion (PR 3756), so the
+    // failure is that step's and not an earlier one's.
+    host.store.loadView = async (ref) => {
+      const v = await load(ref);
+      if (v.delivery?.prNumber !== 3756) return v;
+      return { ...v, rounds: v.rounds.map((r) => (r.status === 'decided' ? { ...r, status: 'superseded' } : r)) };
+    };
+    await expect(incident('§15 (#3754)').run(host)).rejects.toThrow(/head_already_reviewed/);
+  });
+  test('#4686: a store that drops the external-merge effect files no trunk fix, and the end-to-end scenario fails', async () => {
+    const host = memoryHost();
+    const write = host.store.applyTransition.bind(host.store);
+    host.store.applyTransition = (d, ref) => write({ ...d, effects: d.effects.filter((e) => e.kind !== 'dispatch_external_merge_fix') }, ref);
+    await expect(incident('#4686 end to end').run(host)).rejects.toThrow(/trunk fix/);
+  });
 });
+
+/** Mission epochs with no compare-and-set and no unique index: every write applies. */
+function laxEpochs(): EpochHost {
+  const rows: EpochSnapshot[] = [];
+  const branches = new Map<string, string | null>();
+  let seq = 0;
+  return {
+    seedMission: async (branch) => { const id = `lax${++seq}`; branches.set(id, branch); return id; },
+    load: async (missionId) => ({ integrationBranch: branches.get(missionId) ?? null, epochs: rows.filter((r) => r.missionId === missionId).sort((a, b) => a.epoch - b.epoch).map((r) => ({ ...r })) }),
+    apply: async (ops: EpochOp[]) => {
+      for (const op of ops) {
+        if (op.op === 'insert') {
+          const { predecessorEpoch: _p, ...e } = op.epoch;
+          rows.push({ ...e, id: `le${++seq}`, version: 0, settlement: null });
+        } else if (op.op === 'update') {
+          const row = rows.find((r) => r.id === op.epochId);
+          if (row) Object.assign(row, op.set, { version: row.version + 1 });
+        } else branches.set(op.missionId, op.branch);
+      }
+      return true;
+    },
+  };
+}

@@ -40,9 +40,14 @@ const COMPARE_PAGES = 3;
 const COMPARE_PAGE_SIZE = 100;
 
 /** The branch diff with patches, or null when it cannot be read completely. */
-export async function loadBranchDiff(workspaceId: string, base: string, head: string): Promise<ImpactFile[] | null> {
+export async function loadBranchDiff(
+  workspaceId: string,
+  base: string,
+  head: string,
+  repoOf: (workspaceId: string) => Promise<{ installationId: number; fullName: string } | null> = repoFor,
+): Promise<ImpactFile[] | null> {
   try {
-    const repo = await repoFor(workspaceId);
+    const repo = await repoOf(workspaceId);
     if (!repo) return null;
     const { githubApi } = await import('@/lib/github');
     const files: ImpactFile[] = [];
@@ -84,14 +89,24 @@ export function createBuilddImpactDecider(
   };
 }
 
+/** What `assessMissionVisualImpact` reads, when the caller (the scheduler's sweep) already holds it. */
+export interface ImpactFacts {
+  mission: { id: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; primaryPrNumber: number | null };
+  workspace: { teamId: string; gitConfig: unknown } | null;
+  /** The integration PR's delivery; null when it has none. */
+  delivery: { id: string; currentHeadSha: string | null; baseRef: string | null } | null;
+  /** The repo link of a workspace, memoised by the caller across a batch. */
+  repoOf?: (workspaceId: string) => Promise<{ installationId: number; fullName: string } | null>;
+}
+
 /** Assess a mission's integration branch at its current head. Null when the mission or its workspace is gone. */
-export async function assessMissionVisualImpact(missionId: string): Promise<VisualImpactAssessment | null> {
-  const mission = await db.query.missions.findFirst({
+export async function assessMissionVisualImpact(missionId: string, facts?: ImpactFacts): Promise<VisualImpactAssessment | null> {
+  const mission = facts ? facts.mission : await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
   });
   if (!mission?.workspaceId) return null;
-  const ws = await db.query.workspaces.findFirst({
+  const ws = facts ? facts.workspace : await db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
     columns: { teamId: true, gitConfig: true },
   });
@@ -107,7 +122,7 @@ export async function assessMissionVisualImpact(missionId: string): Promise<Visu
   const configuredBase = (ws.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
   let base = typeof configuredBase === 'string' ? configuredBase : null;
   if (mission.primaryPrNumber) {
-    const [d] = await db
+    const [d] = facts ? (facts.delivery ? [facts.delivery] : []) : await db
       .select({ id: workflowDeliveries.id, currentHeadSha: workflowDeliveries.currentHeadSha, baseRef: workflowDeliveries.baseRef })
       .from(workflowDeliveries)
       .where(and(eq(workflowDeliveries.workspaceId, mission.workspaceId), eq(workflowDeliveries.prNumber, mission.primaryPrNumber)))
@@ -118,7 +133,7 @@ export async function assessMissionVisualImpact(missionId: string): Promise<Visu
   }
 
   // Policy off needs no diff at all.
-  const files = policy.mode === 'off' || !base || !headSha ? null : await loadBranchDiff(mission.workspaceId, base, headSha);
+  const files = policy.mode === 'off' || !base || !headSha ? null : await loadBranchDiff(mission.workspaceId, base, headSha, facts?.repoOf);
   const { ports } = await (await import('./kernel-ports')).workflowKernel();
   return assessVisualImpact({
     policy,
