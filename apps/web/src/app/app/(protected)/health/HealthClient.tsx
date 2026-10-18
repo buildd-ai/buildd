@@ -42,6 +42,7 @@ import {
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
 import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
@@ -933,6 +934,8 @@ export function HealthClient({
                           lastHeartbeatAt={hb.lastHeartbeatAt}
                           now={now}
                           seesTeamWork={seesTeamWork}
+                          ownerLabel={hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.runnerClass === 'unknown' || !hb.runnerClass ? 'unknown' : hb.mine ? 'personal' : 'teammate\'s'}
+                          route={describeRunnerRoute(hb)}
                         />
                         {health.pushOnlyResult && (
                           <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
@@ -1099,13 +1102,15 @@ export function HealthClient({
  * same fleet row the collapsed line uses, so the counts cannot disagree. A
  * working claim that holds no slot is not shown here as a slot.
  */
-function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork }: {
+function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork, ownerLabel, route }: {
   fleetRow: FleetSnapshot['runners'][number] | null;
   online: boolean;
   busyLine: string;
   lastHeartbeatAt: string | null;
   now: number;
   seesTeamWork: boolean;
+  ownerLabel: string;
+  route: { claude: string; codex: string };
 }) {
   // Another person's run (or one with no known owner) is named only to those
   // who may read the team's work; everyone else sees that the slot is busy.
@@ -1114,6 +1119,17 @@ function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, se
   const failed = slots.filter(s => !s.worker && s.last?.failed);
   return (
     <div data-testid="health-runner-detail" className="pt-3 space-y-2">
+      {/* Three independent facts: who owns the runner, whose work a slot runs
+          (the principal, per slot below), and which credential the runner uses.
+          None implies another. */}
+      <dl data-testid="health-runner-dimensions" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+        <dt className="text-text-muted">Runner</dt>
+        <dd data-testid="health-runner-owner" className="text-text-primary">{ownerLabel}</dd>
+        <dt className="text-text-muted">Work</dt>
+        <dd className="text-text-primary">per slot: yours, a teammate&apos;s, or unattributed</dd>
+        <dt className="text-text-muted">Route</dt>
+        <dd data-testid="health-runner-route" className="text-text-primary">Claude: {route.claude} · Codex: {route.codex}</dd>
+      </dl>
       <p className="text-meta font-medium text-text-secondary">
         Slots
         <span className="ml-2 font-normal normal-case text-text-muted">{busyLine}</span>

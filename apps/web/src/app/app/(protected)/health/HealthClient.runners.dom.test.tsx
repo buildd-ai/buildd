@@ -194,6 +194,17 @@ describe('Health › Runner row detail (R-5)', () => {
     expect(detail.querySelector('[data-testid="health-runner-connectivity"]')!.textContent).toContain('Connected');
     expect(detail.querySelector('[data-testid="health-runner-failures"]')).not.toBeNull();
   });
+
+  it('keeps runner owner type, work principal and effective route as three separate lines (R-9)', async () => {
+    await mount(0, [{ ...DEFAULT_RUNNERS[0], runnerClass: 'managed', modelAuthSource: 'machine_login', codexAuthSource: null } as any]);
+    const row = q('health-runner-row')!;
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    const detail = row.querySelector('[data-testid="health-runner-detail"]')!;
+    expect(detail.querySelector('[data-testid="health-runner-owner"]')!.textContent).toBe('managed');
+    expect(detail.querySelector('[data-testid="health-runner-route"]')!.textContent).toBe('Claude: local plan login · Codex: not reported');
+  });
 });
 
 describe('Health › Runner row detail (R-7)', () => {
