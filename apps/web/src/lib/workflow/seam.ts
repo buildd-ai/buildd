@@ -466,7 +466,7 @@ export async function applyRecommendationThroughKernel(p: {
  * "Approve and override" on a kernel-owned PR's review escalation (Living Spec r7 AC-45/AC-46):
  * one T23 HumanResolve(approve) of the head the person decided on, at the version they saw,
  * past the required findings still open or awaiting verification. The door proves who may
- * (`hasMergePermission`, `overridePermitted`: lib/review-override-permission.ts); the kernel
+ * (`hasMergePermission`, `overridePermitted`: lib/override-permission.ts); the kernel
  * refuses without them, refuses a moved head (`decision_head_stale`) and answers a replay with
  * the first transition (`duplicate`). On success the inline drain publishes `Buildd / Review
  * approval` success for that head ("approved by a person over N open findings"), and the

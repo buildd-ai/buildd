@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { checkReviewOverridePermission, escalationPermissionsOf, reviewOverrideRefusalSentence, type ReviewOverrideDeps } from './review-override-permission';
+import { checkReviewOverridePermission, escalationPermissionsOf, reviewOverrideRefusalSentence, type ReviewOverrideDeps } from './override-permission';
 
 const WS = { teamId: 't1', gitConfig: {} as unknown, repoFullName: 'acme/web', installationId: 42 };
 

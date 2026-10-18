@@ -12,7 +12,7 @@ const mockSupersede = mock(async (..._a: any[]) => {});
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/task-token-auth', () => ({ authenticateTaskScopedCaller: mockAuth }));
 mock.module('@/lib/pr-resolve', () => ({ resolveOpenWorkerForUser: mockResolve }));
-mock.module('@/lib/review-override-permission', () => ({
+mock.module('@/lib/override-permission', () => ({
   reviewOverridePermission: mockPerm,
   reviewOverrideRefusalSentence: (r: string) => `Refused because ${r.replace(/_/g, ' ')}.`,
 }));

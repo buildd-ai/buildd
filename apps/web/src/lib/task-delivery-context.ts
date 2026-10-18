@@ -12,7 +12,7 @@ import type { ReviewFindings } from './task-checks';
 import { readableTaskResult } from './task-result';
 import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import type { DeliveryView } from './workflow/projections';
-import { escalationPermissionsOf, reviewOverridePermission } from './review-override-permission';
+import { escalationPermissionsOf, reviewOverridePermission } from './override-permission';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface TaskDeliveryContext {
@@ -28,7 +28,7 @@ export interface TaskDeliveryContext {
 /**
  * `viewerId`: the signed-in person looking at the page. Given, a review escalation's decision
  * card offers "Approve and override" only when that person may take it (the merge policy, their
- * team role and their merge permission on GitHub, lib/review-override-permission.ts); absent,
+ * team role and their merge permission on GitHub, lib/override-permission.ts); absent,
  * it is never offered.
  */
 export async function loadTaskDeliveryContext(taskId: string, viewerId?: string | null): Promise<TaskDeliveryContext> {

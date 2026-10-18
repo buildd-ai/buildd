@@ -15,7 +15,7 @@
  * Who: a signed-in person only, from a dashboard session or their own OAuth
  * session (MCP). An API key, a per-task token or an agent grant is refused. The
  * person needs the merge policy to allow it, an owner or admin team role, and
- * merge permission on the repo on GitHub (lib/review-override-permission.ts),
+ * merge permission on the repo on GitHub (lib/override-permission.ts),
  * read at the click. Refusals are a plain sentence; the escalation note clears
  * only when the kernel took the decision.
  */
@@ -27,7 +27,7 @@ import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { requestingPerson } from '@/lib/request-person';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
-import { reviewOverridePermission, reviewOverrideRefusalSentence } from '@/lib/review-override-permission';
+import { reviewOverridePermission, reviewOverrideRefusalSentence } from '@/lib/override-permission';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { approveOverride, doorErrorResponse, isDoorError } from '@/lib/workflow/kernel-client';
 import { explainDecisionRefusal, STALE_DECISION_REASONS } from '@buildd/workflow-kernel/decision-refusal';
