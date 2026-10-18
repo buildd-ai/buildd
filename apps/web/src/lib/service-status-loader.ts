@@ -28,7 +28,7 @@ const ACTIVE_WINDOW_MS = 24 * 3_600_000;
 export async function serviceStatusReads(teamId: string, now: number = Date.now()) {
   const { db } = await import('@buildd/core/db');
   const { accounts, rootCauses, secrets, tasks, teamMembers, workers, workspaces } = await import('@buildd/core/db/schema');
-  const { and, eq, gte, inArray, isNull, ne, sql } = await import('drizzle-orm');
+  const { and, eq, exists, gte, inArray, isNull, ne, sql } = await import('drizzle-orm');
   const { teamCredentialWhere } = await import('@buildd/core/secrets/team-scope');
   const { toRootCauseRecord } = await import('./root-cause-record');
   const { AGENT_CREDENTIAL_PURPOSES } = await import('./getting-started');
@@ -62,13 +62,14 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
     const recent = recentRows[0];
     const records = recordRows.map(toRootCauseRecord);
     const taskIds = [...new Set(records.flatMap(r => r.affectedTaskIds))];
-    const [taskRows, liveRows] = taskIds.length === 0 ? [[], []] : await Promise.all([
-      db.select({ id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, status: tasks.status, createdByUserId: tasks.createdByUserId })
-        .from(tasks).where(inArray(tasks.id, taskIds)),
-      db.select({ taskId: workers.taskId }).from(workers)
-        .where(and(inArray(workers.taskId, taskIds), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
-    ]);
-    const live = new Set(liveRows.map(w => w.taskId));
+    // One statement: the affected tasks and whether each has a live run (an
+    // EXISTS on its workers), so a team with an active cause still costs a
+    // page one round trip here, not two (Fast at any size R-6).
+    const taskRows = taskIds.length === 0 ? [] : await db.select({
+      id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, status: tasks.status, createdByUserId: tasks.createdByUserId,
+      hasLiveRun: sql<boolean>`${exists(db.select({ one: sql`1` }).from(workers)
+        .where(and(eq(workers.taskId, tasks.id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))))}`,
+    }).from(tasks).where(inArray(tasks.id, taskIds));
     const claimed = new Set(claimRows.map(w => w.accountId));
     return {
       teamId,
@@ -78,7 +79,7 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
         createdByUserId: r.createdByUserId, recentlyActive: claimed.has(r.id),
       })),
       members: memberRows,
-      tasks: taskRows.map(t => ({ ...t, hasLiveRun: live.has(t.id) })),
+      tasks: taskRows.map(t => ({ ...t, hasLiveRun: t.hasLiveRun === true })),
       teamHasProviderKey: keyRows.length > 0,
       teamHasSavedSignIn: savedRows.length > 0,
       recentTaskCount: recent?.n ?? 0,
