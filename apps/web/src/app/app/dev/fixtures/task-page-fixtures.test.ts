@@ -21,10 +21,10 @@ describe('task page regression cases', () => {
     expect(f.findings.get('review-1')).toEqual({ prose: null, verdict: null, status: 'pending' });
   });
 
-  it('reviewer approved, parent awaiting merge: Review approved, Land · awaiting merge, no shipped/done/repair', () => {
+  it('reviewer approved, parent awaiting merge: Review approved, Deliver · ready to merge, no shipped/done/repair', () => {
     const { f, all } = text('review-approved');
     expect(f.verdict?.label).toBe('Review approved');
-    expect(f.track).toEqual({ state: 'landing', phrase: 'awaiting merge' });
+    expect(f.track).toEqual({ state: 'landing', phrase: 'ready to merge' });
     expect(f.shipped?.eyebrow).toBe('Review of PR #1234');
     expect(all).not.toMatch(/What shipped|What changed|Merged|Repair|\bDone\b/);
   });

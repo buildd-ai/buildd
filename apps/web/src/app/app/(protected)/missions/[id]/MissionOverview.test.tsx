@@ -60,7 +60,7 @@ describe('MissionOverview, 11 tasks with delivery', () => {
   const f = compact.missionDetailCompactFixture('eleven', null);
   const out = renderToStaticMarkup(<MissionOverview model={f.model} deliveries={f.deliveries} missionId="mission-1" workspaceId="ws-1" />);
 
-  it('draws Build › Audit › Land once (the Lifecycle line), not a second stage grid', () => {
+  it('draws Build › Verify › Deliver once (the Lifecycle line), not a second stage grid', () => {
     expect(out.match(/data-testid="lifecycle"/g)).toHaveLength(1);
     expect(out).not.toContain('data-testid="delivery-stages"');
   });
