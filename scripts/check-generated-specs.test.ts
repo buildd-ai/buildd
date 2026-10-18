@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { checkGeneratedSpecs } from './check-generated-specs';
+import { contentHash } from '../packages/spec-contract/src/hash';
 import { renderRepoCopy } from '../packages/spec-contract/src/repo-copy';
 
 // docs/specs/living-specs.md §18, R-16, AC-75.
@@ -44,4 +45,23 @@ describe('check-generated-specs', () => {
     expect(out.status).toBe(0);
     expect(out.stdout).toContain('generated spec copies:');
   });
+});
+
+it('accepts both legacy unquoted titles and regenerated copies with new metadata hashes', async () => {
+  const r = await renderRepoCopy({ shortId: 'c0ffee12', revision: 2, title: 'Exports', body: '# Exports\n\nExports MUST be complete.\n', metadata: {}, domain: 'integrations', status: 'draft', defaultOwner: 'buildd', defaultLastVerified: '2026-10-13' });
+  if (!r.ok) throw new Error(r.message);
+  expect(r.text).toContain("title: 'Exports'");
+  const legacy = r.text.replace("title: 'Exports'", 'title: Exports');
+  const block = legacy.slice(legacy.indexOf('status: draft'), legacy.indexOf('generated_from:'));
+  const legacyHash = await contentHash(block);
+  expect(legacyHash).not.toBe(r.metadataHash);
+  const old = legacy.replace(r.metadataHash, legacyHash);
+  // Regeneration updates only the metadata hash; approved content stays intact.
+  expect(old).toContain(`content_hash: ${r.contentHash}`);
+  expect(r.text).toContain(`content_hash: ${r.contentHash}`);
+  const staleHash = r.text.replace(r.metadataHash, legacyHash);
+  const stale = await checkGeneratedSpecs([{ file: 'docs/specs/exports.md', text: staleHash }], 'https://buildd.dev');
+  expect(stale.findings).toHaveLength(1);
+  expect(stale.findings[0]!.message).toContain('metadata block');
+  for (const text of [old, r.text]) expect(await checkGeneratedSpecs([{ file: 'docs/specs/exports.md', text }], 'https://buildd.dev')).toEqual({ generated: 1, findings: [] });
 });

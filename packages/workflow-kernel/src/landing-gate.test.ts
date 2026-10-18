@@ -5,7 +5,7 @@
  * and the status puts on the head.
  */
 import { describe, expect, test } from 'bun:test';
-import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate } from './landing-gate';
+import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate } from './landing-gate';
 import { openVerdict } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -55,16 +55,21 @@ describe('reviewGate (§13.13 rule 6)', () => {
 });
 
 describe('landingStatusOf: the buildd/landing status (§4)', () => {
-  test('the context is buildd/landing', () => {
-    expect(LANDING_STATUS_CONTEXT).toBe('buildd/landing');
+  test('the context is Buildd / Review approval, also published under the legacy name', () => {
+    expect(LANDING_STATUS_CONTEXT).toBe('Buildd / Review approval');
+    expect(LANDING_STATUS_CONTEXTS).toEqual(['buildd/landing', 'Buildd / Review approval']);
+  });
+  test('review still running is pending, not failure; a finding or verdict against the head stays failure', () => {
+    for (const state of ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW'] as const) {
+      expect(landingStatusOf(V(D({ state, approvedHeads: [] })))!.state).toBe('pending');
+    }
+    expect(landingStatusOf(V(D({ state: 'AWAITING_REVIEW', approvedHeads: [] })))!.description).toBe('buildd review of abcdef1 is pending: review of abcdef1 is pending');
   });
   test('success only when the kernel would land the head; the description names it by short sha', () => {
     expect(landingStatusOf(V(D(), [R(1, 'approve')]))).toEqual({ state: 'success', sha: 'abcdef1234', description: 'buildd would land abcdef1: approved by review' });
     expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]))!.state).toBe('success');
   });
-  test('failure while review is missing, a verdict is open, or the delivery is anywhere else', () => {
-    expect(landingStatusOf(V(D({ state: 'AWAITING_REVIEW', approvedHeads: [] }))))
-      .toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd will not land abcdef1: review of abcdef1 is pending' });
+  test('failure while a verdict is open, or the delivery is anywhere else', () => {
     expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('buildd will not land abcdef1: review round 2 asked for changes at abcdef1');
     expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' })))!.description).toContain('a person has to decide (review_exhausted)');
     expect(landingStatusOf(V(D({ state: 'CHANGES_REQUESTED' })))!.state).toBe('failure');

@@ -46,7 +46,7 @@ import { recordPrSupersession } from '@/lib/pr-supersession';
 import { deferralOf, isOutageAnswer, nextDeferral, type DeferralState } from '@/lib/control-plane-deferral';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 
 export const REFRESH_SUPERSESSION_ACTOR = 'system:refresh-supersession';
 export const REFRESH_SUPERSESSION_MARKER = '<!-- buildd-refresh-superseded -->';
@@ -335,7 +335,9 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
 export async function sweepSupersededRefreshPrs(
   now: Date = new Date(),
   deps: {
-    load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api;
+    load?: typeof loadRefreshPrs;
+    /** The installation for a PR of this workspace's: only its own team's (`createTeamInstallationResolver`). */
+    installation?: (repo: string, workspaceId: string | null) => Promise<number | null>; api?: Api;
     /** Keep a PR's deferral on its task (and, once it ran out, the flag that stops the sweep retrying). */
     saveDeferral?: (taskId: string, state: DeferralState, exhausted: boolean) => Promise<void>;
     /** Clear a PR's deferral when a tick succeeds, so future outages start fresh. */
@@ -346,7 +348,9 @@ export async function sweepSupersededRefreshPrs(
   const saveDeferral = deps.saveDeferral ?? saveRefreshDeferral;
   const clearDeferral = deps.clearDeferral ?? clearRefreshDeferral;
   const { open, merged } = await (deps.load ?? loadRefreshPrs)(now);
-  const installation = deps.installation ?? ((repo: string) => installationIdForRepo(repo).catch(() => null));
+  const teamInstallations = createTeamInstallationResolver();
+  const installation = deps.installation
+    ?? (async (repo: string, workspaceId: string | null) => (await teamInstallations.forWorkspace(repo, workspaceId)).installationId);
   const cache = new Map<string, number | null>();
 
   for (const older of open.slice(0, REFRESH_SWEEP_CAP)) {
@@ -357,8 +361,8 @@ export async function sweepSupersededRefreshPrs(
     if (successors.length === 0) continue;
     result.candidates++;
 
-    const key = older.repo.toLowerCase();
-    if (!cache.has(key)) cache.set(key, await installation(older.repo));
+    const key = `${older.workspaceId}:${older.repo.toLowerCase()}`;
+    if (!cache.has(key)) cache.set(key, await installation(older.repo, older.workspaceId));
     const installationId = cache.get(key);
     if (!installationId) { result.skipped++; continue; }
 

@@ -232,6 +232,18 @@ jobs:
       - name: Type check
         run: bun run type-check
 
+      # These packages have their own tsconfig that the root `type-check` does
+      # not reach, so an error in one only showed up when someone ran tsc there.
+      # (apps/control-plane and packages/shared fail their own tsc today and are
+      # deliberately not listed until that debt is paid.)
+      - name: Type check standalone packages
+        run: |
+          for dir in packages/workflow-kernel packages/dispatch-contract packages/spec-contract apps/cloud-runner; do
+            echo "::group::tsc $dir"
+            (cd "$dir" && bunx tsc --noEmit) || exit 1
+            echo "::endgroup::"
+          done
+
   # Sharded: every shard computes the same selection (scripts/affected-tests.ts
   # is deterministic over the same checkout) and runs its own slice of it,
   # balanced by scripts/test-durations.json. A small selection lands entirely

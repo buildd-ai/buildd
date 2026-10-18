@@ -953,9 +953,10 @@ describe('S9–S15', () => {
     expect(mergeCalls).toEqual([{ prNumber: o.prNumber, method: 'squash', sha: 'H1' }]);
   });
 
-  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: failure under review, success once approved', async () => {
+  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: pending while review runs, success once approved', async () => {
     const o = await openAndHandOn();
-    expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'failure' });
+    expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'pending' });
+    expect(statusWrites.some((w) => w.state === 'success')).toBe(false);
     await verdict(o, 'approve');
     expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'buildd would land H1: approved by review' });
     const fx = (await effects(o.deliveryId)).filter((e) => e.kind === 'publish_landing_status');

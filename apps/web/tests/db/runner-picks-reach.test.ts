@@ -132,7 +132,7 @@ describe('a pick reaches only while the person who made it still may', () => {
     const { mintRunnerKey, replaceRunnerPicks, listRunnerKeys } = await import('../../src/lib/runner-picks');
     const person = await user();
     const [{ id: home }] = await q<{ id: string }>(sql`
-      INSERT INTO teams (name, slug) VALUES ('Personal', ${`personal-${person}`}) RETURNING id`);
+      INSERT INTO teams (name, slug, personal_user_id) VALUES ('Personal', ${`personal-${person}`}, ${person}) RETURNING id`);
     const other = await team();
     await member(home, person, 'owner');
     await member(other, person, 'member');
@@ -239,7 +239,7 @@ describe('a pick reaches only while the person who made it still may', () => {
     const { mintRunnerKey, replaceRunnerPicks, listRunnerKeys, listForeignRunners } = await import('../../src/lib/runner-picks');
     const person = await user();
     const [{ id: home }] = await q<{ id: string }>(sql`
-      INSERT INTO teams (name, slug) VALUES ('Personal', ${`personal-${person}`}) RETURNING id`);
+      INSERT INTO teams (name, slug, personal_user_id) VALUES ('Personal', ${`personal-${person}`}, ${person}) RETURNING id`);
     const other = await team();
     const admin = await user();
     await member(home, person, 'owner');
@@ -304,7 +304,7 @@ describe('a pick reaches only while the person who made it still may', () => {
     const { mintRunnerKey, replaceRunnerPicks } = await import('../../src/lib/runner-picks');
     const person = await user();
     const [{ id: home }] = await q<{ id: string }>(sql`
-      INSERT INTO teams (name, slug) VALUES ('Personal', ${`personal-${person}`}) RETURNING id`);
+      INSERT INTO teams (name, slug, personal_user_id) VALUES ('Personal', ${`personal-${person}`}, ${person}) RETURNING id`);
     const other = await team();
     await member(home, person, 'owner');
     const homeWs = await workspace(home, 'open');

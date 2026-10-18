@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,

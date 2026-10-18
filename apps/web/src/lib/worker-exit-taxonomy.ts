@@ -120,6 +120,23 @@ export function isUnrecognizedModelError(error: string | null | undefined): bool
   return UNRECOGNIZED_MODEL_PATTERN.test(error) || MODEL_ID_REJECTED_PATTERN.test(error);
 }
 
+/**
+ * The runner's `git worktree add` / `git checkout` timed out while preparing
+ * the session (apps/runner/src/git-operations.ts wraps the failure as
+ * "git worktree add failed: ... timed out"). Nothing ran, so it says nothing
+ * about the task: a contended clone or slow disk, and a later attempt can
+ * succeed. Without this it fell through to `code_failure`, and a reviewer task
+ * (zero retries outside a mission) stayed failed, leaving a green PR with
+ * `review_failed` and nothing to re-dispatch it.
+ */
+const WORKTREE_SETUP_TIMEOUT_PATTERN =
+  /git (?:worktree add|checkout) failed[\s\S]*?(?:timed out|etimedout|sigterm|killed)/i;
+
+export function isWorktreeSetupTimeoutError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return WORKTREE_SETUP_TIMEOUT_PATTERN.test(error);
+}
+
 /** Error text for a worker row that the claim route minted but no runner ever started. */
 export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
@@ -224,6 +241,8 @@ export function classifyReportedFailure(input: {
    * retries. Nothing ran; a later attempt, after a backoff, can succeed. Infra.
    */
   githubThrottled?: boolean;
+  /** The runner timed out creating the session's worktree (see isWorktreeSetupTimeoutError). Infra. */
+  worktreeSetupTimeout?: boolean;
   /** The runner refused a Claude run before spawn: no model login or key on the machine, none delivered. */
   modelAuthMissing?: boolean;
   /**
@@ -251,6 +270,7 @@ export function classifyReportedFailure(input: {
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
   if (input.githubThrottled) return 'infra_failure';
+  if (input.worktreeSetupTimeout) return 'infra_failure';
   if (input.modelAuthMissing) return 'infra_failure';
   if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed

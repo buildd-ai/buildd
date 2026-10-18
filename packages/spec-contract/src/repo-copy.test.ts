@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { contentHash } from './hash';
 import { renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopyInput } from './repo-copy';
-import { lintSpecFile, parseSpecFrontmatter } from './repo-spec';
+import { buildSpecIndex, lintSpecFile, parseSpecFrontmatter, validSpecSummary } from './repo-spec';
 
 // docs/specs/living-specs.md §18: R-14, R-15, R-16, AC-74, AC-75.
 
@@ -156,4 +156,28 @@ describe('verifyRepoCopy refuses a hand edit (AC-75)', () => {
     expect(await verifyRepoCopy('---\ntitle: X\n---\n# X\n')).toEqual({ generated: false });
     expect(await verifyRepoCopy('# X\n')).toEqual({ generated: false });
   });
+});
+
+describe('quoted copy frontmatter', () => {
+  for (const title of ['Runner login: detect, say, report', ...['[', '{', '-', '*', '|', '>', '%', '@', '`', '"'].map(c => `${c} title`), 'Title # preserved', `It's "quoted"`]) {
+    it(`round trips title ${title} through strict YAML and repo lint`, async () => {
+      const r = await render({ body: '# Body\n\nA runner MUST report its login.\n', title });
+      const yaml = r.text.slice(4, r.text.indexOf('\n---', 4));
+      expect((Bun.YAML.parse(yaml) as { title: string }).title).toBe(title);
+      expect(parseSpecFrontmatter(r.text).fm?.title).toBe(title);
+    });
+  }
+  it('decodes single and double quoted scalars for the index', () => {
+    const { fm } = parseSpecFrontmatter(`---\ntitle: 'It''s "ready"'\nsummary: "A \\"quoted\\" path C:\\\\tmp MUST work."\n---\n`);
+    expect(fm?.title).toBe(`It's "ready"`);
+    expect(fm?.summary).toBe('A "quoted" path C:\\tmp MUST work.');
+    const index = buildSpecIndex([{ file: 'ready.md', slug: 'ready', fm: { ...fm, status: 'draft' } }]);
+    expect(index).toContain(`It's "ready"`);
+    expect(index).not.toContain("It''s");
+  });
+});
+
+it('validates a single summary sentence within 220 characters', () => {
+  for (const value of ['A runner MUST report its login.', 'A runner MUST report its login', 'x'.repeat(220), 'Use host-seat.ts for login.']) expect(validSpecSummary(value)).toBe(true);
+  for (const value of ['', '  ', 'x'.repeat(221), 'First sentence. Second sentence.', 'First! Second?', 'one\ntwo', 'one\rtwo', 42]) expect(validSpecSummary(value)).toBe(false);
 });

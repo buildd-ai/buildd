@@ -1,7 +1,7 @@
 import { admitsNoteToNeedsYou, admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from '@/lib/open-ask';
 import { after } from 'next/server';
-import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApprovalCached, loadGithubApprovals, GITHUB_APPROVAL_CONCURRENCY } from '@/lib/github-approval';
 import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
@@ -857,19 +857,19 @@ export default async function HomePage({
             const approvedAutoMergeTaskIds = new Set<string>();
             const humanReviewByTaskId = new Map<string, HumanPrReview>();
             const githubApprovalByWorkerId = new Map<string, import('@/lib/reviewer-gate').GithubApprovalFacts>();
-            const installationByRepo = new Map<string, Promise<number | null>>();
+            // Read through the PR's own team's installation only.
+            const installations = createTeamInstallationResolver();
             // One bounded pass (no unbounded fan-out on large inboxes), served
             // from a short cache bound to the worker's head; see github-approval.ts.
             await loadGithubApprovals(openPrWorkers, GITHUB_APPROVAL_CONCURRENCY, async w => {
                 const repo = repoFullNameFromPrUrl(w.prUrl);
                 if (!repo || !w.prNumber) return;
                 try {
-                  const identity = pickWorkspaceRepoIdentity(wsInboxMap.get(w.workspaceId));
-                  if (!installationByRepo.has(repo)) {
-                    installationByRepo.set(repo, identity.fullName?.toLowerCase() === repo.toLowerCase() && identity.installationId
-                      ? Promise.resolve(identity.installationId) : installationIdForRepo(repo));
-                  }
-                  const installationId = await installationByRepo.get(repo);
+                  const ws = wsInboxMap.get(w.workspaceId);
+                  const identity = pickWorkspaceRepoIdentity(ws);
+                  const { installationId } = await installations.resolve(
+                    repo, { teamId: ws?.teamId, fullName: identity.fullName, installationId: identity.installationId },
+                  );
                   if (!installationId) return;
                   githubApprovalByWorkerId.set(w.id, await readGithubApprovalCached(installationId, repo, w.prNumber, { workerSha: w.lastCommitSha ?? null }));
                 } catch {

@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries, agent-capabilities, mcp-connectors-and-roles, settings-audiences]
 keywords: [owner, admin, member, team role, api key level, permission registry, rbac, ownership transfer, personal role, credential policy, key clamp]
-verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/app/app/(protected)/settings/team/no-grant-table.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/lib/team-access-team-scope.test.ts, apps/web/src/app/api/teams/[id]/members/route.test.ts, apps/web/src/app/api/teams/[id]/members/[userId]/route.test.ts, apps/web/src/app/api/teams/[id]/ownership/route.test.ts, apps/web/src/app/api/teams/[id]/invitations/route.test.ts, apps/web/src/app/api/invitations/[token]/accept/route.test.ts, apps/web/src/lib/creator-key-clamp.test.ts, apps/web/src/lib/connector-team-auth.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/lib/admin/platform-operator-caller.test.ts, apps/web/src/app/api/experiments/route.test.ts, apps/web/src/app/api/experiments/[id]/route.test.ts, apps/web/src/app/api/decisions/route.test.ts, apps/web/src/app/api/decisions/[id]/label/route.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/app/(protected)/home/home-view.test.tsx, apps/web/src/app/api/roles/personal.test.ts, apps/web/src/app/api/roles/[id]/personal.test.ts, apps/web/src/app/api/roles/[id]/share/route.test.ts, apps/web/src/app/api/roles/[id]/promote/route.test.ts, packages/core/__tests__/role-visibility.test.ts, packages/core/__tests__/credential-policy.test.ts, apps/web/src/app/api/workers/claim/personal-credential-injection.test.ts]
+verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/tests/db/personal-team-marker.test.ts, apps/web/src/app/app/(protected)/settings/team/no-grant-table.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/lib/team-access-team-scope.test.ts, apps/web/src/app/api/teams/[id]/members/route.test.ts, apps/web/src/app/api/teams/[id]/members/[userId]/route.test.ts, apps/web/src/app/api/teams/[id]/ownership/route.test.ts, apps/web/src/app/api/teams/[id]/invitations/route.test.ts, apps/web/src/app/api/invitations/[token]/accept/route.test.ts, apps/web/src/lib/creator-key-clamp.test.ts, apps/web/src/lib/connector-team-auth.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/lib/admin/platform-operator-caller.test.ts, apps/web/src/app/api/experiments/route.test.ts, apps/web/src/app/api/experiments/[id]/route.test.ts, apps/web/src/app/api/decisions/route.test.ts, apps/web/src/app/api/decisions/[id]/label/route.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/app/(protected)/home/home-view.test.tsx, apps/web/src/app/api/roles/personal.test.ts, apps/web/src/app/api/roles/[id]/personal.test.ts, apps/web/src/app/api/roles/[id]/share/route.test.ts, apps/web/src/app/api/roles/[id]/promote/route.test.ts, packages/core/__tests__/role-visibility.test.ts, packages/core/__tests__/credential-policy.test.ts, apps/web/src/app/api/workers/claim/personal-credential-injection.test.ts]
 supersedes: []
 assertions:
   - id: "permission-registry"
@@ -105,8 +105,11 @@ belongs to one team and carries a level — `trigger`, `worker` or `admin`
 - `member` holds `create_personal_roles` by default and nothing else from the
   registry. Membership alone
   still reaches the unrole-gated writes listed under Oddities.
-- A user's personal team (slug `personal-<userId>`) counts as owned by them.
-  It cannot be left, and ownership of it cannot be transferred.
+- A user's personal team counts as owned by them. It is the team marked for
+  them at sign-up (`teams.personal_user_id`); the slug never decides it, and
+  the `personal-` slug prefix is reserved, so no team can be created with it
+  or renamed to it. It cannot be left, deleted, or have its ownership
+  transferred.
 
 **Who assigns what**:
 - Moving a member between `member` and `admin` needs `assign_team_roles`
@@ -169,7 +172,7 @@ it (or none).
   `defaultRoles`. The mapping is fixed in code: no team, owner or operator can
   change which roles hold P for one team, and nothing about it is stored per
   team. The settings UI shows no grant table.
-- A user's personal team (slug `personal-<userId>`) counts as owned by them,
+- A user's personal team (`teams.personal_user_id`) counts as owned by them,
   with or without a membership row, and wins over a membership row in it.
 - An API key holds P only in its own team, and only when the entry's minimum
   level is set and the key's level ranks at or above it
@@ -335,6 +338,11 @@ its account and level. Both lists unset: nobody is an operator.
 - AC-20: GIVEN an OAuth bearer whose team's shared session account is in
   `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` WHEN the person behind it is not an
   operator THEN it is not one.
+- AC-21: GIVEN a team whose slug is `personal-<userId>` but which is not
+  marked as that user's personal team WHEN any team or workspace lookup runs
+  for that user THEN the team is not theirs; GIVEN anyone WHEN they create a
+  team with a `personal-` slug, or rename a team to one THEN it is a 400 and
+  nothing is written.
 
 ## Personal roles
 

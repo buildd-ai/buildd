@@ -1,3 +1,5 @@
+import { isPersonalTeam } from './personal-team';
+
 /**
  * Client-side view of the active team. The team switcher persists it in the
  * `buildd-team` cookie (see switch-team.ts); forms that ask "which team owns
@@ -22,12 +24,12 @@ export function readActiveTeamCookie(): string | null {
 
 /** Active team if the user belongs to it, else Personal, else the first team. */
 export function defaultTeamId(
-  teams: readonly { id: string; slug: string }[],
+  teams: readonly { id: string; personalUserId?: string | null }[],
   activeTeamId: string | null,
 ): string {
   const active = activeTeamId ? teams.find(t => t.id === activeTeamId) : undefined;
   if (active) return active.id;
-  const personal = teams.find(t => t.slug.startsWith('personal-'));
+  const personal = teams.find(t => isPersonalTeam(t));
   if (personal) return personal.id;
   return teams[0]?.id ?? '';
 }

@@ -119,6 +119,12 @@ mock.module('@buildd/core/db/schema', () => ({
   githubRepos: { __t: 'githubRepos', id: 'ghr.id', fullName: 'fullName', installationId: 'ghr.installationId' },
 }));
 
+// The owner's installation, only when it is the workspace's team's (an entry with a teamId
+// belongs to that team only); the real rule is pinned in tests/db/team-installation-ownership.test.ts.
+mock.module('@/lib/workspace-installation', () => ({
+  teamInstallationIdForOwner: async (owner: string, teamId: string | null | undefined) =>
+    installationRows.find(r => r.accountLogin === owner && (!r.teamId || r.teamId === teamId))?.installationId ?? null,
+}));
 const mockGithubApi = mock(async (_id: number, _path: string) => ({ ok: true }));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
@@ -315,6 +321,18 @@ describe('loadInvariantSnapshot repo resolution', () => {
 
     // A different repo than the FK row, so its installation comes from the owner.
     expect(checkRef.mock.calls[0]).toEqual([4242, 'acme', 'mobile', 'mission/example-1234'] as any);
+  });
+
+  it("does not check a ref through another team's installation on the owner", async () => {
+    openPrRows = [openPr()];
+    workspaceRows = [{ ...workspaceRows[0], teamId: 'team-1' }];
+    installationRows = [{ installationId: 4242, accountLogin: 'acme', teamId: 'team-2' }];
+    const checkRef = mock(async () => true as boolean | null);
+
+    const { coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(checkRef).not.toHaveBeenCalled();
+    expect(coverage.remoteRefsSkipped).toBe(1);
   });
 
   it('counts a ref it cannot check because no installation covers the owner', async () => {
