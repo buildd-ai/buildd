@@ -190,8 +190,15 @@ describe('workflow kernel tables have one writer', () => {
  * And T6 and T9: `recordReviewVerdict` and `adoptReviewVerdict` (the worker PATCH reports a
  * reviewer's verdict) and `claimFix` (the claim route revalidates a fix at claim).
  * And T12: `observeConflict` (the conflict door reports a conflicted PR).
+ * And the last three (AC-9 met): `observePrState` (T17 to T19), `observeHead` (T3) and
+ * `observeBase` (T29), which the GitHub webhook, the reviewer's push subscriber, the reconcile and
+ * refresh sweeps and the dependency gate report. With them every seam command the web host reaches
+ * is a door op: no module outside the kernel imports one from the seam.
+ * And AC-1 slice 6's `attemptRequeued` (AttemptRequeued): the worker PATCH's retries, loop holds and
+ * budget, mount, auth and codex requeues, and the conflict-fix recovery, applied only on the control plane.
+ * And AC-1 slice 7's `attemptStarted` (AttemptStarted): the claim route's start of a kernel owner task.
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'attemptRequeued', 'attemptStarted', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict', 'observePrState', 'observeHead', 'observeBase'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -201,10 +208,12 @@ const SEAM_MEMBER = new RegExp(String.raw`\(\s*await\s+import\(\s*${SEAM_SPEC}\s
 const SEAM_NAMESPACE = new RegExp(String.raw`(?:import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s*from\s*${SEAM_SPEC}|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+import\(\s*${SEAM_SPEC}\s*\))`, 'g');
 /** `import('…/seam').then((m) => m.a)`. */
 const SEAM_THEN = new RegExp(String.raw`import\(\s*${SEAM_SPEC}\s*\)\s*\.then\(\s*\(?\s*([A-Za-z_$][\w$]*)`, 'g');
+/** `import('…/seam').then(({ a, b: c }) => a(p))`. */
+const SEAM_THEN_NAMED = new RegExp(String.raw`import\(\s*${SEAM_SPEC}\s*\)\s*\.then\(\s*(?:async\s*)?\(\s*\{([^}]*)\}`, 'g');
 
 function seamDoorImports(src: string): string[] {
   const names: string[] = [];
-  for (const m of src.matchAll(SEAM_NAMED)) {
+  for (const m of [...src.matchAll(SEAM_NAMED), ...src.matchAll(SEAM_THEN_NAMED)]) {
     for (const part of (m[1] ?? m[2] ?? '').split(',')) {
       const name = part.trim().replace(/^type\s+/, '').split(/\s+as\s+|\s*:\s*/)[0]?.trim();
       if (name) names.push(name);
@@ -249,9 +258,21 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`import { noopEvidenceOf, attemptEnded as workflowAttemptEnded } from '@/lib/workflow/seam';`)).toEqual(['attemptEnded']);
     expect(seamDoorImports(`const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');`)).toEqual(['attemptEnded']);
     expect(seamDoorImports(`import { attemptEnded } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    // AC-1 slice 6: the requeue is a door; its fallback projection and guard are not commands.
+    expect(seamDoorImports(`import { attemptRequeued, projectRequeue, requeueingAttemptIsCurrentSql } from '@/lib/workflow/seam';`)).toEqual(['attemptRequeued']);
+    expect(seamDoorImports(`const { attemptRequeued: requeue } = await import('@/lib/workflow/seam');`)).toEqual(['attemptRequeued']);
+    expect(seamDoorImports(`import { attemptRequeued } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    // AC-1 slice 7: the start is a door; its fallback projection and the claim's own race guard are not commands.
+    expect(seamDoorImports(`import { cancelSkippedTask, isRepairRole, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';`)).toEqual([]);
+    expect(seamDoorImports(`import { attemptStarted } from '@/lib/workflow/seam';`)).toEqual(['attemptStarted']);
     expect(seamDoorImports(`import { observeCiFailure } from '@/lib/workflow/seam';`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
-    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeCiGreen']);
+    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeBase', 'observeCiGreen', 'observePrState']);
+    expect(seamDoorImports(`import { observeHead, policyFindingFor } from '@/lib/workflow/seam';`)).toEqual(['observeHead']);
+    expect(seamDoorImports(`await import('@/lib/workflow/seam').then(({ observePrState }) => observePrState(p));`)).toEqual(['observePrState']);
+    expect(seamDoorImports(`await import('@/lib/workflow/seam').then((m) => m.observePrState(p));`)).toEqual(['observePrState']);
+    expect(seamDoorImports(`const { recordPrStateObserved } = await import('@/lib/workflow/seam');`)).toEqual([]);
+    expect(seamDoorImports(`import { observeBase, observePrState } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { observeCiGreen } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { adoptReviewVerdict, fixedElsewhereOf, recordReviewVerdict } from '@/lib/workflow/seam';`)).toEqual(['adoptReviewVerdict', 'recordReviewVerdict']);
     expect(seamDoorImports(`import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';`)).toEqual(['claimFix']);
@@ -358,10 +379,10 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
-  'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). A kernel owner's requeue (a retry, a loop hold, the budget, mount, auth and codex requeues: AC-1 slice 6) writes no status or claim either: AttemptRequeued moves it (t_requeue, projectRequeue). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
+  'apps/web/src/app/api/workers/claim/route.ts': `${ATTEMPT('the claim (pending to assigned) of a task with no delivery, a repair or a review, and the rollback of its own assigned claim; the repair-attempt defer is the kernel\'s own decision')}. A kernel owner task's claim (AC-1 slice 7) writes no status: its compare-and-set stamps the claim and AttemptStarted moves it (t_start, projectAttemptStart)`,
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
-  'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
+  'apps/web/src/lib/stale-workers.ts': `${ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt')}. For the current attempt of a kernel owner task (AC-1 slice 5) the caps write result but not status, and the unanswered-question sweep writes nothing: AttemptEnded(lost) projects it (t_attempt, projectOwnerEnd). A late reap after a re-claim, or a placeholder row, ends nothing (reapedOwnerAttemptIsCurrent)`,
   'apps/web/src/lib/interactive-detach.ts': ATTEMPT('a released interactive session requeues its open task'),
   'apps/web/src/lib/credential-recovery.ts': ATTEMPT('requeue of tasks failed on an auth error once the credential is back'),
   'apps/web/src/lib/github-repo-access-store.ts': ATTEMPT('requeue of a task failed on blocked GitHub access, once access is verified'),
@@ -394,11 +415,13 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
  * that can move a task away from completed); a string is why the file's writes cannot.
  */
 const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
-  // 9 includes the reactivation (worker resumes from completed): a person's follow-up on a shipped
+  // 7 includes the reactivation (worker resumes from completed): a person's follow-up on a shipped
   // task runs the worker, but the task keeps completed. Kept guarded rather than exempted, so a
   // follow-up that then fails or is requeued can never reopen work that already merged.
-  'apps/web/src/app/api/workers/[id]/route.ts': 9,
-  'apps/web/src/lib/stale-workers.ts': 8,
+  // AC-1 slice 6: the budget, codex, mount-gap and auth-failover requeues share one helper
+  // (`requeueWorkerTask`): its two statements (the no-delivery requeue, a kernel owner's fields).
+  'apps/web/src/app/api/workers/[id]/route.ts': 7,
+  'apps/web/src/lib/stale-workers.ts': 6,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
   'apps/web/src/lib/task-recovery-hold.ts': 1,
   'apps/web/src/lib/ci-failure-retry.ts': 1,
@@ -418,10 +441,15 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
  * family lowers its number (to 0, then the file leaves TASK_STATUS_WRITERS); never raise one.
  */
 const ATTEMPT_SITE_CEILING: Record<string, number> = {
-  'apps/web/src/app/api/workers/[id]/route.ts': 13,
-  'apps/web/src/app/api/workers/claim/route.ts': 4,
+  // AC-1 slice 6: the four requeues outside a completion became one helper, and a kernel owner's
+  // requeue (those four, a retry, a loop hold) is AttemptRequeued's move, not this route's.
+  'apps/web/src/app/api/workers/[id]/route.ts': 10,
+  // AC-1 slice 7: a kernel owner's claim is AttemptStarted's move, and the two rollbacks of the
+  // route's own assigned claim are one helper (`rollBackClaim`).
+  'apps/web/src/app/api/workers/claim/route.ts': 3,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 3,
-  'apps/web/src/lib/stale-workers.ts': 11,
+  // AC-1 slice 5: the three cap failures are one statement, which writes no status for a kernel owner attempt.
+  'apps/web/src/lib/stale-workers.ts': 9,
   'apps/web/src/lib/interactive-detach.ts': 1,
   'apps/web/src/lib/credential-recovery.ts': 1,
   'apps/web/src/lib/github-repo-access-store.ts': 1,
@@ -535,6 +563,19 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
       .filter(([, n, max]) => n !== max)
       .map(([f, n, max]) => `${f}: ${n} statements, pinned at ${max}${n < max ? ' (lower the pin: the ratchet only goes down)' : ''}`);
     expect(over).toEqual([]);
+  });
+
+  it('AC-1 slice 7: the claim of a kernel owner task writes no status; AttemptStarted moves it, with the route\'s guarded projection behind it', () => {
+    const route = code('apps/web/src/app/api/workers/claim/route.ts');
+    // The kernel owner's compare-and-set: the claim fields only, still WHERE pending, plus no other claim in flight.
+    expect(/\.set\(\{ \.\.\.claimFields \}\)\s*\.where\(and\(eq\(tasks\.id, task\.id\), eq\(tasks\.status, 'pending'\), ownerClaimOpenSql\(\)\)\)/.test(route)).toBe(true);
+    expect(/claimFields = \{[^}]*\bstatus\b/.test(route)).toBe(false);
+    // The start goes through the door, and the route projects it itself when the kernel did not.
+    expect(/\bkernelAttemptStarted\(/.test(route)).toBe(true);
+    expect(/\bprojectAttemptStart\(\{/.test(route)).toBe(true);
+    // The transition moves the task in its own statement.
+    const kernel = code(`${KERNEL_DIR}kernel.ts`);
+    expect(/ctes\.push\(\.\.\.startTaskProjectionCtes\(d, 'd'\)\)/.test(kernel)).toBe(true);
   });
 
   it('AC-1 slice 3: the worker PATCH leaves an owner end\'s status to the projection, and T4 projects it in its own statement', () => {

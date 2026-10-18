@@ -9,8 +9,9 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
+import OpenAtHash from './OpenAtHash';
 import { REPAIR_PHASE_WORDS } from '@/lib/workflow/projections';
-import { reviewDetailOf, type CheckRepair, type CheckRow, type CheckState, type ReviewDetail, type ReviewFindings, type TaskChecks as TaskChecksModel } from '@/lib/task-checks';
+import { REVIEW_FINDINGS_ANCHOR, reviewDetailOf, type CheckRepair, type CheckRow, type CheckState, type ReviewDetail, type ReviewFindings, type TaskChecks as TaskChecksModel } from '@/lib/task-checks';
 
 const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> = {
   passed: { glyph: '✓', cls: 'text-status-success', label: 'passed' },
@@ -117,6 +118,7 @@ export default function TaskChecks({
   if (checks.current.length === 0 && checks.history.length === 0) return null;
   return (
     <section aria-label="Checks" data-testid="task-checks" className="mb-6">
+      <OpenAtHash id={REVIEW_FINDINGS_ANCHOR} />
       <div className="section-label flex flex-wrap items-center gap-x-2 border-b border-border-default pb-1 md:items-baseline md:pb-2">
         <span>Checks</span>
         {prNumber != null && (
@@ -140,10 +142,11 @@ export default function TaskChecks({
                     <RowHead row={row} />
                     <span aria-hidden="true" className="shrink-0 text-text-muted transition-transform group-open:rotate-90">›</span>
                   </summary>
-                  <div className="flex flex-col gap-2 pb-3 pl-7">{detail}</div>
+                  {/* Inside the disclosure: following the review status link to this id opens it (R-43). */}
+                  <div id={row.key === 'review' ? REVIEW_FINDINGS_ANCHOR : undefined} className="flex scroll-mt-4 flex-col gap-2 pb-3 pl-7">{detail}</div>
                 </details>
               ) : (
-                <div className={ROW_CLS}><RowHead row={row} /></div>
+                <div id={row.key === 'review' ? REVIEW_FINDINGS_ANCHOR : undefined} className={ROW_CLS}><RowHead row={row} /></div>
               )}
             </li>
           );

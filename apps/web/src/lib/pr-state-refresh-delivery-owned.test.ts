@@ -80,8 +80,10 @@ mock.module('@/lib/pr-reconcile', () => ({ refreshWorkerMergeStateIfStale: mockR
 // The seam: its read-side helpers for real (they are the statements under test),
 // observePrState (the webhook's apply-and-drain door) as a spy that must stay unused for owned rows.
 const renderObservation = await import('./workflow/render-observation');
-const mockObservePrState = mock(async (_p: unknown) => false);
+const mockObservePrState = mock(async (_p: unknown, _c?: unknown) => false);
 mock.module('@/lib/workflow/seam', () => ({ ...renderObservation, observePrState: mockObservePrState }));
+const realKernelClient = await import('./workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 
 const { refreshStaleWorkersForWorkspaces, refreshStaleWorkers, observeMergeStateOnRender, _resetFailureBackoffForTests } = await import('./pr-state-refresh');
 

@@ -13,7 +13,7 @@ import { LandedThisWeek, type LandedMission } from '../../(protected)/home/Lande
 import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
 import type { ActionQueueItem } from '@/lib/action-queue';
-import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
+import { toDeliveryRow, type DeliveryCounts, type MissionDelivery } from '@/lib/delivery-projection';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import type { AgentsModel } from '@/lib/home-agents';
 import type { IdleStretch } from '@/lib/idle-while-queued';
@@ -92,7 +92,7 @@ export default function HomeCardsFixture() {
   const empty = data === 'empty';
   const items = empty ? [] : data === 'one' ? ONE : DECISIONS;
   const agents = <AgentsPanel model={empty ? AGENTS_IDLE : AGENTS} occupancy={empty ? QUIET_DAY : BUSY_DAY} idle={empty ? [] : IDLE} />;
-  const milestones = empty ? [] : MILESTONES;
+  const milestones = empty ? [] : MILESTONES.map(toDeliveryRow);
   const counts = empty ? COUNTS_EMPTY : COUNTS;
   const landed = empty ? null : <LandedThisWeek missions={LANDED} timeZone="UTC" />;
   return (

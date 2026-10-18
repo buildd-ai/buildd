@@ -15,7 +15,7 @@ const ACTION_HINTS: Record<LandingAction, string> = {
   ci_fix: 'Files a task on the PR branch with the failing log digest.',
   conflict: 'Files a task that resolves the merge conflicts on the PR branch.',
   re_review: 'Asks the reviewer for a fresh verdict on the current commit.',
-  retry_landing: 'Runs the landing check again with a fresh budget.',
+  retry_landing: 'Runs the merge check again with a fresh budget.',
   merge_anyway: 'Merges now, overriding the rule that stopped it.',
   close_superseded: 'Closes the PR; its change is already upstream.',
   review_on_github: 'buildd will not merge this one. Review the diff and merge it on GitHub yourself.',
@@ -67,7 +67,7 @@ export async function loadPrActionSheet({ prNumber, token, userId }: { prNumber:
         ...(a === 'review_on_github' && worker.prUrl ? { href: `${worker.prUrl}/files` } : {}),
       })),
       headMoved: view.headMoved,
-      heading: `Won't land: ${plainReason(view.reason)}`,
+      heading: `Won't merge: ${plainReason(view.reason)}`,
       prUrl: worker.prUrl,
       fallbackHref,
     };

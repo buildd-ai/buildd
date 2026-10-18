@@ -214,6 +214,9 @@ mock.module('@/lib/github', () => ({
 let kernelOwner: string | null = null;
 const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => kernelOwner);
 mock.module('./workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
+// The open-PR status event door (AC-39), through the composition root: recorded, never run.
+const mockRepublishPrHeads = mock(async (..._args: unknown[]) => {});
+mock.module('@/modules', () => ({ republishPrHeads: mockRepublishPrHeads }));
 
 import {
   buildReviewerContext,
@@ -289,6 +292,25 @@ describe('createReviewerTask — workflow kernel ownership', () => {
       expect(mockKernelDeliveryForPr).not.toHaveBeenCalled();
       expect(insertedTask).toMatchObject({ deliveryId: 'delivery-77', deliveryRole: 'review' });
       expect((insertedTask?.context as any).workflowRoundId).toBe('round-2');
+    } finally {
+      kernelOwner = null;
+    }
+  });
+
+  it('a stored review request republishes the head\'s approval status, candidates only (R-41, AC-39)', async () => {
+    insertedTask = undefined;
+    mockRepublishPrHeads.mockClear();
+    await createReviewerTask(base);
+    expect(insertedTask).toBeDefined();
+    expect(mockRepublishPrHeads).toHaveBeenCalledWith(1, 'buildd-ai/buildd', [{ number: 77, sha: 'k1' }], { candidatesOnly: true });
+  });
+
+  it('a request refused because the kernel owns the PR republishes nothing', async () => {
+    kernelOwner = 'delivery-77';
+    mockRepublishPrHeads.mockClear();
+    try {
+      await createReviewerTask(base);
+      expect(mockRepublishPrHeads).not.toHaveBeenCalled();
     } finally {
       kernelOwner = null;
     }

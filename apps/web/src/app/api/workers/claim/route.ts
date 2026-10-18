@@ -13,7 +13,7 @@ import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitl
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, UNVERIFIED_INTERACTIVE_RUNNER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -95,9 +95,9 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+import { attemptStarted as kernelAttemptStarted, claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 
 /**
  * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
@@ -106,6 +106,7 @@ import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalO
  * and the rest of the batch is claimed as usual.
  */
 export const CLAIM_FIX_CONTROL_PLANE_BUDGET_MS = 5_000;
+
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
@@ -182,7 +183,54 @@ import { claimCandidateWhere } from '@/lib/claim-candidate-where';
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
 const ROLE_ENV_WINDOW_MAX_PAGES = 4;
 
+/**
+ * Undo this request's own still-assigned claim (a fix the kernel deferred, a worker the account
+ * cap refused): back to pending, never a cancelled task. Suppressed for the dispatch trigger: it
+ * undoes our own claim, it is not new runnable state, and a wake here would loop claim, refuse,
+ * rollback, wake across every runner.
+ */
+async function rollBackClaim(taskId: string, accountId: string): Promise<void> {
+  await withDispatchHint({ suppress: 'claim_rollback' }, db
+    .update(tasks)
+    .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, accountId))));
+}
 
+/**
+ * AC-1 slice 7 (workflow-kernel-library.md §9): start a kernel owner task this request's
+ * compare-and-set won. A runner's claim sends AttemptStarted through the door, which has its own
+ * small budget and a breaker after an unanswered start (kernel-client.ts `attemptStarted`), never
+ * the fix claims' budget. Unless the kernel answered started, the route projects the start here
+ * under the same guard (`projectAttemptStart`). An interactive session's claim never waits on the
+ * door: it projects the start at once. So a control plane that is down, slow, refusing or too old
+ * never fails a claim, costs a runner's claim at most the start budget once per breaker window,
+ * and costs a person's own session nothing. Nothing parks. Answers whether the task is now
+ * assigned under exactly this claim.
+ */
+async function startKernelOwnerAttempt(p: {
+  task: { id: string; workspaceId: string; deliveryId: string; deliveryRole: 'owner'; context: unknown };
+  claimedBy: string;
+  claimedAt: string;
+  principal: KernelPrincipal | null;
+  interactive: boolean;
+}): Promise<boolean> {
+  if (!p.interactive) {
+    const t0 = Date.now();
+    try {
+      const r = await kernelAttemptStarted(
+        { task: p.task, claimedBy: p.claimedBy, claimedAt: p.claimedAt, source: 'claim' },
+        { principal: p.principal },
+      );
+      if (r.started) return true;
+    } catch (err) {
+      console.error(`[claim] AttemptStarted for task ${p.task.id} did not reach the kernel after ${Date.now() - t0}ms; projecting it here:`, err);
+    }
+  }
+  return projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }).catch((err) => {
+    console.error(`[claim] start projection failed for task ${p.task.id}:`, err);
+    return false;
+  });
+}
 
 export async function POST(req: NextRequest) {
   const claimStarted = performance.now();
@@ -2805,23 +2853,60 @@ export async function POST(req: NextRequest) {
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
     lockAttempts++;
-    const updated = await db
-      .update(tasks)
-      .set({
-        claimedBy: account.id,
-        // The database's clock, the one workers.created_at uses: the kernel tells a claim in
-        // flight from a finished attempt by comparing the two (endingWorkerIsCurrentSql).
-        claimedAt: sql`now()`,
-        expiresAt,
-        status: 'assigned',
-        predictedModel: resolvedModel,
-        context: patchedContext,
-        // Mark loopState as 'running' so the completion route knows this iteration
-        // is active and can safely evaluate the exit condition (double-evaluation guard).
-        ...(task.loopConfig ? { loopState: 'running' } : {}),
-      })
-      .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
-      .returning({ id: tasks.id });
+    const claimFields = {
+      claimedBy: account.id,
+      // The database's clock, the one workers.created_at uses: the kernel tells a claim in
+      // flight from a finished attempt by comparing the two (endingWorkerIsCurrentSql).
+      claimedAt: sql`now()`,
+      expiresAt,
+      predictedModel: resolvedModel,
+      context: patchedContext,
+      // Mark loopState as 'running' so the completion route knows this iteration
+      // is active and can safely evaluate the exit condition (double-evaluation guard).
+      ...(task.loopConfig ? { loopState: 'running' as const } : {}),
+    };
+    // AC-1 slice 7 (workflow-kernel-library.md §9): the owner task of a kernel delivery is started
+    // by the kernel (AttemptStarted, below), never by this statement. The race is still decided
+    // here, in one compare-and-set: a pending task that no other claim holds (ownerClaimOpenSql, the
+    // candidate query's own rule). It stamps the claim and leaves the status `pending` for the start.
+    const kernelOwner = !!(task as any).deliveryId && (task as any).deliveryRole === 'owner';
+    const updated: Array<{ id: string; claimStamp?: string | null }> = kernelOwner
+      ? await db
+        .update(tasks)
+        .set({ ...claimFields })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), ownerClaimOpenSql()))
+        // As Postgres renders it, microseconds kept: the claim's identity for the start's guard.
+        .returning({ id: tasks.id, claimStamp: sql<string>`${tasks.claimedAt}::text` })
+      : await db
+        .update(tasks)
+        .set({ ...claimFields, status: 'assigned' })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
+        .returning({ id: tasks.id });
+
+    if (updated.length > 0 && kernelOwner) {
+      const stamp = updated[0].claimStamp ?? null;
+      const started = stamp
+        ? await startKernelOwnerAttempt({
+          task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context },
+          claimedBy: account.id,
+          claimedAt: stamp,
+          principal: kernelPrincipalOf({ account }),
+          // A person's own session (claim_task) never waits on the door.
+          interactive: !!interactiveSession || runner === INTERACTIVE_RUNNER || runner === UNVERIFIED_INTERACTIVE_RUNNER,
+        })
+        : false;
+      if (!started) {
+        // Lost after the compare-and-set (cancelled, requeued or taken over in between): give back
+        // only this claim, which never wrote a status. Then it is a lost race like any other.
+        if (stamp) {
+          await withDispatchHint({ suppress: 'claim_rollback' }, db
+            .update(tasks)
+            .set({ claimedBy: null, claimedAt: null, expiresAt: null })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), eq(tasks.claimedBy, account.id), sql`${tasks.claimedAt} = ${stamp}::timestamptz`)));
+        }
+        updated.length = 0;
+      }
+    }
 
     if (updated.length === 0) {
       // Already claimed by another request. A gated START that leased paths
@@ -2857,10 +2942,7 @@ export async function POST(req: NextRequest) {
           console.log(`[claim] task ${task.id} skipped: ${fixDecision.reason}`);
           await cancelSkippedTask(task.id, fixDecision.reason);
         } else {
-          await withDispatchHint({ suppress: 'claim_rollback' }, db
-            .update(tasks)
-            .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
+          await rollBackClaim(task.id, account.id);
         }
         // The kernel could not answer (the control plane down or slow, or the claim budget spent), or it
         // refused the claim: each its own code, so neither reads as fixes nobody needs.
@@ -3059,10 +3141,7 @@ export async function POST(req: NextRequest) {
       // Suppressed for the dispatch trigger: this undoes our own claim, it is
       // not new runnable state, and a wake here would loop claim → refuse →
       // rollback → wake across every runner.
-      await withDispatchHint({ suppress: 'claim_rollback' }, db
-        .update(tasks)
-        .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
+      await rollBackClaim(task.id, account.id);
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',

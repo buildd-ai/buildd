@@ -95,6 +95,16 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(long.description.length).toBeLessThanOrEqual(140);
     expect(long.description).not.toContain('abcdef1234');
   });
+  // What evaluateAutoMergeSafety refuses with (apps/web/src/lib/auto-merge.ts and the rails it calls), as the kernel receives them.
+  const RAIL_REASONS = [
+    'touches protected path (infra/x)',
+    'CI checks still pending or failed: build (in_progress)',
+    'auto-threshold tier: diff size 900 source lines > workspace limit 500 (2 noise files excluded)',
+    'PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch',
+    'PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then merge the destructive ones separately once nothing reads the old columns. Triggered by: drops a column',
+    'migration snapshot parent is no longer a leaf of the base: a migration merged since CI ran, so the earlier green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch',
+    'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
+  ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
     const terms = ['Branch update in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
@@ -106,6 +116,9 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
           out.push(landingStatusOf(V(D({ state, stateReason }), rounds))!.description);
           out.push(landingStatusOf({ delivery: D({ state, stateReason }), rounds, attempts: [], findings: [F] })!.description);
           out.push(landingStatusOf(V(D({ state, stateReason, approvedHeads: [] }), rounds))!.description);
+          // A rail's refusal, passed through verbatim as the detail (apps/web auto-merge rails;
+          // auto-merge-rail-words.test.ts keeps their sources free of "land").
+          for (const detail of RAIL_REASONS) out.push(landingStatusOf(V(D({ state, stateReason }), rounds), { detail })!.description);
         }
       }
     }

@@ -747,6 +747,9 @@ const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: f
 /** AC-1 slice 3: the route's own projection of an owner end it left the status out for. */
 const mockProjectOwnerEnd = mock(async (_p: any): Promise<'completed' | 'failed' | null> => null);
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
+/** AC-1 slice 6: a kernel owner's requeue is the kernel's (AttemptRequeued), then the route's own guarded projection. */
+const mockWorkflowAttemptRequeued = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: true, requeued: true }));
+const mockProjectRequeue = mock(async (_p: any): Promise<boolean> => true);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
 const mockAdoptReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ result: 'applied' }));
@@ -760,11 +763,17 @@ mock.module('@/lib/repair-completion', () => ({
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
 // T6 too (recorded or adopted): the verdict is the kernel's door, not the seam's.
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict }));
+mock.module('@/lib/workflow/kernel-client', () => ({
+  ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, attemptRequeued: mockWorkflowAttemptRequeued, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict,
+  observeHead: mock(async () => false), observePrState: mock(async () => false),
+}));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
   projectOwnerEnd: mockProjectOwnerEnd,
+  projectRequeue: mockProjectRequeue,
+  requeueingAttemptIsCurrentSql: (workerId: string, task = 'tk') => ({ requeueingAttemptIsCurrent: workerId, task }),
+  attemptRequeued: mock(async () => { throw new Error('the worker PATCH called the seam\'s attemptRequeued, not the kernel client\'s'); }),
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
@@ -776,8 +785,6 @@ mock.module('@/lib/workflow/seam', () => ({
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
   openKernelDelivery: mock(async () => ({ owned: false })),
-  observeHead: mock(async () => false),
-  observePrState: mock(async () => false),
   requestReview: mock(async () => ({ handled: false })),
   claimFix: mock(async () => ({ action: 'proceed' })),
   cancelSkippedTask: mock(async () => undefined),
@@ -3995,10 +4002,44 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockProjectOwnerEnd.mock.calls[0][0]).toMatchObject({ status: 'failed' });
     });
 
-    it('AC-1 slice 3: an owner retry stays the route\'s own requeue to pending, with no projection', async () => {
+    it('AC-1 slice 6: an owner retry writes its context but not its status or claim; the kernel requeues it, before the end', async () => {
+      mockWorkflowAttemptRequeued.mockReset();
+      mockProjectRequeue.mockReset();
+      // How many ends the kernel had been sent when the requeue went: the requeue goes first.
+      const endsBeforeRequeue: number[] = [];
+      mockWorkflowAttemptRequeued.mockImplementation(async () => { endsBeforeRequeue.push(mockWorkflowAttemptEnded.mock.calls.length); return { handled: true, requeued: true }; });
       const { taskSets } = await endOwner({ status: 'failed', error: 'boom' }, { ...ownerTaskRow, missionId: 'mission-1', status: 'assigned' });
-      expect(taskSets.find((u) => 'status' in u)?.status).toBe('pending');
+      expect(taskSets.some((u) => 'status' in u)).toBe(false);
+      const retry = taskSets.find((u) => (u.context as Record<string, unknown> | undefined)?.retryCount === 1);
+      expect(retry).toBeDefined();
+      for (const k of ['claimedBy', 'claimedAt', 'expiresAt']) expect(k in retry!).toBe(false);
+      expect(mockWorkflowAttemptRequeued).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptRequeued.mock.calls[0][0]).toMatchObject({ task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, workerId: (await mockParams).id, reason: 'retry' });
+      // The kernel answered requeued: no second projection here; the owner end's own projection is skipped for a retry.
+      expect(mockProjectRequeue).not.toHaveBeenCalled();
       expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
+      expect(endsBeforeRequeue).toEqual([0]);
+    });
+
+    it('AC-1 slice 6: a control plane that did not answer the requeue: the route projects it itself under the same guard', async () => {
+      mockWorkflowAttemptRequeued.mockReset();
+      mockProjectRequeue.mockReset();
+      mockWorkflowAttemptRequeued.mockImplementation(async () => { throw new realKernelClient.ControlPlaneUnavailableError('unreachable'); });
+      mockProjectRequeue.mockResolvedValue(true);
+      const { taskSets } = await endOwner({ status: 'failed', error: 'boom' }, { ...ownerTaskRow, missionId: 'mission-1', status: 'assigned' });
+      expect(taskSets.some((u) => 'status' in u)).toBe(false);
+      expect(mockProjectRequeue.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'fix-task-1', workerId: (await mockParams).id });
+    });
+
+    it('AC-1 slice 6: a codex deferral of a kernel owner goes through the kernel; a task with no delivery keeps the route\'s own requeue', async () => {
+      for (const [row, viaKernel] of [[ownerTaskRow, true], [{ ...ownerTaskRow, deliveryId: null, deliveryRole: null }, false]] as const) {
+        mockWorkflowAttemptRequeued.mockReset();
+        mockWorkflowAttemptRequeued.mockResolvedValue({ handled: true, requeued: true });
+        const { taskSets } = await endOwner({ status: 'failed', error: 'Deferred: codex is not available here' }, row);
+        expect(mockWorkflowAttemptRequeued).toHaveBeenCalledTimes(viaKernel ? 1 : 0);
+        if (viaKernel) expect(mockWorkflowAttemptRequeued.mock.calls[0][0]).toMatchObject({ reason: 'codex_deferral' });
+        expect(taskSets.some((u) => u.status === 'pending')).toBe(!viaKernel);
+      }
     });
 
     it('AC-1 slice 3: a repair attempt keeps the route\'s status write; nothing is projected for it', async () => {

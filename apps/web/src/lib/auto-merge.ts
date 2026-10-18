@@ -993,7 +993,7 @@ export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult):
   if (res.behindTolerated) {
     return {
       refreshOutcome: 'behind_tolerated',
-      reason: 'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the landing door lands it without another refresh',
+      reason: 'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
       page: null,
     };
   }

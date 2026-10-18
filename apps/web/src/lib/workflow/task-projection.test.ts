@@ -5,7 +5,9 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
+import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, reapedOwnerAttemptIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
+import { projectRequeueSql, requeueingAttemptIsCurrentSql, requeueTaskProjectionCtes } from './task-projection';
+import { ownerClaimOpenSql, projectAttemptStartSql, startTaskProjectionCtes } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -124,6 +126,21 @@ describe('AC-1 slice 3: the owner end projection', () => {
     expect(t).toContain('nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id)');
   });
 
+  test('reapedOwnerAttemptIsCurrentSql: an open task, an attempt row (no placeholder), its current attempt; the task alias is the caller\'s', () => {
+    const { sql: t, params } = render(reapedOwnerAttemptIsCurrentSql('w7'));
+    expect(t).toContain("tk.status IN ($1::text, $2::text)");
+    expect(params.slice(0, 2)).toEqual(['assigned', 'in_progress']);
+    expect(t).toContain('rw.id::text = $3::text AND (rw.runner IS NULL OR rw.runner NOT IN');
+    expect(params).toContain('external');
+    expect(t).toContain('ew.task_id = tk.id');
+    // Inside a drizzle update(tasks) the row is `tasks`, unaliased.
+    const inUpdate = render(reapedOwnerAttemptIsCurrentSql('w7', 'tasks')).sql;
+    expect(inUpdate).toContain('tasks.status IN (');
+    expect(inUpdate).toContain('ew.task_id = tasks.id');
+    expect(inUpdate).toContain('nw.task_id = tasks.id');
+    expect(inUpdate).not.toContain('tk.');
+  });
+
   test('no CTE for a requeue, a repair\'s end, another command, or an end with no outcome', () => {
     expect(ended({ outcome: 'unproven', requeue: true })).toEqual([]);
     expect(ended({ outcome: 'success' }, 'FIXING')).toEqual([]);
@@ -164,5 +181,93 @@ describe('attempt rows (review of #5049, round 2)', () => {
     expect(isAttemptRow({ runner: 'mcp' })).toBe(true);
     expect(isAttemptRow({ runner: 'runner-1' })).toBe(true);
     expect(isAttemptRow({ runner: null })).toBe(true);
+  });
+});
+
+describe('AC-1 slice 6: the requeue projection', () => {
+  const owner = { command: 'AttemptRequeued' as const, evidence: { requeue: true, reason: 'retry', workerId: 'w-1', taskId: 't-1' } };
+
+  test('t_requeue: the owner task back to pending with its claim released, reading the delivery CTE, under the current-attempt guard', () => {
+    const [cte] = requeueTaskProjectionCtes(owner, 'd');
+    const { sql: t, params } = render(cte);
+    expect(t).toContain("t_requeue AS (\n  UPDATE tasks tk SET status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()\n  FROM d");
+    expect(t).toContain('tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = d.id)');
+    expect(t).toContain("tk.status IN ($1::text, $2::text)");
+    expect(params.slice(0, 2)).toEqual(['assigned', 'in_progress']);
+    expect(t).toContain('ew.task_id = tk.id');
+    expect(t).toContain('NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id');
+    expect(params).toContain('w-1');
+    expect(t).toContain('RETURNING tk.id');
+  });
+
+  test('t_requeue for a repair: the open ledger row\'s own task, never the owner', () => {
+    const [cte] = requeueTaskProjectionCtes({ command: 'AttemptRequeued', evidence: { requeue: true, reason: 'conflict_recovery', workerId: 'w-2', attemptId: 'a-1' } }, 'd');
+    const { sql: t, params } = render(cte);
+    expect(t).toContain("tk.id = (SELECT wa.task_id FROM workflow_attempts wa\n        WHERE wa.id = $1::uuid AND wa.delivery_id = d.id AND wa.status IN ('queued', 'running'))");
+    expect(params[0]).toBe('a-1');
+    expect(t).not.toContain('SELECT od.owner_task_id');
+  });
+
+  test('nothing for any other decision, or a requeue with no worker named', () => {
+    expect(requeueTaskProjectionCtes({ command: 'AttemptEnded', evidence: { requeue: true, workerId: 'w-1' } })).toEqual([]);
+    expect(requeueTaskProjectionCtes({ command: 'AttemptRequeued', evidence: { requeue: true } })).toEqual([]);
+  });
+
+  test('projectRequeueSql: the same move outside a transition, for the named delivery\'s task', () => {
+    const { sql: t, params } = render(projectRequeueSql({ deliveryId: 'd-1', workerId: 'w-1', taskId: 't-1' }));
+    expect(t).toContain('-- workflow:project_requeue');
+    expect(t).toContain("UPDATE tasks tk SET status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()");
+    expect(t).toContain('WHERE tk.id = $1::uuid');
+    expect(t).toContain('tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = $2::uuid)');
+    expect(params.slice(0, 2)).toEqual(['t-1', 'd-1']);
+    expect(render(projectRequeueSql({ deliveryId: 'd-1', workerId: 'w-1', taskId: 't-1', attemptId: 'a-1' })).sql).toContain('wa.delivery_id = $3::uuid');
+  });
+
+  test('requeueingAttemptIsCurrentSql: an open task, an attempt row, the current one, on the named tasks row', () => {
+    const { sql: t } = render(requeueingAttemptIsCurrentSql('w-1', 'tasks'));
+    expect(t).toContain('tasks.status IN (');
+    expect(t).toContain('EXISTS (SELECT 1 FROM workers rw WHERE rw.id::text = ');
+    expect(t).toContain('ew.task_id = tasks.id');
+    expect(t).toContain('tasks.claimed_at IS NULL OR ew.created_at >= tasks.claimed_at');
+    expect(t).not.toContain('tk.');
+    expect(render(endingWorkerIsCurrentSql('w-1')).sql).toContain('ew.task_id = tk.id');
+  });
+});
+
+describe('AC-1 slice 7: the start projection', () => {
+  const STAMP = '2026-10-18 08:00:00.123456+00';
+  const start = { command: 'AttemptStarted' as const, evidence: { start: true, taskId: 't-1', claimedBy: 'acct-1', claimedAt: STAMP } };
+
+  test('t_start: the owner task to assigned, reading the delivery CTE, only while it is pending under this exact claim', () => {
+    const [cte] = startTaskProjectionCtes(start, 'd');
+    const { sql: t, params } = render(cte);
+    expect(t).toContain("t_start AS (\n  UPDATE tasks tk SET status = 'assigned', updated_at = now()\n  FROM d");
+    expect(t).toContain('tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = d.id)');
+    expect(t).toContain("tk.status = 'pending'");
+    expect(t).toContain('tk.claimed_by::text = $');
+    expect(t).toContain('::timestamptz');
+    expect(params).toEqual(expect.arrayContaining(['t-1', 'acct-1', STAMP]));
+    expect(t).toContain('RETURNING tk.id');
+  });
+
+  test('nothing for any other decision, or a start that names no claim', () => {
+    expect(startTaskProjectionCtes({ command: 'AttemptEnded', evidence: start.evidence })).toEqual([]);
+    expect(startTaskProjectionCtes({ command: 'AttemptStarted', evidence: { start: true, taskId: 't-1', claimedBy: 'acct-1' } })).toEqual([]);
+    expect(startTaskProjectionCtes({ command: 'AttemptStarted', evidence: { taskId: 't-1', claimedBy: 'acct-1', claimedAt: STAMP } })).toEqual([]);
+  });
+
+  test('projectAttemptStartSql: the same move outside a transition, for the named delivery\'s owner task', () => {
+    const { sql: t, params } = render(projectAttemptStartSql({ deliveryId: 'd-1', taskId: 't-1', claimedBy: 'acct-1', claimedAt: STAMP }));
+    expect(t).toContain('-- workflow:project_attempt_start');
+    expect(t).toContain("UPDATE tasks tk SET status = 'assigned', updated_at = now()");
+    expect(t).toContain('WHERE tk.id = $1::uuid');
+    expect(t).toContain('od.owner_task_id = tk.id');
+    expect(t).toContain("tk.status = 'pending'");
+    expect(params).toEqual(expect.arrayContaining(['t-1', 'd-1', 'acct-1', STAMP]));
+  });
+
+  test('ownerClaimOpenSql: a pending owner task is claimable unless another claim holds it, by the claim query\'s own rule', () => {
+    const { sql: t } = render(ownerClaimOpenSql());
+    expect(t).toBe('("tasks"."claimed_by" IS NULL OR "tasks"."expires_at" < now())');
   });
 });

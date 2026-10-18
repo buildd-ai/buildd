@@ -169,6 +169,43 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
   return { teamId: team.id, userId: user.id, workspaceIds: wsIds, scale, reused: false };
 }
 
+/**
+ * Stored mission summaries for the team's missions that have none (spec
+ * R-13): pages read them, and in production they are written as work
+ * changes. The seed writes them once, in the store's own chunks.
+ */
+export async function seedMissionSummaries(team: SeededTeam): Promise<number> {
+  const { MISSION_SUMMARY_VERSION } = await import('@buildd/shared');
+  const missing = await q<{ id: string }>(sql`
+    SELECT m.id FROM missions m
+    LEFT JOIN mission_summaries s ON s.mission_id = m.id AND s.version = ${MISSION_SUMMARY_VERSION}
+    WHERE m.team_id = ${team.teamId}::uuid AND s.mission_id IS NULL`);
+  if (missing.length === 0) return 0;
+  const { recomputeMissionSummaries } = await import('../../src/lib/mission-summary-store');
+  const { written } = await recomputeMissionSummaries(missing.map(m => m.id));
+  return written.length;
+}
+
+/**
+ * React's `cache()` as a request scope: in production the protected layout
+ * and the page share one request, so a read the layout made (the user, the
+ * team scope, chat availability) costs the page nothing. Bun has no request
+ * scope, so `cache()` would re-run every call. Mock `react` with this
+ * module and call `reset()` to start a new request.
+ */
+export function requestScopedReact(react: Record<string, unknown>) {
+  let memo = new Map<unknown, Map<string, unknown>>();
+  const cache = <A extends unknown[], R>(fn: (...args: A) => R) => (...args: A): R => {
+    const byArgs = memo.get(fn) ?? new Map<string, unknown>();
+    memo.set(fn, byArgs);
+    const key = JSON.stringify(args.map(a => (a === undefined ? null : a)));
+    if (!byArgs.has(key)) byArgs.set(key, fn(...args));
+    return byArgs.get(key) as R;
+  };
+  const mod = { ...react, cache, default: { ...(react.default as object), cache } };
+  return { mod, reset: () => { memo = new Map(); } };
+}
+
 export interface LoaderMeasurement {
   name: string;
   count: number;
@@ -176,18 +213,22 @@ export interface LoaderMeasurement {
   bytes: number;
   byLabel: Record<string, { count: number; bytes: number }>;
   byTable: Record<string, { count: number; bytes: number }>;
+  /** Round trips by SQL operation (select, insert, update, ...): R-15 reads `insert`/`update`/`delete`. */
+  byOperation: Record<string, number>;
 }
 
 /** Run `fn` labelled `name` and measure every Neon round trip it makes. */
 export async function measureLoader(name: string, fn: () => Promise<unknown>): Promise<LoaderMeasurement> {
   const rec = await recordNeonQueries(() => withLoaderLabel(name, fn));
   const byTable: LoaderMeasurement['byTable'] = {};
+  const byOperation: LoaderMeasurement['byOperation'] = {};
   for (const query of rec.queries) {
+    byOperation[query.operation] = (byOperation[query.operation] ?? 0) + 1;
     const b = (byTable[query.table ?? `(${query.operation})`] ??= { count: 0, bytes: 0 });
     b.count += 1;
     b.bytes += query.bytes;
   }
-  return { name, count: rec.count, statements: rec.statements, bytes: rec.bytes, byLabel: rec.byLabel, byTable };
+  return { name, count: rec.count, statements: rec.statements, bytes: rec.bytes, byLabel: rec.byLabel, byTable, byOperation };
 }
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;

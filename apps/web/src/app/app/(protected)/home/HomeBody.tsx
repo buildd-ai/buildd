@@ -11,7 +11,7 @@ import { DecisionCard } from './DecisionCard';
 import { NeedsYouRows, PolicyDigests } from './NeedsYouRows';
 import { layoutNeedsYou } from './needs-you-layout';
 import { DeliveryMilestones } from './DeliveryMilestones';
-import type { DeliveryCounts, MissionDelivery, QuietMissionCause } from '@/lib/delivery-projection';
+import type { DeliveryCounts, MissionDeliveryRow, QuietMissionCause } from '@/lib/delivery-projection';
 
 /** Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */
 const BODY_GRID = {
@@ -67,7 +67,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
   /** The count contracts (lib/delivery-projection.ts `deliveryCounts`). */
   counts: DeliveryCounts;
   /** 2–3 missions moving toward delivery (`selectHomeMilestones`). */
-  milestones: MissionDelivery[];
+  milestones: MissionDeliveryRow[];
   /** Open missions that are waiting, not moving: counted, never listed. */
   quietMissions: number;
   /** What those missions wait on (`quietMissionCauses`); without it the line names no cause. */

@@ -75,7 +75,7 @@ describe('Failures for an outside reader', () => {
       w('c', 'TypeError: x is undefined'),
     ])} headline={{ failureRatePct: 3, failed: 1, terminal: 30 }} windowLabel="7d" now={NOW} />);
     expect(html).not.toContain('Superseded');
-    expect(html).toContain('2 stopped because the work already landed');
+    expect(html).toContain('2 stopped because the work already merged');
     expect(html.match(/data-testid="failure-group"/g)?.length ?? 0).toBe(0);
   });
 
