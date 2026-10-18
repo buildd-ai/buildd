@@ -1,3 +1,4 @@
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 /**
  * The runner queue read (spec c7410e76 R-26, AC-12), rendered to real SQL:
  * it is scoped to the caller's claimable workspaces and pending work only, it
@@ -174,11 +175,24 @@ describe('loadRunnerQueue', () => {
     expect(read).toBe(0);
   });
 
-  it('adds estimates only for a team that has them on, newest row per task', async () => {
+  it('keeps queue order but hides raw forecasts when calibration is unknown', async () => {
+    let reads = 0;
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      calibrated: () => false,
+      read: async () => [row({ id: 't-2' }), row({ id: 't-1' })],
+      estimates: async () => { reads++; return [{ taskId: 't-1', estimatorVersion: ESTIMATOR_VERSION, p50Minutes: 40 }]; },
+    });
+    expect(reads).toBe(0);
+    expect(out.teams[0].queue.map(t => t.id)).toEqual(['t-2', 't-1']);
+    expect(out.teams[0].queue.every(t => t.estimateMinutes === null)).toBe(true);
+  });
+
+  it('adds only running calibrated estimates for an enabled team, newest row per task', async () => {
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, now: NOW }, {
       read: async () => [row({ id: 't-1' }), row({ id: 't-2' }), row({ id: 't-3', teamId: 'team-b', teamName: 'Bravo' })],
+      calibrated: () => true,
       estimates: async (teamId) => teamId === 'team-1'
-        ? [{ taskId: 't-1', p50Minutes: 39.6 }, { taskId: 't-1', p50Minutes: 10 }]
+        ? [{ taskId: 't-1', estimatorVersion: 'older', p50Minutes: 900 }, { taskId: 't-1', estimatorVersion: ESTIMATOR_VERSION, p50Minutes: 39.6 }, { taskId: 't-1', estimatorVersion: ESTIMATOR_VERSION, p50Minutes: 10 }]
         : null,
     });
     const acme = out.teams.find(t => t.teamName === 'Acme')!;

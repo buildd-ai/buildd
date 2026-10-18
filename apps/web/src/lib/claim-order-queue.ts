@@ -18,6 +18,8 @@
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { db } from '@buildd/core/db';
 import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
@@ -200,6 +202,7 @@ export interface QueueOverlapState {
 }
 
 export interface RunnerQueueDeps {
+  calibrated?: () => boolean;
   read?: (opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) => Promise<RunnerQueueRow[]>;
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
@@ -281,19 +284,20 @@ async function readRows(opts: { workspaceIds: string[]; gates: Partial<Record<Qu
   return (await buildRunnerQueueQuery(db, opts)) as unknown as RunnerQueueRow[];
 }
 
-export type EstimateRow = { taskId: string; p50Minutes: number };
+export type EstimateRow = { estimatorVersion: string; taskId: string; p50Minutes: number };
 
 /**
  * Teams with task estimates on get each queued task's frozen p50, from the
  * same rows the mission Overview and Plan page read, under the same team
- * switch; a team with them off gets none (null). Newest row first.
+ * availability; numeric projections additionally require calibrated running
+ * version rows. A team with them off gets none (null). Newest row first.
  */
 async function readEstimates(teamId: string, taskIds: string[]): Promise<EstimateRow[] | null> {
   if (taskIds.length === 0 || !(await taskEstimatesEnabled(teamId))) return null;
   return db
-    .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes })
+    .select({ taskId: taskEstimates.taskId, estimatorVersion: taskEstimates.estimatorVersion, p50Minutes: taskEstimates.p50Minutes })
     .from(taskEstimates)
-    .where(and(eq(taskEstimates.teamId, teamId), inArray(taskEstimates.taskId, taskIds)))
+    .where(and(eq(taskEstimates.teamId, teamId), eq(taskEstimates.estimatorVersion, ESTIMATOR_VERSION), inArray(taskEstimates.taskId, taskIds)))
     .orderBy(desc(taskEstimates.createdAt));
 }
 
@@ -341,13 +345,13 @@ export async function loadRunnerQueue(
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {
-    if (team.queue.length === 0) return;
+    if (team.queue.length === 0 || !(deps.calibrated ?? taskEstimatesDefaultOn)()) return;
     const est = await estimates(team.teamId, team.queue.map(t => t.id)).catch(() => null);
     if (!est) return;
     team.estimatesOn = true;
     // Newest first: the first row per task is its estimate.
     const first = new Map<string, number>();
-    for (const r of est) if (!first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
+    for (const r of est) if (r.estimatorVersion === ESTIMATOR_VERSION && !first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
     for (const t of team.queue) t.estimateMinutes = first.has(t.id) ? Math.round(first.get(t.id)!) : null;
   }));
   return { teams: teamsOut, truncated };

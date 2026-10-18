@@ -65,7 +65,9 @@ the platform owner sees version-specific calibration and model comparisons.
 - Estimates are forecasts for people. The claim route, scheduler and mission
   planner never use forecasts or calibration as inputs to ordering or capacity.
   The Missions Plan numeric readout and its link remain behind the running
-  version calibration gate as well as team availability; default-on collection
+  version calibration gate as well as team availability; mission Overview and
+  runner queue numeric projections use the same gate and exact-version rows.
+  Default-on collection
   must not expose uncalibrated mission completion dates.
 
 **Quality gate** (`evaluateTaskEstimatesGate`, printed by
@@ -459,3 +461,8 @@ AC-27: GIVEN default-on availability and uncalibrated estimates WHEN opening
 Missions THEN its Plan link is hidden and the Plan route loads no numeric
 forecast. GIVEN calibrated estimates and an eligible team THEN Plan remains
 available. Test: apps/web/src/app/app/(protected)/missions/plan/page.test.tsx.
+
+AC-28: GIVEN uncalibrated running estimates or rows from another version WHEN
+mission Overview or runner queue projects numeric forecasts THEN it omits them
+and preserves queue ordering. Test: apps/web/src/lib/mission-build-estimates.test.ts,
+apps/web/src/lib/claim-order-queue.test.ts.
