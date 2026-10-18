@@ -796,7 +796,11 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     await push(o, 'H2', { ancestors: ['H1'] });
     // AC-1: the rows are delivery-owned, so the funnel reports the green and writes neither row.
     const green = await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' }, { scope: factFunnelScope });
-    expect(green.map((r) => r.deferred)).toEqual([true, true]);
+    // The target is the PR's URL and number, not the workspace: on the double run (scripts/run-db-tests.ts)
+    // it also reaches the first run's rows for the same PR, which are delivery-owned too. Pin this run's.
+    expect(green.every((r) => r.deferred)).toBe(true);
+    expect(green.filter((r) => r.workspaceId === workspaceId).map((r) => r.id).sort())
+      .toEqual((await prRows(o)).map((r) => r.id).sort());
     const before = await delivery(o.deliveryId);
     // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
     expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
