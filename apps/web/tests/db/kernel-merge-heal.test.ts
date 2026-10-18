@@ -59,6 +59,8 @@ const realClient = await import('../../src/lib/workflow/kernel-client');
 mock.module('../../src/lib/workflow/kernel-client', () => ({
   ...realClient, hostsKernelHere: async () => false, drainOnControlPlane: async () => null,
   observePrState: async (p: Parameters<typeof realClient.observePrState>[0]) => (await import('../../src/lib/workflow/seam')).observePrState(p, deps),
+  // The heal tick asks the control plane to heal (the `heal` op); here that host is this process.
+  healOnControlPlane: async (id: string) => (await import('../../src/lib/workflow/kernel-heal')).healHere([id]),
 }));
 const realEmit = await import('../../src/lib/core-emit');
 mock.module('../../src/lib/core-emit', () => ({ ...realEmit, emit: async () => {} }));
