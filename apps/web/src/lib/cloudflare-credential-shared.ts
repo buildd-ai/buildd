@@ -115,7 +115,18 @@ export interface CloudflareCapabilities {
   workersAi: CapabilityCheck;
   /** The AI Gateway named on the credential; null when none is set. */
   aiGateway: CapabilityCheck | null;
+  /** Deploying the cloud runner from Settings: the Worker script, its secrets and Durable Objects. */
+  workersScripts?: CapabilityCheck;
+  /** Its container applications and rollouts. */
+  containers?: CapabilityCheck;
+  /** Its snapshot bucket. */
+  r2?: CapabilityCheck;
+  /** Its workers.dev URL. */
+  workersSubdomain?: CapabilityCheck;
 }
+
+/** What the Settings Deploy button needs on top of an active token. */
+export const DEPLOY_CAPABILITIES = ['workersScripts', 'containers', 'r2', 'workersSubdomain'] as const satisfies readonly (keyof CloudflareCapabilities)[];
 
 export type CloudflareCapability = keyof CloudflareCapabilities;
 
@@ -159,6 +170,10 @@ function describeWithCodes(res: Response, body: CfVerifyBody): string {
 const CAPABILITY_LABEL: Record<CloudflareCapability, { name: string; permission: string }> = {
   workersAi: { name: 'Workers AI', permission: 'Workers AI Read' },
   aiGateway: { name: 'AI Gateway', permission: 'AI Gateway Read' },
+  workersScripts: { name: 'Workers Scripts', permission: 'Workers Scripts Edit' },
+  containers: { name: 'Containers', permission: 'Containers Edit' },
+  r2: { name: 'R2', permission: 'Workers R2 Storage Edit' },
+  workersSubdomain: { name: 'workers.dev subdomain', permission: 'Account Settings Read' },
 };
 
 /** One read that only succeeds with the permission. 401/403 = not allowed, 404 = not found, else unknown. */
@@ -190,13 +205,31 @@ export async function checkCloudflareCapabilities(
   fetchImpl: FetchLike = fetch,
 ): Promise<CloudflareCapabilities> {
   const base = `${CLOUDFLARE_API_BASE}/accounts/${cred.accountId}`;
-  const [workersAi, aiGateway] = await Promise.all([
-    checkOne(`${base}/ai/models/search?per_page=1`, cred.apiToken, fetchImpl),
-    cred.aiGatewayId
-      ? checkOne(`${base}/ai-gateway/gateways/${encodeURIComponent(cred.aiGatewayId)}`, cred.apiToken, fetchImpl)
-      : Promise.resolve(null),
+  const check = (path: string) => checkOne(`${base}${path}`, cred.apiToken, fetchImpl);
+  // The deploy checks are reads in the same permission groups as the writes
+  // a deploy makes. A token cannot list its own permissions (that needs API
+  // Tokens Read), so a read that succeeds is the best evidence there is.
+  const [workersAi, aiGateway, workersScripts, containers, r2, workersSubdomain] = await Promise.all([
+    check('/ai/models/search?per_page=1'),
+    cred.aiGatewayId ? check(`/ai-gateway/gateways/${encodeURIComponent(cred.aiGatewayId)}`) : Promise.resolve(null),
+    check('/workers/scripts'),
+    check('/containers/applications'),
+    check('/r2/buckets?per_page=1'),
+    check('/workers/subdomain'),
   ]);
-  return { workersAi, aiGateway };
+  return { workersAi, aiGateway, workersScripts, containers, r2, workersSubdomain };
+}
+
+/**
+ * The permissions the Settings Deploy button is missing, in words
+ * ("add Containers Edit to this token"), or [] when none was refused. A check
+ * that could not run is not counted: the deploy step says what failed.
+ */
+export function missingDeployPermissions(caps: CloudflareCapabilities | null | undefined): string[] {
+  if (!caps) return [];
+  return DEPLOY_CAPABILITIES
+    .filter((k) => caps[k]?.state === 'not_allowed')
+    .map((k) => CAPABILITY_LABEL[k].permission);
 }
 
 /** The card's words for one check: "Workers AI: not allowed (add Workers AI Read to this token)". */
@@ -205,7 +238,10 @@ export function describeCloudflareCapability(which: CloudflareCapability, check:
   switch (check.state) {
     case 'allowed': return `${name}: allowed`;
     case 'not_allowed': return `${name}: not allowed (add ${permission} to this token)`;
-    case 'not_found': return `${name}: not found (check the AI Gateway ID)`;
+    case 'not_found':
+      if (which === 'aiGateway') return `${name}: not found (check the AI Gateway ID)`;
+      if (which === 'workersSubdomain') return `${name}: none yet (pick one under Workers & Pages in the Cloudflare dashboard)`;
+      return `${name}: not found`;
     default: return `${name}: could not check${check.detail ? ` (${check.detail})` : ''}`;
   }
 }
