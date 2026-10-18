@@ -12,6 +12,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects } from '@/lib/task-cancel';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
 
 // TERMINAL_TASK_STATUSES: @buildd/shared.
 const SIDE_EFFECT_BATCH = 10;
@@ -189,9 +190,12 @@ export async function POST(req: NextRequest) {
     await Promise.all(taskIds.slice(i, i + SIDE_EFFECT_BATCH).map((id) => applyTaskDeleteSideEffects(id)));
   }
 
+  // The rows are gone after the delete, so resolve the scopes they version on first.
+  const deletedScopes = await scopesOfDeletedTasks(taskIds);
   await db
     .delete(tasks)
     .where(inArray(tasks.id, taskIds));
+  await bumpChangeVersions(deletedScopes);
 
   return NextResponse.json({
     affected: taskIds.length,

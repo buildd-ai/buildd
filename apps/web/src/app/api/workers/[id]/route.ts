@@ -813,7 +813,7 @@ export async function PATCH(
   // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
   // The body is deliberately not re-indented, so this stays a small diff.
   try {
-  return withLoaderLabel('workers.patch', () => patchWorker(req, context));
+  return await withLoaderLabel('workers.patch', () => patchWorker(req, context));
   } finally { await settleWorkChanges(); }
 }
 

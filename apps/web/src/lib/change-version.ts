@@ -275,6 +275,20 @@ export async function scopesOfWorkChange(batch: WorkChangeBatch): Promise<string
   return uniq(rows.flatMap(r => [r.workspaceId, r.teamId ? teamChangeScope(r.teamId) : null]));
 }
 
+/**
+ * The scopes deleted tasks versioned on, read before the delete (afterwards
+ * the join that `scopesOfWorkChange` uses finds nothing). Never throws.
+ */
+export async function scopesOfDeletedTasks(taskIds: readonly string[]): Promise<string[]> {
+  if (taskIds.length === 0) return [];
+  try {
+    return await scopesOfWorkChange({ missionIds: [], taskIds: [...taskIds], workerIds: [], prs: [], workspacePrs: [] });
+  } catch (err) {
+    console.error('[change-version] scopes of deleted tasks failed:', err);
+    return [];
+  }
+}
+
 /** The composition root's work-change listener: bump the workspaces and teams a batch touched. */
 export async function changeVersionWorkListener(batch: WorkChangeBatch): Promise<void> {
   await bumpChangeVersions(await scopesOfWorkChange(batch));

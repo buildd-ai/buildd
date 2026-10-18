@@ -50,6 +50,7 @@ import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql'
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
@@ -948,7 +949,10 @@ export async function DELETE(
     // delete orphans the worker rows (task_id → NULL), and a question parked
     // on one would otherwise stay live, holding a slot, with no task to end it.
     await applyTaskDeleteSideEffects(id);
+    // The row is gone after the delete, so resolve the scopes it versions on first.
+    const deletedScopes = await scopesOfDeletedTasks([id]);
     await db.delete(tasks).where(eq(tasks.id, id));
+    await bumpChangeVersions(deletedScopes);
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -203,6 +203,17 @@ const mockResolveTaskDelegationWrite = mock(async (input: unknown, _ws: string, 
     : { ok: false, status: 403, error: 'Only a person can grant a task delegation' });
 mock.module('@/lib/task-delegation-checks', () => ({ resolveTaskDelegationWrite: mockResolveTaskDelegationWrite }));
 
+// Change version: a deleted task's scopes are read before the row goes, then bumped.
+const deleteOrder: string[] = [];
+const mockScopesOfDeletedTasks = mock(async (ids: readonly string[]) => { deleteOrder.push(`scopes:${ids.join(',')}`); return ['ws-1', 'team:team-1']; });
+const mockBumpChangeVersions = mock(async (scopes: Iterable<string | null | undefined>) => { deleteOrder.push(`bump:${[...scopes].join(',')}`); });
+const actualChangeVersion = await import('@/lib/change-version');
+mock.module('@/lib/change-version', () => ({
+  ...actualChangeVersion,
+  scopesOfDeletedTasks: mockScopesOfDeletedTasks,
+  bumpChangeVersions: mockBumpChangeVersions,
+}));
+
 import { GET, PATCH, DELETE } from './route';
 
 // Helper to create mock NextRequest
@@ -2619,6 +2630,25 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.success).toBe(true);
+  });
+
+  it('bumps the deleted task\'s change-version scopes, read before the row is deleted', async () => {
+    const mockTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      status: 'pending',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    deleteOrder.length = 0;
+    mockTasksDelete.mockReturnValue({ where: mock(() => { deleteOrder.push('delete'); return Promise.resolve(); }) });
+
+    const response = await callHandler(DELETE, createMockRequest({ method: 'DELETE' }), TASK_ID);
+
+    expect(response.status).toBe(200);
+    expect(deleteOrder).toEqual([`scopes:${TASK_ID}`, 'delete', 'bump:ws-1,team:team-1']);
   });
 
   it('deletes assigned task successfully', async () => {
