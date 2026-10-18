@@ -652,7 +652,7 @@ export function HealthClient({
                     {b.sampleTasks.some((t) => t.claim) && (
                       <ul data-testid={`strand-claim-${b.backend}`} className="mt-1 space-y-0.5 text-xs text-text-muted">
                         {b.sampleTasks.map((t) => (
-                          <li key={t.id} className="truncate">{t.title}: {claimBlockerLine(t.claim)}</li>
+                          <li key={t.id} className="truncate">{t.title}: {routeLine(t.route)}{claimBlockerLine(t.claim)}</li>
                         ))}
                       </ul>
                     )}
@@ -2372,6 +2372,14 @@ function FailureAnalyticsSection({
   );
 }
 
+
+/** Where a queued task actually routes (spec 97b1bd0b AC-7): the effective backend, and what it asked for when the team's mask moved it. */
+export function routeLine(r: { requested: string; effective: string } | undefined): string {
+  if (!r) return '';
+  return r.requested === r.effective
+    ? `routes to ${r.effective}; `
+    : `asked for ${r.requested}, routes to ${r.effective}; `;
+}
 
 /**
  * One task's claim-scheduler decision as a line (spec 97b1bd0b R-10): blocked

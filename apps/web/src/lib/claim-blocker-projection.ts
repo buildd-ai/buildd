@@ -44,18 +44,26 @@ export interface ClaimDecisionRow {
   occurredAt: Date | string;
 }
 
+/** Refusals that only concern one backend; they say nothing about a task routed elsewhere. */
+const BACKEND_SPECIFIC_REASONS: Readonly<Record<string, string>> = { codex_single_flight: 'codex' };
+
 const UNKNOWN: ClaimBlocker = { state: 'unknown', reason: null, phrase: null, evaluatedAt: null };
 
 /** Pure: one task's blocker from its newest recorded decision. */
 export function projectClaimBlocker(
   row: { reason: string; occurredAt: Date | string } | null | undefined,
   now: number = Date.now(),
+  /** The backend the task now routes to; a refusal for another backend is stale, not current. */
+  effectiveBackend?: string | null,
 ): ClaimBlocker {
   if (!row) return UNKNOWN;
   const at = new Date(row.occurredAt);
   if (Number.isNaN(at.getTime())) return UNKNOWN;
+  const forOtherBackend = !!effectiveBackend
+    && BACKEND_SPECIFIC_REASONS[row.reason] !== undefined
+    && BACKEND_SPECIFIC_REASONS[row.reason] !== effectiveBackend;
   return {
-    state: now - at.getTime() <= DEFERRAL_FRESHNESS_MS ? 'blocked' : 'stale',
+    state: !forOtherBackend && now - at.getTime() <= DEFERRAL_FRESHNESS_MS ? 'blocked' : 'stale',
     reason: row.reason,
     phrase: claimHoldPhrase(row.reason),
     evaluatedAt: at.toISOString(),
@@ -67,17 +75,21 @@ export function projectClaimBlockers(
   taskIds: readonly string[],
   rows: readonly ClaimDecisionRow[],
   now: number = Date.now(),
+  effectiveBackends?: ReadonlyMap<string, string>,
 ): Map<string, ClaimBlocker> {
   const newest = new Map<string, ClaimDecisionRow>();
   for (const r of rows) if (r.taskId && !newest.has(r.taskId)) newest.set(r.taskId, r);
-  return new Map(taskIds.map(id => [id, projectClaimBlocker(newest.get(id), now)]));
+  return new Map(taskIds.map(id => [id, projectClaimBlocker(newest.get(id), now, effectiveBackends?.get(id))]));
 }
 
 /**
  * Blockers for pending tasks. A failed read yields `unknown` for every task,
  * never a guessed block.
  */
-export async function loadClaimBlockers(taskIds: readonly string[]): Promise<Map<string, ClaimBlocker>> {
+export async function loadClaimBlockers(
+  taskIds: readonly string[],
+  effectiveBackends?: ReadonlyMap<string, string>,
+): Promise<Map<string, ClaimBlocker>> {
   if (taskIds.length === 0) return new Map();
   try {
     const rows = await db.query.gateEvents.findMany({
@@ -91,7 +103,7 @@ export async function loadClaimBlockers(taskIds: readonly string[]): Promise<Map
       limit: Math.min(500, taskIds.length * 20),
       columns: { taskId: true, reason: true, occurredAt: true },
     });
-    return projectClaimBlockers(taskIds, rows);
+    return projectClaimBlockers(taskIds, rows, Date.now(), effectiveBackends);
   } catch {
     return projectClaimBlockers(taskIds, []);
   }

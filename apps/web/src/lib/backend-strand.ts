@@ -54,6 +54,8 @@ export interface StrandedTaskSample {
   workspaceName: string | null;
   /** The claim scheduler's recorded decision for this task (spec 97b1bd0b R-10). */
   claim?: ClaimBlocker;
+  /** Backend the task asked for and the one it runs on after the team's mask (spec 97b1bd0b AC-7). */
+  route?: { requested: string; effective: string };
 }
 
 export interface BackendStrandStat {
@@ -173,15 +175,26 @@ export async function getBackendStrandSummary(opts: {
     for (const [effective, stored] of strandedStored) {
       const wsIds = [...(strandedWorkspaces.get(effective) ?? [])];
       const sampleRows = (await db
-        .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name })
+        .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name, backend: tasks.backend })
         .from(tasks)
         .leftJoin(workspaces, eq(tasks.workspaceId, workspaces.id))
         .where(strandedPendingWhere(wsIds, [...stored]))
         .orderBy(asc(tasks.createdAt))
-        .limit(sampleLimit)) as unknown as StrandedTaskSample[];
-      const blockers = await loadClaimBlockers(sampleRows.map(r => r.id));
+        .limit(sampleLimit)) as unknown as Array<StrandedTaskSample & { backend: string | null }>;
+      const blockers = await loadClaimBlockers(
+        sampleRows.map(r => r.id),
+        new Map(sampleRows.map(r => [r.id, effective])),
+      );
       const stat = byBackend.get(effective);
-      if (stat) stat.sampleTasks = sampleRows.map(r => ({ ...r, claim: blockers.get(r.id) }));
+      if (stat) {
+        stat.sampleTasks = sampleRows.map(r => ({
+          id: r.id,
+          title: r.title,
+          workspaceName: r.workspaceName,
+          claim: blockers.get(r.id),
+          route: { requested: r.backend ?? 'claude', effective },
+        }));
+      }
     }
   }
 

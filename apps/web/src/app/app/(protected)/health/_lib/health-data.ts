@@ -166,7 +166,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: { requested: string; effective: string } }>;
 }
 
 export interface CredentialHealthItem {
