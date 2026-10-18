@@ -3,6 +3,7 @@ import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from 
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
+import { noteBearerTenant } from './request-tenant';
 import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { taskLinksPr } from './agent-capabilities/pr-links';
@@ -74,6 +75,7 @@ export async function authenticateTaskScopedCaller(
   // Read on every request (lib/task-delegation.ts), so clearing a grant ends
   // the reach at once.
   const delegations = await loadTokenDelegations(claims.taskId, claims.workspaceId, account);
+  await noteBearerTenant(apiKey, account.teamId);
   return {
     ...account,
     scopes: null,

@@ -5,6 +5,7 @@ import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { noteSessionTenant } from './request-tenant';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type CurrentUser = {
@@ -74,6 +75,8 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   });
 
   if (!user) return null;
+  // Team and plan on the request's spans, and the plan for the read limiter (proxy.ts).
+  await noteSessionTenant(user.id);
 
   return {
     id: user.id,
