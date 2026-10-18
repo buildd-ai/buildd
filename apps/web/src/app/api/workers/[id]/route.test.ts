@@ -11279,8 +11279,7 @@ describe('PATCH /api/workers/[id]', () => {
     it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {
       setupReviewerTaskCompletion('request-changes');
       // Also need original task for the retry
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11297,14 +11296,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -11383,8 +11386,7 @@ describe('PATCH /api/workers/[id]', () => {
           prNumber: 42,
           prBaseRef: 'mission/mission-example-goal-a1b2c3d4',
         });
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11401,14 +11403,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -14813,7 +14819,7 @@ describe('PATCH /api/workers/[id]', () => {
         }),
       });
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, branch: 'buildd/claim-time-branch' });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -17496,14 +17502,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
   };
 
   let sets: any[] = [];
+  let rawSets: any[] = [];
+  let queueAtWrite: string | null;
 
   function setup(worker: any = baseWorker) {
     sets = [];
+    rawSets = [];
+    queueAtWrite = worker.pendingInstructions ?? null;
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
     mockWorkersFindFirst.mockResolvedValue(worker);
     mockWorkersUpdate.mockReturnValue({
       set: mock((vals: any) => {
-        sets.push(vals);
+        rawSets.push(vals);
+        // Model the database CASE against the queue at write time, including
+        // an instruction appended after the route read its worker snapshot.
+        const queueExpr = vals.pendingInstructions;
+        const persisted = { ...vals };
+        if (queueExpr?.type === 'sql') {
+          expect(queueExpr.strings.join('?')).toMatch(/CASE\s+WHEN \? = \? THEN NULL\s+ELSE \? END/);
+          persisted.pendingInstructions = queueAtWrite === queueExpr.values[1] ? null : queueAtWrite;
+        }
+        sets.push(persisted);
         return {
           where: mock(() => ({
             returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
@@ -17579,6 +17598,18 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     const marked = sets.find(v => v.instructionHistory);
     expect(marked.instructionHistory[0].deliveryState).toBe('delivered');
+  });
+
+  it('preserves a queue appended between the read and the single acknowledgement write', async () => {
+    setup();
+    queueAtWrite = 'Switch to the other auth flow\n\nAlso add a test';
+    expect((await patch({ instructionsDelivered: 'Switch to the other auth flow' })).status).toBe(200);
+
+    const write = rawSets.find(v => v.pendingInstructions?.type === 'sql');
+    expect(write).toBeDefined();
+    expect(write.pendingInstructions.values[1]).toBe(baseWorker.pendingInstructions);
+    expect(sets.find(v => v.instructionHistory).pendingInstructions).toBe(queueAtWrite);
+    expect(rawSets.filter(v => 'pendingInstructions' in v)).toHaveLength(1);
   });
 
   it('does not clear a queue that grew after the hand-off', async () => {
@@ -17664,6 +17695,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(typeof marked[0].deliveredAt).toBe('number');
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('publishes delivery once on the worker channel and suppresses a repeated acknowledgement', async () => {
+    const worker = { ...idWorker, currentAction: 'Editing files' };
+    setup(worker);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
+    const body = { instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'] };
+
+    expect((await patch(body)).status).toBe(200);
+    const progress = mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress');
+    expect(progress).toHaveLength(1);
+    expect(progress[0][0]).toBe('worker-' + (await mockParams).id);
+    expect(progress[0][2]).toMatchObject({ delivery: true });
+    expect(sets.every(v => v.currentAction === undefined)).toBe(true);
+
+    const persisted = Object.assign({}, worker, ...sets);
+    setup(persisted);
+    mockTriggerEvent.mockClear();
+    expect((await patch(body)).status).toBe(200);
+    expect(mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress')).toHaveLength(0);
   });
 
   it('B-3: instructionsAcknowledged flips exactly that entry, ignores unknown ids, and is not a turn', async () => {

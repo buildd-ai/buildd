@@ -4,6 +4,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
+import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
@@ -140,20 +141,33 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
-import { changedFields, livenessWriteDue, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
+import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
 
 /**
  * Work that does not change the reply runs after it is sent (spec 3ef37387
  * R-33): `after()` inside a request, inline outside one (tests, scripts), so
  * nothing is lost where no response is being sent. Never throws.
  */
-async function afterReply(label: string, fn: () => Promise<unknown>): Promise<void> {
-  const run = () => fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err));
-  try {
-    after(run);
-  } catch {
-    await run();
-  }
+function deferredReplyWork() {
+  const pending: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  let scheduled = false;
+  return async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    const run = async () => {
+      for (const item of pending.splice(0)) {
+        try { await withLoaderLabel(`workers.patch.after.${item.label}`, item.fn); }
+        catch (err) { console.error(`[workers PATCH] ${item.label} failed:`, err); }
+      }
+    };
+    pending.push({ label, fn });
+    if (scheduled) return;
+    try {
+      after(run);
+      scheduled = true;
+    } catch {
+      // Direct invocation (scripts/unit tests) has no request lifetime.
+      await run();
+    }
+  };
 }
 
 /**
@@ -792,9 +806,17 @@ export async function GET(
 // PATCH /api/workers/[id] - Update worker status
 export async function PATCH(
   req: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) {
+  return withLoaderLabel('workers.patch', () => patchWorker(req, context));
+}
+
+async function patchWorker(
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const afterReply = deferredReplyWork();
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -820,7 +842,7 @@ export async function PATCH(
   const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId | typeof workers.accountId) =>
     sql`(SELECT ${col} FROM ${workers} WHERE ${workers.id} = ${id})`;
   const workerTeam = sql`(SELECT ${workspaces.teamId} FROM ${workspaces} WHERE ${workspaces.id} = ${workerOf(workers.workspaceId)})`;
-  const opening = await readRound({
+  const opening = await withLoaderLabel('workers.patch.load', () => readRound({
     worker: db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) }),
     workspace: db.query.workspaces.findFirst({
       where: sqlWhere(eq(workspaces.id, workerOf(workers.workspaceId))),
@@ -838,7 +860,7 @@ export async function PATCH(
       )),
       columns: { encryptedValue: true, label: true, purpose: true },
     }),
-  });
+  }));
   const worker = opening.worker;
 
   if (!worker) {
@@ -1105,13 +1127,6 @@ export async function PATCH(
     siblingProbe: supportsSiblingProbe,
   } = body;
 
-  // A report that moves the worker (status, a question, a PR) moves its
-  // mission: the summary is refreshed once, after the response, whichever
-  // branch below writes (lib/work-changed.ts). A bare progress heartbeat does
-  // not; what it ages the reconcile catches.
-  if (reportedStatus !== undefined || waitingFor !== undefined || body.prUrl !== undefined || body.prNumber !== undefined) {
-    noteWorkChanged({ workerIds: [id] });
-  }
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
@@ -1196,7 +1211,8 @@ export async function PATCH(
     // so neither the park clock nor a just-cleared question is touched.
     // At most once a minute: /respond reads it on a 5-minute window.
     const seenAt = Date.parse(String((worker.waitingFor as { sessionSeenAt?: unknown } | null)?.sessionSeenAt ?? ''));
-    if (declaredConsumer === 'agent' && !(Date.now() - seenAt < INTERACTIVE_SESSION_SEEN_WRITE_MS)) {
+    if (declaredConsumer === 'agent' && !(await markParkedWorkerSeen(id))
+      && !(Date.now() - seenAt < INTERACTIVE_SESSION_SEEN_WRITE_MS)) {
       await recordInteractiveSessionSeen(id);
     }
   }
@@ -1210,7 +1226,9 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
-  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  if (carriesUsage && combineCostBasis(worker.costBasis, reportedBasis ?? 'unknown') !== worker.costBasis) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -1842,6 +1860,7 @@ export async function PATCH(
     if (worker.taskId) {
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
+      await afterReply('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
       const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
@@ -1863,6 +1882,7 @@ export async function PATCH(
       } catch (err) {
         console.warn(`[Worker ${id}] orchestration touch label failed (non-fatal):`, err);
       }
+      });
     }
     updates.observedTouches = null;
   } else if (reportedTouches.length > 0) {
@@ -4417,6 +4437,7 @@ export async function PATCH(
         workerId: id,
       };
 
+      await afterReply('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
@@ -4881,6 +4902,7 @@ export async function PATCH(
       // Root causes: an auth failure records its runner's cause; a completed run
       // is the capability check that clears causes on its runner and workspace.
       await runStep('root-cause', () => recordRootCauseForOutcome({ taskId, accountId: worker.accountId, status, error }));
+      });
     }
   }
 
@@ -4930,14 +4952,10 @@ export async function PATCH(
     // the next check-in serves the queue again, and the runner skips text it
     // has already injected.
     if (queuedInstructions && instructionAckText.includes(queuedInstructions)) {
-      const [cleared] = await db
-        .update(workers)
-        .set({ pendingInstructions: null })
-        .where(and(eq(workers.id, id), eq(workers.pendingInstructions, queuedInstructions)))
-        .returning({ id: workers.id });
-      if (!cleared) {
-        console.log(`[workers PATCH] worker ${id}: instruction queue changed during delivery — keeping it queued`);
-      }
+      updates.pendingInstructions = sql`CASE
+        WHEN ${workers.pendingInstructions} = ${queuedInstructions} THEN NULL
+        ELSE ${workers.pendingInstructions} END` as unknown as string;
+
     }
   } else if (queuedInstructions) {
     if (!agentExcluded) pendingInstructions = queuedInstructions;
@@ -4971,8 +4989,8 @@ export async function PATCH(
 
   // A progress report writes only what it changes, and a report that changes
   // nothing writes nothing (spec 3ef37387 R-33): the runner re-sends its whole
-  // view every ~10 s. `updated_at` still moves on a floor (lib/worker-patch-diff.ts),
-  // except under an interactive park, whose clock it is. A terminal transition
+  // view every ~10 s. Redis records liveness; without it, updated_at moves on
+  // a safe floor, except under an interactive park, whose clock it is. A terminal transition
   // or a reactivation writes as it always has.
   const progressReport = !terminalTransitionReserved && !reactivatingTerminalWorker;
   let writeSet: Partial<typeof workers.$inferInsert> | null = updates;
@@ -4982,7 +5000,8 @@ export async function PATCH(
       writeSet = { updatedAt: updates.updatedAt };
       if (updates.turns !== undefined) writeSet.turns = updates.turns;
       for (const key of changed) (writeSet as Record<string, unknown>)[key] = (updates as Record<string, unknown>)[key];
-    } else if (!keepsParkClock(worker, { status, waitingFor }) && livenessWriteDue(worker)) {
+    } else if (!keepsParkClock(worker, { status, waitingFor })
+      && !(await markWorkerHeartbeat(id)) && livenessWriteDue(worker)) {
       writeSet = { updatedAt: updates.updatedAt };
     } else {
       writeSet = null;
@@ -5007,6 +5026,13 @@ export async function PATCH(
       return workerConflictResponse(id);
     }
     updated = worker;
+  }
+
+  await afterReply('worker follow-up', async () => {
+  // A runner repeats status and PR fields on every sync. Only actual writes
+  // invalidate derived summaries; noteWorkChanged coalesces their listeners.
+  if (writeSet && ['status', 'waitingFor', 'prUrl', 'prNumber'].some(key => key in writeSet)) {
+    noteWorkChanged({ workerIds: [id] });
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the
@@ -5184,6 +5210,8 @@ export async function PATCH(
       console.error(`[Worker ${id}] Mission budget check failed:`, err);
     }
   }
+
+  });
 
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
   // A progress report uses the opening read; a terminal one re-reads, since its
@@ -5582,6 +5610,7 @@ export async function PATCH(
   // workspace channel shows delivery.
   const deliveryMoved = !!writeSet && ('instructionHistory' in writeSet || 'pendingInstructions' in writeSet);
 
+  await afterReply('publish worker changes', async () => {
   if (shouldPublish) {
     await triggerEvent(channels.worker(id), eventName, pusherPayload);
 
@@ -5659,6 +5688,8 @@ export async function PATCH(
       console.error('Notification dispatch error:', err);
     }
   }
+
+  });
 
   // ── Deliver undelivered user replies / mission guidance to this worker ──────
   //
