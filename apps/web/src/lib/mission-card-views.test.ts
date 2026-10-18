@@ -182,18 +182,25 @@ describe('Home loads only the completed missions it can still show (task 16e1cc5
   });
 });
 
-describe('Home wires the bounded card query (task 16e1cc50)', () => {
+describe('Home reads stored mission summaries, bounded (spec 3ef37387 R-9, R-13)', () => {
   const { readFileSync } = require('node:fs');
   const { join } = require('node:path');
   const page: string = readFileSync(join(import.meta.dir, '../app/app/(protected)/home/page.tsx'), 'utf8');
-  const start = page.indexOf('const allMissions = ');
-  const query = page.slice(start, page.indexOf('}) : [];', start));
+  const start = page.indexOf('const missionScope = and(');
+  const scope = page.slice(start, page.indexOf(');', start));
 
-  it('bounds completed missions and uses the card digests', () => {
-    expect(query).toContain('homeMissionRecencyWhere(');
-    expect(query).toContain('extras: MISSION_CARD_TASK_EXTRAS');
-    expect(query).toContain('extras: MISSION_CARD_SCHEDULE_EXTRAS');
-    expect(query).not.toContain('taskTemplate: true');
-    expect(query).not.toContain('description: true');
+  it('scopes to the team, skips archived missions and bounds completed ones', () => {
+    expect(scope).toContain("ne(missionsTable.status, 'archived')");
+    expect(scope).toContain('homeMissionRecencyWhere(now)');
+  });
+
+  it('reads no mission tasks or workers for the cards, and every mission list is capped', () => {
+    expect(page).toContain('innerJoin(missionSummaries, stored)');
+    expect(page).not.toContain('MISSION_CARD_SCHEDULE_EXTRAS');
+    for (const list of ['moving:', 'listedMissions:', 'missingSummaries:']) {
+      const at = page.indexOf(`    ${list}`);
+      expect(at).toBeGreaterThan(-1);
+      expect(page.slice(at, page.indexOf('\n    // ', at + 10))).toMatch(/\.limit\(/);
+    }
   });
 });

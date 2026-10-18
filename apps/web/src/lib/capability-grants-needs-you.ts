@@ -10,7 +10,7 @@
  *
  * Only people who can decide see the card: a pending request is listed for a
  * team where the viewer holds manage_connectors, since nobody else can approve
- * or deny it. Home and its badge read `loadAccessNeedsYou`; the push is sent
+ * or deny it. Home reads `accessNeedsYouRead`; the push is sent
  * once, when a new pending request is written (`notifyAccessRequest`).
  *
  * Spec: docs/specs/capability-requests.md → Showing and deciding.
@@ -64,30 +64,36 @@ export function accessNeedsYouItems(rows: readonly AccessRequestView[], baseUrl 
 }
 
 /**
- * Home's read: pending requests in the teams of these workspaces where the
- * viewer can decide. Never throws (Home keeps every other card).
+ * Home's read as one statement for its batch: the team's pending requests in
+ * these workspaces (newest first, at most 25), with each one's task title and
+ * workspace name. Only a viewer who can decide them (manage_connectors) asks.
+ * `items` turns the rows into Needs You items. Reads only: lapsed grants are
+ * expired by `expire`, which Home runs after its response.
  */
-export async function loadAccessNeedsYou(userId: string | null | undefined, workspaceIds: readonly string[]): Promise<WaitingOnYouRawItem[]> {
-  if (!userId || workspaceIds.length === 0) return [];
-  try {
-    const [{ db }, { workspaces }, { inArray }, { can }, { listTeamRequests }, { withRequestContext }] = await Promise.all([
-      import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'),
-      import('./permissions'), import('./capability-grants-store'), import('./capability-grants-context'),
-    ]);
-    const rows = await db.select({ id: workspaces.id, teamId: workspaces.teamId }).from(workspaces).where(inArray(workspaces.id, [...workspaceIds]));
-    const teamIds = [...new Set(rows.map(r => r.teamId).filter((t): t is string => !!t))];
-    const visible = new Set(workspaceIds);
-    const out: WaitingOnYouRawItem[] = [];
-    for (const teamId of teamIds) {
-      if (!(await can({ kind: 'user', userId }, 'manage_connectors', teamId))) continue;
-      const pending = (await listTeamRequests(teamId, { status: ['pending'], limit: 25 })).filter(r => visible.has(r.workspaceId));
-      out.push(...accessNeedsYouItems(await withRequestContext(pending) as unknown as AccessRequestView[]));
-    }
-    return out;
-  } catch (err) {
-    console.warn('[capability-grants-needs-you] Home access read failed (non-fatal):', (err as Error)?.message ?? err);
-    return [];
-  }
+export async function accessNeedsYouRead(teamId: string, workspaceIds: readonly string[]) {
+  const [{ db }, { capabilityGrants, tasks, workspaces }, { and, desc, eq, inArray }, { grantView, toGrantRecord, expireLapsedTeamGrants }] = await Promise.all([
+    import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('./capability-grants-store'),
+  ]);
+  const query = db.select({ grant: capabilityGrants, taskTitle: tasks.title, workspaceName: workspaces.name })
+    .from(capabilityGrants)
+    .leftJoin(tasks, eq(tasks.id, capabilityGrants.taskId))
+    .leftJoin(workspaces, eq(workspaces.id, capabilityGrants.workspaceId))
+    .where(and(
+      eq(capabilityGrants.teamId, teamId),
+      eq(capabilityGrants.status, 'pending'),
+      inArray(capabilityGrants.workspaceId, [...workspaceIds]),
+    ))
+    .orderBy(desc(capabilityGrants.requestedAt))
+    .limit(25);
+  type Row = Awaited<typeof query>[number];
+  return {
+    query,
+    items: (rows: readonly Row[]): WaitingOnYouRawItem[] => accessNeedsYouItems(rows.map(r => ({
+      ...grantView({ ...toGrantRecord(r.grant), reason: r.grant.reason, decisionReason: r.grant.decisionReason, requestedAt: r.grant.requestedAt, decidedAt: r.grant.decidedAt }),
+      taskTitle: r.taskTitle ?? null, workspaceName: r.workspaceName ?? null, decidedByName: null,
+    })) as unknown as AccessRequestView[]),
+    expire: () => expireLapsedTeamGrants(teamId),
+  };
 }
 
 /** The push for a new pending request: what, who, and the lease asked for. Pure. */

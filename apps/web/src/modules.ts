@@ -20,7 +20,8 @@ import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/plat
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
-import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
+import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
+import { homeMissionSummaries } from '@/lib/mission-summary-home';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -250,10 +251,17 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
 
 /**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
- * pending capability requests the escalation gate gives to a person, for the
- * teams where the viewer can decide them. A fixed rule; no model call.
+ * pending capability requests the escalation gate gives to a person, as one
+ * statement for Home's batch. A fixed rule; no model call, no write.
  */
-export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
+export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
+
+/**
+ * The missions module's slot for Home (lib/mission-summary-home.ts): live
+ * readings for missions with no stored summary yet, the after-response
+ * summary write, and filing a visual review a mission PR owes.
+ */
+export const HOME_MISSION_SUMMARIES = homeMissionSummaries;
 
 /**
  * The decisions module's slot for the team settings route

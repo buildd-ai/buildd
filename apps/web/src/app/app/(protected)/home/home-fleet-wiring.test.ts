@@ -1,7 +1,7 @@
 /**
- * Home's fleet wiring, read from source: the live-worker read is uncapped (a
- * `limit: 10` hid the 11th agent from the page), and the fleet loader keeps
- * every live worker inside its row cap by reading newest-started first.
+ * Home's fleet wiring, read from source: the fleet loader keeps every live
+ * worker inside its row cap by reading newest-started first (a `limit: 10`
+ * once hid the 11th agent), and the Agents panel streams in after the page.
  */
 import { describe, expect, it } from 'bun:test';
 
@@ -10,11 +10,10 @@ const body = await Bun.file(new URL('./HomeBody.tsx', import.meta.url)).text();
 const loader = await Bun.file(new URL('../../../../lib/home-fleet.ts', import.meta.url)).text();
 
 describe('Home live workers', () => {
-  it('the active-workers query carries no limit', () => {
-    const at = home.indexOf('const activeWorkers = await db.query.workers.findMany({');
-    expect(at).toBeGreaterThan(-1);
-    const block = home.slice(at, home.indexOf('with: {', at));
-    expect(block).not.toMatch(/limit:\s*\d+/);
+  it('the Agents panel streams in behind Suspense, outside the page\'s own load', () => {
+    expect(home).toContain('<Suspense fallback={<section data-testid="home-agents"');
+    expect(home).toContain('<HomeAgents {...view.agents}');
+    expect(home).toContain('loadHomeFleet({ teamId, wsIds, now');
   });
 
   it('the fleet loader reads live workers unconditionally and newest first', () => {
@@ -52,7 +51,7 @@ describe('Home live workers', () => {
     expect(home).toContain('<AgentsPanel');
     expect(home).not.toContain('<FleetStrip');
     expect(home).not.toContain('<StatStrip');
-    expect(home).toContain('getUserTeamRole(user.id, activeTeamId)');
+    expect(home).toContain('getUserTeamRole(userId, teamId)');
   });
 
   it('renders the redesigned sections with stable test ids', () => {
