@@ -5898,6 +5898,8 @@ export const workflowScopeAmendments = pgTable('workflow_scope_amendments', {
   confidence: real('confidence'),
   fallback: text('fallback'),
   actor: text('actor'),
+  // A held decision's answer: 'in_scope' | 'amend_scope' | 'out_of_scope' (a person) | 'withdrawn' (the task left the mission).
+  resolution: text('resolution').$type<'in_scope' | 'amend_scope' | 'out_of_scope' | 'withdrawn'>(),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   resolvedBy: text('resolved_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

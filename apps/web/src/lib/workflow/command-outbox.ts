@@ -57,6 +57,9 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   heal: false,
   mission_epoch: false,
   mission_scope: false,
+  // A person answering gets the 503 and answers again; a withdrawal is re-sent by nothing, but the
+  // decision stays held and is answered by the next person to look.
+  mission_scope_resolve: false,
   // The runner reports an attempt's end once; the floor re-sends an owner's end, never a repair's or a review's.
   attempt_ended: true,
   // A requeue is reported once too. The door's caller projects it on the web host meanwhile, so a

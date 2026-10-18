@@ -50,6 +50,8 @@ import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql'
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
+import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
+import { isOwnScopeHold } from '@buildd/workflow-kernel/scope-hold';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -828,6 +830,23 @@ export async function PATCH(
     // edge; lib/surface-audit-subscribers.ts). emit never throws.
     if (missionId !== undefined && task.missionId && updated && updated.missionId !== task.missionId) {
       await emit({ type: 'task.left_mission', taskId: id, missionId: task.missionId, workspaceId: updated.workspaceId ?? null });
+    }
+    // A task linked to a mission gets the scope decision a task filed into it does
+    // (lib/mission-subscribers.ts, docs/specs/workflow-kernel-library.md §6).
+    if (missionLinkAdded && updated?.missionId) {
+      await emit({ type: 'task.joined_mission', taskId: id, missionId: updated.missionId, workspaceId: updated.workspaceId });
+    }
+    // Resuming a task its mission's scope decision held is the person's answer "it fits the
+    // mission as written" (the question note says so): recorded once, the note answered.
+    if (held === false && task.missionId && updated?.missionId === task.missionId
+      && isOwnScopeHold((task.context as Record<string, unknown> | null)?.heldBy, task.missionId)) {
+      const person = requestingPerson(user, apiAccount);
+      const { answerMissionTaskScopeQuietly } = await import('@/lib/mission-epoch-door');
+      await answerMissionTaskScopeQuietly({
+        taskId: id, workspaceId: updated.workspaceId, missionId: task.missionId, answer: 'in_scope',
+        actor: person ? `human:${person}` : `agent:${apiAccount?.id ?? 'unknown'}`,
+        principal: kernelPrincipalOf({ person, account: apiAccount }),
+      });
     }
 
     // A task linked/unlinked/created against a mission is exactly the kind of

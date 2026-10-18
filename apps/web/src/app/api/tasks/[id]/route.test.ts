@@ -121,6 +121,9 @@ const mockEmit = mock(async (_event: any) => {});
 mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
 const leftMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.left_mission');
 const roleChanged = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.role_changed');
+const joinedMission = () => mockEmit.mock.calls.map(c => c[0]).filter((e: any) => e.type === 'task.joined_mission');
+const mockAnswerScope = mock(async (_p: any) => {});
+mock.module('@/lib/mission-epoch-door', () => ({ answerMissionTaskScopeQuietly: mockAnswerScope }));
 mock.module('@/lib/mission-link-scope', () => ({
   isMissionLinkable: mockIsMissionLinkable,
 }));
@@ -1087,6 +1090,26 @@ describe('PATCH /api/tasks/[id]', () => {
       setup();
       await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
       expect(leftMission()).toEqual([]);
+    });
+
+    it('linking (or moving) a task to a mission says it joined, so it gets its scope decision', async () => {
+      mockEmit.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue({ ...task, missionId: 'm-old' });
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...task, missionId: 'm-1' }]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+      await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(joinedMission()).toEqual([{ type: 'task.joined_mission', taskId: TASK_ID, missionId: 'm-1', workspaceId: 'ws-1' }]);
+    });
+
+    it('unlinking, or re-sending the same mission, is no join', async () => {
+      mockEmit.mockClear();
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue({ ...task, missionId: 'm-1' });
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...task, missionId: 'm-1' }]) }));
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mockWhere })) });
+      await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { missionId: 'm-1' } }), TASK_ID);
+      expect(joinedMission()).toEqual([]);
     });
   });
 
@@ -2253,6 +2276,33 @@ describe('PATCH /api/tasks/[id]', () => {
       const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: false } }), TASK_ID);
       expect(res.status).toBe(200);
       expect(sets[0].context).toEqual({ model: 'x' });
+    });
+
+    it("resuming a task its mission's scope decision held records the person's answer: it fits", async () => {
+      mockAnswerScope.mockClear();
+      mockTasksFindFirst.mockResolvedValue({ ...openTask({ heldBy: { at: 'then', userId: null, reason: 'mission_scope_decision', missionId: 'm-1' } }), missionId: 'm-1' });
+      capture();
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', missionId: 'm-1', ...v }]) })) })),
+      });
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: false } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(mockAnswerScope).toHaveBeenCalledWith({
+        taskId: TASK_ID, workspaceId: 'ws-1', missionId: 'm-1', answer: 'in_scope', actor: 'human:user-123',
+        principal: { kind: 'user', id: 'user-123' },
+      });
+    });
+
+    it("resuming a person's own hold, or one another mission placed, records no scope answer", async () => {
+      mockAnswerScope.mockClear();
+      for (const heldBy of [{ at: 'then', userId: 'u' }, { at: 'then', userId: null, reason: 'mission_scope_decision', missionId: 'm-other' }]) {
+        mockTasksFindFirst.mockResolvedValue({ ...openTask({ heldBy }), missionId: 'm-1' });
+        mockTasksUpdate.mockReturnValue({
+          set: mock((v: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', missionId: 'm-1', ...v }]) })) })),
+        });
+        expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: false } }), TASK_ID)).status).toBe(200);
+      }
+      expect(mockAnswerScope).not.toHaveBeenCalled();
     });
 
     it('refuses a non-boolean, and holding a finished task', async () => {
