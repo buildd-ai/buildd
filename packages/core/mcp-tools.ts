@@ -148,8 +148,9 @@ export function formatGetPrDelivery(data: {
     headline: string; detail: string | null;
     review: { line: string } | null;
     repairs: Array<{ label: string; words: string }>;
+    reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; repairsLine: string } {
+}): { standingLine: string; reviewLine: string; repairsLine: string; approvalLine: string } {
   const d = data.delivery;
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
@@ -157,11 +158,13 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '', approvalLine: '' };
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
+    // R-43: the review gate is its own line, never folded into CI.
+    approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
   };
 }
 
@@ -3591,7 +3594,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, repairsLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3679,6 +3682,7 @@ export async function handleBuilddAction(
         standingLine,
         ciLine,
         failingLine,
+        approvalLine,
         reviewLine,
         repairsLine,
         statsLine,

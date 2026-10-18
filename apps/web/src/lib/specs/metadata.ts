@@ -1,4 +1,5 @@
 import { validSpecSummary } from '@buildd/spec-contract/repo-spec';
+import { isRepoPath } from '@buildd/spec-contract/repo-copy';
 import { db } from '@buildd/core/db';
 import { specMetadataChanges, specs, type SpecMetadataBlock } from '@buildd/core/db/schema';
 import { and, desc, eq, ne, notInArray, sql } from 'drizzle-orm';
@@ -42,7 +43,6 @@ const lineNo = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n
 export const DOMAIN_VALUE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SHA = /^[0-9a-f]{40}$/;
 
-const PATH = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./[\]@+-]+$/;
 
 function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | null } | { error: string } {
   if (raw === null) return { value: null };
@@ -66,7 +66,7 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
       return typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw) && !Number.isNaN(Date.parse(raw)) ? { value: raw } : { error: 'last_verified is a date, YYYY-MM-DD' };
     case 'surfaces':
     case 'verified_by': {
-      if (!Array.isArray(raw) || raw.length > 50 || !raw.every((p) => typeof p === 'string' && PATH.test(p))) return { error: `${key} is a list of repo-relative paths` };
+      if (!Array.isArray(raw) || raw.length > 50 || !raw.every((p) => typeof p === 'string' && isRepoPath(p))) return { error: `${key} is a list of repo-relative paths` };
       return { value: [...new Set(raw as string[])] };
     }
     case 'assertions': {
