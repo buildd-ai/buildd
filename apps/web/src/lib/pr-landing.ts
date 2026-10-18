@@ -336,6 +336,32 @@ export function evaluateTreadmillBound(input: {
 }
 
 /**
+ * The marker, moved onto the head its own refresh produced. GitHub's update-branch
+ * answers before the branch moves, so the head read right after it is often still
+ * the one it merged into, and the marker names that pre-refresh head. Read as is,
+ * every later landing took the refresh's merge commit for someone else's push: "not
+ * produced by a platform refresh", a new cycle, another refresh, never a bound and
+ * never a merge (#5172). A live head that is a two-parent merge whose first parent
+ * is the marker's head, and whose other parent the base already holds, is that
+ * refresh's merge of the base. Anything else, or anything unread, leaves the marker
+ * as it is.
+ */
+export async function resolveRefreshedHead(
+  marker: LandingMarker | null,
+  liveHeadSha: string,
+  baseRef: string | null,
+  get: (path: string) => Promise<unknown>,
+): Promise<LandingMarker | null> {
+  if (!marker || !baseRef || marker.pendingHeadSha === liveHeadSha || marker.lastOutcome !== 'updating_branch') return marker;
+  const commit = await get(`commits/${liveHeadSha}`).catch(() => null) as { parents?: Array<{ sha?: unknown }> } | null;
+  const parents = Array.isArray(commit?.parents) ? commit!.parents.map((p) => p?.sha) : [];
+  if (parents.length !== 2 || parents[0] !== marker.pendingHeadSha || typeof parents[1] !== 'string') return marker;
+  const cmp = await get(`compare/${parents[1]}...${encodeURIComponent(baseRef)}`).catch(() => null) as { status?: unknown } | null;
+  if (cmp?.status !== 'ahead' && cmp?.status !== 'identical') return marker;
+  return { ...marker, pendingHeadSha: liveHeadSha };
+}
+
+/**
  * How many refreshes the current landing cycle has spent. A cycle belongs to a
  * head the platform produced: a push by anyone else (an author fix, a conflict
  * resolution) starts a new one, and so does a spent cycle once it has cooled
@@ -756,7 +782,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   baseRef = pr.baseRef;
   if (pr.state !== 'open') return human('pr_closed', `the PR is ${pr.state} and was not merged`);
 
-  marker = await readMarker();
+  marker = await resolveRefreshedHead(await readMarker(), liveHead, baseRef, (path) => githubApi(installationId, `${ghPath}/${path}`));
 
   // An event about a head that is no longer live is not a reason to act: the
   // live head has its own event coming (or its own marker).

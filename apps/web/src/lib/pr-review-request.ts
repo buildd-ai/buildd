@@ -36,6 +36,7 @@ import {
   type PrReviewWaitFor,
 } from './pr-review-status';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 
 // ── DB reads ──────────────────────────────────────────────────────────────────
@@ -330,6 +331,8 @@ export async function resolveOrAdoptPrOwner(params: {
   if (!adoptedTask?.id) {
     throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (task insert failed)`);
   }
+  // A new task in the workspace's lists (spec 3ef37387 R-20).
+  noteWorkChanged({ taskIds: [adoptedTask.id] });
 
   const adoptedWorker = await insertPrOwnerWorker({
     workspaceId,
