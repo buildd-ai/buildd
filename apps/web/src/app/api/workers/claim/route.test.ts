@@ -10717,6 +10717,21 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
   });
 
+  it('force from a verified interactive session lifts scope-undeclared serialization, recorded as bypassed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task({ missionId: 'mission-A', pathManifest: ['**'] })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const ctx = claimedContext();
+
+    const data = await (await claim({ runner: 'mcp', forceOverride: true }, interactiveHeaders())).json();
+    expect(data.workers).toHaveLength(1);
+    expect(ctx().forceClaim.bypassed).toContain('advisory_manifest');
+  });
+
   // Friction 2ccccd12: a local-executor mission's own explicit claims aren't
   // an unsupervised force claim — the interactive session IS the executor,
   // same predicate as the role-gate (LX) and rate-limit exemptions above.

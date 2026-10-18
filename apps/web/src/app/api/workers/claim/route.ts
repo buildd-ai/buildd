@@ -2126,6 +2126,13 @@ export async function POST(req: NextRequest) {
           if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
             jevStartNotes.push(holdNote);
             console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
+          } else if (blockingPeer && forced && interactiveSession) {
+            // An admin force claim from a verified interactive session: a
+            // person is at the keyboard choosing this task, in its own
+            // worktree. Without this a busy mission blocked a session claim
+            // indefinitely (the manifest cannot be narrowed after creation).
+            // A headless admin force claim still keeps the serialization.
+            if (!forceBypassed.includes('advisory_manifest')) forceBypassed.push('advisory_manifest');
           } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
             // A person's dashboard Force start lifts this serialization for
             // this task (artifact §7.2: human force only). The admin MCP
