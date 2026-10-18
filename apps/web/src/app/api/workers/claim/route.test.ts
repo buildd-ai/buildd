@@ -232,11 +232,11 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest', roleSlug: 'roleSlug' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
-  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
+  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled', defaultBackend: 'defaultBackend' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workerErrorTraces: mockErrorTracesTable,
   workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
-  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
+  workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs', defaultBackend: 'defaultBackend' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
   tenantBudgets: { id: 'id', tenantId: 'tenantId', teamId: 'teamId', budgetResetsAt: 'budgetResetsAt' },
   backendPauses: { teamId: 'teamId', backend: 'backend', resetsAt: 'resetsAt' },
@@ -1971,6 +1971,160 @@ describe('POST /api/workers/claim', () => {
   // cloud runner workspace: a task routed through the team agent endpoint was
   // budget-blocked anyway; a task created with backend:'claude' was moved to
   // Codex; and a flip went through to a runner that then had no Codex auth.
+  // The runner's login mode (spec 34a48877 R-14 to R-19): how its own logins
+  // share its slots, for work no task, role, mission or workspace ties to one.
+  // The batch split itself (AC-10) is pinned on pickLoginBackend
+  // (packages/shared/__tests__/runner-login-mode.test.ts); these pin what the
+  // claim does with one task given the counts the runner sent.
+  describe("runner login mode: the runner's own logins share its slots", () => {
+    let origKey: string | undefined;
+    let taskSets: any[] = [];
+    const claimSet = () => taskSets.find(p => p && p.status === 'assigned') ?? null;
+
+    beforeEach(() => {
+      origKey = process.env.ENCRYPTION_KEY;
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      taskSets = [];
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveAgentModelRoute.mockReset();
+      mockResolveAgentModelRoute.mockImplementation(async () => null);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockMissionsFindMany.mockImplementation(() => [] as any[]);
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((payload: any) => {
+          taskSets.push(payload);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) };
+        }),
+      }));
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      mockResolveCodexApiKey.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 9, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+    });
+    afterEach(() => {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockResolveCodexApiKey.mockResolvedValue(null);
+      mockMissionsFindMany.mockImplementation(() => [] as any[]);
+    });
+
+    const task = (over: Record<string, unknown> = {}, context: Record<string, unknown> = {}) => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context,
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
+      ...over,
+    });
+    /** A runner with its own Codex login (`codex login` → CODEX_HOME) and a login mode. */
+    const ownLogins = ['backend:codex', 'CODEX_HOME'];
+    const loginUse = (mode: string, running = { claude: 0, codex: 0 }, slots = 9) => ({ mode, slots, running });
+    const claim = (body: Record<string, unknown>) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', capabilities: ownLogins, ...body },
+    }));
+
+    it('an older runner that sends no mode keeps today: a free task runs on Claude, nothing stamped', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({})).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(claimSet()?.context?.backendRouting).toBeUndefined();
+    });
+
+    it('balanced: with Claude already ahead of its share, the next free task runs on Codex and says why (R-15, R-18)', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 2, codex: 0 }) })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+      expect(claimSet()?.context?.backendRouting).toEqual(expect.objectContaining({
+        backend: 'codex', from: 'claude', reason: 'runner_login_mode', mode: 'balanced',
+      }));
+    });
+
+    it('balanced: a full Codex share sends the free task to Claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 2, codex: 3 }) })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('AC-11: claude-first keeps a free task on Claude while Claude is usable', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('claude-first', { claude: 8, codex: 0 }) })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(claimSet()?.context?.backendRouting).toBeUndefined();
+    });
+
+    it('codex-first runs a free task on Codex', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('AC-12: codex-first never moves a task created with backend claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task({}, { backendPinned: true })]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it("R-16: codex-first respects a workspace default of claude (mission and role defaults: login-mode-gate.test.ts)", async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task({ workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record', defaultBackend: 'claude' }, teamId: 'team-1' } })]);
+      expect((await (await claim({ loginUse: loginUse('codex-first') })).json()).workers[0].task.backend).toBe('claude');
+    });
+
+    it('codex-first sends the task to Claude while Codex is at its limit', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('codex-first on a runner that cannot run Codex stays on Claude', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ capabilities: [], loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('AC-13 / R-17: on its own Codex login a second Codex run in one workspace is allowed', async () => {
+      // Another Codex agent already runs in ws-1.
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task()])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 3, codex: 1 }) })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('R-17: a task stored as Codex is not held by the one-per-workspace cap on its own login', async () => {
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task({ backend: 'codex' })])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      const data = await (await claim({ loginUse: loginUse('balanced', { claude: 0, codex: 1 }) })).json();
+      expect(data.diagnostics?.deferrals?.codex_single_flight ?? 0).toBe(0);
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('R-17: a delivered Codex credential keeps the one-per-workspace cap', async () => {
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' }]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([task()])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
+      // backend:codex but no local login: Codex would run on the delivered key.
+      const data = await (await claim({ capabilities: ['backend:codex'], loginUse: loginUse('codex-first') })).json();
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+  });
+
   describe('Claude seat wall: only seat-bound, unpinned tasks fail over, and only where Codex can run', () => {
     let origKey: string | undefined;
     let taskSets: any[] = [];
