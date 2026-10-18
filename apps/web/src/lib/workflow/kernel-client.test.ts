@@ -19,7 +19,10 @@ const input = { workspaceId: WS, installationId: 1, repoFullName: 'acme/w', prNu
 const principal = { kind: 'user' as const, id: USER };
 const OWN = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
 
-afterEach(() => resetKernelModeCache());
+afterEach(async () => {
+  resetKernelModeCache();
+  (await import('./kernel-client')).resetAttemptStartBreaker();
+});
 
 /** Node's fetch when the connection is refused: `fetch failed` with the socket error as its cause. */
 const refusedErr = (code = 'ECONNREFUSED') => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
@@ -536,6 +539,102 @@ describe('AttemptRequeued is a door too (AC-1 slice 6): a requeue from the web h
   });
 });
 
+describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner task from the web host', () => {
+  const start = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    claimedBy: USER, claimedAt: '2026-10-18 08:00:00.123456+00', source: 'claim',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input, and nothing runs here', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_started', result: { handled: true, started: true } }); }) as unknown as typeof fetch;
+    const r = await attemptStarted(start, { principal: runner, idempotencyKey: 'attempt_started:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true, started: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_started', input: { ...start, workspaceId: WS }, principal: runner, idempotencyKey: 'attempt_started:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_started']);
+  });
+
+  it('release skew: an older control plane refuses it as unknown, and the web host still never runs it (the claim projects the start instead)', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_started"' }, { status: 400 })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(l.ran).toEqual([]);
+    const r2 = local();
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...r2.deps, env: OWN, fetch: refusing } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(r2.ran).toEqual([]);
+  });
+
+  it('its own small budget at the default: a control plane answering 503, or hanging, costs a start well under a second and a half, not the claim\'s 5 s', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_BUDGET_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_BUDGET_MS).toBeLessThanOrEqual(1_000);
+    const unavailable = (async () => Response.json({ v: 1, code: 'unavailable' }, { status: 503 })) as unknown as typeof fetch;
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+    for (const f of [unavailable, hanging]) {
+      resetAttemptStartBreaker();
+      const t0 = Date.now();
+      const err = await attemptStarted(start, { principal: runner, deps: { ...local().deps, sleep: undefined, env: OWN, fetch: f } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(Date.now() - t0).toBeLessThan(1_500);
+    }
+  });
+
+  it('a start left unanswered opens a short breaker: the next starts skip the door at once, until it closes', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_SKIP_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_SKIP_MS).toBeGreaterThanOrEqual(30_000);
+    expect(ATTEMPT_START_SKIP_MS).toBeLessThanOrEqual(60_000);
+    resetAttemptStartBreaker();
+    let t = 1_000_000;
+    let sent = 0;
+    const down = (async () => { sent++; throw refusedErr(); }) as unknown as typeof fetch;
+    const deps = { ...local().deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } };
+    expect(await attemptStarted(start, { principal: runner, deps }).catch((e) => e)).toBeInstanceOf(ControlPlaneUnavailableError);
+    const afterFirst = sent;
+    expect(afterFirst).toBeGreaterThan(0);
+    const skipped = await attemptStarted(start, { principal: runner, deps }).catch((e) => e);
+    expect(skipped).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(sent).toBe(afterFirst);
+    t += ATTEMPT_START_SKIP_MS + 1;
+    const answered = (async () => answer({ op: 'attempt_started', result: { handled: true, started: true } })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...deps, fetch: answered } })).toEqual({ handled: true, started: true });
+    resetAttemptStartBreaker();
+  });
+
+  it('a start the control plane never answered is not parked: the claim projects it on its own host instead', async () => {
+    const { attemptStarted } = await import('./kernel-client');
+    const l = local();
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    let t = 0;
+    const parked: unknown[] = [];
+    const err = await attemptStarted(start, {
+      principal: runner,
+      deps: { ...l.deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: (async (p: unknown) => { parked.push(p); return true; }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).not.toBe(true);
+    expect(parked).toEqual([]);
+    expect(l.ran).toEqual([]);
+  });
+
+  it('the host starts only a task of the workspace the reach check judged, and the endpoint knows the op', async () => {
+    const { runKernelOp, isKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_started', { ...start, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+    expect(isKernelOp('attempt_started')).toBe(true);
+  });
+});
+
 describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the landing path\'s CI failure', () => {
   const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3, source: 'cron:ci-red' };
   const sweep = { kind: 'system' as const, id: 'system:cron:ci-red' };
@@ -766,6 +865,8 @@ describe('AC-35: a door command the control plane never answered is parked for t
     expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'attempt_requeued', 'observe_base', 'observe_ci_green', 'observe_head', 'record_review_verdict']);
     // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
     expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
+    // AC-1 slice 7: nor a start: the claim projects it on its own host, and a late re-send could start a claim that moved on.
+    expect(PARK_ON_UNAVAILABLE.attempt_started).toBe(false);
   });
 
   it('the door\'s 503 says it was parked', async () => {

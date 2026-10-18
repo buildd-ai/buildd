@@ -101,6 +101,11 @@ export interface KernelOps {
    * the task's workspace rides at the top level for the reach check.
    */
   attempt_requeued: { input: Parameters<Seam['attemptRequeued']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptRequeued']>> };
+  /**
+   * AC-1 slice 7: the claim route's compare-and-set won a kernel owner task; the kernel starts its
+   * attempt (the task to `assigned`). As attempt_ended, the task's workspace rides at the top level.
+   */
+  attempt_started: { input: Parameters<Seam['attemptStarted']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptStarted']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
   /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
@@ -154,6 +159,11 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     // As attempt_ended: the requeue it applies must be for a task of the workspace the reach check judged.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_requeued: input.workspaceId is not the task\'s workspace');
     return s.attemptRequeued(p);
+  },
+  attempt_started: (s, { workspaceId, ...p }) => {
+    // As attempt_ended: the start it applies must be for a task of the workspace the reach check judged.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_started: input.workspaceId is not the task\'s workspace');
+    return s.attemptStarted(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
   observe_ci_green: (s, i) => s.observeCiGreen(i),

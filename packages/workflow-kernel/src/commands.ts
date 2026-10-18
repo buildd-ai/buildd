@@ -125,6 +125,22 @@ export type Command =
       delta?: DeltaReading | null;
     })
   | (Base & {
+      /**
+       * AC-1 slice 7 (workflow-kernel-library.md §9): a claim starts the owner attempt of a
+       * delivery's task. The claim route's own compare-and-set already decided the race (only a
+       * pending task, only one claimer: it stamped claimed_by / claimed_at and nothing else); the
+       * kernel moves the task to `assigned` in the transition's own statement, only while the task
+       * still carries that exact claim. Not an end and no state change: the delivery keeps its state.
+       */
+      type: 'AttemptStarted';
+      /** The owner task being started. */
+      taskId: string;
+      /** The account whose claim won (tasks.claimed_by). */
+      claimedBy: string;
+      /** The claim's stamp, tasks.claimed_at as Postgres renders it (microseconds kept): the claim's identity and key. */
+      claimedAt: string;
+    })
+  | (Base & {
       type: 'AttemptEnded';
       /** The worker row whose exit this is: one task can run several workers (retries). */
       workerId: string;

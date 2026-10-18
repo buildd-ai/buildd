@@ -21,6 +21,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
+import { tasks } from '@buildd/core/db/schema';
 
 import type { MergeTaskTransition } from '@/lib/pr-merged-work';
 import type { ApplyDecision } from './commands';
@@ -208,6 +209,70 @@ export function isAttemptRowSql(alias: string): SQL {
 
 /** The JS side of `isAttemptRowSql`, for a worker row already read. */
 export const isAttemptRow = (w: { runner?: string | null }): boolean => !w.runner || !NON_RUNNER_EXECUTOR_IDS.includes(w.runner);
+
+// ── AC-1 slice 7: a claim starts the owner attempt ──────────────────────────
+
+/**
+ * The claim's compare-and-set for a kernel owner task (beside `status = 'pending'`): no other
+ * claim on it, by the claim query's own rule (claim-candidate-where.ts `claimFree`): unclaimed, or
+ * a claim past its expiry. A kernel owner's claim stamps claimed_by / claimed_at / expires_at and
+ * leaves the status to AttemptStarted, so without this a second claimer would see the task still
+ * pending. Every requeue releases the claim; one a request left behind when it died expires.
+ */
+export function ownerClaimOpenSql(): SQL {
+  return sql`(${tasks.claimedBy} IS NULL OR ${tasks.expiresAt} < now())`;
+}
+
+/** The claim a start is for, read off the decision's evidence (reducer.ts `attemptStarted`). */
+function startOf(evidence: unknown): { taskId: string; claimedBy: string; claimedAt: string } | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.start !== true || typeof e.taskId !== 'string' || typeof e.claimedBy !== 'string' || typeof e.claimedAt !== 'string') return null;
+  return { taskId: e.taskId, claimedBy: e.claimedBy, claimedAt: e.claimedAt };
+}
+
+/** Only the claim that won: still pending, still carrying exactly that claim, never a kernel-merged task. */
+function startGuardSql(p: { taskId: string; claimedBy: string; claimedAt: string }): SQL {
+  return sql`tk.id = ${p.taskId}::uuid
+    AND tk.status = 'pending'
+    AND tk.claimed_by::text = ${p.claimedBy}::text
+    AND tk.claimed_at = ${p.claimedAt}::timestamptz
+    AND ${notKernelMergedTaskSql(tkCols)}`;
+}
+
+/**
+ * The `t_start` CTE (workflow-kernel-library.md §9, AC-1): AttemptStarted moves the owner task to
+ * `assigned` in the transition's own statement, reading the delivery CTE `d`, so a version miss
+ * writes nothing. The claim route's compare-and-set already chose the winner; this moves the task
+ * only while it still carries that claim (a cancel, a requeue or a stale takeover in between keeps
+ * the task where it is). Empty for every other decision.
+ */
+export function startTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptStarted') return [];
+  const s = startOf(decision.evidence);
+  if (!s) return [];
+  const a = sql.raw(d);
+  return [sql`t_start AS (
+  UPDATE tasks tk SET status = 'assigned', updated_at = now()
+  FROM ${a}
+  WHERE tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${a}.id)
+    AND ${startGuardSql(s)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same move outside a transition: for a start the reducer did not bind (the delivery moved on
+ * while the task was requeued, as a loop task's next iteration is), a duplicate, or one the control
+ * plane could not take or does not know. Same guard as `t_start`. Returns the task id moved, or none.
+ */
+export function projectAttemptStartSql(p: { deliveryId: string; taskId: string; claimedBy: string; claimedAt: string }): SQL {
+  return sql`-- workflow:project_attempt_start
+UPDATE tasks tk SET status = 'assigned', updated_at = now()
+WHERE tk.id = ${p.taskId}::uuid
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${startGuardSql(p)}
+RETURNING tk.id`;
+}
 
 /** The worker an end names, from its idempotency key (`end:<workerId>`, reducer.ts). */
 const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ? key.slice(4) : null);
