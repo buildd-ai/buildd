@@ -220,7 +220,7 @@ export default async function ReleaseDetailPage({
             ) : release.commitsAheadAtDispatch != null ? (
               <span className="text-text-muted">
                 {attributionState === 'clean'
-                  ? 'Nothing shipped in this range'
+                  ? 'Nothing merged in this range'
                   : `Commit range unavailable${release.headSha ? ` (${release.headSha.slice(0, 7)})` : ''}`}
               </span>
             ) : null}

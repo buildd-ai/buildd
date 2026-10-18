@@ -24,7 +24,7 @@ function current(state: StateKey, step: number, repairs: number | undefined): { 
     case 'ci_failed': return { glyph: STATES.ci_failed.glyph, tone: 'bad', extra: ` · CI failed${rounds(repairs)}` };
     case 'waiting': return { glyph: STATES.waiting.glyph, tone: 'act', extra: ' · waiting' };
     case 'failed': return { glyph: STATES.failed.glyph, tone: 'bad', extra: ' · failed' };
-    case 'not_landed': return { glyph: STATES.not_landed.glyph, tone: 'bad', extra: ' · not landed' };
+    case 'not_landed': return { glyph: STATES.not_landed.glyph, tone: 'bad', extra: ' · closed without merging' };
     case 'review':
       return { glyph: STATES.review.glyph, tone: 'run', extra: rounds(repairs) || undefined };
     default:

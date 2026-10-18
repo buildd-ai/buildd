@@ -275,7 +275,7 @@ describe('buildMissionCardView', () => {
     expect(view.compact).toBe(true);
     expect(view.primary).toBeNull();
     expect(view.flightStrip).toBeNull();
-    expect(compactCardLine(view, () => '1d ago')).toBe('Completed 1d ago · 2/2');
+    expect(compactCardLine(view, () => '1d ago')).toBe('Done 1d ago · 2/2');
   });
 
   it('keeps the flight strip only when it has something to draw', () => {

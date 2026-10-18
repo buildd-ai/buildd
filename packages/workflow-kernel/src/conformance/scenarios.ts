@@ -23,7 +23,8 @@ import {
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
 import { deliveryPrState, deriveDeliveryView, repairLabelOf } from '../projections';
-import { landingStatusOf, reviewGate } from '../landing-gate';
+import { LANDING_STATUS_CONTEXT, landingStatusOf, reviewGate } from '../landing-gate';
+import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '../merge-hold';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
@@ -776,6 +777,91 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.ingest.facts.map((x) => x.kind), ['base_changed'], 'the retarget through the funnel');
       eq(await outcomesOf(host, s, 'merge_call'), ['skipped:base_moved:applied'], 'recorded');
       ok((await s.d()).state !== 'LANDING' && !(await s.d()).approvedHeads.includes('H1'), 'the approval of the old diff is dropped');
+    },
+  },
+  // ── §4 merge holds: a required check GitHub waits on ───────────────────────
+  {
+    name: 'merge holds: a required check not passed yet holds the merge in LANDING with the approval standing, never a person\'s; a check reporting on that head wakes it and it merges',
+    async run(host) {
+      const s = await (await new Delivery(host, 42).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'pr_closed' ? (await s.merged('H1')).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.github.mergeAnswer = { outcome: 'held', check: 'build', detail: 'Required status check "build" is expected.' };
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'asked once, pinned to H1');
+      eq(await outcomesOf(host, s, 'merge_call'), ['held:required_check:build'], 'the merge effect parked itself, naming the check');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.status), ['pending'], 'still owed');
+      eq(pick(await s.d(), ['state', 'stateReason', 'approvedHeads']), { state: 'LANDING', stateReason: null, approvedHeads: ['H1'] }, 'still landing, the approval standing');
+      ok(!(await host.transitions(s.deliveryId)).some((t) => t.toState === 'ESCALATED'), 'nobody was asked');
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.length, 1, 'not called again before its wait');
+      eq(await wakeHeldMergesOn(host.store, s.deliveryId, 'H0'), 0, 'a check on another head wakes nothing');
+      f.github.mergeAnswer = { outcome: 'merged', detail: 'Pull Request successfully merged' };
+      eq(await wakeHeldMergesOn(host.store, s.deliveryId, 'H1'), 1, 'a check on H1 wakes the held merge');
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.map((m) => m.headSha), ['H1', 'H1'], 'called again, pinned to H1');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:merged:applied'], 'the same row merged');
+      eq((await s.d()).state, 'MERGED', 'merged');
+    },
+  },
+  {
+    name: 'merge holds: the head\'s own Buildd / Review approval success is published and read back before the merge call; one GitHub does not show yet holds the call',
+    async run(host) {
+      const s = await (await new Delivery(host, 43).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      let atMerge: string[] | null = null;
+      f.github.onMerge = () => {
+        atMerge = f.github.written.filter((w) => w.op === 'publishStatus' && !w.dropped && w.sha === 'H1' && w.context === LANDING_STATUS_CONTEXT).map((w) => String(w.state));
+      };
+      // The merge effect alone, before any status effect has run: it publishes the success itself.
+      eq(await kernelEffectHandlers(f.ports).merge_call!(await direct(host, s, 'merge_call')), { outcome: 'ok:merged:applied' }, 'merged');
+      eq(atMerge, ['success'], 'GitHub showed the success before the merge call');
+
+      const t = await (await new Delivery(host, 44).open()).approvedAt('H1');
+      applied(await t.land('H1'), 'LANDING', 'landing');
+      const g = fakePorts(host);
+      g.github.setPr(t.repo, t.prNumber, t.live('H1'));
+      g.github.dropStatuses = true;
+      eq(await kernelEffectHandlers(g.ports).merge_call!(await direct(host, t, 'merge_call')), {
+        outcome: `held:own_status:${LANDING_STATUS_CONTEXT}`, park: { delayMs: MERGE_HOLD_MIN_DELAY_MS },
+      }, 'a success GitHub does not show yet holds the call');
+      eq(g.github.merges, [], 'no merge call ahead of its own status');
+      eq((await t.d()).state, 'LANDING', 'still landing');
+    },
+  },
+  {
+    name: 'merge holds: a hold past its bound escalates to a person naming the check; the review check on a head buildd has not approved escalates at once',
+    async run(host) {
+      const s = await (await new Delivery(host, 45).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.github.mergeAnswer = { outcome: 'held', check: 'build', detail: 'Required status check "build" is expected.' };
+      const r = await kernelEffectHandlers(f.ports).merge_call!({ ...(await direct(host, s, 'merge_call')), ageMs: MERGE_HOLD_MAX_MS });
+      eq(r, { outcome: 'ok:held:lasting:applied' }, 'the hold outlived its bound');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person is asked');
+      ok((await s.count('notify')) >= 1, 'and notified');
+      await drainKernel(host, s, f.ports);
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq(last.state, 'failure', 'the review status says it is blocked');
+      ok(String(last.description).includes('required check "build"'), `names the check: ${String(last.description)}`);
+
+      // A person's override past an open request for changes: GitHub requires the review check,
+      // which buildd will never show as success on this head. No wait passes it.
+      const o = await new Delivery(host, 46).open();
+      await o.ownerPushed('H1');
+      applied(await o.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
+      applied(await o.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H1', live: o.live('H1'), override: { reason: 'owner call' } }), 'LANDING', 'override landing');
+      const g = fakePorts(host);
+      g.github.setPr(o.repo, o.prNumber, o.live('H1'));
+      g.github.mergeAnswer = { outcome: 'held', check: LANDING_STATUS_CONTEXT, detail: `Required status check "${LANDING_STATUS_CONTEXT}" is expected.` };
+      await drainKernel(host, o, g.ports);
+      eq(g.github.merges.length, 1, 'asked once');
+      eq(pick(await o.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'escalated at once, not after a wait');
+      ok(!g.github.written.some((w) => w.op === 'publishStatus' && w.state === 'success'), 'the review status was never set to success to get it through');
     },
   },
   {

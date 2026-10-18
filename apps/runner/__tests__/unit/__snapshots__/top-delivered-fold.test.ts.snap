@@ -7,11 +7,11 @@ exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead
  Acme                 │ Pair on the parser                                      
  ▸ Pair on the… local │ Managed from a local session                            
    Ship the… building │─────────────────────────────────────────────────────────
-   Docs refr… on hold │ No activity yet.                                        
-   Delivered · 4      │                                                         
+   Docs refre… paused │ No activity yet.                                        
+   Done this week · 4 │                                                         
  Initech              │                                                         
    Billing… verifying │                                                         
-   Delivered · 1      │                                                         
+   Done this week · 1 │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -31,18 +31,18 @@ exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its
 " buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
- Acme                 │ 4 delivered in the last 7 days                          
+ Acme                 │ 4 done in the last 7 days                               
    Pair on the… local │─────────────────────────────────────────────────────────
    Ship the… building │ Mar 9   Retire the old API                              
-   Docs refr… on hold │ Mar 8   Billing export                                  
- ▸ Delivered · 4      │ Mar 6   Search ranking                                  
+   Docs refre… paused │ Mar 8   Billing export                                  
+ ▸ Done this week · 4 │ Mar 6   Search ranking                                  
    Retire the … Mar 9 │ Mar 4   Onboarding copy                                 
    Billing exp… Mar 8 │                                                         
    Search rank… Mar 6 │                                                         
    Onboarding … Mar 4 │                                                         
  Initech              │                                                         
    Billing… verifying │                                                         
-   Delivered · 1      │                                                         
+   Done this week · 1 │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -59,7 +59,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Billing export (filter: billing)                        
- ▸ Billing exp… Mar 8 │ Delivered Mar 8                                         
+ ▸ Billing exp… Mar 8 │ Done Mar 8                                              
  Initech              │─────────────────────────────────────────────────────────
    Billing… verifying │ Nothing matches the filter.                             
                       │                                                         
@@ -88,11 +88,11 @@ exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instea
  Acme                       │ Pair on the parser                                                                        
  ▸ Pair on the parser local │ Managed from a local session                                                              
    Ship the impor… building │───────────────────────────────────────────────────────────────────────────────────────────
-   Docs refresh     on hold │ No activity yet.                                                                          
-   Delivered this week · 4  │                                                                                           
+   Docs refresh      paused │ No activity yet.                                                                          
+   Done this week · 4       │                                                                                           
  Initech                    │                                                                                           
    Billing clean… verifying │                                                                                           
-   Delivered this week · 1  │                                                                                           
+   Done this week · 1       │                                                                                           
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           
@@ -128,18 +128,18 @@ exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on it
 " buildd · laptop-1234 · 2 workspaces · 2 teams                                        0 of 3 busy · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Acme                       │ 4 delivered in the last 7 days                                                            
+ Acme                       │ 4 done in the last 7 days                                                                 
    Pair on the parser local │───────────────────────────────────────────────────────────────────────────────────────────
    Ship the impor… building │ Mar 9   Retire the old API                                                                
-   Docs refresh     on hold │ Mar 8   Billing export                                                                    
- ▸ Delivered this week · 4  │ Mar 6   Search ranking                                                                    
+   Docs refresh      paused │ Mar 8   Billing export                                                                    
+ ▸ Done this week · 4       │ Mar 6   Search ranking                                                                    
    Retire the old API Mar 9 │ Mar 4   Onboarding copy                                                                   
    Billing export     Mar 8 │                                                                                           
    Search ranking     Mar 6 │                                                                                           
    Onboarding copy    Mar 4 │                                                                                           
  Initech                    │                                                                                           
    Billing clean… verifying │                                                                                           
-   Delivered this week · 1  │                                                                                           
+   Done this week · 1       │                                                                                           
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           
@@ -172,7 +172,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 filtering: a delivered match shows wit
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ Billing export (filter: billing)                                                          
- ▸ Billing export     Mar 8 │ Delivered Mar 8                                                                           
+ ▸ Billing export     Mar 8 │ Done Mar 8                                                                                
  Initech                    │───────────────────────────────────────────────────────────────────────────────────────────
    Billing clean… verifying │ Nothing matches the filter.                                                               
                             │                                                                                           

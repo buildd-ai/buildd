@@ -112,6 +112,25 @@ export async function kernelDeliveryForPr(workspaceId: string, repoFullName: str
 }
 
 /**
+ * §4 merge holds: the kernel deliveries LANDING at `headSha` on this repo, in workspaces whose kill
+ * switch is on. A commit status on that head may release a merge GitHub is holding on it; the
+ * status webhook finds them here (a status names a commit, not a PR).
+ */
+export function landingAtHeadSql(repoFullName: string, headSha: string): SQL {
+  return sql`-- workflow:landing_at_head
+SELECT d.id, d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
+WHERE d.authority = 'kernel' AND d.state = 'LANDING' AND d.repo_full_name = ${repoFullName}::text
+  AND d.current_head_sha = ${headSha}::text AND d.pr_number IS NOT NULL
+  AND ${kernelOnSql(sql`w.git_config`)}
+LIMIT 10`;
+}
+
+export async function kernelDeliveriesLandingAt(repoFullName: string, headSha: string, exec: Exec = dbExec): Promise<Array<{ deliveryId: string; workspaceId: string; prNumber: number }>> {
+  const rows = ((await exec(landingAtHeadSql(repoFullName, headSha))).rows ?? []) as Array<{ id: string; workspace_id: string; pr_number: number }>;
+  return rows.map((r) => ({ deliveryId: String(r.id), workspaceId: String(r.workspace_id), prNumber: Number(r.pr_number) }));
+}
+
+/**
  * As above, for an attempt task that carries `tasks.delivery_id`. With `workspaceId`, a delivery of
  * another workspace reads as no kernel delivery (the same one statement, no extra read): for a
  * caller where that is the safe answer (a fix claim proceeds unrevalidated, as for any legacy fix).

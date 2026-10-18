@@ -21,11 +21,11 @@ describe('TaskCard — ship badge mount (§10.3)', () => {
     expect(html).toContain('Force release');
   });
 
-  it('row density: renders "Shipped" badge linking to the release when attributed to a healthy release', () => {
+  it('row density: renders "Released" badge linking to the release when attributed to a healthy release', () => {
     const html = renderToStaticMarkup(
       <TaskCard {...baseProps({ release: 'inherit', shippedReleaseId: 'rel-42' })} />,
     );
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
     expect(html).toContain('/app/releases/rel-42');
   });
 
@@ -33,7 +33,7 @@ describe('TaskCard — ship badge mount (§10.3)', () => {
     const html = renderToStaticMarkup(<TaskCard {...baseProps({ release: 'inherit' })} />);
     expect(html).not.toContain('Skip release');
     expect(html).not.toContain('Force release');
-    expect(html).not.toContain('Shipped');
+    expect(html).not.toContain('Released');
   });
 
   it('full density: renders "Skip release" badge when release=false', () => {
@@ -41,12 +41,12 @@ describe('TaskCard — ship badge mount (§10.3)', () => {
     expect(html).toContain('Skip release');
   });
 
-  it('full density: additive — Force release and Shipped both render', () => {
+  it('full density: additive — Force release and Released both render', () => {
     const html = renderToStaticMarkup(
       <TaskCard {...baseProps({ density: 'full', release: 'true', shippedReleaseId: 'rel-7' })} />,
     );
     expect(html).toContain('Force release');
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
   });
 });
 

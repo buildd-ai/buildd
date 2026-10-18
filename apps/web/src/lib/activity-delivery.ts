@@ -414,8 +414,8 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
     case 'landing': return 'Approved and green on its latest revision. Merging.';
     case 'unavailable': return 'The audit could not run. It retries on its own.';
     case 'needs': return d.root.waitingPrompt?.trim() || 'Waiting on a decision.';
-    case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without landing.';
-    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on lands.' : 'Next in line for a runner.';
+    case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without a change to merge.';
+    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on finishes.' : 'Next in line for a runner.';
     default: return DELIVERY_KIND[delivery.kind].label;
   }
 }
@@ -548,7 +548,7 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
     ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to audit');
   const land = at < 2 ? 'After Audit'
     : delivery.kind === 'landing' ? 'Merging'
-    : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without landing')
+    : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without a change to merge')
     : prNumber ? 'Merged' : 'Nothing to merge';
   return { build, audit, land };
 }
@@ -619,10 +619,10 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
     else if (r.review?.verdict === 'escalate') add(at, 'Review asked a person to decide', 'ink');
     else if (r.status === 'completed' || r.status === 'failed') add(at, 'Review could not run', 'warning');
   }
-  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Landed', 'success');
-  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Landed via PR #${owner.supersededByPrNumber}`, 'success');
+  if (owner?.mergedAt) add(ms(owner.mergedAt as string), 'Merged', 'success');
+  else if (owner?.supersededByPrNumber) add(ms(owner.updatedAt), `Merged in #${owner.supersededByPrNumber}`, 'success');
   else if (delivery.kind === 'notlanded') {
-    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without landing', 'error');
+    add(ms(owner?.updatedAt ?? d.root.updatedAt), owner?.prUrl ? (owner.abandonedAt ? 'PR closed and set aside' : 'PR closed without merging') : 'Stopped without a change to merge', 'error');
   } else if (!owner && d.root.status === 'completed') add(ms(d.root.updatedAt), 'Finished; nothing to merge', 'success');
   if (d.root.status === 'cancelled') add(ms(d.root.updatedAt), 'Cancelled', 'muted');
   if (raw.length === 0) add(ms(d.root.createdAt), 'Queued', 'muted');

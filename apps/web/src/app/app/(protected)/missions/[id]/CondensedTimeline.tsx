@@ -176,7 +176,7 @@ function PrStatusLine({
         <span className="text-[11px] md:text-[10px] text-text-muted">·</span>
         {lw.supersededByPrNumber ? (
           <span className="text-[11px] md:text-[10px] text-status-success">
-            landed as{' '}
+            merged in{' '}
             {lw.supersededByPrUrl ? (
               <a href={lw.supersededByPrUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
                 #{lw.supersededByPrNumber}

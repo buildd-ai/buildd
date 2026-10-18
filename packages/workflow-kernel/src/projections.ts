@@ -301,6 +301,7 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
     };
   }
   if (t?.command === 'MergeCallResult' && ev?.outcome === 'gate_refused') return { headline: 'The review approval check refused the merge when it ran; a person has to look', detail: str('detail') };
+  if (t?.command === 'MergeCallResult' && ev?.outcome === 'held') return { headline: 'GitHub kept the merge waiting on a required check that has not passed; a person has to look', detail: str('detail') };
   if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to merge it', detail: str('detail') };
   if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to merge it', detail: str('reason') };
   return { headline: ESCALATION_COPY.landing_needs_human!, detail: evidenceDetail(t) };
@@ -403,7 +404,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       break;
     case 'MERGED': headline = 'Merged'; break;
     case 'CLOSED_UNMERGED': headline = 'Closed without merging'; detail = d.stateReason; break;
-    case 'SUPERSEDED': headline = d.supersededByPr != null ? `Shipped in PR #${d.supersededByPr}` : 'Superseded'; break;
+    case 'SUPERSEDED': headline = d.supersededByPr != null ? `Merged in #${d.supersededByPr}` : 'Superseded'; break;
     case 'ABANDONED': headline = 'Abandoned'; break;
     case 'FAILED': headline = 'Failed'; detail = d.stateReason; break;
   }

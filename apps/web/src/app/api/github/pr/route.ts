@@ -1,6 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { ensureRepoAccessForPr, refuseForRepoAccess } from '@/lib/github-repo-access-gate';
 import { isIntegrationPermissionError, missingPermissions as missingRepoPermissions } from '@/lib/github-repo-access';
 import { failedChecks } from '@/lib/failed-checks';
@@ -300,6 +301,9 @@ export async function POST(req: NextRequest) {
       draft,
       prUrl: existingPrUrl,
     } = body;
+    // This worker's PR fields are about to change: its mission's summary is
+    // refreshed after the response, once, whatever branch below writes them.
+    noteWorkChanged({ workerIds: [typeof workerId === 'string' ? workerId : null] });
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -1454,6 +1458,8 @@ export async function PATCH(req: NextRequest) {
   try {
     const requestBody = await req.json();
     const { workerId, prNumber, body: newPrBody, draft: draftUpdate, workspaceId: prWorkspaceId } = requestBody;
+    // Closing or readying the PR changes its worker's lifecycle; refreshed after the response.
+    noteWorkChanged({ workerIds: [typeof workerId === 'string' ? workerId : null] });
     // Presence of `body` switches this call from closing the PR to rewriting
     // its body — the two things this route's only caller set ever needed
     // from a bare PATCH. See update_pr in mcp-tools.ts.
@@ -1784,6 +1790,8 @@ export async function PUT(req: NextRequest) {
   try {
     const body = await req.json();
     const { workerId, prNumber, mergeMethod = 'squash', workspaceId } = body;
+    // A merge changes its worker's lifecycle; refreshed after the response.
+    noteWorkChanged({ workerIds: [typeof workerId === 'string' ? workerId : null] });
     // The workflow-kernel delivery version the caller read (§7.2): stale → 409 with the current view.
     const expectedVersion: number | undefined = typeof body.version === 'number' && Number.isInteger(body.version) ? body.version : undefined;
 

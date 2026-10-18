@@ -143,7 +143,7 @@ export interface FlowTask {
   segments: FlowSegment[];
   shippedAt: number | null;
   lostAt: number | null;
-  outcome?: 'In flight' | 'Completed';
+  outcome?: 'In flight' | 'Done';
   agentHours: number;
   /** Milliseconds inside the window per category; see insights-time-split.ts. */
   time?: Record<TimeCategory, number>;
@@ -428,7 +428,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       segments,
       shippedAt,
       lostAt,
-      outcome: (settledQuietly || !latestPr) && !rows.some(r => LIVE.has(r.status)) ? 'Completed' : 'In flight',
+      outcome: (settledQuietly || !latestPr) && !rows.some(r => LIVE.has(r.status)) ? 'Done' : 'In flight',
       agentHours,
       time,
     });
