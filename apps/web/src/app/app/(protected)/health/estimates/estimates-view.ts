@@ -35,11 +35,19 @@ export function estimatesReadout(readout: Pick<TaskEstimateReadout, 'overall' | 
     };
   }
   return {
-    lead: `${inTen(overall.withinP80)} in 10 tasks finished within the upper estimate.`,
+    lead: `Upper estimate coverage: ${coveragePercent(overall.withinP80)}% (80% target).`,
     sample: `Across ${overall.scored} finished tasks.`,
     typical: typicalBiasLine(overall),
     limitedHistory,
   };
+}
+
+/** Rounded coverage preserves the distinction between all/none and nearly so. */
+function coveragePercent(share: number): number {
+  const rounded = Math.round(share * 100);
+  if (share > 0 && rounded === 0) return 1;
+  if (share < 1 && rounded === 100) return 99;
+  return rounded;
 }
 
 /** A share as "X in 10". Never rounds up to 10 or down to 0 unless every or no task did. */
@@ -50,12 +58,11 @@ export function inTen(share: number): number {
   return x;
 }
 
-/** The typical overrun or underrun (median actual / p50), only when it is outside 0.85 to 1.15. */
+/** Median actual / creation-time p50, including a ratio close to one. */
 export function typicalBiasLine(score: BacktestScore): string | null {
   const r = score.medianRatio;
-  if (r == null || r <= 0 || (r >= 0.85 && r <= 1.15)) return null;
-  const x = r > 1 ? r : 1 / r;
-  return `Typically ran ${x >= 10 ? Math.round(x) : x.toFixed(1)}x ${r > 1 ? 'longer' : 'shorter'} than estimated.`;
+  if (r == null || !Number.isFinite(r) || r <= 0) return null;
+  return `Actual / p50: ${r < 0.1 ? '<0.1' : r.toFixed(1)}x.`;
 }
 
 /** How many scored estimates leaned mostly on the new-repo prior or on no evidence. A count, never a rate. */
