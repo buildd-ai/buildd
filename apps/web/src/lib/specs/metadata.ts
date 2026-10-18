@@ -1,3 +1,4 @@
+import { validSpecSummary } from '@buildd/spec-contract/repo-spec';
 import { db } from '@buildd/core/db';
 import { specMetadataChanges, specs, type SpecMetadataBlock } from '@buildd/core/db/schema';
 import { and, desc, eq, ne, notInArray, sql } from 'drizzle-orm';
@@ -49,7 +50,7 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
     case 'owner':
       return typeof raw === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(raw) ? { value: raw } : { error: 'owner is a GitHub handle, without @' };
     case 'summary':
-      return typeof raw === 'string' && raw.trim() && raw.length <= 500 && !raw.includes('\n') ? { value: raw.trim() } : { error: 'summary is one line of at most 500 characters' };
+      return validSpecSummary(raw) ? { value: raw.trim() } : { error: 'summary is one sentence on one line of at most 220 characters' };
     case 'criteria_unread': {
       const c = raw as Record<string, unknown>;
       const ok = !!c && typeof c === 'object' && !Array.isArray(c)

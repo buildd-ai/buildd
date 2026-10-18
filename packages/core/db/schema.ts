@@ -2828,7 +2828,7 @@ export type SpecStatus = (typeof SPEC_STATUSES)[number];
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
 export interface SpecMetadataBlock {
   owner?: string;
-  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  /** The repo copy's `summary`: one sentence, at most 220 characters; editable or imported. */
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
