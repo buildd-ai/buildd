@@ -774,7 +774,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
       if (data.revoked) {
         // Reads OK but a worker run reported the OAuth session revoked. GET /v1/models
         // can't detect that, so don't show a green pass — direct the user to re-auth.
-        setMsg({ type: 'error', text: 'Revoked: a worker run was logged out. Run `claude setup-token` and paste the new token.' });
+        setMsg({ type: 'error', text: 'Revoked: an agent run was logged out. Run `claude setup-token` and paste the new token.' });
       } else if (data.verified) {
         setMsg({ type: 'success', text: 'Verified.' });
       } else {
@@ -1331,7 +1331,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
             {status.expired && status.healthStatus === 'revoked' && fallbackConnected && (
-              <StatusChip tone="ok">Workers using setup token as fallback</StatusChip>
+              <StatusChip tone="ok">Agents using setup token as fallback</StatusChip>
             )}
           </div>
 

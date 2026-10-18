@@ -19,6 +19,7 @@
  */
 
 import { DEFAULT_TIMEZONE, formatStamp } from '@buildd/core/timezone';
+import { displayTitle } from '@buildd/shared';
 
 export const ACTIVITY_COMMENT_MARKER = '<!-- buildd-activity -->';
 
@@ -147,7 +148,7 @@ interface Rendered {
   label: string;
   /** Shorter header wording, when the row label carries history the header doesn't need. */
   headline?: string;
-  /** Header-only tail, e.g. "waiting for a worker". Omitted from the row. */
+  /** Header-only tail, e.g. "waiting for an agent". Omitted from the row. */
   status?: string;
   /** Summary text on the collapsed note. */
   noteLabel?: string;
@@ -182,7 +183,8 @@ const MAX_HEADLINE_TITLE_CHARS = 60;
 /** `"Waiting for fix task: <title>"`, or null when the entry carries no title. */
 function fixTaskHeadline(e: { taskTitle?: string | null }): string | null {
   if (!e.taskTitle) return null;
-  return `Waiting for fix task: ${clip(e.taskTitle, MAX_HEADLINE_TITLE_CHARS)}`;
+  // The row says which fix it is ("fix 1 of 3"); the retry key never shows.
+  return `Waiting for fix task: ${clip(displayTitle(e.taskTitle).title, MAX_HEADLINE_TITLE_CHARS)}`;
 }
 
 /**
@@ -199,7 +201,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         label: story.fix
           ? story.fix.iteration != null ? `Re-review queued · after ${fixText(story.fix)}` : 'Re-review queued'
           : 'Review queued',
-        status: 'waiting for a worker',
+        status: 'waiting for an agent',
       };
     case 'reviewing':
       // Only ever written once a worker has CLAIMED the reviewer task
@@ -212,7 +214,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         tone: 'waiting',
         label: `Changes requested · ${fixText(e)} queued`,
         headline: fixTaskHeadline(e) ?? `${capitalize(fixText(e))} queued`,
-        status: 'waiting for a worker',
+        status: 'waiting for an agent',
         noteLabel: 'Reviewer feedback',
       };
     case 'ci_fixing':
@@ -220,7 +222,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         tone: 'waiting',
         label: `CI failed · ${fixText(e)} queued`,
         headline: fixTaskHeadline(e) ?? `CI ${fixText(e)} queued`,
-        status: 'waiting for a worker',
+        status: 'waiting for an agent',
         noteLabel: 'Details',
         urlLabel: 'CI run',
       };
@@ -229,7 +231,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         tone: 'waiting',
         label: `Migration slot conflict · ${fixText(e)} queued`,
         headline: fixTaskHeadline(e) ?? `Migration slot conflict · ${fixText(e)} queued`,
-        status: 'waiting for a worker',
+        status: 'waiting for an agent',
         noteLabel: 'Details',
       };
     case 'human_applied_recommendation':
@@ -237,13 +239,13 @@ function present(e: NormalizedEntry, story: Story): Rendered {
         tone: 'waiting',
         label: 'Recommendation applied · fix queued',
         headline: fixTaskHeadline(e) ?? undefined,
-        status: 'waiting for a worker',
+        status: 'waiting for an agent',
       };
     case 'fix_started': {
       // Only ever written once a worker has CLAIMED the fix task. This is the
       // one state allowed to say buildd is changing the branch.
       const fixEntry = hasIteration(e) ? e : story.fix;
-      const title = e.taskTitle ?? null;
+      const title = e.taskTitle ? displayTitle(e.taskTitle).title : null;
       return {
         tone: 'working',
         label: `Fixing · ${fixText(fixEntry)}`,

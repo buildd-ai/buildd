@@ -49,7 +49,7 @@ export function claimEntryWords(e: ClaimLogEntry, now: number = Date.now()): str
     return `nothing waiting: ${n} poll${n === 1 ? '' : 's'}${e.idleSince ? ` since ${new Date(e.idleSince).toLocaleTimeString()}` : ''}`;
   }
   if (e.event === 'claim_rejected') {
-    if (e.status === 0) return 'no answer from the server; any workers it started are released';
+    if (e.status === 0) return 'no answer from the server; any slots it took are freed';
     const why = e.reason ? `: ${e.reason}` : '';
     return `refused${e.status ? ` (${e.status})` : ''}${why}`;
   }

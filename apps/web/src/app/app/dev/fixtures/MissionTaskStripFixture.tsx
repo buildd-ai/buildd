@@ -35,7 +35,7 @@ const WORKSPACE_ID = stripFixtureId(901);
 /** The local mission's situation, as the accessor phrases it for one open task. */
 function localSituation(taskId: string): MissionSituation {
   return {
-    headline: 'Ready to start from a local session.',
+    headline: 'Ready to start from your session.',
     tone: 'neutral',
     focus: { kind: 'task', tone: 'neutral', label: '1 open task', count: 1, taskIds: [taskId], byStatus: { pending: 1 }, local: true },
     nextAction: null,

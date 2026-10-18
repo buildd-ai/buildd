@@ -50,6 +50,7 @@ import CriteriaCheckNow from './CriteriaCheckNow';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
 import { repairBadge } from '@/lib/delivery-projection';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -693,7 +694,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
         <ScopeChip scope={t.scope} />
         {t.roleName && <SectionLabel className="ml-auto">{t.roleName}</SectionLabel>}
       </div>
-      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary" title={t.title}>{displayTaskTitle(t.title)}</p>
+      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary" title={t.title}><TaskTitle short title={t.title} /></p>
       <div className="grid grid-cols-[70px_1fr] gap-x-2.5 gap-y-1 font-mono text-[12px] md:text-[11.5px]">
         {t.runner && <><span className="text-text-muted">runner</span><span className="text-text-secondary">{`${t.runner}${t.slot != null ? ` · slot ${t.slot + 1}` : ''}`}</span></>}
         {running && <><span className="text-text-muted">{t.endedAt ? 'ran' : 'running'}</span><span className="tabular-nums text-text-secondary">{`${running} · ${t.milestones.length} milestone${t.milestones.length === 1 ? '' : 's'}`}</span></>}

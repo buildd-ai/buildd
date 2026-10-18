@@ -551,8 +551,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
     else if (kind === 'waiting') {
       exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
-        : m.localStrand?.stranded ? { tone: 'warning', text: 'No local session is running it' }
-        : m.localStrand ? { tone: 'muted', text: 'Waiting for a local session' }
+        : m.localStrand?.stranded ? { tone: 'warning', text: 'No session is running it' }
+        : m.localStrand ? { tone: 'muted', text: 'Waiting for your session' }
         : { tone: 'muted', text: 'Next in line for a runner, not waiting on you' };
     }
   }
@@ -647,8 +647,8 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'waiting':
       if (d?.waitingOn !== 'dependency' && m.localStrand) {
         return m.localStrand.stranded
-          ? { evidence: `${t} has not started.`, next: `Waiting for a local session (none for ${quietLabel(m.localStrand.quietMs)})` }
-          : { evidence: `${t} has not started.`, next: 'Waiting for a local session' };
+          ? { evidence: `${t} has not started.`, next: `Waiting for your session (none for ${quietLabel(m.localStrand.quietMs)})` }
+          : { evidence: `${t} has not started.`, next: 'Waiting for your session' };
       }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
@@ -712,7 +712,7 @@ function quietCause(m: MissionDelivery): string {
     return m.visualOpen.hold ? `waiting on visual review (${m.visualOpen.hold})` : 'waiting on visual review';
   }
   if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
-  if (m.next.startsWith('Waiting for a local session')) return 'waiting for a local session';
+  if (m.next.startsWith('Waiting for your session')) return 'waiting for your session';
   if (m.next === 'Next in line for a runner') return 'next in line for a runner';
   return 'waiting';
 }
