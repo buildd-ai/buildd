@@ -1,7 +1,8 @@
 /**
  * The hook point for "these rows of work changed": a task's status or
  * mission, a worker's status or PR fields, a delivery's state, a review.
- * Core calls `noteWorkChanged` after such a write; modules that keep state
+ * Core calls `noteWorkChanged` after such a write; the flush first moves the
+ * workspace change version (lib/change-version.ts), then modules that keep state
  * derived from that work (the stored mission summary, spec 3ef37387 R-13)
  * listen through the composition root (`WORK_CHANGE_LISTENERS` in
  * apps/web/src/modules.ts), so core never imports them
@@ -72,11 +73,21 @@ function take(): WorkChangeBatch {
   return batch;
 }
 
+/**
+ * Core's own reaction, run before any module's: the workspace change version
+ * moves (spec 3ef37387 R-20), so a list read tagged before the write reads
+ * again. It is core state, so it is not wired through the composition root.
+ */
+const bumpVersions: WorkChangeListener = async (batch) => {
+  const { bumpChangeVersions } = await import('./change-version');
+  await bumpChangeVersions(batch);
+};
+
 async function listeners(): Promise<readonly WorkChangeListener[]> {
   if (testListeners) return testListeners;
   // Loaded when a flush runs, not when core loads: the composition root imports every module.
   const modules = (await import('@/modules')) as Record<string, unknown>;
-  return (modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [];
+  return [bumpVersions, ...((modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [])];
 }
 
 function runFlush(): Promise<void> {
