@@ -143,6 +143,14 @@ WHERE delivery_id = ${deliveryId}::uuid AND kind = 'merge_call' AND status = 'pe
 RETURNING id`;
 }
 
+/** §5: the open findings of one delivery become another's, ids kept (a closed one stays where it was decided). */
+export function carryOpenFindingsSql(fromDeliveryId: string, toDeliveryId: string): SQL {
+  return sql`-- workflow:carry_open_findings
+UPDATE workflow_findings SET delivery_id = ${toDeliveryId}::uuid, updated_at = now()
+WHERE delivery_id = ${fromDeliveryId}::uuid AND status IN ('open', 'addressed')
+RETURNING id`;
+}
+
 /** What runs for each effect that just went dead. Default: dead-effects.ts escalation + gate event. */
 export type OnDeadEffect = (dead: DeadEffect, exec: Exec) => Promise<void>;
 

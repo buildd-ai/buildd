@@ -435,6 +435,12 @@ export class MemoryStore implements Store {
     return next.deliveryId;
   }
 
+  async carryOpenFindings(fromDeliveryId: string, toDeliveryId: string): Promise<string[]> {
+    const moved = this.findings.filter((f) => f.deliveryId === fromDeliveryId && (f.status === 'open' || f.status === 'addressed'));
+    for (const f of moved) f.deliveryId = toDeliveryId;
+    return moved.map((f) => f.id);
+  }
+
   async wakeHeldMerges(deliveryId: string, headSha: string): Promise<number> {
     const held = this.effectLog.filter((e) => e.deliveryId === deliveryId && e.kind === 'merge_call' && e.status === 'pending'
       && (e.outcome ?? '').startsWith(`${MERGE_HELD_OUTCOME}:`) && e.payload.headSha === headSha);
