@@ -38,6 +38,7 @@ export const TASK_EVENT_MIN_MS = 10_000;
 /** No key for this long and top stops reading from the server until the next key. */
 export const IDLE_PAUSE_MS = 15 * 60_000;
 const IDLE_STATUS = 'Updates paused while idle. Press any key to catch up.';
+const RATE_LIMITED_PREFIX = 'The server is rate limiting reads;';
 /** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
 export const QUEUE_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
@@ -157,10 +158,25 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   let queueTimer: ReturnType<typeof setTimeout> | null = null;
   let tasksAt = 0;
   let tasksTrailing: ReturnType<typeof setTimeout> | null = null;
+  // The server's read rate limit (a 429 the runner passes through with
+  // retryAfterSec): no task-list read until then, and one catch-up read after.
+  let tasksHeldUntil = 0;
+  let tasksCatchUp: ReturnType<typeof setTimeout> | null = null;
   const refreshTasks = async () => {
+    if (Date.now() < tasksHeldUntil) return;
     tasksAt = Date.now();
     try {
-      const r = await client.get<{ tasks?: any[]; error?: string }>('/api/tasks');
+      const r = await client.get<{ tasks?: any[]; error?: string; retryAfterSec?: number }>('/api/tasks');
+      if (r.status === 429) {
+        const wait = Math.max(1, Number(r.body?.retryAfterSec) || 30);
+        tasksHeldUntil = Date.now() + wait * 1000;
+        dispatch({ type: 'status', status: { text: `${RATE_LIMITED_PREFIX} the task list refreshes in ${wait}s.`, tone: 'info' } });
+        if (!tasksCatchUp) {
+          tasksCatchUp = setTimeout(() => { tasksCatchUp = null; if (serverReadsAllowed()) void refreshTasks(); }, wait * 1000);
+        }
+        return;
+      }
+      if (r.status === 200 && state.status?.text.startsWith(RATE_LIMITED_PREFIX)) dispatch({ type: 'status', status: null });
       if (r.status === 200 && Array.isArray(r.body?.tasks)) dispatch({ type: 'tasks', tasks: r.body.tasks });
       else if (r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the task list: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
@@ -168,7 +184,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // A queue event's refetch: at once when the last read is older than the
   // floor, else one trailing read when the floor passes.
   const refreshTasksSoon = () => {
-    if (tasksTrailing) return;
+    if (tasksTrailing || Date.now() < tasksHeldUntil) return;
     const wait = tasksAt + taskEventMinMs - Date.now();
     if (wait <= 0) { void refreshTasks(); return; }
     tasksTrailing = setTimeout(() => {
@@ -411,6 +427,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (renderTimer) clearTimeout(renderTimer);
     if (queueTimer) clearTimeout(queueTimer);
     if (tasksTrailing) clearTimeout(tasksTrailing);
+    if (tasksCatchUp) clearTimeout(tasksCatchUp);
     if (escTimer) clearTimeout(escTimer);
     term.stdin.off?.('data', onData);
     term.stdin.pause?.();

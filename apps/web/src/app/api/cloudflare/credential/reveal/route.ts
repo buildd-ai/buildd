@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
   }
   try {
     await recordDeploymentAudit({
-      teamId: account.teamId, workspaceId: null, taskId: null, workerId: null, accountId: account.id,
+      teamId: account.teamId, workspaceId: null, taskId: null, workerId: null, accountId: account.id, userId: null,
       principal: 'admin', roleSlug: null, operation: 'reveal', capabilities: ['secrets:reveal'], elevated: true,
       provider: 'cloudflare', project: null, environment: null, credentialRef: credentialRefOf(row.label, 'cloudflare'),
       outcome: 'succeeded', reason: null, result: null,
