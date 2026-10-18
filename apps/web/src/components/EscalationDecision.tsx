@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel';
+import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'apply-recommendation',
