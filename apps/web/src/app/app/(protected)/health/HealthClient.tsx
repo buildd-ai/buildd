@@ -51,6 +51,8 @@ import { runnerBusyLine } from '@/lib/fleet-view';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { ClaimabilitySection } from './ClaimabilitySection';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
@@ -280,6 +282,8 @@ interface Props {
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
   runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
+  /** Claim-planner ledger summary: claimability, shown apart from slot occupancy; null hides it. */
+  claimPlans?: ClaimPlanHealth | null;
   /**
    * A task that needs protection is waiting in the scoped workspaces. Every
    * task needs it by default, so this is "any task pending". An unknown or
@@ -338,6 +342,7 @@ export function HealthClient({
   failureGroups: failureGroupsView = null,
   agentAccess = null,
   runnerLanes = null,
+  claimPlans = null,
   protectedWorkPending = false,
   seesTeamWork = false,
   now,
@@ -797,6 +802,8 @@ export function HealthClient({
           />
         </div>
       )}
+
+      {show('capacity') && <ClaimabilitySection health={claimPlans} now={now} />}
 
       {show('capacity') && hasLanes && (
         <div data-testid="health-section-lanes" className="mb-6">

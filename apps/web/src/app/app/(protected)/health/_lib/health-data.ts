@@ -40,6 +40,8 @@ import {
 import { countWorkersInWindow, fetchActionEvents } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { loadClaimPlanHealth } from '@/lib/claim-plan-health-query';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
@@ -192,7 +194,7 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'runnerLanes' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
+  | 'runnerLanes' | 'claimPlans' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
@@ -204,7 +206,7 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
   failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
-  runners: new Set(['runners', 'runnerLanes', 'budgetForecast', 'credentials']),
+  runners: new Set(['runners', 'runnerLanes', 'claimPlans', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -242,6 +244,8 @@ export interface HealthData {
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
   /** Whether the viewer may read teammates' work in expanded runner detail (view_team_usage); a member sees only their own. */
   seesTeamWork: boolean;
+  /** Claim-planner ledger summary (claimability), apart from slot occupancy; null hides the section. */
+  claimPlans: ClaimPlanHealth | null;
   /** The workspaces `runnerLanes` reads, so the page can re-render on their worker events. */
   laneWorkspaceIds: string[];
   now: number;
@@ -705,6 +709,10 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       .catch(() => null)
     : null;
 
+  const claimPlans = need('claimPlans')
+    ? await loadClaimPlanHealth({ workspaceIds: scopedWsIds, since: new Date(now - parseWindowMs(window)) }).catch(() => null)
+    : null;
+
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId, operator).catch(() => null) : null;
 
   return {
@@ -733,6 +741,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       seesTeamWork: need('runnerLanes')
         ? await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false)
         : false,
+      claimPlans,
       protectedWorkPending,
       // The workspaces the lanes read, for the page's live refresh.
       laneWorkspaceIds: runnerLanes ? scopedWsIds : [],
