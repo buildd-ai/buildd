@@ -102,7 +102,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -5953,6 +5953,9 @@ async function handleReviewerOutcomeIfNeeded(
         console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
       );
   }
+
+  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-39).
+  await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
 
   // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
   // A review round of a kernel delivery: the verdict is recorded against the

@@ -231,6 +231,17 @@ export async function openPrReviewReads(): Promise<import('@/lib/release/open-pr
 }
 
 /**
+ * The event doors of `Buildd / Review approval` on an open PR head (lib/workflow/open-pr-events.ts):
+ * the GitHub webhook, the worker route's recorded verdict and a stored review request call it, so the
+ * status follows the event instead of the hourly floor. Lazy, so a route loads it only when it runs.
+ */
+export async function republishPrHeads(
+  ...args: Parameters<typeof import('@/lib/workflow/open-pr-events').republishPrHeads>
+): Promise<void> {
+  return (await import('@/lib/workflow/open-pr-events')).republishPrHeads(...args);
+}
+
+/**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
  * blocker an agent tried to ask about is filed as a repair task instead.
  */

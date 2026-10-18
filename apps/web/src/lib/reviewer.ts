@@ -956,7 +956,29 @@ export async function createReviewerTask(
     }
   }
 
+  // A review is now asked for: a verified release candidate's `Buildd / Review approval` turns
+  // pending at once (R-41, AC-39), instead of standing at success until the hourly floor.
+  if (reviewerTask) await republishReviewRequested({ installationId, repoFullName, prNumber, headSha });
+
   return reviewerTask ?? null;
+}
+
+/**
+ * The review-request event door of the open-PR status (docs/specs/workflow-kernel-library.md §4, AC-39),
+ * through the composition root. Only a release candidate's answer moves (any other PR stays pending), so
+ * it runs candidates-only; a failure never fails the request, the floor repeats it within the hour.
+ */
+export async function republishReviewRequested(
+  p: { installationId?: number | null; repoFullName?: string | null; prNumber: number; headSha?: string | null },
+  republish?: (typeof import('@/modules'))['republishPrHeads'],
+): Promise<void> {
+  if (!p.installationId || !p.repoFullName) return;
+  try {
+    const run = republish ?? (await import('@/modules')).republishPrHeads;
+    await run(p.installationId, p.repoFullName, [{ number: p.prNumber, sha: p.headSha ?? null }], { candidatesOnly: true });
+  } catch (err) {
+    console.error(`[reviewer] open PR status after a review request on ${p.repoFullName}#${p.prNumber} failed (the floor repeats it):`, err);
+  }
 }
 
 // ── Prompt text (versioned prompts table, public defaults) ───────────────────
