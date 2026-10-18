@@ -12,7 +12,14 @@
  */
 import type { RunnerClass } from './runner-ownership';
 
-import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
+import {
+  RUNNER_LIVE_WINDOW_MS,
+  isIsolationRecordCurrent,
+  isolationVerdict,
+  type RunnerCodexAuthSource,
+  type RunnerIsolationRecord,
+  type RunnerModelAuthSource,
+} from '@buildd/shared';
 
 export interface RunnerHeartbeat {
   id: string;
@@ -55,6 +62,13 @@ export interface RunnerHeartbeat {
    * Health page lists apart under "Team runners".
    */
   mine: boolean;
+  /**
+   * The model login the runner itself reported on its last heartbeat (a label,
+   * never a credential). Null/absent: an older runner that sends none, which
+   * is not the same as `none`.
+   */
+  modelAuthSource?: RunnerModelAuthSource | null;
+  codexAuthSource?: RunnerCodexAuthSource | null;
   /** Authoritative ownership (managed / team host / personal / unknown); see runner-ownership.ts. */
   runnerClass?: RunnerClass;
   /** How the runner's model usage is paid: `oauth` = the login on its own machine, `api` = a key. Absent when unknown. */

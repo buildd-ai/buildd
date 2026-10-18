@@ -59,6 +59,7 @@ import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
 import { RunnerIsolation } from './_components/RunnerIsolation';
+import { RunnerRoute } from './_components/RunnerRoute';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
@@ -922,6 +923,7 @@ export function HealthClient({
                       </button>
                     </div>
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
+                    {health?.expanded && <RunnerRoute runner={hb} />}
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         <RunnerSlotDetail
@@ -2394,7 +2396,11 @@ export function routeLine(r: { requested: string; effective: string } | undefine
  */
 export function claimBlockerLine(c: ClaimBlocker | undefined): string {
   if (!c || c.state === 'unknown') return 'no recent scheduler decision (not known to be blocked)';
-  const at = c.evaluatedAt ? ` (last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+  const at = c.evaluatedAt ? ` (claim scheduler, last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
   const why = c.phrase ?? c.reason ?? 'held';
-  return c.state === 'blocked' ? `blocked: ${why}${at}` : `last held: ${why}, may no longer apply${at}`;
+  const label = c.kind === 'credential_unavailable' ? 'credential unavailable'
+    : c.kind === 'capacity_exhausted' ? 'capacity exhausted'
+    : c.kind === 'sandbox' ? 'sandbox requirement unmet'
+    : 'blocked';
+  return c.state === 'blocked' ? `${label}: ${why}${at}` : `last held (${label}): ${why}, may no longer apply${at}`;
 }

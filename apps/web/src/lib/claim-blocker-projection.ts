@@ -28,8 +28,31 @@ const CLAIM_HOLD_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export type ClaimBlockerState = 'blocked' | 'stale' | 'unknown';
 
+/**
+ * What kind of hold it is (spec 97b1bd0b AC-8): a missing credential, spent
+ * capacity and a sandbox gap are different problems with different fixers.
+ * `other` is any other recorded reason; null when no decision is on record.
+ */
+export type ClaimBlockerKind = 'credential_unavailable' | 'capacity_exhausted' | 'sandbox' | 'other';
+
+const CREDENTIAL_REASONS = new Set(['no_personal_credential', 'provider_unavailable']);
+const CAPACITY_REASONS = new Set([
+  'workspace_cap', 'mission_budget', 'mission_concurrent', 'budget_paused', 'managed_concurrency',
+  'managed_runner_hours', 'hosted_runner_hours', 'oauth_parallelism', 'codex_single_flight',
+]);
+
+export function claimBlockerKind(reason: string | null): ClaimBlockerKind | null {
+  if (!reason) return null;
+  if (CREDENTIAL_REASONS.has(reason)) return 'credential_unavailable';
+  if (CAPACITY_REASONS.has(reason)) return 'capacity_exhausted';
+  if (reason === 'isolation_unenforced') return 'sandbox';
+  return 'other';
+}
+
 export interface ClaimBlocker {
   state: ClaimBlockerState;
+  /** Credential unavailable, capacity exhausted, sandbox or other; null when unknown. */
+  kind: ClaimBlockerKind | null;
   /** The scheduler's own reason slug, when a decision is on record. */
   reason: string | null;
   /** Words for `reason`; null when the reason is not one Health has words for. */
@@ -47,7 +70,7 @@ export interface ClaimDecisionRow {
 /** Refusals that only concern one backend; they say nothing about a task routed elsewhere. */
 const BACKEND_SPECIFIC_REASONS: Readonly<Record<string, string>> = { codex_single_flight: 'codex' };
 
-const UNKNOWN: ClaimBlocker = { state: 'unknown', reason: null, phrase: null, evaluatedAt: null };
+const UNKNOWN: ClaimBlocker = { state: 'unknown', kind: null, reason: null, phrase: null, evaluatedAt: null };
 
 /** Pure: one task's blocker from its newest recorded decision. */
 export function projectClaimBlocker(
@@ -64,6 +87,7 @@ export function projectClaimBlocker(
     && BACKEND_SPECIFIC_REASONS[row.reason] !== effectiveBackend;
   return {
     state: !forOtherBackend && now - at.getTime() <= DEFERRAL_FRESHNESS_MS ? 'blocked' : 'stale',
+    kind: claimBlockerKind(row.reason),
     reason: row.reason,
     phrase: claimHoldPhrase(row.reason),
     evaluatedAt: at.toISOString(),
