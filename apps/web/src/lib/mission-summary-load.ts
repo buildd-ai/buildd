@@ -92,6 +92,8 @@ export async function loadMissionSummaryInputs(
           turns: workers.turns, exitCause: workers.exitCause,
           prUrl: workers.prUrl, prNumber: workers.prNumber, prBaseRef: workers.prBaseRef, mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus,
           supersededByPrNumber: workers.supersededByPrNumber, abandonedAt: workers.abandonedAt,
+          // A worker parked on a question: the list strip draws it as waiting on you.
+          waitingFor: workers.waitingFor,
         })
           .from(workers)
           .where(and(inArray(workers.taskId, taskIds), stageWorkersPredicate()))

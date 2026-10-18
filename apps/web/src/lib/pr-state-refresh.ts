@@ -267,11 +267,19 @@ async function recordObservedClosure(p: { workspaceId: string; repo: string; prN
  * with no delivery runs `refreshWorkerMergeStateIfStale` as before; a
  * delivery-owned row is read and, if GitHub says it closed, recorded as a fact
  * only (AC-3).
+ *
+ * Bounded (spec 3ef37387 R-12): each PR once, and at most
+ * {@link RENDER_OBSERVE_MAX} per render, in the caller's order. The rest wait
+ * for the next render or the hourly sweep.
  */
+export const RENDER_OBSERVE_MAX = 5;
+
 export async function observeMergeStateOnRender(
-  stale: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  rows: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
   installationId: number,
 ): Promise<void> {
+  const seen = new Set<string>();
+  const stale = rows.filter(w => !seen.has(w.prUrl) && !!seen.add(w.prUrl)).slice(0, RENDER_OBSERVE_MAX);
   if (stale.length === 0) return;
   const ownerOf = await deliveryOwnership(stale.map((w) => w.id));
   for (const w of stale) {

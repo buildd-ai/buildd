@@ -5,6 +5,7 @@
  * to note summaries for writing after the response, and to file a visual
  * review a mission PR owes (also after the response).
  */
+import type { MissionSummaryList } from '@buildd/shared';
 import { computeMissionSummary, homeReadingOf, type MissionHomeReading } from './mission-summary';
 import { loadMissionSummaryInputs } from './mission-summary-load';
 import { refreshMissionSummary } from './mission-summary-store';
@@ -19,6 +20,9 @@ export interface LiveHomeReading {
   computedAt: number;
   /** An integration-branch mission's mission-PR work holder (`missionWorkHolder`), else null. */
   workHolder: string | null;
+  /** The missions list's reading and live-worker count, from the same summary. */
+  list: MissionSummaryList;
+  liveWorkers: number;
 }
 
 /**
@@ -30,9 +34,10 @@ export async function deriveHomeReadings(ids: string[], now: number): Promise<Li
   const inputs = await loadMissionSummaryInputs(ids, { visualReview: false });
   return [...inputs.values()].map(input => {
     const m = input.missionRows[0] as Record<string, any>;
+    const summary = computeMissionSummary(input, now);
     return {
       id: m.id, title: m.title, status: m.status, completedAt: m.completedAt ?? null,
-      home: homeReadingOf(computeMissionSummary(input, now)), computedAt: now,
+      home: homeReadingOf(summary), computedAt: now, list: summary.list, liveWorkers: summary.liveWorkers,
       workHolder: m.integrationBranchEnabled === true
         ? missionWorkHolder(missionWorkStateFromRows(m as never, input.taskRows as never, input.workerRows as never))
         : null,

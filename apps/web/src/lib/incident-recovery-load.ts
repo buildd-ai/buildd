@@ -10,7 +10,11 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * the tasks' context and the incidents named. Never throws: a failed read
  * leaves every question as it is.
  */
-export async function loadTaskRecoveryViews(taskIds: readonly string[], opts: { timeZone?: string } = {}): Promise<Map<string, TaskRecoveryView>> {
+export async function loadTaskRecoveryViews(
+  taskIds: readonly string[],
+  /** A zone, or how to read it: read only when some task carries a ref. */
+  opts: { timeZone?: string | (() => Promise<string>) } = {},
+): Promise<Map<string, TaskRecoveryView>> {
   const out = new Map<string, TaskRecoveryView>();
   const ids = [...new Set(taskIds.filter(Boolean))];
   if (ids.length === 0) return out;
@@ -31,8 +35,9 @@ export async function loadTaskRecoveryViews(taskIds: readonly string[], opts: { 
       where: sqlWhere(inArray(failureIncidents.id, [...new Set(refs.map(r => r.ref.incidentId))])),
     });
     const byId = new Map(incidents.map(i => [i.id, i]));
+    const timeZone = typeof opts.timeZone === 'function' ? await opts.timeZone() : opts.timeZone;
     for (const { taskId, ref } of refs) {
-      const view = taskRecoveryView(byId.get(ref.incidentId) ?? null, { timeZone: opts.timeZone });
+      const view = taskRecoveryView(byId.get(ref.incidentId) ?? null, { timeZone });
       if (view) out.set(taskId, view);
     }
   } catch (err) {
@@ -41,11 +46,17 @@ export async function loadTaskRecoveryViews(taskIds: readonly string[], opts: { 
   return out;
 }
 
-/** As `loadTaskRecoveryViews`, in the viewer's zone: one wait for a page's parallel group. */
+/**
+ * As `loadTaskRecoveryViews`, in the viewer's zone: one wait for a page's
+ * parallel group. The zone is read only when a task carries a ref.
+ */
 export async function loadTaskRecoveryViewsForViewer(taskIds: readonly string[], viewer: { userId: string | null; teamId: string | null }): Promise<Map<string, TaskRecoveryView>> {
-  const { getViewerTimezone } = await import('./team-timezone');
-  const timeZone = await getViewerTimezone(viewer.userId, viewer.teamId).catch(() => 'UTC');
-  return loadTaskRecoveryViews(taskIds, { timeZone });
+  return loadTaskRecoveryViews(taskIds, {
+    timeZone: async () => {
+      const { getViewerTimezone } = await import('./team-timezone');
+      return getViewerTimezone(viewer.userId, viewer.teamId).catch(() => 'UTC');
+    },
+  });
 }
 
 /** Task ids whose open question recovery has superseded. */

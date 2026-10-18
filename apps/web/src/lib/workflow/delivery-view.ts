@@ -61,16 +61,17 @@ SELECT to_jsonb(d.*) AS delivery,
   (SELECT e.outcome FROM workflow_effects e
      WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
      ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
-  (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
+  -- The workspace's config and the owner task feed only the APPROVED merge rule (ApprovedMergeRule).
+  CASE WHEN d.state = 'APPROVED' THEN (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) END AS workspace,
   (SELECT f.payload->'contradiction' FROM workflow_facts f
      WHERE f.workspace_id = d.workspace_id AND f.repo_full_name = d.repo_full_name AND f.pr_number = d.pr_number
        AND f.kind = 'pr_closed' AND f.payload ? 'contradiction'
      ORDER BY f.observed_at DESC LIMIT 1) AS merge_contradiction,
-  (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
+  CASE WHEN d.state = 'APPROVED' THEN (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
             'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
                           'working_branch', m.working_branch, 'integration_branch_enabled', m.integration_branch_enabled)
                         FROM missions m WHERE m.id = ot.mission_id))
-     FROM tasks ot WHERE ot.id = d.owner_task_id) AS owner_task
+     FROM tasks ot WHERE ot.id = d.owner_task_id) END AS owner_task
 FROM dl d`;
 }
 

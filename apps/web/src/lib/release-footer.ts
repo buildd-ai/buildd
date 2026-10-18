@@ -20,7 +20,8 @@ export interface ReleaseFooterWorkspace {
   releaseConfig: unknown;
 }
 
-export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace): Promise<ReleaseFooterData> {
+/** `render`: a page is rendering, so the baseline never asks GitHub (lib/release-baseline.ts). */
+export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace, opts: { render?: boolean } = {}): Promise<ReleaseFooterData> {
   const archetype = detectArchetype({
     name: workspace.name,
     releaseConfig: (workspace.releaseConfig as any) ?? null,
@@ -28,16 +29,10 @@ export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace): 
   });
 
   if (archetype === 'gated') {
-    const [latestRelRow] = await db
-      .select({ id: releases.id })
-      .from(releases)
-      .where(eq(releases.workspaceId, workspace.id))
-      .orderBy(desc(releases.createdAt))
-      .limit(1);
-
     // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
     // healthy release → deployed release → any release row → prod-branch HEAD.
-    const baseline = await resolveGatedReleaseBaseline(workspace.id);
+    // The same read names the latest release.
+    const baseline = await resolveGatedReleaseBaseline(workspace.id, { render: opts.render });
 
     const queueRow = baseline.asOf
       ? (await db
@@ -67,7 +62,7 @@ export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace): 
           : derivedUnavailable<string>('no_scope'),
       baselineSource: baseline.source,
       baselineAsOf: baseline.asOf,
-      releaseId: latestRelRow?.id ?? null,
+      releaseId: baseline.latestReleaseId ?? null,
     };
   }
 

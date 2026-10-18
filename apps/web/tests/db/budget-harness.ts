@@ -215,6 +215,8 @@ export interface LoaderMeasurement {
   byTable: Record<string, { count: number; bytes: number }>;
   /** Round trips by SQL operation (select, insert, update, ...): R-15 reads `insert`/`update`/`delete`. */
   byOperation: Record<string, number>;
+  /** Each round trip: its literal-free SQL head and the bytes it returned. */
+  queries: Array<{ table: string | null; head: string; statements: number; bytes: number }>;
 }
 
 /** Run `fn` labelled `name` and measure every Neon round trip it makes. */
@@ -228,7 +230,10 @@ export async function measureLoader(name: string, fn: () => Promise<unknown>): P
     b.count += 1;
     b.bytes += query.bytes;
   }
-  return { name, count: rec.count, statements: rec.statements, bytes: rec.bytes, byLabel: rec.byLabel, byTable, byOperation };
+  return {
+    name, count: rec.count, statements: rec.statements, bytes: rec.bytes, byLabel: rec.byLabel, byTable, byOperation,
+    queries: rec.queries.map(x => ({ table: x.table, head: x.head, statements: x.statements, bytes: x.bytes })),
+  };
 }
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
@@ -245,6 +250,11 @@ export function reportBudget(m: LoaderMeasurement, budget: Budget, scale: SeedSc
     `  queries ${m.count} (budget ${budget.queries}), statements ${m.statements}, data ${kb(m.bytes)} (budget ${kb(budget.bytes)})`,
     `  heaviest tables:`,
     top,
+    // BUDGET_REPORT_QUERIES=1 lists every round trip, heaviest first: which statement to cut.
+    ...(process.env.BUDGET_REPORT_QUERIES === '1'
+      ? ['  round trips:', ...m.queries.slice().sort((a, b) => b.bytes - a.bytes)
+          .map(x => `    ${kb(x.bytes).padStart(9)}  ${x.statements > 1 ? `[batch ${x.statements}] ` : ''}${x.table ?? '-'}: ${x.head}`)]
+      : []),
   ].join('\n');
   process.stdout.write(`${text}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) {

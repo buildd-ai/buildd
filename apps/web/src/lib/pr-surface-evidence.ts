@@ -2,7 +2,7 @@
 import { db } from '@buildd/core/db';
 import { systemCache } from '@buildd/core/db/schema';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { isRenderedSurfaceChange } from '@buildd/core/surface-audit';
 import type { ImpactFile } from './workflow/visual-review-impact';
 
@@ -13,11 +13,7 @@ const keyFor = (repo: Repo, pr: number, head: string) =>
 
 async function read(key: string): Promise<Evidence | null> {
   try {
-    const row = await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, key)) });
-    if (!row || (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())) return null;
-    const value = row.value as Evidence;
-    return typeof value?.headSha === 'string' && Array.isArray(value.files)
-      && value.files.every(f => typeof f.path === 'string' && (f.patch === null || typeof f.patch === 'string')) ? value : null;
+    return evidenceOf(await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, key)) }));
   } catch { return null; }
 }
 
@@ -50,6 +46,36 @@ async function changedFiles(repo: Repo, pr: number): Promise<ImpactFile[] | null
   }
   // A capped list is not evidence of absence. Let the caller use declared scope.
   return null;
+}
+
+function evidenceOf(row: { value: unknown; expiresAt: Date | null } | undefined): Evidence | null {
+  if (!row || (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())) return null;
+  const value = row.value as Evidence;
+  return typeof value?.headSha === 'string' && Array.isArray(value.files)
+    && value.files.every(f => typeof f.path === 'string' && (f.patch === null || typeof f.patch === 'string')) ? value : null;
+}
+
+/**
+ * A render's read (spec 3ef37387 R-12): the durable merged evidence of each
+ * PR, all in one query, never GitHub. A PR with none recorded is absent; an
+ * open PR is not asked here at all (its head is GitHub's, see loadPrSurfaceFiles).
+ */
+export async function loadMergedSurfaceEvidence(repo: Repo, prs: readonly number[]): Promise<Map<number, ImpactFile[]>> {
+  const out = new Map<number, ImpactFile[]>();
+  if (prs.length === 0) return out;
+  const keys = new Map(prs.map(pr => [keyFor(repo, pr, 'merged'), pr] as const));
+  try {
+    const rows = await db.query.systemCache.findMany({
+      where: sqlWhere(inArray(systemCache.key, [...keys.keys()])),
+      columns: { key: true, value: true, expiresAt: true },
+    });
+    for (const row of rows) {
+      const ev = evidenceOf(row);
+      const pr = keys.get(row.key);
+      if (ev && pr != null) out.set(pr, ev.files);
+    }
+  } catch { /* unreadable storage: every PR answers by its declared manifest */ }
+  return out;
 }
 
 /** Rendering never fills merged evidence, even on cold/expired/unavailable storage. */

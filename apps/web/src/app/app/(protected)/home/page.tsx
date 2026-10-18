@@ -6,6 +6,7 @@ import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, createTeamInsta
 import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
 import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
+import { readRound } from '@/lib/read-round';
 import { tasks, workers, missions as missionsTable, missionSummaries, initiatives, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
@@ -115,22 +116,6 @@ const HOME_LISTED_MISSION_CAP = 40;
 const RECENT_DONE_MS = 12 * 3_600_000;
 const OPEN_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
 const MOVING_KINDS = ['landing', 'audit', 'repair', 'build'] as const;
-
-type BatchItem = PromiseLike<unknown>;
-type RoundResults<R> = { [K in keyof R]: Awaited<R[K]> };
-
-/**
- * One round of independent reads in one round trip. A null entry is a read
- * the round does not need; it comes back null and is never sent.
- */
-async function readRound<R extends Record<string, BatchItem | null>>(reads: R): Promise<RoundResults<R>> {
-  const keys = Object.keys(reads).filter(k => reads[k] != null);
-  const results = keys.length > 0 ? (await db.batch(keys.map(k => reads[k]) as never)) as unknown[] : [];
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(reads)) out[k] = null;
-  keys.forEach((k, i) => { out[k] = results[i]; });
-  return out as RoundResults<R>;
-}
 
 /** What Home renders, and nothing else. */
 interface HomeView {

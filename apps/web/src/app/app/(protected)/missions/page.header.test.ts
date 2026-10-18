@@ -28,7 +28,9 @@ describe('missions page header', () => {
   });
 
   it('hands the group filter the mission initiative link and the ?group= param', () => {
-    expect(src).toContain('groupId: obj.initiativeId');
+    // Each row's group is its initiative, read by the list's loader (lib/mission-list-load.ts).
+    const loader = readFileSync(join(import.meta.dir, '../../../../lib/mission-list-load.ts'), 'utf8');
+    expect(loader).toContain('groupId: missions.initiativeId');
     expect(src).toMatch(/initialGroup=\{/);
   });
 
