@@ -1,4 +1,5 @@
 import type { ActionQueueItem } from './action-queue';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './criteria-escalation-note';
 import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { StrandCta } from './mission-list-card';
@@ -167,6 +168,11 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     case 'QUESTION':
       return make({ label: 'question', tone: 'warning', title: text(i.question) ?? subject, sentence: text(i.question) && subject ? `Asked while working on ${subject}.` : 'An agent is waiting for your answer.', actionType: 'answer', primary: { label: 'Answer', href: taskHref ?? subjectHref ?? '' } });
     case 'DECIDE': {
+      // A criteria escalation's note title is the same sentence on every mission, so as the card title it
+      // made N escalated missions read as one duplicated ask. The mission is the subject; the verdict is the why.
+      if (i.noteTitle === CRITERIA_ESCALATION_NOTE_TITLE && text(i.missionTitle) && text(i.recommendation)) {
+        return make({ label: 'decision', tone: 'warning', title: text(i.missionTitle), sentence: text(i.recommendation), actionType: 'decide', primary: { label: 'Review criteria', href: subjectHref ?? '' } });
+      }
       const title = text(i.noteTitle) ?? text(i.escalationReason) ?? text(i.recommendation);
       return make({ label: 'decision', tone: 'warning', title, sentence: text(i.recommendation) && title !== text(i.recommendation) ? `Recommended: ${text(i.recommendation)}` : subject ? `Mission: ${subject}` : 'The mission is waiting on your choice.', actionType: 'decide', primary: { label: 'Choose…', href: subjectHref ?? '' } });
     }
