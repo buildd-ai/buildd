@@ -41,12 +41,13 @@ const view: KernelView = {
   ],
 };
 const dv = deriveDeliveryView({ view })!;
-const LINE = '2 rounds · latest: changes requested · 2 open findings';
+// AC-47: each finding counted once: the required open one, the verified one, the optional one apart.
+const LINE = '2 rounds · latest: changes requested · 1 open finding, 1 verified resolved, 1 advisory';
 
 describe('AC-24: the three surfaces agree on a delivery with two review rounds', () => {
   test('get_pr', () => {
     const report = prDeliveryReport(dv);
-    expect(report.review).toMatchObject({ rounds: 2, latestVerdict: 'request_changes', openFindings: 2 });
+    expect(report.review).toMatchObject({ rounds: 2, latestVerdict: 'request_changes', findings: { open: 1, addressedAwaitingVerification: 0, verifiedResolved: 1, waived: 0, deferred: 0, total: 2, advisory: 1 } });
     // No GitHub reviews: it still never says "Reviews: none".
     const { reviewLine } = formatGetPrDelivery({ reviews: { approved: 0, changesRequested: 0 }, delivery: report });
     expect(reviewLine).toBe(`Reviews: ${LINE}`);

@@ -253,9 +253,68 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
       const [req, ctx] = makeRequest();
       const res = await POST(req, ctx);
       expect(res.status).toBe(409);
-      expect(await res.json()).toMatchObject({ reason: 'no_review_at_head', kernel: true });
+      const body = await res.json();
+      expect(body).toMatchObject({ reason: 'no_review_at_head', kernel: true });
+      // AC-46: the reason in plain words, never the bare code.
+      expect(body.error).toContain('no review has read the current commit');
       expect(mockTasksValues).not.toHaveBeenCalled();
       expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+    });
+
+    describe('Living Spec r7: a person\'s bounded fix from the escalation decision', () => {
+      const applied = {
+        result: { result: 'applied', transitionId: 'tr-1', deliveryId: 'd-1', version: 8, decision: {} },
+        current, attempt: { id: 'a-1', attemptNo: 3, maxAttempts: 3, taskId: 'kernel-fix-1' },
+      };
+
+      it('AC-45: the fix is bound to the head and version the card showed', async () => {
+        mockApplyThroughKernel.mockResolvedValue(applied);
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7, headSha: 'abc123' });
+        expect((await POST(req, ctx)).status).toBe(200);
+        expect(mockApplyThroughKernel.mock.calls[0][0]).toMatchObject({ expectedVersion: 7, decisionHeadSha: 'abc123', actor: 'human:u-1' });
+      });
+
+      it('AC-45: the same decision again is the first fix: ok, nothing new filed, the note cleared, no second feed entry', async () => {
+        mockApplyThroughKernel.mockResolvedValue({
+          result: { result: 'duplicate', transitionId: 'tr-1', reason: 'idempotency_key_seen', current }, current, attempt: null,
+        });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7, headSha: 'abc123' });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ ok: true, dispatched: false, kernel: true });
+        expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+        expect(mockMissionNotesValues).not.toHaveBeenCalled();
+        expect(mockTasksValues).not.toHaveBeenCalled();
+      });
+
+      it('AC-45: a stale replay after the PR escalated again is not a success: the new note stays', async () => {
+        const escalated = { state: 'ESCALATED', stateReason: 'review_exhausted', version: 12, head: 'abc123', round: 3 };
+        mockApplyThroughKernel.mockResolvedValue({
+          result: { result: 'duplicate', transitionId: 'tr-1', reason: 'idempotency_key_seen', current: escalated }, current: escalated, attempt: null,
+        });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7, headSha: 'abc123' });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ reason: 'decision_already_answered', stale: true, kernel: true });
+        expect(body.error).not.toMatch(/[a-z]+_[a-z_]+/);
+        expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+        expect(mockMissionNotesValues).not.toHaveBeenCalled();
+      });
+
+      it('AC-46: a fix decided on a head that moved is a 409 in plain words, and the note stays', async () => {
+        mockApplyThroughKernel.mockResolvedValue({
+          result: { result: 'rejected', reason: 'decision_head_stale', current }, current, attempt: null,
+        });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7, headSha: 'old999' });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ reason: 'decision_head_stale', stale: true, kernel: true });
+        expect(body.error).toContain('newer commit');
+        expect(body.error).not.toMatch(/[a-z]+_[a-z_]+/);
+        expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+      });
     });
 
     it('a legacy PR never reaches the kernel door', async () => {

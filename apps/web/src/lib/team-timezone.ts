@@ -4,6 +4,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { DEFAULT_TIMEZONE, isValidTimezone, resolveTimezone } from '@buildd/core/timezone';
 import { roleHas, TEAM_ROLES } from '@/lib/permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from './caller-cache';
 
 /**
  * Timezone lookups. Two stored zones, no override chain — see
@@ -97,6 +98,7 @@ export async function recordUserTimezone(
   if (!isValidTimezone(timezone)) return null;
 
   await db.update(users).set({ timezone, updatedAt: new Date() }).where(eq(users.id, userId));
+  await clearCallerCache(callerDep.user(userId));
 
   const owned = await db
     .select({ teamId: teamMembers.teamId })

@@ -33,9 +33,13 @@ describe('reviewSummaryOf (AC-24)', () => {
       ],
       findings: [F(), F({ id: 'r1:1', status: 'addressed' }), F({ id: 'r1:2', status: 'resolved' }), F({ id: 'r2:0', required: false })],
     })!;
-    expect(s).toEqual({ rounds: 2, latestRound: 2, latestVerdict: 'request_changes', inFlight: false, openFindings: 3, addressedFindings: 1, totalFindings: 4 });
-    // c1d66a6a: one of them has a fix pushed since (addressed), waiting for a review to verify it.
-    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · 3 open findings, 1 with a fix waiting for a re-review');
+    // AC-47: each required finding counted once; the optional one is advice, outside the partition.
+    expect(s).toEqual({
+      rounds: 2, latestRound: 2, latestVerdict: 'request_changes', inFlight: false,
+      findings: { open: 1, addressedAwaitingVerification: 1, verifiedResolved: 1, waived: 0, deferred: 0, total: 3, advisory: 1 },
+    });
+    // c1d66a6a: one of them has a fix pushed since (addressed), not verified, and not counted as open too.
+    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · 1 open finding, 1 with a fix awaiting verification, 1 verified resolved, 1 advisory');
   });
 
   test('a round in flight is counted; the verdict is the newest decided one', () => {
@@ -44,7 +48,7 @@ describe('reviewSummaryOf (AC-24)', () => {
     expect(s.latestVerdict).toBe('request_changes');
     expect(s.inFlight).toBe(true);
     expect(s.reviewing).toBe(true);
-    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · round 2 in review · no open findings');
+    expect(reviewSummaryLine(s)).toBe('2 rounds · latest: changes requested · round 2 in review · no open findings (1 verified resolved)');
   });
 
   test('a superseded round is not a round anyone reviewed', () => {
@@ -55,6 +59,12 @@ describe('reviewSummaryOf (AC-24)', () => {
 
   test('only queued: no verdict yet', () => {
     expect(reviewSummaryLine(reviewSummaryOf({ rounds: [R({ status: 'queued' })] })!)).toBe('1 round · round 1 queued · no open findings');
+  });
+
+  test('AC-47: a waived and a deferred finding are counted apart, never as verified resolved', () => {
+    const s = reviewSummaryOf({ rounds: [R({ effectiveVerdict: 'approve' })], findings: [F({ status: 'waived' }), F({ id: 'r1:1', status: 'deferred' }), F({ id: 'r1:2', status: 'resolved' })] })!;
+    expect(s.findings).toEqual({ open: 0, addressedAwaitingVerification: 0, verifiedResolved: 1, waived: 1, deferred: 1, total: 3, advisory: 0 });
+    expect(reviewSummaryLine(s)).toBe('1 round · latest: approved · no open findings (1 verified resolved, 1 waived, 1 deferred)');
   });
 
   test('the effective verdict wins over the raw one', () => {

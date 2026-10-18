@@ -631,6 +631,9 @@ describe('POST /api/github/pr/review — idempotency', () => {
       const body = await res.json();
       expect(body.code).toBe('force_requires_human');
       expect(body.hint).toContain('person');
+      // Living Spec r7 AC-46: the error itself is a plain sentence, never the bare code.
+      expect(body.error).toContain('only a person');
+      expect(body.error).not.toMatch(/[a-z]+_[a-z_]+/);
     });
 
     // 2ded4e88: a spent review budget is a person's. The hint names where they act, not `force`: an

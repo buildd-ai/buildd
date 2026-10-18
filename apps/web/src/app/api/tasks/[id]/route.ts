@@ -49,6 +49,7 @@ import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -372,6 +373,8 @@ export async function PATCH(
       if (!updated) {
         return NextResponse.json({ error: 'The task was claimed while the delegation was being set; a running agent asks with request_capability instead.', code: 'not_pending' }, { status: 409 });
       }
+      // A token minted for this task reads its delegation through the caller cache.
+      await clearCallerCache(callerDep.task(id));
       return NextResponse.json({ id: updated.id, delegation: updated.delegation });
     }
 

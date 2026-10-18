@@ -70,7 +70,8 @@ import { LandedThisWeek, type LandedMission } from './LandedThisWeek';
 import { buildAgentsModel } from '@/lib/home-agents';
 import { idleWhileQueued } from '@/lib/idle-while-queued';
 import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
-import { startOfDayInZone } from '@/lib/fleet-view';
+import { startOfDayInZone, type FleetHeartbeatRow } from '@/lib/fleet-view';
+import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { shortAgo } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { missionTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
@@ -761,7 +762,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   await orderStrandButtons(view.listed, teamId, userId, now);
 
   // ── Questions ──
-  const { questions, runnerConnected } = homeQuestionsFrom({ heartbeats: r1.heartbeats ?? [], rows: asking, superseded, now });
+  const { questions, runnerConnected } = homeQuestionsFrom({ heartbeats: await withLiveRunnerBeats((r1.heartbeats ?? []) as FleetHeartbeatRow[]), rows: asking, superseded, now });
   view.runnerConnected = hasWs ? runnerConnected : undefined;
   view.questions = questions.map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
