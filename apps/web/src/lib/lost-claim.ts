@@ -25,21 +25,43 @@
  * The release is a compare-and-swap on `status = 'idle' AND started_at IS
  * NULL`: a runner whose `running` PATCH lands first keeps its worker, so a late
  * acknowledgement can never race a release into two sessions.
+ *
+ * The same report also keeps the rows it lists alive. A runner starts the
+ * workers of one claim one after another (fetch, worktree, provisioning), so
+ * the last of a large batch can wait more than five minutes for its
+ * `running` PATCH. The idle and never-started reap rules judge by `updated_at`,
+ * and before this they failed such a worker while the runner was listing it as
+ * held on every heartbeat. A listed
+ * row's `updated_at` now advances on each heartbeat, for at most
+ * CLAIM_ACK_MAX_HOLD_MS after minting, so a start that never finishes is still
+ * reaped.
+ *
+ * A released row's task goes back to pending without charging the infra retry
+ * budget (resolveTasksOfReapedWorkers, `undelivered`): nothing ran, so a run of
+ * lost responses says nothing about the task and must never stall it.
  */
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
 import { CLAIM_RESPONSE_LOST_ERROR } from '@/lib/worker-exit-taxonomy';
 import { releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { resolveTasksOfReapedWorkers } from '@/lib/stale-workers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
- * How old an unstarted row must be before a heartbeat may release it. Well
- * above the runner's 30s claim timeout, so a response still on the wire is
- * never mistaken for a lost one even if `claimInFlight` was misreported.
+ * How old an unstarted row must be before a heartbeat may release it. Above
+ * the runner's 90s claim timeout (CLAIM_TIMEOUT_MS in apps/runner/src/buildd.ts,
+ * raised from 30s), so a response still on the wire is never mistaken for a
+ * lost one even if `claimInFlight` was misreported.
  */
-export const CLAIM_ACK_GRACE_MS = 90_000;
+export const CLAIM_ACK_GRACE_MS = 120_000;
+
+/**
+ * How long after minting a runner's acknowledgement keeps an unstarted row
+ * alive. A batch's serial start takes minutes, not this long; past it the row
+ * is left to the never-started reap.
+ */
+export const CLAIM_ACK_MAX_HOLD_MS = 30 * 60_000;
 
 /** What a runner reports on its heartbeat about the claim → session handoff. */
 export interface ClaimHandoffReport {
@@ -75,6 +97,8 @@ export interface LostClaimCandidate {
 export interface LostClaimDeps {
   /** Unstarted idle rows this account minted for `runner` before `mintedBefore`, excluding `held`. */
   findCandidates(input: { accountId: string; runner: string; mintedBefore: Date; held: string[] }): Promise<LostClaimCandidate[]>;
+  /** Advance `updated_at` on `ids` still idle and unstarted, minted for `runner` after `mintedAfter`. */
+  renewHeld(input: { accountId: string; runner: string; ids: string[]; mintedAfter: Date; now: Date }): Promise<number>;
   /** CAS: fail the rows still idle and unstarted; returns the ids actually released. */
   release(ids: string[], now: Date): Promise<string[]>;
   releaseSeats(accountIds: Array<string | null>): Promise<unknown>;
@@ -100,6 +124,22 @@ const defaultDeps: LostClaimDeps = {
       limit: 50,
     });
   },
+  async renewHeld({ accountId, runner, ids, mintedAfter, now }) {
+    if (ids.length === 0) return 0;
+    const rows = await db
+      .update(workers)
+      .set({ updatedAt: now })
+      .where(and(
+        inArray(workers.id, ids),
+        eq(workers.accountId, accountId),
+        eq(workers.runner, runner),
+        eq(workers.status, 'idle'),
+        isNull(workers.startedAt),
+        gt(workers.createdAt, mintedAfter),
+      ))
+      .returning({ id: workers.id });
+    return rows.length;
+  },
   async release(ids, now) {
     if (ids.length === 0) return [];
     const rows = await db
@@ -120,7 +160,7 @@ const defaultDeps: LostClaimDeps = {
     return rows.map(r => r.id);
   },
   releaseSeats: releaseConcurrencySeats,
-  resolveTasks: released => resolveTasksOfReapedWorkers(released, 'never_started'),
+  resolveTasks: released => resolveTasksOfReapedWorkers(released, 'never_started', { undelivered: true }),
   log: line => console.warn(line),
 };
 
@@ -133,9 +173,11 @@ export async function releaseUnacknowledgedClaims(
   deps: LostClaimDeps = defaultDeps,
 ): Promise<number> {
   const { accountId, runner, report } = input;
-  if (report.claimInFlight) return 0;
   const now = input.now ?? new Date();
   const held = [...new Set([...report.pendingStartIds, ...(input.heldWorkerIds ?? [])])];
+  // Held is held whether or not another claim is in flight.
+  await deps.renewHeld({ accountId, runner, ids: held, mintedAfter: new Date(now.getTime() - CLAIM_ACK_MAX_HOLD_MS), now });
+  if (report.claimInFlight) return 0;
   const candidates = await deps.findCandidates({
     accountId,
     runner,
