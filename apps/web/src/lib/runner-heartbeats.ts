@@ -14,6 +14,7 @@ import {
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { classifyRunnerOwnership } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
@@ -49,7 +50,7 @@ export async function getRunnerHeartbeats(
   const hbs = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
     orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
-    with: { account: { columns: { name: true, teamId: true, createdByUserId: true } } },
+    with: { account: { columns: { name: true, teamId: true, createdByUserId: true, managedRunner: true, hostRunner: true } } },
   });
   if (hbs.length === 0) return [];
 
@@ -110,6 +111,7 @@ export async function getRunnerHeartbeats(
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
       isolation: readIsolationRecord(hb.environment),
       shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
+      runnerClass: classifyRunnerOwnership(hb.account),
       mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
 }

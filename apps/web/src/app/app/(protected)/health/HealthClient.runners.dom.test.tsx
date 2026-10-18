@@ -190,6 +190,18 @@ describe('Health › Runners ownership', () => {
     expect(team!.textContent).toContain('Teammate box');
   });
 
+  it('labels managed, team-host and personal runners by their recorded class', async () => {
+    await mount(0, [
+      { ...hb('a', 'Mine one', true), runnerClass: 'personal' },
+      { ...hb('b', 'Cloud', false), runnerClass: 'managed' },
+      { ...hb('c', 'Host', false), runnerClass: 'team' },
+    ]);
+    expect(q('health-runners-mine')!.textContent).toContain('personal');
+    const team = q('health-runners-team')!.textContent!;
+    expect(team).toContain('managed');
+    expect(team).toContain('team host');
+  });
+
   it('omits a section with no runners', async () => {
     await mount(0, [hb('a', 'Mine one', true)]);
     expect(q('health-runners-mine')).not.toBeNull();
