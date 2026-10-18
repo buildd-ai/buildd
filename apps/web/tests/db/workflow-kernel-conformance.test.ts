@@ -14,7 +14,8 @@ import type { EffectKind } from '@buildd/workflow-kernel/commands';
 import { postgresStore } from '../../src/lib/workflow/postgres-store';
 import { builddPolicy } from '../../src/lib/workflow/kernel-policy';
 import type { Exec } from '../../src/lib/workflow/kernel';
-import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { applyEpochOpsSql, epochsForMissions } from '../../src/lib/workflow/delivery-epochs';
+import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
 
 beforeAll(() => {
   assertDbConfigured();
@@ -54,7 +55,37 @@ function postgresHost(): ConformanceHost {
     setKernelEnabled: async (workspaceId, on) => {
       await q(sql`UPDATE workspaces SET git_config = jsonb_set(COALESCE(git_config, '{}'::jsonb), '{workflowKernel}', ${JSON.stringify(on)}::jsonb) WHERE id = ${workspaceId}::uuid`);
     },
+    // §6: buildd's one statement per epoch transition (applyEpochOpsSql), its CAS and unique indexes.
+    epochs: {
+      seedMission: async (branch) => {
+        const { teamId, workspaceId } = await seedWorkspace();
+        const missionId = await seedMission(teamId, workspaceId);
+        await q(sql`UPDATE missions SET working_branch = ${branch}, integration_branch_enabled = true WHERE id = ${missionId}::uuid`);
+        return missionId;
+      },
+      load: async (missionId) => ({
+        integrationBranch: (await q<{ working_branch: string | null }>(sql`SELECT working_branch FROM missions WHERE id = ${missionId}::uuid`))[0]?.working_branch ?? null,
+        epochs: (await epochsForMissions([missionId], exec)).get(missionId) ?? [],
+      }),
+      apply: async (ops) => {
+        try {
+          const row = (await exec(applyEpochOpsSql(ops))).rows?.[0] as { applied?: unknown } | undefined;
+          return row?.applied === true || row?.applied === 't';
+        } catch (err) {
+          if (isUniqueViolation(err)) return false;
+          throw err;
+        }
+      },
+    },
   };
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  for (let e: unknown = err, i = 0; e && i < 4; e = (e as { cause?: unknown }).cause, i++) {
+    if ((e as { code?: unknown }).code === '23505') return true;
+    if (/duplicate key value violates unique constraint/i.test(String((e as { message?: unknown }).message ?? ''))) return true;
+  }
+  return false;
 }
 
 // The scenarios leave effects owed (most never drain). Other files drain the whole
