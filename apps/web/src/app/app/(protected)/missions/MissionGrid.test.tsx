@@ -199,7 +199,7 @@ describe('MissionGrid portfolio', () => {
   });
 
   it('shows a state as glyph + word', () => {
-    expect(rowHtml('m02')).toContain('Auditing');
+    expect(rowHtml('m02')).toContain('In review');
     expect(rowHtml('m03')).toContain('Closed without merging');
     expect(rowHtml('m03')).not.toContain('Not landed');
   });

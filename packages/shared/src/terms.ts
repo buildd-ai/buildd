@@ -74,6 +74,7 @@ export type TermKey =
   // A PR (kernel delivery)
   | 'pr.waiting_push'
   | 'pr.in_review'
+  | 'pr.checking'
   | 'pr.changes_requested'
   | 'pr.fixing'
   | 'pr.ci_failed'
@@ -93,6 +94,9 @@ export type TermKey =
   | 'wait.runner'
   | 'wait.no_runner'
   | 'wait.unknown'
+  | 'wait.agent'
+  | 'wait.checks'
+  | 'wait.review'
   // Runner, release, totals
   | 'runner.paused'
   | 'release.releasing'
@@ -178,6 +182,8 @@ const TERM_LIST: Term[] = [
     means: 'The agent finished; its commits are not on the PR yet.', from: [k('AWAITING_PUSH')] },
   { key: 'pr.in_review', word: 'In review', short: 'in review', tone: 'run', glyph: '◐',
     means: 'An agent is reviewing the PR.', from: [k('AWAITING_REVIEW'), ts('review'), sk('review')] },
+  { key: 'pr.checking', word: 'Checking', short: 'checking', tone: 'run', glyph: '◐',
+    means: 'Required checks are running on the current revision.', from: [] },
   { key: 'pr.changes_requested', word: 'Changes requested', short: 'changes requested', tone: 'act',
     means: 'The review asked for changes; a fix starts next.', from: [k('CHANGES_REQUESTED')] },
   { key: 'pr.fixing', word: 'Fixing', short: 'fixing', tone: 'act', glyph: '↻',
@@ -225,6 +231,12 @@ const TERM_LIST: Term[] = [
     from: wk('provider_unavailable', 'role_unavailable', 'capability_mismatch') },
   { key: 'wait.unknown', word: 'Not started: reason unknown', short: 'reason unknown', tone: 'q',
     means: 'The server did not say why it has not started.', from: wk('unknown') },
+  { key: 'wait.agent', word: 'Waiting for an agent', short: 'waiting for an agent', tone: 'q',
+    means: 'The work is filed; it starts when an agent picks it up.', from: [] },
+  { key: 'wait.checks', word: 'Waiting for checks', short: 'waiting for checks', tone: 'q',
+    means: 'Nothing is running here; the PR waits on its required checks.', from: [] },
+  { key: 'wait.review', word: 'Waiting for review', short: 'waiting for review', tone: 'q',
+    means: 'The PR waits for a reviewer to pick it up.', from: [] },
 
   // ── Runners, releases, totals ─────────────────────────────────────────────
   { key: 'runner.paused', word: 'Paused', short: 'paused', tone: 'q', glyph: '‖',
@@ -271,6 +283,14 @@ export const termWord = (key: TermKey): string => TERMS[key].word;
 /** A terminal form, by key. */
 export const termShort = (key: TermKey): string => TERMS[key].short;
 
+/**
+ * Runner capacity: "2 of 3 slots in use". Never busy, running or working,
+ * which are state words (§2.4). `short` is the terminal header form.
+ */
+export function slotsInUse(used: number, total: number, form: 'long' | 'short' = 'long'): string {
+  return form === 'short' ? `${used}/${total} in use` : `${used} of ${total} ${total === 1 ? 'slot' : 'slots'} in use`;
+}
+
 /** The mission start gate in words: Not started until it first runs, Paused after. */
 export function missionGateTerm(m: { armedAt?: Date | string | null }): Term {
   return TERMS[m.armedAt ? 'mission.paused' : 'mission.not_started'];
@@ -307,6 +327,14 @@ export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: strin
     why: 'One merged PR read Shipped, Landed, Merged and Completed depending on the screen.' },
   { word: /\bdeliver(?:ed|ing)\b/i, use: 'Done, Merging, Done this week',
     why: '"Delivery" is the kernel’s internal noun for a PR’s journey.' },
+  { word: /\bauditing\b|\bin audit\b|\brepairing\b/i, use: 'In review, Checking, Fixing',
+    why: 'Review was Auditing, In audit or In review, and a fix was Repairing on the web and Fixing everywhere else.' },
+  { word: /^(?:Pending|Queued|Never started|Assigned|Starting|Running(?: now)?)$/, use: 'Ready, Blocked, Working, Not started',
+    why: 'Pending and Ready named one row; Queued meant two different waits; Assigned, Starting and Running all meant an agent is on it.' },
+  { word: /\bwaiting for a worker\b/i, use: 'Waiting for an agent',
+    why: '"Worker" is the platform’s internal noun for one agent session.' },
+  { word: /\b(?:of|\/)\s*\S+\s+busy\b|\bslots? (?:is |are )?busy\b|\bevery slot is busy\b/i, use: '2 of 3 slots in use',
+    why: 'Capacity read busy, running or working; those are state words.' },
   { word: /^completed$|\bcompleted this week\b/i, use: 'Done, Merged',
     why: 'A task marked Completed drew the merged glyph even when it had no PR.' },
   { word: /\blocal[- ]sessions?\b|\[LOCAL\b|^LOCAL$|\bbuilding locally\b/i, use: 'Your session, Run from your session, Running in your session',

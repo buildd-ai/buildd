@@ -82,8 +82,8 @@ export interface LandedStripProps {
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: TERMS['pr.merged'].word, review: 'In review', running: 'Running', waiting: 'Has a question',
-  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
+  landed: TERMS['pr.merged'].word, review: 'In review', running: TERMS['work.working'].word, waiting: 'Has a question',
+  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: TERMS['work.blocked'].word,
 };
 
 /**

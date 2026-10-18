@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, TERMS, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -1414,7 +1414,7 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     if (!Number.isNaN(at) && at > now) return `starts in ${untilWords(at - now)}`;
   }
   const busy = busySlots(state);
-  if (busy >= state.runner.maxConcurrent) return `runner is full (${busy} of ${state.runner.maxConcurrent} busy)`;
+  if (busy >= state.runner.maxConcurrent) return `runner is full (${slotsInUse(busy, state.runner.maxConcurrent)})`;
   if (broad && broadSawIt && broad.reason !== 'claimed') {
     if (broad.reason === 'all_candidates_deferred') {
       const words = broadDeferralWords(broad);

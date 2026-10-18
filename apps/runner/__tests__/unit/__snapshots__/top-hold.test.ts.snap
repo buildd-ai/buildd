@@ -1,14 +1,14 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`the frame while held 80x24: "paused" in place of "online", and the line under the header 1`] = `
-" buildd · laptop-1234                         2 of 3 busy · ● paused · v0.340.0 
+" buildd · laptop-1234                 2 of 3 slots in use · ● paused · v0.340.0 
  Paused since 09:12: nothing new starts, 2 running finish. h resumes.           
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
    Local only     0/1 │─────────────────────────────────────────────────────────
-   Specs import   1/2 │ Running now                                             
+   Specs import   1/2 │ Working now                                             
    Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ? installer hint   Builder      9m asks: "Print the URL…
                       │ ● single instance  Builder      4m bun run test __tests…
@@ -28,14 +28,14 @@ exports[`the frame while held 80x24: "paused" in place of "online", and the line
 `;
 
 exports[`the frame while held 120x40 1`] = `
-" buildd · laptop-1234                                                                 2 of 3 busy · ● paused · v0.340.0 
+" buildd · laptop-1234                                                         2 of 3 slots in use · ● paused · v0.340.0 
  Paused since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                   
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
  ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
    Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
-   Specs import         1/2 │ Running now                                                                               
+   Specs import         1/2 │ Working now                                                                               
    Other tasks       1 open │›● name override               Builder     12m Edit config.ts                       41k tok
                             │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
                             │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok

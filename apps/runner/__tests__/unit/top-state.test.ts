@@ -169,7 +169,7 @@ describe('rows (R-3)', () => {
     const loose = TASKS.find(t => t.id === 't-loose')!;
     expect(waitingReason(loose, s, NOW)).toBe('not tried yet');
     const full = reduce(s, { type: 'config', maxConcurrent: 2 });
-    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 busy)');
+    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 slots in use)');
   });
 
   test('a dependency that is done no longer holds the task', () => {
