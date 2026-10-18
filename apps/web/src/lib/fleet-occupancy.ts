@@ -24,6 +24,7 @@
 
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { executorOf } from './executor';
+import { RUNNER_CLASSES, type RunnerClass } from './runner-ownership';
 
 export type OccupancyWindow = '24h' | '7d' | '30d';
 export const OCCUPANCY_WINDOWS: readonly OccupancyWindow[] = ['24h', '7d', '30d'];
@@ -56,6 +57,16 @@ export interface OccupancyWorkerRow {
   updatedAt: number | null;
   /** `workers.claimedByUserId`: the accountable principal. Null/absent: unattributed, never guessed. */
   ownerId?: string | null;
+  /**
+   * `tasks.createdByUserId`: the task's owner. For runner work it decides
+   * mine/others, so a task on a managed runner belongs to its owner and not to
+   * whichever key claimed it. Absent (older callers): the claimer decides. Null:
+   * a service-owned or unowned task, unattributed. Interactive sessions always
+   * belong to their claimer.
+   */
+  taskOwnerId?: string | null;
+  /** The runner's ownership class (lib/runner-ownership.ts); absent reads as unknown. */
+  runnerClass?: RunnerClass;
 }
 
 export interface OccupancyLevel {
@@ -91,7 +102,14 @@ export interface OccupancySeries {
   bucketMs: number;
   buckets: OccupancyBucket[];
   /** Over the whole window: the highest peak, and the time-weighted mean. */
-  summary: { runner: OccupancyLevel; sessions: OccupancyLevel; runnerBy: OccupancyBreakdown; sessionsBy: OccupancyBreakdown };
+  summary: {
+    runner: OccupancyLevel;
+    sessions: OccupancyLevel;
+    runnerBy: OccupancyBreakdown;
+    sessionsBy: OccupancyBreakdown;
+    /** Runner slots by whose runner held them, independent of whose task it was. */
+    runnerByClass: Record<RunnerClass, OccupancyLevel>;
+  };
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
@@ -159,9 +177,10 @@ function level(edges: Edge[], from: number, now: number, bucketMs: number, count
   return { buckets, summary: { avg: now > from ? total / (now - from) : 0, peak: Math.max(0, ...peak) } };
 }
 
-function ownerOf(w: OccupancyWorkerRow, viewerId: string | null | undefined): OccupancyOwner {
-  if (!w.ownerId) return 'unattributed';
-  return viewerId && w.ownerId === viewerId ? 'mine' : 'others';
+function ownerOf(w: OccupancyWorkerRow, viewerId: string | null | undefined, executor: 'runner' | 'interactive'): OccupancyOwner {
+  const owner = executor === 'runner' && w.taskOwnerId !== undefined ? w.taskOwnerId : w.ownerId;
+  if (!owner) return 'unattributed';
+  return viewerId && owner === viewerId ? 'mine' : 'others';
 }
 
 type OwnerEdges = Record<OccupancyOwner, Edge[]>;
@@ -185,6 +204,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   const { from, bucketMs, count } = occupancyBuckets(window, now, input.tzOffsetMs ?? 0);
   const runnerEdges = emptyEdges();
   const sessionEdges = emptyEdges();
+  const classEdges = Object.fromEntries(RUNNER_CLASSES.map(c => [c, [] as Edge[]])) as Record<RunnerClass, Edge[]>;
   for (const w of workers) {
     if (w.startedAt == null) continue;
     const executor = executorOf(w.runner);
@@ -192,11 +212,13 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
     const start = w.startedAt;
     const end = Math.min(occupancyEnd(w, now), now);
     if (end <= start || end <= from) continue;
-    const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId)];
+    const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId, executor)];
     into.push({ t: start, d: 1 }, { t: end, d: -1 });
+    if (executor === 'runner') classEdges[w.runnerClass ?? 'unknown'].push({ t: start, d: 1 }, { t: end, d: -1 });
   }
   const runner = split(runnerEdges, from, now, bucketMs, count);
   const sessions = split(sessionEdges, from, now, bucketMs, count);
+  const runnerByClass = Object.fromEntries(RUNNER_CLASSES.map(c => [c, level(classEdges[c], from, now, bucketMs, count).summary])) as Record<RunnerClass, OccupancyLevel>;
   return {
     windowKey: window,
     window: { from, to: now },
@@ -208,7 +230,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
       runnerBy: runner.at(k),
       sessionsBy: sessions.at(k),
     })),
-    summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary },
+    summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary, runnerByClass },
   };
 }
 
@@ -233,5 +255,7 @@ export function occupancyDiscrepancies(series: OccupancySeries): string[] {
   }
   check('runner summary', series.summary.runner, series.summary.runnerBy);
   check('sessions summary', series.summary.sessions, series.summary.sessionsBy);
+  const classAvg = RUNNER_CLASSES.reduce((s, c) => s + series.summary.runnerByClass[c].avg, 0);
+  if (Math.abs(classAvg - series.summary.runner.avg) > EPS) out.push(`runner summary: class avg ${classAvg} != total ${series.summary.runner.avg}`);
   return out;
 }

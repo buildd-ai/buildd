@@ -5,9 +5,10 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers, workspaces } from '@buildd/core/db/schema';
+import { accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { classifyRunnerOwnership } from './runner-ownership';
 import { buildOccupancySeries, occupancyBuckets, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
 
 /** The team's workspace ids: the scope every occupancy read is limited to. */
@@ -45,18 +46,27 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
     .select({
       runner: workers.runner,
       ownerId: workers.claimedByUserId,
+      taskOwnerId: tasks.createdByUserId,
+      managedRunner: accounts.managedRunner,
+      hostRunner: accounts.hostRunner,
+      accountOwnerId: accounts.createdByUserId,
+      hasAccount: accounts.id,
       status: workers.status,
       startedAt: workers.startedAt,
       completedAt: workers.completedAt,
       updatedAt: workers.updatedAt,
     })
     .from(workers)
+    .leftJoin(tasks, eq(tasks.id, workers.taskId))
+    .leftJoin(accounts, eq(accounts.id, workers.accountId))
     .where(occupancyWhere(workspaceIds, since, now))
     .orderBy(desc(workers.startedAt))
     .limit(OCCUPANCY_ROW_LIMIT);
-  return (rows as Array<{ runner: string | null; ownerId: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
+  return (rows as Array<{ runner: string | null; ownerId: string | null; taskOwnerId: string | null; managedRunner: boolean | null; hostRunner: boolean | null; accountOwnerId: string | null; hasAccount: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
     runner: r.runner,
     ownerId: r.ownerId,
+    taskOwnerId: r.taskOwnerId,
+    runnerClass: classifyRunnerOwnership(r.hasAccount ? { managedRunner: r.managedRunner, hostRunner: r.hostRunner, createdByUserId: r.accountOwnerId } : null),
     status: r.status,
     startedAt: ms(r.startedAt),
     completedAt: ms(r.completedAt),
