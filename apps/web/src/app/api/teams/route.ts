@@ -7,6 +7,7 @@ import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { emit } from '@/lib/core-emit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 export async function GET(req: NextRequest) {
   const principal = await getRequestPrincipal(req);
@@ -134,6 +135,8 @@ export async function POST(req: NextRequest) {
     // The roles module seeds the default roles (fire-and-forget).
     await emit({ type: 'team.created', teamId: team.id });
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    invalidateAppChrome(user.id);
     return NextResponse.json(team);
   } catch (error) {
     console.error('Create team error:', error);

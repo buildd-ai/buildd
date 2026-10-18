@@ -1,5 +1,7 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import { computeIsTerminalLeaf, createEventHandlers } from './TaskAutoRefresh';
+import { resetPageRefreshGate } from '@/lib/page-refresh';
+import { realClock } from '@/lib/realtime-throttle';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -39,6 +41,10 @@ describe('computeIsTerminalLeaf', () => {
 });
 
 describe('createEventHandlers', () => {
+  // These pin which events refresh; the page's 5 s gate is tested in
+  // lib/page-refresh.test.ts and switched off here.
+  beforeEach(() => resetPageRefreshGate(realClock, 0));
+
   function mockRouter() {
     const calls: number[] = [];
     return { router: { refresh: () => calls.push(Date.now()) }, calls };
@@ -91,11 +97,22 @@ describe('createEventHandlers', () => {
     expect(calls.length).toBe(0);
   });
 
-  test('handleTaskCompleted/handleTaskFailed only refresh for a listed dependency', () => {
+  test("a dependency's worker finishing refreshes (no task:completed/failed event exists); an unrelated one does not", () => {
     const { router, calls } = mockRouter();
     const handlers = createEventHandlers(router, 'task-dependent', ['dep-a', 'dep-b']);
-    handlers.handleTaskCompleted({ taskId: 'dep-a' });
-    handlers.handleTaskFailed({ taskId: 'unrelated' });
+    handlers.handleWorkerTerminal({ taskId: 'dep-a' });
+    handlers.handleWorkerTerminal({ taskId: 'unrelated' });
     expect(calls.length).toBe(1);
+  });
+
+  test('the page gate collapses a burst of transitions into one refresh now and one at the window end', () => {
+    resetPageRefreshGate();
+    const { router, calls } = mockRouter();
+    const handlers = createEventHandlers(router, 'task-burst', []);
+    handlers.handleClaimed({ task: { id: 'task-burst' } });
+    handlers.handleTaskUpdated({ task: { id: 'task-burst' } });
+    handlers.handleWorkerTerminal({ taskId: 'task-burst' });
+    expect(calls.length).toBe(1);
+    resetPageRefreshGate(realClock, 0);
   });
 });
