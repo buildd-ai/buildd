@@ -1358,8 +1358,14 @@ export async function setupWorktree(
       const detail = holder
         ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
         : `branch "${actualBranch}" could not be created at ${worktreePath}`;
+      // A timeout is said FIRST: the stored error is cut to 400 chars and the
+      // git command line in the cause (branch + two paths) can push the
+      // "timed out" marker past the cut, so the server could no longer tell a
+      // slow disk from a real failure and classified it as a code failure.
+      const cause = err instanceof Error ? err.message : String(err);
+      const timedOut = (err as { timedOut?: boolean } | null)?.timedOut === true || /timed out|etimedout/i.test(cause);
       throw new Error(
-        `${cloud ? 'git checkout' : 'git worktree add'} failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
+        `${cloud ? 'git checkout' : 'git worktree add'} failed${timedOut ? ' (timed out)' : ''}: ${detail} (base ${base}): ${cause}`,
       );
     } finally {
       emitPhase('worktree_end');
