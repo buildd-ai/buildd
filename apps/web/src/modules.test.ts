@@ -95,6 +95,8 @@ describe('composition root', () => {
       'reviews:supersession-rescan-on-merge',
       'reviews:supersession-reconcile-on-close',
       'reviews:dead-pr-shutdown',
+      // A merged PR's surface files are recorded so rendering never reads them from GitHub.
+      'visual-qa:surface-evidence-on-merge',
       // A closed blocker is a recovery moment (failure-incident-recovery §12(a)).
       'health-quality:failure-incident-recovery-on-pr-closed',
       'jev-decisions:verdict-on-close',
