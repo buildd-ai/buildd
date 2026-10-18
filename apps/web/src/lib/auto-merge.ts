@@ -640,10 +640,10 @@ export async function tryAutoMergeWorkerPr(params: {
   surfaceOrderingConfig?: WorkspaceGitConfig | null;
   /** The kernel's landing (T15/T16); null = not the kernel's PR. Defaults to the seam's. Injected by tests. */
   landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
-  /** AC-13: adopts a PR with no delivery before it merges (merge-adoption.ts). Injected by tests. */
-  adoptBeforeMerge?: typeof import('@/lib/workflow/merge-adoption').adoptBeforeMerge;
+  /** AC-13: adopts a PR with no delivery before it merges (pr-landing-adoption.ts). Injected by tests. */
+  adoptBeforeMerge?: typeof import('@/lib/pr-landing-adoption').adoptBeforeMerge;
   /** The release gate's merge for a PR adoption answered `gate` for. Injected by tests. */
-  mergeOutsideKernel?: typeof import('@/lib/workflow/merge-adoption').mergeOutsideKernel;
+  mergeOutsideKernel?: typeof import('@/lib/pr-landing-adoption').mergeOutsideKernel;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
@@ -919,7 +919,7 @@ export async function tryAutoMergeWorkerPr(params: {
   // with this worker's task as the owner), so it lands through the kernel's gate, which owes it a
   // review of this head; one nothing can adopt is refused, never merged on the legacy arm.
   const landingWorkspaceId = reviewWorkspaceId;
-  const adoptBeforeMerge = params.adoptBeforeMerge ?? (await import('@/lib/workflow/merge-adoption')).adoptBeforeMerge;
+  const adoptBeforeMerge = params.adoptBeforeMerge ?? (await import('@/lib/pr-landing-adoption')).adoptBeforeMerge;
   const adoption = await adoptBeforeMerge(
     { workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, taskId: worker.taskId ?? null, door: 'auto_merge' },
     { principal: { kind: 'system', id: 'system:auto_merge' } },
@@ -945,7 +945,7 @@ export async function tryAutoMergeWorkerPr(params: {
     if (kernel) return { kernel };
     // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
     if (adoption.kind === 'gate') {
-      const outside = params.mergeOutsideKernel ?? (await import('@/lib/workflow/merge-adoption')).mergeOutsideKernel;
+      const outside = params.mergeOutsideKernel ?? (await import('@/lib/pr-landing-adoption')).mergeOutsideKernel;
       return { legacy: await outside({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, mergeMethod, door: 'auto_merge', taskId: worker.taskId ?? null }) };
     }
     if (adoption.kind !== 'legacy') return { notLanded: true as const };
@@ -966,6 +966,11 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason };
   }
   const result = slotted.result.legacy;
+  // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+  if (!result.merged && 'hold' in result && result.hold) {
+    console.log(`Auto-merge waiting for ${repoFullName}#${prNumber}: ${result.message}`);
+    return { merged: false, reason: result.message };
+  }
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber);

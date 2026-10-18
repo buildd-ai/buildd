@@ -55,7 +55,6 @@ import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
-import { adoptBeforeMerge, mergeOutsideKernel } from '@/lib/workflow/merge-adoption';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { prDeliveryReport } from '@/lib/pr-delivery-report';
@@ -63,7 +62,7 @@ import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
-import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
+import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome, adoptBeforeMerge, mergeOutsideKernel } from '@/lib/pr-landing';
 import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
@@ -2418,6 +2417,10 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, merged: false, error: `PR #${prNumber} is the workflow's, and it did not take the merge; nothing was merged. Retry in a moment.`, reason: 'kernel_not_landed' }, { status: 409 });
     }
     const result = slotted.result.legacy;
+    // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+    if (!result.merged && 'hold' in result && result.hold) {
+      return NextResponse.json({ ok: false, merged: false, error: result.message, waiting: true, reason: 'release_gate_hold', hint: 'It merges once the release gate passes; retry then.' }, { status: 409 });
+    }
     void recordCapabilityDecision({
       capability: 'pr.merge', decision: result.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
       workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,

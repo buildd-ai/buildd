@@ -22,20 +22,22 @@
  *    door merges it through the release gate (`mergeOutsideKernel`), so the
  *    candidate status stays the release gate's and no kernel repair pushes to
  *    the branch.
- *  - `refused`: nothing could adopt it (a fork, whose branch cannot be bound; (no owner task, the task is a review or
- *    an attempt, the PR could not be bound, the control plane did not answer).
- *    The door merges nothing and says why.
+ *  - `refused`: nothing could adopt it: a fork (whose branch cannot be
+ *    bound), no owner task, a task that is a review or an attempt, a PR that
+ *    could not be bound or read, or a control plane that did not answer. The
+ *    door merges nothing and says why.
  *
  * Release doors (D7 to D10) never ask: a release PR's bookkeeping lives
  * outside the kernel and they keep the release gate (§4, owner decision).
  */
 import { db } from '@buildd/core/db';
-import type { Exec } from './kernel';
-import { resolveByPrSql } from './authority';
-import type { DoorCall } from './kernel-client';
-import { kernelEnabled } from './kill-switch';
+import type { SQL } from 'drizzle-orm';
+import { kernelEnabled, resolveByPrSql } from '@/lib/workflow/authority';
+import type { DoorCall } from '@/lib/workflow/kernel-client';
 import { classifyReleasePr } from '@buildd/core/release-candidate';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
+
+type Exec = (q: SQL) => Promise<{ rows?: unknown[] }>;
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -181,7 +183,7 @@ export async function adoptBeforeMerge(p: MergeAdoptionInput, call: DoorCall, de
 
   try {
     const ownerTaskId = await (deps.ownerOf ?? defaultOwnerOf)(p.taskId).catch(() => p.taskId!);
-    const open = deps.open ?? (await import('./kernel-client')).openKernelDelivery;
+    const open = deps.open ?? (await import('@/lib/workflow/kernel-client')).openKernelDelivery;
     const r = await open({
       workspaceId: p.workspaceId, ownerTaskId, repoFullName: p.repoFullName, prNumber: p.prNumber,
       installationId: p.installationId, source: `${p.door}:adopt`,
@@ -207,12 +209,13 @@ export async function adoptBeforeMerge(p: MergeAdoptionInput, call: DoorCall, de
 export async function mergeOutsideKernel(p: {
   workspaceId: string; installationId: number; repoFullName: string; prNumber: number; headSha: string;
   mergeMethod: 'merge' | 'squash' | 'rebase'; door: string; actorUserId?: string | null; taskId?: string | null;
-}, deps: { merge?: typeof import('@/lib/release/pinned-merge').mergeReleasePrPinned } = {}): Promise<{ merged: boolean; message: string; indeterminate?: boolean }> {
+}, deps: { merge?: typeof import('@/lib/release/pinned-merge').mergeReleasePrPinned } = {}): Promise<{ merged: boolean; message: string; indeterminate?: boolean; hold?: boolean }> {
   const merge = deps.merge ?? (await import('@/lib/release/pinned-merge')).mergeReleasePrPinned;
   const r = await merge({
     workspaceId: p.workspaceId, installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber,
     verifiedHeadSha: p.headSha, mergeMethod: p.mergeMethod, surface: p.door, actorUserId: p.actorUserId ?? null, taskId: p.taskId ?? null,
   });
   if (r.merged) return { merged: true, message: r.message };
-  return { merged: false, message: r.message, ...(r.indeterminate ? { indeterminate: true } : {}) };
+  // `hold`: the release gate is waiting (a required check, the review, the kernel): a wait, not a failed merge.
+  return { merged: false, message: r.message, ...(r.indeterminate ? { indeterminate: true } : {}), ...(r.hold ? { hold: true } : {}) };
 }

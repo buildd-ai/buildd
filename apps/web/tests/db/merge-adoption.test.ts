@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 import { q, seedTask } from './harness';
 
-const { adoptBeforeMerge } = await import('../../src/lib/workflow/merge-adoption');
+const { adoptBeforeMerge } = await import('../../src/lib/pr-landing-adoption');
 
 const SYSTEM = { principal: { kind: 'system' as const, id: 'system:auto_merge' } };
 

@@ -21,7 +21,7 @@ mock.module('@/lib/workflow/landing', () => ({
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
 const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -474,6 +474,18 @@ describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
     const out = await land({}, d);
     expect(out.kind).toBe('merged');
     expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', door: 'land_pr:check_suite' })]);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate the release gate holds (a required check) is a wait, never a failed merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async () => ({ merged: false, message: 'GitHub is holding PR #42 until required check "build" passes', hold: true })) as never,
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 

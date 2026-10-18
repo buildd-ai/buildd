@@ -7,7 +7,7 @@ import { describe, expect, mock, test } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
-const { adoptBeforeMerge: adoptRaw, mergeOutsideKernel } = await import('./merge-adoption');
+const { adoptBeforeMerge: adoptRaw, mergeOutsideKernel } = await import('./pr-landing-adoption');
 
 const BASE = { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, taskId: 'task-1', door: 'dashboard' };
 const CALL = { principal: { kind: 'user' as const, id: 'u1' } };
@@ -162,9 +162,14 @@ describe('mergeOutsideKernel (the release gate for a PR adoption kept out of the
   test('a review hold or a lost answer is not a merge', async () => {
     const held = await mergeOutsideKernel(
       { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'merge_pr' },
+      { merge: (async () => ({ merged: false, refused: 'required_check', hold: true, message: 'GitHub is holding it' })) as never },
+    );
+    expect(held).toEqual({ merged: false, message: 'GitHub is holding it', hold: true });
+    const refused = await mergeOutsideKernel(
+      { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'merge_pr' },
       { merge: (async () => ({ merged: false, refused: 'review', message: 'the review gate holds it' })) as never },
     );
-    expect(held).toEqual({ merged: false, message: 'the review gate holds it' });
+    expect(refused).toEqual({ merged: false, message: 'the review gate holds it' });
     const lost = await mergeOutsideKernel(
       { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'merge_pr' },
       { merge: (async () => ({ merged: false, refused: 'merge_failed', message: 'timeout', indeterminate: true })) as never },

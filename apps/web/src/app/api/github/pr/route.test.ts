@@ -95,7 +95,7 @@ mock.module('@/lib/workflow/landing', () => ({
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
 const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
@@ -283,6 +283,8 @@ mock.module('@/lib/pr-review-status', () => ({
 // here only the merge_pr door's wiring is asserted. Mode resolution is the real rule.
 const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'sha-42' }));
 mock.module('@/lib/pr-landing', () => ({
+  adoptBeforeMerge: mockAdoptBeforeMerge,
+  mergeOutsideKernel: mockMergeOutsideKernel,
   landPr: mockLandPr,
   resolveLandingMode: (gitConfig: any) => {
     const mode = gitConfig?.landing?.mode;
@@ -4162,6 +4164,17 @@ describe('PUT /api/github/pr', () => {
         expect(mockLandThroughKernel).not.toHaveBeenCalled();
         expect(mockMergePullRequest).not.toHaveBeenCalled();
         expect(res.status).toBe(200);
+      });
+
+      it('a release candidate the release gate holds is a 409 wait, not a failed merge', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'gate', why: 'release' });
+        mockMergeOutsideKernel.mockReset();
+        mockMergeOutsideKernel.mockResolvedValue({ merged: false, message: 'GitHub is holding it', hold: true });
+        const res = await put();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, waiting: true, reason: 'release_gate_hold' });
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
 
       it('adopted, but the kernel did not take the merge: refused, never the legacy merge', async () => {

@@ -36,7 +36,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-polic
 import { latestRunPerName, listAllCheckRuns, type CheckRunState } from '@/lib/ci-verdict';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
-import { adoptBeforeMerge, mergeOutsideKernel } from '@/lib/workflow/merge-adoption';
+import { adoptBeforeMerge, mergeOutsideKernel } from '@/lib/pr-landing-adoption';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -677,6 +677,10 @@ export async function POST(
     return NextResponse.json({ error: `PR #${prNumber} is the workflow's, and it did not take the merge; nothing was merged. Retry in a moment.`, reason: 'kernel_not_landed' }, { status: 409 });
   }
   const result = slotted.result.legacy;
+  // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+  if (!result.merged && 'hold' in result && result.hold) {
+    return NextResponse.json({ error: result.message, waiting: true, reason: 'release_gate_hold' }, { status: 409 });
+  }
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

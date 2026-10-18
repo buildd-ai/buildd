@@ -33,7 +33,7 @@ mock.module('@/lib/workflow/landing', () => ({
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
 const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // The visual review half of the mission-PR gate (ready-to-merge.ts) is proven in
 // ready-to-merge.test.ts and mission-pr.test.ts; here the review has passed.
 mock.module('@/lib/workflow/visual-review-state-load', () => ({
