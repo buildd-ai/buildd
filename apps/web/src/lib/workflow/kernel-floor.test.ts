@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { REVIEW_DISPATCH_BACKOFF_MS, REVIEW_DISPATCH_RETRIES } from '@buildd/workflow-kernel/handlers/review';
 import { KERNEL_FLOOR_PERIOD_MS, kernelFloorOutcome, runKernelFloor, runScheduledKernelFloor, type KernelFloorDeps } from './kernel-floor';
 import { setKernelHost } from './kernel-host';
+import { setKernelSpanSink, type KernelSpanRecord } from './kernel-telemetry';
 
-afterEach(() => setKernelHost('web'));
+afterEach(() => { setKernelHost('web'); setKernelSpanSink(null); });
 
 function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>> = {}) {
   const ran: string[] = [];
@@ -25,6 +26,7 @@ function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>>
       repos: 1, checked: 2, published: 1, republished: 1, unchanged: 0, candidates: 0, errors: 0,
       coverage: { context: 'Buildd / Review approval', checked: 2, missing: [], verdict: 'covered' },
     }) as KernelFloorDeps['publishOpenPrStatuses'],
+    readOutboxDepth: async () => ({ parked: 1, parkedOldestAgeS: 5400, effectsDue: 2, effectsOldestAgeS: 30 }),
   };
   return { ran, deps };
 }
@@ -127,5 +129,40 @@ describe('open PR status coverage', () => {
     const r = await runKernelFloor(s.deps);
     expect(r.openPrStatuses).toMatchObject({ coverage: { verdict: 'nothing_checked' } });
     expect(kernelFloorOutcome(r).errors).toBe(0);
+  });
+});
+
+// The floor's span (workflow-kernel-library.md, Observability): outbox depth after the pass and its repairs per kind.
+describe('the floor span', () => {
+  it('one kernel.floor span per pass, with the depth left and the repairs', async () => {
+    const spans: KernelSpanRecord[] = [];
+    setKernelSpanSink((s) => { spans.push(s); });
+    setKernelHost('control-plane');
+    await runKernelFloor(steps().deps);
+    expect(spans.map((s) => s.name)).toEqual(['kernel.floor']);
+    expect(spans[0].attributes).toMatchObject({
+      'kernel.host': 'control-plane',
+      'kernel.outbox.parked': 1, 'kernel.outbox.parked_oldest_age_s': 5400, 'kernel.outbox.effects_due': 2, 'kernel.outbox.effects_oldest_age_s': 30,
+      'kernel.floor.repairs.facts_imported': 1, 'kernel.floor.repairs.effects_enqueued': 1, 'kernel.floor.repairs.trunk_recovered': 1,
+      'kernel.floor.repairs.treadmill_restarted': 1, 'kernel.floor.repairs.parked_answered': 1, 'kernel.floor.repairs.parked_dead': 0,
+      'kernel.floor.errors': 0,
+    });
+    expect(spans[0].error).toBe(false);
+  });
+
+  it('a depth read that fails is reported unread, never as an empty outbox, and the pass still returns', async () => {
+    const spans: KernelSpanRecord[] = [];
+    setKernelSpanSink((s) => { spans.push(s); });
+    const s = steps();
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const r = await runKernelFloor({ ...s.deps, readOutboxDepth: async () => { throw new Error('db down'); } });
+      expect(r.kernelOutbox).toMatchObject({ done: 2 });
+    } finally {
+      console.error = realError;
+    }
+    expect(spans[0].attributes['kernel.outbox.unread']).toBe(true);
+    expect('kernel.outbox.parked' in spans[0].attributes).toBe(false);
   });
 });

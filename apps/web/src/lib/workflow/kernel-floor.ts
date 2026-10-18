@@ -20,11 +20,14 @@ import { withCronRun } from '@/lib/cron-run';
 import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles, type FloorSummary, type TreadmillCycleSummary, type TrunkSweepSummary } from './seam';
 import type { DrainSummary } from './effects';
 import { postgresCommandLedger } from './command-ledger';
-import { drainParkedCommands, type ParkedDrainSummary } from './command-outbox';
+import { drainParkedCommands, readOutboxDepth, type ParkedDrainSummary } from './command-outbox';
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
 import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
+import { KERNEL_SPAN, emitKernelSpan, floorSpanAttributes, type FloorRepairs, type OutboxDepth } from './kernel-telemetry';
+
+export { readOutboxDepth } from './command-outbox';
 
 type Isolated<T> = T | { error: string };
 
@@ -56,12 +59,15 @@ export interface KernelFloorDeps {
   pruneCommands?: () => Promise<number>;
   drainParkedCommands?: () => Promise<ParkedDrainSummary>;
   publishOpenPrStatuses?: () => Promise<OpenPrStatusSummary>;
+  /** The outboxes' depth after the pass, for its span (`kernel.floor`). */
+  readOutboxDepth?: () => Promise<OutboxDepth>;
 }
 
 const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
   Promise.resolve().then(p).catch((err): { error: string } => ({ error: err instanceof Error ? err.message : String(err) }));
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
+  const startedAt = Date.now();
   const [kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
     isolate(() => (deps.drainDueEpochEffects ?? (() => drainDueEpochEffects()))()),
@@ -72,7 +78,34 @@ export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<Kernel
     isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
     isolate(() => (deps.publishOpenPrStatuses ?? (() => publishOpenPrStatuses()))()),
   ]);
-  return { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  const result = { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  // After the pass: what it left waiting. A failed read is reported as unread, never as empty.
+  const depth = await (deps.readOutboxDepth ?? readOutboxDepth)().catch((err: unknown) => {
+    console.error('[kernel-floor] the outbox depth could not be read:', err instanceof Error ? err.message : err);
+    return null;
+  });
+  reportKernelFloor(result, depth, startedAt);
+  return result;
+}
+
+/** The floor's repairs per kind, from one pass's result (a failed step repaired nothing). */
+export function floorRepairsOf(r: KernelFloorResult): FloorRepairs {
+  const floor = ok(r.kernelFloor) ? r.kernelFloor : null;
+  const trunk = ok(r.trunk) ? r.trunk : null;
+  const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
+  const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
+  return {
+    factsImported: floor?.imported ?? 0, effectsEnqueued: floor?.enqueued ?? 0, trunkRecovered: trunk?.recovered ?? 0,
+    treadmillRestarted: tread?.restarted ?? 0, parkedAnswered: parked?.done ?? 0, parkedDead: parked?.dead ?? 0,
+  };
+}
+
+function reportKernelFloor(r: KernelFloorResult, depth: OutboxDepth | null, startedAt: number): void {
+  const errors = kernelFloorOutcome(r).errors;
+  emitKernelSpan({
+    name: KERNEL_SPAN.floor, startMs: startedAt, durationMs: Date.now() - startedAt, error: errors > 0,
+    attributes: floorSpanAttributes({ host: kernelHost(), depth, repairs: floorRepairsOf(r), errors }),
+  });
 }
 
 const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error' in (v as object));
