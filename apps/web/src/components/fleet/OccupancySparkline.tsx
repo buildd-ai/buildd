@@ -1,18 +1,29 @@
 /**
  * The last day's runner slots in use, as one quiet line: time-weighted per 15
- * minutes, scaled to its own highest point so a quiet day still shows its shape
+ * minutes, scaled to its own highest bucket average so a quiet day still shows its shape
  * (capacity never sets the scale; the tile states it in words). A day with no
  * runner work says so instead of drawing a flat line, shaded or not. Server-safe
  * (no hooks), so Home renders it in the HTML.
  */
 import Link from 'next/link';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
-import { fmtLevel, levelPaths, niceScaleMax } from './occupancy-geometry';
+import { fmtLevel, levelPaths } from './occupancy-geometry';
 
 const W = 240;
-const H = 24;
+const H = 32;
+/** Floor for the y scale: a blip of a few minutes stays small instead of filling the box. */
+const MIN_SCALE = 0.5;
 
 export const NO_RUNNER_WORK = 'No runner work in the past 24h';
+
+/**
+ * The y-scale top: the highest bucket average itself, not rounded up to a whole
+ * slot. Buckets are averages, so a day that peaked at 1 usually averages well
+ * under 1 per bucket and a whole-number scale drew it a few pixels tall.
+ */
+export function sparklineScale(values: number[]): number {
+  return Math.max(MIN_SCALE, ...values);
+}
 
 /** "Past 24h · Peak 10 · Avg 1.7": what the line says, in words. */
 export function sparklineCaption(series: OccupancySeries): string {
@@ -33,7 +44,7 @@ export function OccupancySparkline({ series, href, shade = [] }: { series: Occup
   const x = (t: number) => Math.round((Math.min(Math.max(t, series.window.from), series.window.to) - series.window.from) / span * W * 100) / 100;
   const values = series.buckets.map(b => b.runner.avg);
   const idle = series.summary.runner.peak === 0;
-  const { line, area } = levelPaths(values, niceScaleMax(values), W, H);
+  const { line, area } = levelPaths(values, sparklineScale(values), W, H);
   const caption = idle ? NO_RUNNER_WORK : sparklineCaption(series);
   const label = idle
     ? 'No runner work in the past 24 hours.'
@@ -42,7 +53,7 @@ export function OccupancySparkline({ series, href, shade = [] }: { series: Occup
   const body = (
     <>
       {!idle && (
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-6 w-full" role="img" aria-label={label}>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-8 w-full" role="img" aria-label={label}>
           {span > 0 && shade.map((r, i) => (
             <rect key={i} data-testid="occupancy-shade" x={x(r.from)} y={0} width={Math.max(1, x(r.to) - x(r.from))} height={H} style={{ fill: 'var(--q-tint)' }} />
           ))}
