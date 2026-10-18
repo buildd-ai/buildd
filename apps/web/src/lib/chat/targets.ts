@@ -71,7 +71,7 @@ export interface TaskScope {
 
 export async function loadCandidates(read: ApiFn, scope: TaskScope): Promise<{ candidates: TaskCandidate[]; label: string }> {
   if (scope.missionId) {
-    const m = await read(`/api/missions/${scope.missionId}`);
+    const m = await read(`/api/missions/${scope.missionId}?include=details`);
     const tasks = (Array.isArray(m?.tasks) ? m.tasks : []) as TaskCandidate[];
     return { candidates: tasks, label: `mission "${m?.title ?? scope.missionTitle ?? 'this mission'}"` };
   }
