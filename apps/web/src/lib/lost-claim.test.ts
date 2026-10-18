@@ -8,6 +8,7 @@ mock.module('@/lib/interactive-detach', () => ({ releaseConcurrencySeats: async 
 
 import {
   CLAIM_ACK_GRACE_MS,
+  CLAIM_ACK_MAX_HOLD_MS,
   parseClaimHandoff,
   releaseUnacknowledgedClaims,
   type LostClaimCandidate,
@@ -18,8 +19,9 @@ const NOW = new Date('2026-10-10T13:40:00Z');
 const RUNNER = 'http://100.64.0.1:8766';
 
 /** An in-memory worker table with the same release CAS as the real one. */
-function harness(rows: Array<LostClaimCandidate & { runner: string; status: string; startedAt: Date | null }>) {
+function harness(rows: Array<LostClaimCandidate & { runner: string; status: string; startedAt: Date | null; updatedAt?: Date }>) {
   const resolved: string[] = [];
+  const renewed: string[] = [];
   const seats: Array<string | null> = [];
   const logs: string[] = [];
   const deps: LostClaimDeps = {
@@ -27,6 +29,18 @@ function harness(rows: Array<LostClaimCandidate & { runner: string; status: stri
       return rows.filter(r =>
         r.accountId === accountId && r.runner === runner && r.status === 'idle' && r.startedAt === null
         && r.createdAt < mintedBefore && !held.includes(r.id));
+    },
+    async renewHeld({ accountId, runner, ids, mintedAfter, now }) {
+      let n = 0;
+      for (const r of rows) {
+        if (ids.includes(r.id) && r.accountId === accountId && r.runner === runner && r.status === 'idle'
+          && r.startedAt === null && r.createdAt > mintedAfter) {
+          r.updatedAt = now;
+          renewed.push(r.id);
+          n++;
+        }
+      }
+      return n;
     },
     async release(ids, now) {
       const out: string[] = [];
@@ -44,13 +58,13 @@ function harness(rows: Array<LostClaimCandidate & { runner: string; status: stri
     async resolveTasks(released) { resolved.push(...released.map(r => r.taskId!)); },
     log: line => logs.push(line),
   };
-  return { deps, resolved, seats, logs };
+  return { deps, resolved, seats, logs, renewed };
 }
 
 function row(over: Partial<LostClaimCandidate & { runner: string; status: string; startedAt: Date | null }> = {}) {
   return {
     id: 'w-lost', taskId: 't-1', accountId: 'acct', runner: RUNNER, status: 'idle', startedAt: null,
-    createdAt: new Date(NOW.getTime() - 2 * 60_000),
+    createdAt: new Date(NOW.getTime() - 3 * 60_000),
     prUrl: null, prNumber: null, commitCount: null, branch: null, error: null,
     ...over,
   };
@@ -69,7 +83,7 @@ describe('releaseUnacknowledgedClaims', () => {
     expect(h.resolved).toEqual(['t-1']);
     expect(h.seats).toEqual(['acct']);
     const logged = JSON.parse(h.logs[0].replace('[claim-handoff] ', ''));
-    expect(logged).toMatchObject({ event: 'claim_unacknowledged_released', workerId: 'w-lost', taskId: 't-1', runner: RUNNER, ageMs: 120_000 });
+    expect(logged).toMatchObject({ event: 'claim_unacknowledged_released', workerId: 'w-lost', taskId: 't-1', runner: RUNNER, ageMs: 180_000 });
   });
 
   it('releases rows a restarted runner no longer holds (empty pending list after restart)', async () => {
@@ -164,6 +178,88 @@ describe('releaseUnacknowledgedClaims', () => {
     const first = await releaseUnacknowledgedClaims({ accountId: 'acct', runner: RUNNER, report, now: NOW }, h.deps);
     const second = await releaseUnacknowledgedClaims({ accountId: 'acct', runner: RUNNER, report, now: NOW }, h.deps);
     expect(first + second).toBe(1);
+    expect(h.resolved).toEqual(['t-1']);
+  });
+});
+
+describe('releaseUnacknowledgedClaims — acknowledgement keeps a held row alive', () => {
+  it('a worker still waiting its turn in a slow serial start is renewed, not released (late acknowledgement)', async () => {
+    // Minted 6 minutes ago: past the 5-minute idle reap, still in the runner's start queue.
+    const rows = [row({ id: 'w-queued', createdAt: new Date(NOW.getTime() - 6 * 60_000), updatedAt: new Date(NOW.getTime() - 6 * 60_000) })];
+    const h = harness(rows);
+    const n = await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: ['w-queued'], claimInFlight: false }, now: NOW },
+      h.deps,
+    );
+    expect(n).toBe(0);
+    expect(rows[0].status).toBe('idle');
+    expect(rows[0].updatedAt).toEqual(NOW);
+    expect(h.resolved).toEqual([]);
+  });
+
+  it('renews held rows while another claim is in flight, and releases nothing then', async () => {
+    const rows = [row({ id: 'w-held' }), row({ id: 'w-unheld', taskId: 't-2' })];
+    const h = harness(rows);
+    const n = await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: ['w-held'], claimInFlight: true }, now: NOW },
+      h.deps,
+    );
+    expect(n).toBe(0);
+    expect(h.renewed).toEqual(['w-held']);
+    expect(rows[1].status).toBe('idle');
+  });
+
+  it('renews a row the runner lists as active but has not started (heartbeat activeWorkerIds)', async () => {
+    const rows = [row({ id: 'w-active' })];
+    const h = harness(rows);
+    await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: [], claimInFlight: false }, heldWorkerIds: ['w-active'], now: NOW },
+      h.deps,
+    );
+    expect(h.renewed).toEqual(['w-active']);
+  });
+
+  it('stops renewing once the row is older than the hold cap, so a start that never finishes is still reaped', async () => {
+    const rows = [row({ id: 'w-stuck', createdAt: new Date(NOW.getTime() - CLAIM_ACK_MAX_HOLD_MS - 1_000) })];
+    const h = harness(rows);
+    await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: ['w-stuck'], claimInFlight: false }, now: NOW },
+      h.deps,
+    );
+    expect(h.renewed).toEqual([]);
+    expect(rows[0].status).toBe('idle');
+  });
+
+  it('never renews another runner\'s row, even if this runner lists its id', async () => {
+    const rows = [row({ id: 'w-theirs', runner: 'http://other:8766' })];
+    const h = harness(rows);
+    await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: ['w-theirs'], claimInFlight: false }, now: NOW },
+      h.deps,
+    );
+    expect(h.renewed).toEqual([]);
+  });
+
+  it('repeated reconciliation: a late acknowledgement of an already-released row revives nothing and requeues once', async () => {
+    const rows = [row({ id: 'w-late' })];
+    const h = harness(rows);
+    const first = await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: [], claimInFlight: false }, now: NOW },
+      h.deps,
+    );
+    // The response finally reaches the runner, which now lists the id.
+    const later = new Date(NOW.getTime() + 60_000);
+    const second = await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: ['w-late'], claimInFlight: false }, now: later },
+      h.deps,
+    );
+    const third = await releaseUnacknowledgedClaims(
+      { accountId: 'acct', runner: RUNNER, report: { pendingStartIds: [], claimInFlight: false }, now: later },
+      h.deps,
+    );
+    expect([first, second, third]).toEqual([1, 0, 0]);
+    expect(rows[0].status).toBe('failed');
+    expect(h.renewed).toEqual([]);
     expect(h.resolved).toEqual(['t-1']);
   });
 });
