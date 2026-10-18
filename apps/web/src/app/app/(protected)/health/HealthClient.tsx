@@ -286,6 +286,8 @@ interface Props {
    * stale sandbox probe is a Problem only while this holds.
    */
   protectedWorkPending?: boolean;
+  /** May read teammates' work in expanded runner detail; false shows other people's runs unnamed. */
+  seesTeamWork?: boolean;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -337,6 +339,7 @@ export function HealthClient({
   agentAccess = null,
   runnerLanes = null,
   protectedWorkPending = false,
+  seesTeamWork = false,
   now,
   page = 'all',
   top = null,
@@ -911,6 +914,7 @@ export function HealthClient({
                           busyLine={busyLine}
                           lastHeartbeatAt={hb.lastHeartbeatAt}
                           now={now}
+                          seesTeamWork={seesTeamWork}
                         />
                         {health.pushOnlyResult && (
                           <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
@@ -1077,13 +1081,17 @@ export function HealthClient({
  * same fleet row the collapsed line uses, so the counts cannot disagree. A
  * working claim that holds no slot is not shown here as a slot.
  */
-function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now }: {
+function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork }: {
   fleetRow: FleetSnapshot['runners'][number] | null;
   online: boolean;
   busyLine: string;
   lastHeartbeatAt: string | null;
   now: number;
+  seesTeamWork: boolean;
 }) {
+  // Another person's run (or one with no known owner) is named only to those
+  // who may read the team's work; everyone else sees that the slot is busy.
+  const hidden = (mine: boolean | null | undefined) => !seesTeamWork && mine !== true && mine !== undefined;
   const slots = fleetRow?.slots ?? [];
   const failed = slots.filter(s => !s.worker && s.last?.failed);
   return (
@@ -1101,11 +1109,11 @@ function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now }: 
               <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
               {s.worker ? (
                 <span className="text-text-primary truncate">
-                  {s.worker.question ? 'Waiting · ' : 'Working · '}{s.worker.name ?? s.worker.title ?? s.worker.label}
+                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}
                 </span>
               ) : (
                 <span className="text-text-muted truncate">
-                  Idle{s.last ? ` · last ${s.last.label ?? 'run'}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
+                  Idle{s.last ? ` · last ${hidden(s.last.mine) ? 'run' : (s.last.label ?? 'run')}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
                 </span>
               )}
             </li>

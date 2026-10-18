@@ -37,9 +37,9 @@ const ago = (minutes: number) => new Date(NOW - minutes * 60_000);
 const RUNNER_URL = 'http://runner-one.local:8766';
 
 /** One runner with a running task, and `sessions` claims from people's own sessions. */
-function lanes(sessions: number) {
+function lanes(sessions: number, viewerId?: string) {
   const workers = [
-    { id: 'w-run', accountId: 'acct', runner: RUNNER_URL, status: 'running', startedAt: ago(30), task: { id: 't-run', title: 'fix: keep captions readable', roleSlug: 'builder', missionId: null } },
+    { id: 'w-run', ownerId: 'someone-else', accountId: 'acct', runner: RUNNER_URL, status: 'running', startedAt: ago(30), task: { id: 't-run', title: 'fix: keep captions readable', roleSlug: 'builder', missionId: null } },
     { id: 'w-done', accountId: 'acct', runner: RUNNER_URL, status: 'completed', startedAt: ago(90), completedAt: ago(60), task: { id: 't-done', title: 'feat: add a header', roleSlug: 'builder', missionId: null } },
     ...Array.from({ length: sessions }, (_, i) => ({
       id: `w-s${i}`, accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(10 + i),
@@ -47,7 +47,7 @@ function lanes(sessions: number) {
     })),
   ];
   return {
-    fleet: buildFleetSnapshot([{ id: 'hb-1', accountId: 'acct', localUiUrl: RUNNER_URL, maxConcurrentWorkers: 3, lastHeartbeatAt: ago(0) }], workers, { now: NOW }),
+    fleet: buildFleetSnapshot([{ id: 'hb-1', accountId: 'acct', localUiUrl: RUNNER_URL, maxConcurrentWorkers: 3, lastHeartbeatAt: ago(0) }], workers, { now: NOW, viewerId }),
     idle: [],
     missions: {},
   };
@@ -86,7 +86,7 @@ afterEach(() => {
 
 const DEFAULT_RUNNERS = [{ id: 'hb-1', accountId: 'acct', accountName: 'Runner one', lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 1, maxConcurrentWorkers: 3 }];
 
-async function mount(sessions: number, runners: object[] = DEFAULT_RUNNERS) {
+async function mount(sessions: number, runners: object[] = DEFAULT_RUNNERS, view: { viewerId?: string; seesTeamWork?: boolean } = {}) {
   await act(async () => {
     root.render(
       <HealthClient
@@ -106,7 +106,8 @@ async function mount(sessions: number, runners: object[] = DEFAULT_RUNNERS) {
         subagentDelegation={null}
         errorPatterns={null}
         now={NOW}
-        runnerLanes={lanes(sessions) as never}
+        runnerLanes={lanes(sessions, view.viewerId) as never}
+        seesTeamWork={view.seesTeamWork}
         {...({} as never)}
       />,
     );
@@ -192,6 +193,31 @@ describe('Health › Runner row detail (R-5)', () => {
     expect(detail.textContent).toContain('Keep captions readable');
     expect(detail.querySelector('[data-testid="health-runner-connectivity"]')!.textContent).toContain('Connected');
     expect(detail.querySelector('[data-testid="health-runner-failures"]')).not.toBeNull();
+  });
+});
+
+describe('Health › Runner row detail (R-7)', () => {
+  const open = async (view: Parameters<typeof mount>[2]) => {
+    await mount(0, DEFAULT_RUNNERS, view);
+    const row = q('health-runner-row')!;
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    return row.querySelector('[data-testid="health-runner-detail"]')!;
+  };
+
+  it("names a teammate's run only to someone who may read the team's work", async () => {
+    const detail = await open({ viewerId: 'me', seesTeamWork: false });
+    expect(detail.textContent).toContain("A teammate's work");
+    expect(detail.textContent).not.toContain('Keep captions readable');
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+  });
+
+  it('names it for a team viewer, and a member keeps their own', async () => {
+    expect((await open({ viewerId: 'me', seesTeamWork: true })).textContent).toContain('Keep captions readable');
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    expect((await open({ viewerId: 'someone-else', seesTeamWork: false })).textContent).toContain('Keep captions readable');
   });
 });
 
