@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -24,6 +25,9 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid mission id: expected a UUID, got "${id}". Pass the full UUID.` }, { status: 404 });
@@ -109,4 +113,5 @@ export async function POST(
     console.error('Run mission error:', error);
     return NextResponse.json({ error: 'Failed to run mission' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }

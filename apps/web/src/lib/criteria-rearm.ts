@@ -4,7 +4,7 @@ import { and, eq, gt, sql } from 'drizzle-orm';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
-import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**

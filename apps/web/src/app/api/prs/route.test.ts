@@ -54,6 +54,13 @@ describe('GET /api/prs', () => {
     expect(mockListPrs.mock.calls[1][0].workspaceIds).toEqual([]);
   });
 
+  it('a query failure is a 500 with a JSON error body, never an empty one', async () => {
+    mockListPrs.mockRejectedValue(new Error('boom'));
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toContain('boom');
+  });
+
   it('refuses closed with a pointer to get_pr', async () => {
     const res = await GET(req('?state=closed'));
     expect(res.status).toBe(400);

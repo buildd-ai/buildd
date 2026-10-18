@@ -14,6 +14,11 @@ export interface TaskArtifactItem {
   visibility: 'private' | 'public';
   metadata: Record<string, unknown>;
   createdAt: string;
+  /**
+   * `content` is the card's preview only: the task page sends the first part
+   * of a long body and the viewer loads the whole of it when it opens.
+   */
+  truncated?: boolean;
 }
 
 interface ArtifactRow {
@@ -65,4 +70,16 @@ export function taskVisibleArtifacts<A extends { id: string; type: string; conte
       ? summaries[0]
       : null;
   return { visible: suppressedSummary ? deliverable.filter(a => a.id !== suppressedSummary.id) : deliverable, suppressedSummary };
+}
+
+/** `GET /api/artifacts/[id]`'s body, for an artifact the page sent only a preview of. Null when it cannot be read. */
+export async function fetchArtifactBody(id: string, fetcher: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const res = await fetcher(`/api/artifacts/${encodeURIComponent(id)}`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { artifact?: { content?: unknown } };
+    return typeof body.artifact?.content === 'string' ? body.artifact.content : null;
+  } catch {
+    return null;
+  }
 }

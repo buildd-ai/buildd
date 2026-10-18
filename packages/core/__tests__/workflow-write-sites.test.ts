@@ -346,7 +346,7 @@ const FUNNEL_CALLERS: Record<string, string> = {
   'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (unscoped; no owning slice)`,
   'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (unscoped; no owning slice). The render read-through itself retires with AC-3`,
   'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal, unscoped; no owning slice)',
-  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal, unscoped; no owning slice): the sibling owner row of a second PR from one worker',
+  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal, unscoped; no owning slice): the PR-only owner row: a second PR from one worker, or an orphan PR the hourly sweep adopts',
   // Cannot import apps/web, so it mints an unscoped scope (below).
   'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. Healing through the kernel floor instead has no owning slice',
 };

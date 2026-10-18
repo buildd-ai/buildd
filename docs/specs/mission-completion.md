@@ -921,7 +921,7 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)
 - "File the work" resolution: `apps/web/src/app/api/tasks/route.ts` (POST,
   fire-and-forget block on `task.missionId`)
-- Reply exclusion for the escalation note: `apps/web/src/lib/criteria-escalation-note.ts`
+- Reply exclusion for the escalation note: `apps/web/src/lib/escalation-note-title.ts`
   (`CRITERIA_ESCALATION_NOTE_TITLE`), `apps/web/src/lib/mission-note-reply.ts`
   (`isReplyableQuestion()`), consumed by
   `apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx`
