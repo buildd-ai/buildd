@@ -223,7 +223,12 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }, QUEUE_DEBOUNCE_MS);
   };
 
+  // Workers the stream pushed since the running snapshot asked for its list:
+  // the snapshot answer is older for those, so it keeps the pushed copy.
+  let streamTouched: Set<string> | null = null;
   const loadSnapshot = async () => {
+    const touched = new Set<string>();
+    streamTouched = touched;
     const [runner, config, workers, workspaces] = await Promise.all([
       client.get('/api/runner').catch(() => null),
       client.get('/api/config').catch(() => null),
@@ -235,7 +240,8 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
     if (config?.body) dispatch(configEvent(config.body));
-    if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
+    if (streamTouched === touched) streamTouched = null;
+    if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers, fresher: [...touched] });
     // The queue is not waited for: the first frame never holds for it.
     void refreshQueue();
     await Promise.all([refreshTasks(), refreshMissions()]);
@@ -248,6 +254,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         await client.events((event) => {
           backoff = 1_000;
           if (eventChangesQueue(state, event)) queueChanged();
+          if (streamTouched) {
+            if (event.type === 'worker_update' && (event as any).worker?.id) streamTouched.add((event as any).worker.id);
+            if (event.type === 'init') for (const w of (event as any).workers ?? []) if (w?.id) streamTouched.add(w.id);
+          }
           dispatch(event);
         }, abort.signal);
       } catch { /* reconnect below */ }
@@ -255,8 +265,8 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       dispatch({ type: 'connection', online: false });
       await new Promise(r => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 10_000);
-      // A restarted runner has new state: take a fresh snapshot.
-      if (!abort.signal.aborted) await loadSnapshot().catch(() => {});
+      // A restarted runner has new state: take a fresh snapshot, beside the reconnect.
+      if (!abort.signal.aborted) void loadSnapshot().catch(() => {});
     }
   };
 
@@ -450,7 +460,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshTasks(); }, TASK_REFRESH_MS));
   timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshMissions(true); }, MISSION_REFRESH_MS));
   timers.push(setInterval(() => { if (state.view === 'queue' && serverReadsAllowed()) void refreshQueue(); }, QUEUE_REFRESH_MS));
-  void loadSnapshot().then(() => stream());
+  // The stream opens beside the snapshot, not after it: its init frame fills
+  // the header (online, slots) while the slower task and mission reads load.
+  void loadSnapshot().catch(() => {});
+  void stream();
 
   return done;
 }

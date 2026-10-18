@@ -158,7 +158,8 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   const served = workspaceSummary(state);
   const busy = busySlots(state);
   // R-33: a held runner reads "on hold" where "online" would be.
-  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? '● on hold' : '● online';
+  // Before the first connection it is loading; reconnecting only once one was up and dropped.
+  const online = !state.runner.online ? (state.runner.connectedOnce ? '○ reconnecting' : '○ loading') : heldNow(state, now) ? '● on hold' : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
