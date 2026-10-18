@@ -12,6 +12,7 @@
  * - Internal API calls use caller's Bearer token — no privilege escalation
  * - register_skill with filePath/repo: not supported (no filesystem access)
  */
+import { runLocalRead } from "@/lib/mcp-local-reads";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -144,18 +145,19 @@ function extractBearerToken(req: Request): string | null {
 function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
 
   return async (endpoint, options = {}) => {
-    const response = await fetch(`${baseUrl}${endpoint}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
-        ...options.headers,
-        // An account-level grant session acts in exactly this workspace on
-        // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
-        ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
+      ...(options.headers as Record<string, string> | undefined),
+      // An account-level grant session acts in exactly this workspace on
+      // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
+      ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
+    };
+    // R-22: a read route in LOCAL_READS runs in this process, the same request a fetch would send.
+    const method = (options.method ?? "GET").toUpperCase();
+    const local = method === "GET" && !options.body ? await runLocalRead(`${baseUrl}${endpoint}`, headers) : null;
+    const response = local ?? await fetch(`${baseUrl}${endpoint}`, { ...options, headers });
 
     if (!response.ok) {
       const error = await response.text();
