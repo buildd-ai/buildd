@@ -826,7 +826,11 @@ recorded as such, never as an approval.
   `publishOpenPrHead` (`apps/web/src/lib/workflow/open-pr-status.ts`), called
   through `republishPrHeads` (`open-pr-events.ts`) from the `pull_request`
   (opened, reopened, synchronize, ready_for_review), `check_suite` and
-  `check_run` webhooks and from a recorded review verdict. It derives the
+  `check_run` webhooks, a stored review request (`createReviewerTask`) and a
+  recorded review verdict; the routes reach it through `republishPrHeads` in
+  `apps/web/src/modules.ts` (S14). A check event or a review request can only
+  move a release candidate's answer, so it reads only a PR that can be one
+  (the workspace declares candidates and its branches fit). It derives the
   answer from what GitHub and the review state show now, never from the event,
   skips a PR that is closed or whose head is not the event's, writes only when
   GitHub shows something else, and derives again after writing, so duplicate
@@ -906,14 +910,17 @@ recorded as such, never as an approval.
   THEN the open head's status is `pending`, never H1's `success`; a release
   candidate is `success` only with every required check passed on its SHA
   and no review standing against it.
-- AC-39 (event): GIVEN a PR opened or pushed, or a release candidate's check
-  re-run or review verdict changed WHEN the event arrives THEN the head's
-  status is rewritten at once to the answer true now (a verified candidate
-  flips to `failure` or `pending`), a duplicate or older event changes nothing.
+- AC-39 (event; implements Living Spec criteria AC-40 and AC-42 of the
+  workflow kernel spec): GIVEN a PR opened or pushed, or a release candidate's
+  check re-run, review requested or review verdict changed WHEN the event
+  arrives THEN the head's status is rewritten at once to the answer true now
+  (a verified candidate flips to `failure` or `pending`), a duplicate or older
+  event changes nothing, and a check event on a PR that cannot be a candidate
+  reads nothing from GitHub.
 
 | AC | Test |
 | --- | --- |
-| Criterion AC-39 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-39" |
+| Criterion AC-39 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/src/lib/reviewer.test.ts` › "a stored review request republishes"; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-39" |
 | Criterion AC-36 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
 | Criterion AC-37 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-37" |
 | Criterion AC-38 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-38"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-38" |

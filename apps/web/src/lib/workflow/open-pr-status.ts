@@ -23,6 +23,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import { classifyReleasePr } from '@buildd/core/release-candidate';
 import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
 import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHeadAnswer, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import type { KernelView } from '@buildd/workflow-kernel/types';
@@ -182,10 +183,7 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   const owner = await ownerOf();
   const view = owner ? await loadView(owner.deliveryId) : null;
   const link = owner?.link ?? links[0]!;
-  const facts = {
-    headRef: pr.head?.ref, baseRef: pr.base?.ref, headSha: sha, author: pr.user?.login ?? null,
-    headRepoFullName: pr.head?.repo?.full_name ?? null, baseRepoFullName: pr.base?.repo?.full_name ?? repoFullName, body: pr.body ?? null,
-  };
+  const facts = prFacts(pr, sha, repoFullName);
   const candidateLink = links.find((l) => reviews.isCandidate(l.releaseConfig, facts)) ?? null;
   const workspaceId = candidateLink?.workspaceId ?? link.workspaceId;
   // Only what the answer needs: the kernel's own answer reads no review state.
@@ -275,7 +273,28 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
   return { ...s, coverage: statusCoverage(heads) };
 }
 
-export type PrEventOutcome = 'published' | 'unchanged' | 'skipped_not_open' | 'skipped_stale_head' | 'skipped_unlinked';
+export type PrEventOutcome = 'published' | 'unchanged' | 'skipped_not_open' | 'skipped_stale_head' | 'skipped_unlinked' | 'skipped_not_candidate';
+
+/** The PR facts a release candidate is classified on, read off a pull. */
+function prFacts(pr: OpenPull, sha: string, repoFullName: string): ReleasePrFacts {
+  return {
+    headRef: pr.head?.ref, baseRef: pr.base?.ref, headSha: sha, author: pr.user?.login ?? null,
+    headRepoFullName: pr.head?.repo?.full_name ?? null, baseRepoFullName: pr.base?.repo?.full_name ?? repoFullName, body: pr.body ?? null,
+  };
+}
+
+/**
+ * Whether a PR could be a release candidate under `config`, from its branches alone (no GitHub read):
+ * the workspace declares candidates, and, when the refs are known, the base is the prod branch and the
+ * head matches a candidate branch. `classifyReleasePr` passes the shape check first, so any rejection
+ * other than `not_release_shape` (here, the cross-repository one: no repos are given) means the shape fits.
+ */
+export function mayBeCandidate(config: WorkspaceReleaseConfig | null, refs: { headRef?: string | null; baseRef?: string | null }): boolean {
+  if (!config?.candidate) return false;
+  if (refs.headRef == null || refs.baseRef == null) return true;
+  const c = classifyReleasePr(config, { headRef: refs.headRef, baseRef: refs.baseRef });
+  return c.kind === 'candidate' || (c.kind === 'none' && c.reason !== 'not_release_shape');
+}
 
 /** The PR as GitHub shows it now (null: gone). */
 async function getPullLive(installationId: number, repoFullName: string, prNumber: number): Promise<OpenPull & { state?: string } | null> {
@@ -288,7 +307,7 @@ const MAX_SETTLE = 3;
 
 /**
  * An event (a PR opened or pushed, a check finished, a review verdict recorded) re-derives one open
- * head's `Buildd / Review approval` now instead of at the next hourly floor (AC-40, AC-42).
+ * head's `Buildd / Review approval` now instead of at the next hourly floor (AC-39).
  *
  * Ordered by construction, never by the event's arrival: the answer is derived from what GitHub and
  * the review state show *now*, not from the payload, so a late or duplicate event repeats the newest
@@ -301,13 +320,22 @@ const MAX_SETTLE = 3;
  * publish (through the door), so this never enqueues or drains kernel effects; the floor does.
  */
 export async function publishOpenPrHead(
-  p: { installationId: number; repoFullName: string; prNumber: number; sha?: string | null },
+  p: {
+    installationId: number; repoFullName: string; prNumber: number; sha?: string | null;
+    /**
+     * Only a release candidate's answer moves on this event (a check finished, a review was asked for):
+     * a PR that cannot be one is skipped before any GitHub call. `headRef`/`baseRef`, when the payload
+     * has them, rule out a PR whose branches are not candidate-shaped without reading it.
+     */
+    candidatesOnly?: boolean; headRef?: string | null; baseRef?: string | null;
+  },
   deps: OpenPrStatusDeps & { getPull?: (installationId: number, repoFullName: string, prNumber: number) => Promise<(OpenPull & { state?: string }) | null> } = {},
 ): Promise<PrEventOutcome> {
   const exec = deps.exec ?? dbExec;
-  const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
   const links = (await (deps.repos ?? (() => linkedRepos(exec)))()).filter((r) => r.repoFullName.toLowerCase() === p.repoFullName.toLowerCase());
   if (!links.length) return 'skipped_unlinked';
+  if (p.candidatesOnly && !links.some((l) => mayBeCandidate(l.releaseConfig, p))) return 'skipped_not_candidate';
+  const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
   const linked = [{ ...links[0]!, installationId: p.installationId }, ...links.slice(1)];
   const getPull = deps.getPull ?? getPullLive;
   const run: HeadRun = { deps, exec, reviews, kernelRepublish: false };
@@ -318,6 +346,7 @@ export async function publishOpenPrHead(
     if (!pr || (pr.state && pr.state !== 'open')) return i === 0 ? 'skipped_not_open' : outcome;
     const sha = pr.head?.sha;
     if (!sha || (p.sha && p.sha !== sha && i === 0)) return i === 0 ? 'skipped_stale_head' : outcome;
+    if (p.candidatesOnly && i === 0 && !links.some((l) => reviews.isCandidate(l.releaseConfig, prFacts(pr, sha, links[0]!.repoFullName)))) return 'skipped_not_candidate';
     const r = await publishHead(run, linked, pr, sha);
     if (!r.wrote) return outcome;
     outcome = 'published';

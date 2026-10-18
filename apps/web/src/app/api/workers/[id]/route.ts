@@ -81,7 +81,6 @@ import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
 import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, projectOwnerEnd, recordLocalHead, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { republishPrHeads } from '@/lib/workflow/open-pr-events';
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
@@ -103,7 +102,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -5881,7 +5880,7 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
-  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-40, AC-42).
+  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-39).
   await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
 
   // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
