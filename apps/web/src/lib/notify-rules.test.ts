@@ -3,6 +3,7 @@ import {
   resolveNotifyPlan,
   isCredentialExpiredError,
   isTeamAlertEvent,
+  readableTitles,
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotifyEvent,
 } from './notify-rules';
@@ -143,5 +144,19 @@ describe('isTeamAlertEvent', () => {
     expect(isTeamAlertEvent('needs_attention')).toBe(false);
     expect(isTeamAlertEvent('toString')).toBe(false);
     expect(isTeamAlertEvent('')).toBe(false);
+  });
+});
+
+describe('readableTitles (terms catalog §2.10): a notification never shows a retry key', () => {
+  it('a task title on its own line reads the title, then the attempt', () => {
+    expect(readableTitles('[builder · after CI #1] fix(top): words\n3 attempts failed.')).toBe('fix(top): words · Fix 1 · CI failed\n3 attempts failed.');
+  });
+
+  it('a key after a prefix in the line is read the same way', () => {
+    expect(readableTitles('PR #12: [builder · after conflict #2] Ship it')).toBe('PR #12: Ship it · Fix 2 · merge conflict');
+  });
+
+  it('text without a key is unchanged', () => {
+    expect(readableTitles('PR #12: Ship it\nResolve, close or abandon.')).toBe('PR #12: Ship it\nResolve, close or abandon.');
   });
 });

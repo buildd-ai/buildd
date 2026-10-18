@@ -2,6 +2,7 @@ import Link from 'next/link';
 import ExternalLink from '@/components/ExternalLink';
 import Card from '@/components/ui/Card';
 import { StatusPill } from '@/components/ui/StatePill';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 /**
  * Task rows on the role detail page. Each row navigates to its task, and some
@@ -30,7 +31,7 @@ export function RecentTaskRow({
         href={`/app/tasks/${task.id}`}
         className={`min-w-0 flex-1 truncate text-sm text-text-primary ${STRETCH}`}
       >
-        {task.title}
+        <TaskTitle title={task.title} />
       </Link>
       <StatusPill status={task.status} variant="plain" />
       {prNumber ? (
@@ -64,7 +65,7 @@ export function CurrentTaskCard({
         href={`/app/tasks/${task.id}`}
         className={`mb-1 block text-sm font-medium text-text-primary [overflow-wrap:anywhere] ${STRETCH}`}
       >
-        {task.title}
+        <TaskTitle title={task.title} />
       </Link>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
         {task.workspaceName && <span>{task.workspaceName}</span>}

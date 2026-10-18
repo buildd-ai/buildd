@@ -15,7 +15,7 @@ shorten the word, never re-word it.
 | `mission.building` | Building | `building` | Agents are working on the mission’s tasks. |  | `mission.stage:building` |
 | `mission.verifying` | Verifying | `verifying` | The mission’s checks are running on its outcome. |  | `mission.stage:verifying` |
 | `mission.done` | ■ Done | `done` | Every task is finished and the mission’s checks passed. |  | `mission.stage:delivered` |
-| `mission.your_session` | Run from your session | `your session` | Its tasks start from a person’s own Claude Code session, not a runner. | Claim a task from your session | `waiting:mission_local` |
+| `mission.your_session` | Run from your session | `your session` | Its tasks start from a person’s own Claude Code session, not a runner. | Claim a task from your session | `waiting:mission_local`, `mission.executor:local` |
 | `work.ready` | □ Ready | `ready` | Nothing stops it; it starts when a slot frees. |  | `task.status:pending`, `worker.status:idle`, `strip:ready`, `waiting:eligible_no_runner` |
 | `work.blocked` | ▦ Blocked | `blocked` | It waits on another task and starts by itself when that one finishes. |  | `strip:blocked`, `strip:queued`, `waiting:dep_declared`, `waiting:dep_inferred`, `waiting:ordered_behind` |
 | `work.working` | ▶ Working | `working` | An agent is working on it. |  | `kernel:WORKING`, `task.status:assigned`, `task.status:in_progress`, `worker.status:starting`, `worker.status:running`, `strip:running` |
@@ -26,6 +26,7 @@ shorten the word, never re-word it.
 | `work.cancelled` | ✕ Cancelled | `cancelled` | A person cancelled the task. |  | `task.status:cancelled` |
 | `work.replaced` | Replaced | `replaced` | Another task took over this work. |  | `worker.status:superseded` |
 | `work.recovering` | ⊘ Recovering | `recovering` | A check can’t run; buildd is restoring it. |  | `strip:recovering` |
+| `work.your_session` | ▶ Running in your session | `your session` | A person claimed it from their own Claude Code session; buildd does not run or stop it. |  | `worker.runner:mcp` |
 | `pr.waiting_push` | Waiting for push | `waiting for push` | The agent finished; its commits are not on the PR yet. |  | `kernel:AWAITING_PUSH` |
 | `pr.in_review` | ◐ In review | `in review` | An agent is reviewing the PR. |  | `kernel:AWAITING_REVIEW`, `task.status:review`, `strip:review` |
 | `pr.changes_requested` | Changes requested | `changes requested` | The review asked for changes; a fix starts next. |  | `kernel:CHANGES_REQUESTED` |
@@ -51,9 +52,20 @@ shorten the word, never re-word it.
 | `release.released` | Released | `released` | The change is live in production. |  | `release:deployed` |
 | `total.done_this_week` | Done this week | `Done this week` | Tasks that finished this week. |  |  |
 
+## What runs the work
+
+One noun each. "Worker" is the internal row behind an agent and "seat" an old billing word; neither is shown to a person.
+
+| Noun | Means |
+|---|---|
+| runner | A machine that runs agents. |
+| slot | Room for one agent on a runner. |
+| agent | The AI working on a task. |
+| your session | A person’s own Claude Code session, which claims tasks without a runner. |
+
 ## Words never shown as a state
 
-`bun run copy:check` counts these (rule `catalog-word`).
+`bun run copy:check` counts these (rule `catalog-word`). MCP replies are read as an agent reads them: a word marked "agents may" is not counted there.
 
 | Pattern | Say instead | Why |
 |---|---|---|
@@ -62,3 +74,6 @@ shorten the word, never re-word it.
 | `\bshipped\b` | Merged, Merged in #N, Done, Released | One merged PR read Shipped, Landed, Merged and Completed depending on the screen. |
 | `\bdeliver(?:ed\|ing)\b` | Done, Merging, Done this week | "Delivery" is the kernel’s internal noun for a PR’s journey. |
 | `^completed$\|\bcompleted this week\b` | Done, Merged | A task marked Completed drew the merged glyph even when it had no PR. |
+| `\blocal[- ]sessions?\b\|\[LOCAL\b\|^LOCAL$\|\bbuilding locally\b` | Your session, Run from your session, Running in your session | One claim read LOCAL, local session, Your sessions and claimed. It is the person’s own session; say so. |
+| `(?<![/.])\bworkers?\b(?!\.)\|^\[?Workers?\b(?! (?:URL\|upload\|AI\|Scripts)\b)` | runner, slot, agent (agents may) | "Worker" is the internal row behind an agent. A person sees runners, their slots and the agents in them. |
+| `\bseats?\b` | slot, plan, sign-in, plan limit | "Seat" was a billing word for a subscription sign-in. Say the plan, the sign-in or the slot. |

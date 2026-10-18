@@ -21,7 +21,7 @@
  * time ahead, e.g. a retry floor after failures, or a person's hold) is listed
  * after the queue, not in it, with its reason.
  */
-import { TERMS, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
+import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
   EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor,
@@ -69,7 +69,7 @@ export interface QueueSection {
 }
 
 const EXCLUSION_WORDS: Record<RunnerQueueExclusion, string> = {
-  local_session: 'runs in a local session',
+  local_session: 'runs from your session',
   another_runner: 'another runner takes it',
   role_missing: 'needs a role this runner lacks',
   runner_type: 'for another kind of runner',
@@ -160,8 +160,13 @@ function alongsideWords(a: NonNullable<RunnerQueueTask['alongside']>, state: Top
   return startsAlongsideWords(title ? `"${clip(title, 24)}"` : a.holderTaskId ? `task ${a.holderTaskId.slice(0, 8)}` : 'other work');
 }
 
-/** The title of a task top knows of: the task list, its workers, or the queue. */
+/** The title of a task top knows of: the task list, its workers, or the queue. Never its retry key. */
 function titleOf(taskId: string, state: TopState): string | null {
+  const raw = rawTitleOf(taskId, state);
+  return raw == null ? null : titleWithAttempt(raw);
+}
+
+function rawTitleOf(taskId: string, state: TopState): string | null {
   const t = state.tasks.find(x => x.id === taskId);
   if (t) return t.title;
   const w = Object.values(state.workers).find(x => x.taskId === taskId);
@@ -191,8 +196,8 @@ function refusalWords(o: ClaimOutcome, positions: Map<string, number>, state: To
   }
   if (code === 'deps_blocked') return 'after its dependency';
   if (code && CLAIM_EXCLUSION_WORDS[code]) return CLAIM_EXCLUSION_WORDS[code];
-  if (o.reason === 'refused') return o.status === 429 ? 'account is at its worker limit' : 'the server refused its claim';
-  if (o.reason === 'no_slots') return 'account is at its worker limit';
+  if (o.reason === 'refused') return o.status === 429 ? 'account has no free slot' : 'the server refused its claim';
+  if (o.reason === 'no_slots') return 'account has no free slot';
   if (code) return o.detail ? clip(o.detail.replace(/\.\s.*$/s, ''), 40) : TERMS['wait.unknown'].short;
   return null;
 }
@@ -272,7 +277,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
       rows: queued.map((t, i) => ({
         taskId: t.id,
         position: i + 1,
-        title: t.title,
+        title: titleWithAttempt(t.title),
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
@@ -287,7 +292,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         return {
           taskId: t.id,
           position: null,
-          title: t.title,
+          title: titleWithAttempt(t.title),
           missionId: t.missionId,
           roleSlug: t.roleSlug,
           workspace: t.workspaceName,
@@ -301,7 +306,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
       notFor: notFor.map(t => ({
         taskId: t.id,
         position: null,
-        title: t.title,
+        title: titleWithAttempt(t.title),
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,

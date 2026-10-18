@@ -91,7 +91,7 @@ describe('queue sections (R-26)', () => {
     const [one] = queueSections(queueState(), NOW);
     // The why goes in the starts column; the mission column always names the mission.
     expect(one.notFor.map(r => [r.position, r.title, r.starts, r.exclusion])).toEqual([
-      [null, 'Runner terminal: round 3 audit', 'runs in a local session', 'local_session'],
+      [null, 'Runner terminal: round 3 audit', 'runs from your session', 'local_session'],
       [null, 'fix(supersession): close the old PR', 'another runner takes it', 'another_runner'],
       [null, 'design: the queue tab', 'needs Designer', 'role_missing'],
     ]);

@@ -296,7 +296,7 @@ export default function TaskActionZone({
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
-          <p className="font-mono text-meta font-semibold text-status-error">Worker failed</p>
+          <p className="font-mono text-meta font-semibold text-status-error">Agent failed</p>
           {authFailure && lastError ? (
             <div className="space-y-2" data-testid="task-auth-failure">
               <p className="text-body text-text-primary">{authFailure.message}</p>
@@ -390,7 +390,7 @@ export default function TaskActionZone({
             </WaitingLine>
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
-              ? 'Ready to start. Claim it from a local session.'
+              ? 'Ready to start. Claim it from your session.'
               : 'Waiting for a runner to claim it.'}
           </p>}
           {runnerPicker && workspaceId && (

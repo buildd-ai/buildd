@@ -8,7 +8,7 @@
  *   bun run terms:doc --check   # fail if it is stale (CI, pre-commit)
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { BANNED_WORDS, TERMS, type InternalRef } from '../packages/shared/src/terms';
+import { BANNED_WORDS, NOUNS, TERMS, type InternalRef } from '../packages/shared/src/terms';
 
 export const TERMS_DOC = 'docs/design/terms.md';
 
@@ -32,8 +32,10 @@ export function renderTermsDoc(): string {
   for (const t of Object.values(TERMS)) {
     lines.push(`| \`${t.key}\` | ${t.glyph ? `${t.glyph} ` : ''}${cell(t.word)} | \`${cell(t.short)}\` | ${cell(t.means)} | ${cell(t.liftedBy ?? '')} | ${t.from.map(ref).join(', ')} |`);
   }
-  lines.push('', '## Words never shown as a state', '', '`bun run copy:check` counts these (rule `catalog-word`).', '', '| Pattern | Say instead | Why |', '|---|---|---|');
-  for (const b of BANNED_WORDS) lines.push(`| \`${cell(b.word.source)}\` | ${cell(b.use)} | ${cell(b.why)} |`);
+  lines.push('', '## What runs the work', '', 'One noun each. "Worker" is the internal row behind an agent and "seat" an old billing word; neither is shown to a person.', '', '| Noun | Means |', '|---|---|');
+  for (const n of Object.values(NOUNS)) lines.push(`| ${cell(n.word)} | ${cell(n.means)} |`);
+  lines.push('', '## Words never shown as a state', '', '`bun run copy:check` counts these (rule `catalog-word`). MCP replies are read as an agent reads them: a word marked "agents may" is not counted there.', '', '| Pattern | Say instead | Why |', '|---|---|---|');
+  for (const b of BANNED_WORDS) lines.push(`| \`${cell(b.word.source)}\` | ${cell(b.use)}${b.agentsMay ? ' (agents may)' : ''} | ${cell(b.why)} |`);
   return lines.join('\n') + '\n';
 }
 

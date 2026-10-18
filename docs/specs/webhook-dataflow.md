@@ -304,7 +304,7 @@ watching GitHub can see an agent is on it without opening the dashboard.
   existing comment is PATCHed with a "CI failed · fix N of M queued" entry
   linking the fix task, with no spinner, and no second comment is created.
 - AC-16: WHEN a reviewer requests changes THEN the header reads "Fix N of M
-  queued · waiting for a worker" with no spinner; WHEN a worker then claims
+  queued · waiting for an agent" with no spinner; WHEN a worker then claims
   that fix task THEN the header reads "Fixing · fix N of M" with the spinner.
 - AC-12: WHEN the newest entry is a terminal state THEN the rendered comment
   contains no reference to the spinner asset.
