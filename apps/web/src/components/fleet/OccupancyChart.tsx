@@ -136,7 +136,7 @@ function MemberSplit({ series }: { series: OccupancySeries }) {
         <span className="min-w-0 truncate text-text-primary">{label}</span>
         <span className="shrink-0 font-mono text-meta text-text-muted">avg {fmtLevel(avg)} · peak {peak}</span>
       </div>
-      <div className="mt-1 h-1 bg-surface-3"><div className="h-1 bg-accent" style={{ width: `${Math.round((avg / max) * 100)}%` }} /></div>
+      <div className="mt-1 h-1 bg-surface-3"><div className="h-1 bg-text-secondary" style={{ width: `${Math.round((avg / max) * 100)}%` }} /></div>
     </li>
   );
   if (members.length === 0 && other.avg === 0) return null;
