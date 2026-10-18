@@ -56,5 +56,12 @@ it('accepts both legacy unquoted titles and regenerated copies with new metadata
   const legacyHash = await contentHash(block);
   expect(legacyHash).not.toBe(r.metadataHash);
   const old = legacy.replace(r.metadataHash, legacyHash);
+  // Regeneration updates only the metadata hash; approved content stays intact.
+  expect(old).toContain(`content_hash: ${r.contentHash}`);
+  expect(r.text).toContain(`content_hash: ${r.contentHash}`);
+  const staleHash = r.text.replace(r.metadataHash, legacyHash);
+  const stale = await checkGeneratedSpecs([{ file: 'docs/specs/exports.md', text: staleHash }], 'https://buildd.dev');
+  expect(stale.findings).toHaveLength(1);
+  expect(stale.findings[0]!.message).toContain('metadata block');
   for (const text of [old, r.text]) expect(await checkGeneratedSpecs([{ file: 'docs/specs/exports.md', text }], 'https://buildd.dev')).toEqual({ generated: 1, findings: [] });
 });
