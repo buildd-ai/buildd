@@ -14,7 +14,7 @@ const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
 const DONE: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'One more fix was requested. The automatic budget is still spent.',
   force_re_review: 'A forced re-review was requested for the current head.',
-  approve_override: 'You approved the current head over the remaining findings. Merge follows the workspace policy.',
+  approve_override: 'Head approved over remaining findings. Merge follows the workspace policy.',
 };
 
 /**
@@ -108,7 +108,7 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
             </button>
             {a.id === 'approve_override' && confirmingOverride && (
               <div data-testid="decision-override-confirm" className="flex flex-col gap-2">
-                <label className="flex flex-col gap-1 text-meta">Why you are approving it anyway (optional)
+                <label className="flex flex-col gap-1 text-meta">Reason (optional)
                   <textarea value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} rows={2} className="border border-border-default bg-surface-1 px-2 py-1 text-body" />
                 </label>
                 <button type="button" onClick={() => setConfirmingOverride(false)} disabled={busy !== null} className="min-h-11 self-start text-meta underline md:min-h-0">Cancel</button>

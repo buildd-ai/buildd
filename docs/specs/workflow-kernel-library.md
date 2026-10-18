@@ -1501,7 +1501,7 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   refused (`decision_head_stale`, `human_required`, `no_merge_permission`),
   nothing moves or is dispatched, the note stays, and the door answers with a
   plain sentence that names what was wrong and what to do, never a bare code.
-- AC-79 (implements Living Spec criteria AC-45/AC-46, follow-up 22): GIVEN a
+- AC-81 (implements Living Spec criteria AC-45/AC-46, follow-up 22): GIVEN a
   review escalation with required findings still open or awaiting
   verification WHEN a person whom the merge policy allows, with an owner or
   admin team role and merge permission on the repo on GitHub, chooses
@@ -1512,7 +1512,7 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   stay listed, `Buildd / Review approval` turns `success` for that head, the
   escalation note clears, and the landing merges it once; the same decision
   again is answered by the first and changes nothing.
-- AC-80 (failure): GIVEN the same escalation WHEN the head moved since, an
+- AC-82 (failure): GIVEN the same escalation WHEN the head moved since, an
   agent, an API key or a task token asks, the person lacks merge permission,
   or the merge policy or their role does not allow an override THEN it is
   refused (`decision_head_stale`, `human_required`, `no_merge_permission`,
@@ -1591,8 +1591,8 @@ as a candidate whatever its worker row says.
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 | Criterion AC-67 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-45"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-45 / AC-46"; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "Living Spec r7"; `apps/web/src/app/api/prs/[prNumber]/apply-recommendation/route.test.ts` › "Living Spec r7" |
 | Criterion AC-68 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-46"; `packages/workflow-kernel/src/decision-refusal.test.ts`; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "AC-46" |
-| Criterion AC-79 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override: a person with merge permission"; `apps/web/tests/db/escalation-decisions.test.ts` › "approve and override"; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts`; `packages/workflow-kernel/src/reducer.test.ts` › "over open findings needs overridePermitted"; `apps/web/src/lib/workflow/delivery-view.test.ts` › "read only for a review escalation" |
-| Criterion AC-80 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override is refused"; `apps/web/src/lib/override-permission.test.ts`; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts` › "refused"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "host's sentence" |
+| Criterion AC-81 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override: a person with merge permission"; `apps/web/tests/db/escalation-decisions.test.ts` › "approve and override"; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts`; `packages/workflow-kernel/src/reducer.test.ts` › "over open findings needs overridePermitted"; `apps/web/src/lib/workflow/delivery-view.test.ts` › "read only for a review escalation" |
+| Criterion AC-82 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override is refused"; `apps/web/src/lib/override-permission.test.ts`; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts` › "refused"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "host's sentence" |
 | Criterion AC-69 | `packages/workflow-kernel/src/findings.test.ts` › "findingTotals"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "AC-47"; `packages/workflow-kernel/src/delivery-summary.test.ts` › "AC-47"; `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/lib/workflow/delivery-view.test.ts` › "follow-up 22" |
 | Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 

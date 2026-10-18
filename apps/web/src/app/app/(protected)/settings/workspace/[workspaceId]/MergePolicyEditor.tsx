@@ -376,7 +376,7 @@ export default function MergePolicyEditor({
             { value: 'off', label: REVIEW_OVERRIDE_LABEL.off, description: 'Findings have to be fixed, waived or deferred' },
           ]}
         />
-        <p className="text-xs text-text-muted">When a review leaves findings and the PR waits on you, who can approve it anyway.</p>
+        <p className="text-xs text-text-muted">Who can approve a PR that still has open review findings.</p>
       </div>
 
       {/* Stall notify */}

@@ -45,6 +45,14 @@ describe('POST /api/prs/[prNumber]/approve-override', () => {
     expect(mockApprove).not.toHaveBeenCalled();
   });
 
+  it('a bearer that fails authentication is a 401, never the cookie session', async () => {
+    mockAuth.mockResolvedValueOnce(null);
+    const res = await call(DECISION, { authorization: 'Bearer bogus' });
+    expect(res.status).toBe(401);
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+
   it('an API key or a per-task token is refused in plain words, before any permission is read', async () => {
     for (const account of [{ id: 'a1', teamId: 't1' }, { id: 'a1', teamId: 't1', taskScope: { workspaceId: 'ws-1' }, sessionUserId: 'user-1' }]) {
       mockAuth.mockResolvedValueOnce(account);

@@ -39,6 +39,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ prN
   // A bearer decides when one is sent: only a person's own OAuth session is a person.
   const bearer = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const account = bearer ? await authenticateTaskScopedCaller(bearer, req) : null;
+  // A bearer that does not authenticate is refused; it never falls back to the cookie session.
+  if (bearer && !account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const person = account ? requestingPerson(null, account) : (await getCurrentUser())?.id ?? null;
   if (!person) {
     if (account) return refuse('human_required', 403);
