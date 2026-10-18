@@ -284,7 +284,7 @@ export async function sweepHeldReleases(opts: { limit?: number; maxSweeps?: numb
       }
       const sweeps = (typeof ctx.releaseHoldSweeps === 'number' ? ctx.releaseHoldSweeps : 0) + 1;
       if (sweeps > max) {
-        if (await settleHeldReleaseTask(t, { merged: false, prNumber, repoFullName: repo.repoFullName, reason: `PR #${prNumber} was still not merged after ${max} hourly retries; nothing was released. Land it, or release again.`, title: 'Release held too long' })) out.failed++;
+        if (await settleHeldReleaseTask(t, { merged: false, prNumber, repoFullName: repo.repoFullName, reason: `PR #${prNumber} was still not merged after ${max} hourly retries; nothing was released. Merge it, or release again.`, title: 'Release PR still not merged' })) out.failed++;
         continue;
       }
       await db.update(tasks).set({ context: { ...ctx, releaseHoldSweeps: sweeps }, updatedAt: new Date() })

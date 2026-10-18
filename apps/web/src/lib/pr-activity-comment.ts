@@ -275,17 +275,17 @@ function present(e: NormalizedEntry, story: Story): Rendered {
     case 'review_approved_awaiting_human':
       return { tone: 'done', label: 'Approved · ready to merge', status: 'merge policy leaves this to a human', noteLabel: 'Summary' };
     case 'review_escalated':
-      return { tone: 'human', label: 'Escalated · needs a human', noteLabel: 'Reason' };
+      return { tone: 'human', label: 'Waiting on you', noteLabel: 'Reason' };
     case 'review_failed':
       return {
         tone: 'human',
-        label: 'Review didn’t finish · needs a human',
+        label: 'Review didn’t finish · waiting on you',
         status: 'no verdict came back; nothing blocks merging, but nobody reviewed it',
       };
     case 'human_review_required':
       return { tone: 'human', label: 'Human review required', status: 'merge policy', noteLabel: 'Reason' };
     case 'ci_exhausted':
-      return { tone: 'human', label: 'CI still failing · needs a human', noteLabel: 'Details', urlLabel: 'CI run' };
+      return { tone: 'human', label: 'CI still failing · waiting on you', noteLabel: 'Details', urlLabel: 'CI run' };
     case 'lede_corrected':
       return { tone: 'plain', label: 'Opening line corrected', noteLabel: 'Original', aside: true };
     case 'copy_review':
@@ -308,7 +308,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       // A fix attempt ended but GitHub's head never moved: no review is owed yet.
       return { tone: 'waiting', label: `${capitalize(fixText(hasIteration(e) ? e : story.fix))} not on GitHub yet`, status: 'waiting for the push' };
     case 'push_undeliverable':
-      return { tone: 'human', label: 'Fix never reached GitHub · needs a human', noteLabel: 'Details' };
+      return { tone: 'human', label: 'Fix never reached GitHub · waiting on you', noteLabel: 'Details' };
     case 'composition_verified':
       return { tone: 'done', label: 'Composition verified', status: 'every change was reviewed at its own head' };
     case 'composition_delta_approved':

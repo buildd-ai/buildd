@@ -20,7 +20,7 @@ const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: s
   // decision/warning visual language — these are decisions, just reviewer-scoped.
   reviewer_approved: { label: 'APPROVED', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
   reviewer_request_changes: { label: 'CHANGES REQUESTED', color: 'text-[#D97706]', bg: 'bg-[#D97706]/10', icon: 'M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
-  reviewer_escalated: { label: 'ESCALATED', color: 'text-status-error', bg: 'bg-status-error/10', icon: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z' },
+  reviewer_escalated: { label: 'Waiting on you', color: 'text-status-error', bg: 'bg-status-error/10', icon: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z' },
 };
 
 function timeAgo(date: string | Date): string {

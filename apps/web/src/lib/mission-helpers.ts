@@ -31,11 +31,11 @@ export function getDrivePresentation(
   nextRun: { text: string; urgency: NextRunUrgency | null },
 ): { label: string; detail: string; tone: 'info' | 'warning' | 'muted' } {
   switch (drive) {
-    case 'MANUAL': return { label: 'MANUAL', detail: 'Disarmed · Run now to advance', tone: 'muted' };
-    case 'QUIET_HOURS': return { label: 'QUIET HOURS', detail: 'Deferred for quiet hours', tone: 'warning' };
-    case 'SEATS_FULL': return { label: 'SEATS FULL', detail: 'Deferred until a seat is free', tone: 'warning' };
-    case 'COMPLETE': return { label: 'COMPLETE', detail: '', tone: 'muted' };
-    case 'AUTO': return { label: 'AUTO', detail: nextRun.text, tone: 'info' };
+    case 'MANUAL': return { label: 'Manual', detail: 'Run now to advance', tone: 'muted' };
+    case 'QUIET_HOURS': return { label: 'Scheduled', detail: 'Starts after quiet hours', tone: 'warning' };
+    case 'SEATS_FULL': return { label: 'Waiting for a free slot', detail: 'Starts when a slot frees', tone: 'warning' };
+    case 'COMPLETE': return { label: 'Done', detail: '', tone: 'muted' };
+    case 'AUTO': return { label: 'Auto', detail: nextRun.text, tone: 'info' };
   }
 }
 
@@ -386,28 +386,28 @@ export type MissionDisplayState = 'held' | 'local' | 'stranded' | 'blocked' | 's
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   // A held start gate: NOT STARTED here, PAUSED when it ran before (the state view sets it).
-  held: 'NOT STARTED',
+  held: 'Not started',
   // executor='local': the tasks run in a person's own session. Active work,
   // never HELD — held is the pause, and a local mission is not paused.
-  local: 'LOCAL',
+  local: 'Run from your session',
   // executor='local' with claimable work and no session for
   // LOCAL_SESSION_QUIET_MS (lib/local-strand.ts): nothing will claim it.
-  stranded: 'STRANDED',
-  blocked: 'BLOCKED',
+  stranded: 'Stranded',
+  blocked: 'Blocked',
   // "STALLED", not "IDLE" (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, one
   // vocabulary): the Home/list health chip already said STALLED for the same
   // condition — open work, no live worker — so the detail header reading IDLE
   // made one mission look like two states. `MissionHealth`'s scheduling
   // `stalled` never renders as this chip, so the word no longer collides.
-  stalled: 'STALLED',
-  running: 'RUNNING',
-  failed: 'FAILED',
-  review: 'READY FOR REVIEW',
-  awaiting_verification: 'AWAITING VERIFICATION',
-  waiting_decision: 'AWAITING DECISION',
-  manual: 'MANUAL',
-  complete: 'COMPLETE',
-  active: 'AUTO',
+  stalled: 'Stalled',
+  running: 'Running',
+  failed: 'Failed',
+  review: 'In review',
+  awaiting_verification: 'Verifying',
+  waiting_decision: 'Waiting on you',
+  manual: 'Manual',
+  complete: 'Done',
+  active: 'Auto',
 };
 
 /** Label + chip classes. The colour comes from the one mapping (`status-tone.ts`): RUNNING is orange everywhere. */
@@ -597,12 +597,12 @@ export type MissionGroup = 'running' | 'attention' | 'review' | 'scheduled' | 'p
 export type FilterTab = 'all' | 'active' | 'scheduled' | 'completed';
 
 export const SECTION_DISPLAY: Record<MissionGroup, { label: string; color: string }> = {
-  running:   { label: 'RUNNING NOW',     color: 'var(--status-success)' },
-  attention: { label: 'NEEDS ATTENTION', color: 'var(--status-warning)' },
-  review:    { label: 'AWAITING REVIEW', color: 'var(--status-success)' },
-  scheduled: { label: 'SCHEDULED',       color: 'var(--status-info)' },
-  paused:    { label: 'PAUSED / NOT STARTED',   color: 'var(--text-muted)' },
-  completed: { label: 'COMPLETED',       color: 'var(--text-muted)' },
+  running:   { label: 'Running now',     color: 'var(--status-success)' },
+  attention: { label: 'Waiting on you', color: 'var(--status-warning)' },
+  review:    { label: 'In review', color: 'var(--status-success)' },
+  scheduled: { label: 'Scheduled',       color: 'var(--status-info)' },
+  paused:    { label: 'Paused or not started',   color: 'var(--text-muted)' },
+  completed: { label: 'Done',            color: 'var(--text-muted)' },
 };
 
 export const GROUP_ACCENT_CLASS: Record<MissionGroup, string> = {
@@ -809,7 +809,7 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   held: { label: TERMS['mission.not_started'].word, colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
   'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
-  escalated: { label: 'Needs decision', colorClass: 'health-pill-escalated' },
+  escalated: { label: 'Waiting on you', colorClass: 'health-pill-escalated' },
 };
 
 export function timeAgo(date: Date | string): string {

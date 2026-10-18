@@ -83,7 +83,7 @@ describe('buildMissionContextBar', () => {
   it('carries the mission title and the one state chip (D2)', () => {
     const bar = buildMissionContextBar(mission(tasks), 'b2');
     expect(bar.title).toBe('Claim loop hardening');
-    expect(bar.chip.label).toBe('RUNNING');
+    expect(bar.chip.label).toBe('Running');
     expect(bar.missionId).toBe('m1');
   });
 });

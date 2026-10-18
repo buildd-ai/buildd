@@ -1113,7 +1113,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     ask_human: '{ workerId?, question (required), options? (string[] — quick replies shown as buttons), context? (one or two sentences: which task this is and what is being decided) } — park your own interactive worker (claimed with claim_task from this session) on a question for a person. It takes the same path as a runner agent\'s AskUserQuestion: the worker goes to waiting_input, the question shows in Needs you on the dashboard and the team gets the push. Returns { waiting: true, workerId, askedAt, waitCommand }. To wait, run waitCommand as a Bash command with run_in_background: it exits 0 once answered (non-zero with a reason otherwise) and costs no turns while waiting; then call await_answer { waitSeconds: 0 }. Without background commands, loop on await_answer. Unanswered, it expires like any question (24 h, 4 h in a mission). Refused for a runner-managed worker, which asks with AskUserQuestion instead. workerId auto-resolved from context if omitted.',
     await_answer: '{ workerId?, waitSeconds? (0-45, default 40) } — read the answer to your ask_human question: after waitCommand exits 0, call with waitSeconds: 0. Otherwise it long-polls until answered. Answered: { answered: true, answer, question }, marked read so it comes back once (receive_messages would return it, also once). Timeout: { timedOut: true, stillWaiting: true }; call again straight away. Each call tells buildd your session is still there; one that stops for a few minutes has its answer sent to a follow-up task. { answered: false, stillWaiting: false } means nothing is waiting any more (reasonCode says why). Interactive sessions only; a runner-managed worker is resumed by its runner. workerId auto-resolved from context if omitted.',
     answer_question: '{ taskId (required), message (required) } — answer the question a waiting_input agent is parked on (the task page\'s Answer link). Takes the same resume path as the dashboard: the parked session continues with your answer, or a continuation task starts if the session is gone. send_agent_message cannot do this — a parked agent takes no turn, so a queued message is never read. Refused unless the task\'s worker is waiting on a question. [admin]',
-    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as NOT SENT. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     correct_task_result: '{ taskId (required), summary?, prUrl?, prNumber? (at least one of summary / prUrl / prNumber) } — amend a completed or failed task\'s stored result after the fact. summary: replace result.summary (e.g. a stray assistant aside got captured, or a bug garbled it); the prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. prUrl/prNumber: attach the PR that delivered a task closed without a worker (e.g. by update_task status=completed) — the PR is verified in the workspace\'s GitHub repo via the GitHub App, mapped to the task with an external placeholder worker (as request_pr_review adoption does) and written to result.prUrl/prNumber, so the mission page lists it and mission completion sees it. Refused if another task owns the PR, unless that owner is an auto-adopted placeholder (a webhook-created bookkeeping task that only noticed the PR first, never did the work) — then the mapping moves onto this task instead of refusing. Also refused if the task already records a different PR; re-attaching the same PR is a no-op. Commit stats are never touched. Fails on a task that has not yet completed or failed — there is nothing to correct yet. [admin]',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find decayed unused chunks (memory: no recorded pull or use in the memory use ledger, with recent retrieval hits still counting while the ledger is young; every other corpus: zero retrieval hits), or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). [admin]',
@@ -7279,9 +7279,9 @@ export async function handleBuilddAction(
         m.state ?? (m.deliveryState === 'pending' ? 'queued' : m.deliveryState ?? 'queued');
       const TAG: Record<string, string> = {
         queued: '⏳ QUEUED (waits for the agent\'s next turn)',
-        delivered: '📨 DELIVERED (in the session, not read yet)',
+        delivered: '📨 SENT (in the session, not read yet)',
         acknowledged: '✓ ACKNOWLEDGED (read by the agent)',
-        undelivered: '✗ UNDELIVERED (the run ended first)',
+        undelivered: '✗ NOT SENT (the run ended first)',
       };
 
       const lines = messages.map((m) => {
@@ -7377,9 +7377,9 @@ export async function handleBuilddAction(
 
       // Do not restate delivery here: the server owns that claim, and delivery is
       // only confirmed once the agent actually receives the text. get_task_messages
-      // shows each message as QUEUED / DELIVERED / ACKNOWLEDGED / UNDELIVERED.
+      // shows each message as QUEUED / SENT / ACKNOWLEDGED / NOT SENT.
       const stateNote = result.deliveryState === 'pending'
-        ? "Queued: it reaches the agent at its next turn boundary. get_task_messages shows when it is DELIVERED and ACKNOWLEDGED (read)."
+        ? "Queued: it reaches the agent at its next turn boundary. get_task_messages shows when it is SENT and ACKNOWLEDGED (read)."
         : '';
       return text([
         `Message sent to worker ${workerId} (status: ${activeWorker.status}).`,
@@ -7473,7 +7473,7 @@ export async function handleBuilddAction(
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
         `actually implement "${feature}" (a real table/route/impl), or are they only ` +
         `semantic neighbours? Rule one of: IMPLEMENTED · DOCUMENTED-NOT-BUILT · ` +
-        `SHIPPED-NOT-DOCUMENTED · CONTRADICTED. The verdict is yours, not the scores'.`
+        `BUILT-NOT-DOCUMENTED · CONTRADICTED. The verdict is yours, not the scores'.`
       );
     }
 

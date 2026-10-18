@@ -164,7 +164,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       if (check !== null && LANDING_STATUS_CONTEXTS.includes(check) && !ownReady) {
         return hold(check, 'required_check', `GitHub requires ${named}, which buildd shows as success only on an approved head; merging past it is a GitHub bypass`, true);
       }
-      return hold(check, 'required_check', `GitHub kept the merge waiting on ${named} for ${waited()}${ans.detail ? ` (${ans.detail})` : ''}`);
+      return hold(check, 'required_check', `GitHub’s merge is waiting on ${named} for ${waited()}${ans.detail ? ` (${ans.detail})` : ''}`);
     }
     const r = await apply(d.id, {
       type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: ans.outcome, detail: ans.detail,

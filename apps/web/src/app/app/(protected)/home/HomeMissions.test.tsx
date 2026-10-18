@@ -134,11 +134,11 @@ describe('HomeMissions', () => {
   const views = visibleIds.map(id => buildMissionCardView(rows.find(r => r.id === id)!, { from: 'home' }));
   const html = renderToStaticMarkup(<HomeMissions missions={list} views={views} />);
 
-  it('renders the RUNNING NOW group for missions with live agents (AC-14)', () => {
+  it('renders the Running now group for missions with live agents (AC-14)', () => {
     const running = html.split('data-testid="mission-group" data-group="running"')[1] ?? '';
-    expect(running).toContain('RUNNING NOW');
+    expect(running).toContain('Running now');
     expect(running).toContain('Claim loop hardening');
-    expect(html).not.toContain('NEEDS ATTENTION');
+    expect(html).not.toContain('Waiting on you');
   });
 
   it('a mission waiting on the user is active: counted in the header (D8)', () => {

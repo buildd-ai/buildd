@@ -28,7 +28,7 @@ const fx = (key: MissionLifecycleKey): MissionLifecycleFixture => fixtures.find(
 
 const asksForVerification = (f: MissionLifecycleFixture) =>
   f.view.situation.focus?.kind === 'criterion_unverified'
-  || f.view.chip.label === 'AWAITING VERIFICATION'
+  || f.view.chip.label === 'Verifying'
   || /verif/i.test(f.view.situation.headline)
   || /verif/i.test(f.view.situation.nextAction ?? '')
   || /verif/i.test(f.model.sentence ?? '');
@@ -69,7 +69,7 @@ describe('AC-12: a working organizer is planning, not awaiting verification', ()
 describe('AC-13: active implementation reads as work', () => {
   const f = fx('implementation-active');
   it('running, the focus is the open tasks, and verification is not asked for', () => {
-    expect(f.view.chip.label).toBe('RUNNING');
+    expect(f.view.chip.label).toBe('Running');
     expect(f.view.situation.focus?.kind).toBe('task');
     expect(asksForVerification(f)).toBe(false);
   });
@@ -91,7 +91,7 @@ describe('AC-14: an open PR is the one ask', () => {
 describe('AC-15: verification is the primary ask once the work has landed', () => {
   const f = fx('verification-due');
   it('awaiting verification, with the run-verification next action', () => {
-    expect(f.view.chip.label).toBe('AWAITING VERIFICATION');
+    expect(f.view.chip.label).toBe('Verifying');
     expect(f.view.situation.focus?.kind).toBe('criterion_unverified');
     expect(f.view.situation.nextAction).toMatch(/verification/i);
     expect(f.view.group).toBe('attention');
@@ -101,7 +101,7 @@ describe('AC-15: verification is the primary ask once the work has landed', () =
 describe('AC-16: delivered is quiet, and every view model agrees', () => {
   it('a delivered mission asks for nothing and shows its criteria passed', () => {
     const f = fx('delivered');
-    expect(f.view.chip.label).toBe('COMPLETE');
+    expect(f.view.chip.label).toBe('Done');
     expect(f.view.situation.nextAction).toBeNull();
     expect(f.model.kind).toBe('done');
     expect(f.model.criteria).toEqual({ passed: 2, total: 2 });

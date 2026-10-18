@@ -1239,7 +1239,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // effect waits on it itself; it says so here only when it stops waiting.
         const hold = { check: cmd.hold?.check ?? null, heldForMs: cmd.hold?.heldForMs ?? null, ...(cmd.hold?.lasting ? { lasting: true } : {}) };
         if (!hold.lasting) return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence: { ...evidence, hold } });
-        const detail = cmd.detail ?? `GitHub kept the merge waiting on ${hold.check ? `required check "${hold.check}"` : 'a required check'}`;
+        const detail = cmd.detail ?? `GitHub’s merge is waiting on ${hold.check ? `required check "${hold.check}"` : 'a required check'}`;
         return c.apply(key, 'ESCALATED', {
           guardHead: true, patch: { stateReason: 'landing_needs_human' },
           effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing_hold:${cmd.headSha}:${cmd.landingVersion ?? 'x'}`, payload: { event: 'landing_needs_human', detail, check: hold.check } }],

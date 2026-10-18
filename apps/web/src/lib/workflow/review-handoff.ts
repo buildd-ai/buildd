@@ -64,7 +64,7 @@ export const legacyFirstReview = async (p: LegacyFirstReviewInput): Promise<{ ou
       entry: { kind: 'human_review_required', note: p.policyEvidence.reason }, workspaceId: p.workspaceId,
     });
     void notifyTeamOf({ workspaceId: p.workspaceId, prNumber: p.prNumber }, 'needsAttention', {
-      title: 'A PR was escalated for human review', message: p.policyEvidence.reason, url: p.htmlUrl, urlTitle: `PR #${p.prNumber}`,
+      title: 'A PR is waiting on you', message: p.policyEvidence.reason, url: p.htmlUrl, urlTitle: `PR #${p.prNumber}`,
     });
     return { outcome: 'human_review_required' };
   }

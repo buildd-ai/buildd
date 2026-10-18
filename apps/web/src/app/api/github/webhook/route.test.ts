@@ -1619,7 +1619,7 @@ describe('POST /api/github/webhook', () => {
         (c) => c[1] === '/repos/test-org/test-repo/issues/42/comments' && c[2]?.method === 'POST',
       );
       expect(commentCall).toBeDefined();
-      expect(JSON.parse(commentCall[2].body).body).toContain('CI still failing · needs a human');
+      expect(JSON.parse(commentCall[2].body).body).toContain('CI still failing · waiting on you');
     });
 
     it('does not retry when maxCiRetries is 0 (disabled)', async () => {

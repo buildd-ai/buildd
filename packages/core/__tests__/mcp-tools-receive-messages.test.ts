@@ -79,7 +79,7 @@ describe('MCP receive_messages (B-10)', () => {
 describe('MCP get_task_messages (B-11)', () => {
   const TASK_ID = '22222222-2222-4222-8222-222222222222';
 
-  it('prints one of QUEUED / DELIVERED / ACKNOWLEDGED / UNDELIVERED per human→agent line', async () => {
+  it('prints one of QUEUED / SENT / ACKNOWLEDGED / NOT SENT per human→agent line', async () => {
     const api = mock(async () => ({
       messages: [
         { type: 'instruction', message: 'a', timestamp: 1, state: 'queued' },
@@ -93,11 +93,11 @@ describe('MCP get_task_messages (B-11)', () => {
     const lines = (result.content[0]?.text ?? '').split('\n').filter(l => l.includes('[human→agent]'));
     expect(lines).toHaveLength(4);
     expect(lines[0]).toContain('QUEUED');
-    expect(lines[1]).toContain('DELIVERED');
+    expect(lines[1]).toContain('SENT');
     expect(lines[2]).toContain('ACKNOWLEDGED');
-    expect(lines[3]).toContain('UNDELIVERED');
+    expect(lines[3]).toContain('NOT SENT');
     const agentLine = (result.content[0]?.text ?? '').split('\n').find(l => l.includes('[agent→human]'))!;
-    expect(agentLine).not.toMatch(/QUEUED|DELIVERED|ACKNOWLEDGED/);
+    expect(agentLine).not.toMatch(/QUEUED|SENT|ACKNOWLEDGED/);
   });
 
   it('an older server without derived state still reads: pending is QUEUED', async () => {

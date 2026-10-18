@@ -397,7 +397,7 @@ export const reviewsHost: Reviews = {
     const overrideReason = ((reviewer?.result ?? {}) as { effectiveVerdictReason?: string }).effectiveVerdictReason ?? null;
     const message = overrideReason ?? out.escalationReason ?? out.summary ?? 'see the review';
     const prUrl = `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
-    void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', { title: 'The reviewer escalated a PR', message, url: prUrl, urlTitle: `PR #${d.prNumber}` });
+    void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', { title: 'The reviewer stopped on a PR', message, url: prUrl, urlTitle: `PR #${d.prNumber}` });
     const repo = await workspaceRepo(d.workspaceId);
     if (repo) {
       await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', note: message }, workspaceId: d.workspaceId });

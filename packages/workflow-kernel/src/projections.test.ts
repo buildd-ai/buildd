@@ -325,14 +325,14 @@ describe('landing_needs_human says which refusal it was (88318f31)', () => {
 
   test('the base keeps changing what the PR changes: names the files', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', files: ['src/a.ts', 'bun.lock'] })))
-      .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+      .toEqual({ headline: 'Merge stopped: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
   });
 
   test('the base only kept moving: the refresh count and the gap', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
-      .toEqual({ headline: 'Merge held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
+      .toEqual({ headline: 'Merge stopped: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
     // An escalation recorded before the base delta was read is the same kind.
-    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Merge held: the base kept moving faster than CI');
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Merge stopped: the base kept moving faster than CI');
   });
 
   test('GitHub refusing the merge and a refresh that kept failing are each named', () => {

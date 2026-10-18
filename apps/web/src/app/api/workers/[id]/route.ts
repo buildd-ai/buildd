@@ -6423,7 +6423,7 @@ async function handleReviewerOutcomeIfNeeded(
     case 'escalate': {
       // BT-9: Escalate path — notify human, no retry
       void notifyTeamOf({ workspaceId }, 'needsAttention', {
-        title: 'The reviewer escalated a PR',
+        title: 'The reviewer stopped on a PR',
         message: serverOverrideReason ?? output.escalationReason ?? output.summary,
         url: prUrl,
         urlTitle: `PR #${prNumber}`,

@@ -774,7 +774,7 @@ export async function tryAutoMergeWorkerPr(params: {
       });
       if (task?.missionId) {
         await notifyMissionPrReady(task.missionId, {
-          title: 'Auto-merge blocked — review needed',
+          title: 'Auto-merge is blocked: waiting on you',
           prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
           prNumber,
           headSha,

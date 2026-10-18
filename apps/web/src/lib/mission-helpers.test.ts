@@ -797,14 +797,14 @@ describe('deriveTaskHealthSignal', () => {
 describe('mission card presentation', () => {
   it('manual drive copy never contains a next-run countdown', () => {
     const presentation = getDrivePresentation('MANUAL', { text: 'Next run in 9m', urgency: 'imminent' });
-    expect(presentation.label).toBe('MANUAL');
-    expect(presentation.detail).toBe('Disarmed · Run now to advance');
+    expect(presentation.label).toBe('Manual');
+    expect(presentation.detail).toBe('Run now to advance');
     expect(presentation.detail).not.toContain('Next run');
   });
 
   it('auto drive includes the available countdown', () => {
     expect(getDrivePresentation('AUTO', { text: 'Next run in 9m', urgency: 'imminent' })).toEqual({
-      label: 'AUTO', detail: 'Next run in 9m', tone: 'info',
+      label: 'Auto', detail: 'Next run in 9m', tone: 'info',
     });
   });
 
@@ -874,20 +874,20 @@ describe('computeGateChipMaxWaitMins — gate chip waiting time', () => {
 describe('getMissionStateChip', () => {
   it('review state returns READY FOR REVIEW with success color', () => {
     const chip = getMissionStateChip('review');
-    expect(chip.label).toBe('READY FOR REVIEW');
+    expect(chip.label).toBe('In review');
     expect(chip.cls).toContain('status-success');
   });
 
   it('awaiting_verification state reads AWAITING VERIFICATION with a warning colour', () => {
     const chip = getMissionStateChip('awaiting_verification');
-    expect(chip.label).toBe('AWAITING VERIFICATION');
+    expect(chip.label).toBe('Verifying');
     expect(chip.cls).toContain('status-warning');
   });
 
-  it('waiting_decision state reads AWAITING DECISION, not AUTO', () => {
+  it('waiting_decision state reads Waiting on you, not AUTO', () => {
     const chip = getMissionStateChip('waiting_decision');
-    expect(chip.label).toBe('AWAITING DECISION');
-    expect(chip.label).not.toBe('AUTO');
+    expect(chip.label).toBe('Waiting on you');
+    expect(chip.label).not.toBe('Auto');
     expect(chip.cls).toContain('status-warning');
   });
 
@@ -923,7 +923,7 @@ describe('formatWaitDuration', () => {
 describe('one chip vocabulary (D2)', () => {
   it('stalled reads STALLED, the same word the health badge uses', async () => {
     const { getMissionStateChip: chip } = await import('./mission-helpers');
-    expect(chip('stalled').label).toBe('STALLED');
+    expect(chip('stalled').label).toBe('Stalled');
   });
 
   it('BLOCKED has one tone — error — on the state chip and the health chip', async () => {

@@ -821,7 +821,7 @@ describe('deriveMissionStateView — local executor', () => {
     const view = deriveMissionStateView(local);
     expect(view.kind).toBe('running');
     expect(view.displayState).toBe('local');
-    expect(view.chip.label).toBe('LOCAL');
+    expect(view.chip.label).toBe('Run from your session');
     expect(view.waitingOn).toBeNull();
     expect(view.situation.headline).toBe('2 tasks ready to start from a local session.');
     expect(view.situation.headline).not.toMatch(/no live worker/);
@@ -833,7 +833,7 @@ describe('deriveMissionStateView — local executor', () => {
 
   it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [{ id: 't1', status: 'in_progress' }, { id: 't2', status: 'pending' }] });
-    expect(view.chip.label).toBe('LOCAL');
+    expect(view.chip.label).toBe('Run from your session');
     expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
   });
 
@@ -850,9 +850,9 @@ describe('deriveMissionStateView — local executor', () => {
     expect(nextActionFor(task!)).not.toMatch(/Dispatch a worker/);
   });
 
-  it('the session\'s own claimed worker keeps the LOCAL chip', () => {
+  it('the session\'s own claimed worker keeps the Run from your session chip', () => {
     const view = deriveMissionStateView({ ...local, activeAgents: 1, health: 'NOMINAL' });
-    expect(view.chip.label).toBe('LOCAL');
+    expect(view.chip.label).toBe('Run from your session');
     expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
   });
 

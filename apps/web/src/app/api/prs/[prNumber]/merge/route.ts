@@ -590,7 +590,7 @@ export async function POST(
     });
     if (hold.blocks) {
       return NextResponse.json(
-        { error: `Merge held: ${hold.reason}`, semanticHold: true, needsPerson: hold.needsPerson },
+        { error: `Merge stopped: ${hold.reason}`, semanticHold: true, needsPerson: hold.needsPerson },
         { status: 409 },
       );
     }

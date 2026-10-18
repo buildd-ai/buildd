@@ -38,13 +38,13 @@ deciding whether to step in, so every rule below comes down to two things:
 | fix task finished | `fix_ended` | ○ Fix N of M finished · waiting on checks (or `ended · failed`) | none |
 | approved, auto-merge pending | `review_approved` | ✓ Approved · merging once checks pass | none |
 | approved, human merges | `review_approved_awaiting_human` | ✓ Approved · ready to merge | none |
-| needs a human | `review_escalated`, `review_failed`, `human_review_required`, `ci_exhausted` | ⚑ … · needs a human | none |
+| waiting on you | `review_escalated`, `review_failed`, `human_review_required`, `ci_exhausted` | ⚑ … · waiting on you | none |
 | done | `merged`, `human_override_merge`, `review_superseded_by_merge` | ✓ Merged … | none |
 | queued/running fix cancelled, reviewer approved first | `fix_superseded_by_approval` | ✓ Fix cancelled · already approved | none |
 | other queued work cancelled by a supersession rule (aside) | `work_superseded` | Superseded · fix cancelled · PR closed (row only) | none |
 | abandoned | `closed_unmerged` | ✕ Closed without merging | none |
 | fix ended, GitHub head unchanged (kernel) | `push_pending` | ○ Fix N of M not on GitHub yet · waiting for the push | none |
-| push recovery gave up (kernel) | `push_undeliverable` | ⚑ Fix never reached GitHub · needs a human | none |
+| push recovery gave up (kernel) | `push_undeliverable` | ⚑ Fix never reached GitHub · waiting on you | none |
 | release, integration or mission branch refresh PR composed of reviewed changes (kernel) | `composition_verified` | ✓ Composition verified · every change was reviewed at its own head | none |
 | the novel paths of a composed PR approved by a delta round (kernel) | `composition_delta_approved` | ✓ New changes approved · this review covered only the new paths | none |
 | base branch fails the same checks (kernel trunk breaker) | `blocked_on_trunk` | ○ Blocked on a red base branch · CI retries paused until the base is green | none |
@@ -89,7 +89,7 @@ Use these words and no synonyms. They match the dashboard (`CondensedTimeline`,
 review queued · re-review queued · reviewing · re-reviewing · changes requested · queued · fixing · finished ·
 ended · pushed ·
 waiting for a worker · waiting on checks · approved · ready to merge ·
-needs a human · merged · closed without merging
+waiting on you · merged · closed without merging
 
 A PR's end states are the terms catalog's words (`packages/shared/src/terms.ts`,
 `docs/design/terms.md`): Merging, Merged, Merged in #N, Closed without merging.

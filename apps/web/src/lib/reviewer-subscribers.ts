@@ -246,7 +246,7 @@ async function maybeDispatchReviewer(
         });
       }
       void notifyTeamOf({ workspaceId: workspace.id, prNumber: pr.number }, 'needsAttention', {
-        title: 'A PR was escalated for human review',
+        title: 'A PR is waiting on you',
         message: reason,
         url: pr.html_url,
         urlTitle: `PR #${pr.number}`,
