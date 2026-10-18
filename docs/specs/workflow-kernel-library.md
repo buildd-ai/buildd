@@ -925,6 +925,12 @@ push, refresh, completion or owner change can make it disappear.
   round is a round like any other: it uses one of the delivery's `maxRounds`
   (unless it re-checks a head after an approval, which spends none:
   workflow-state-kernel.md §8.2, c1d66a6a).
+  The kept approval covers only the head it judged: approved at H1, and the
+  owner pushes H2 and ends, H2 is reviewed and does not land on H1's word. When the
+  owner's end leaves the delivery `APPROVED` at the same head, the seam marks the PR
+  due on the landing sweep's queue, so landing is re-evaluated at once instead of
+  waiting for a person or the floor (the landing door had deferred while the delivery
+  was `WORKING`, and nothing else woke it).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
