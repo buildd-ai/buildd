@@ -25,6 +25,7 @@ import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type Deli
 import { deliveryPrState, deriveDeliveryView, repairLabelOf } from '../projections';
 import { LANDING_STATUS_CONTEXT, landingStatusOf, reviewGate } from '../landing-gate';
 import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '../merge-hold';
+import { openHeadStatus } from '../open-pr-status';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
@@ -2680,6 +2681,37 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const r3 = await s.latestRound();
       eq(pick(r3, ['round', 'kind']), { round: 3, kind: 'full' }, 'a full review once the chain is over the cap');
       eq(pick((r3.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'fromHeadSha']), { eligible: false, fromHeadSha: 'H1' }, 'measured from H1');
+    },
+  },
+  {
+    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    async run(host) {
+      const s = await new Delivery(host, 81).open();
+      const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;
+      const stateOf = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).status.state;
+      eq([await of('H1'), await stateOf('H1')], ['host', 'pending'], 'work running, no head reported yet: pending');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'review owed at H1: the kernel answers, pending');
+      applied(await s.verdict('approve'), 'APPROVED', 'approve');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'success'], 'approved at H1: the kernel says success at H1');
+      // H2 pushed, not yet imported: the approval of H1 never carries over to H2.
+      eq([await of('H2'), await stateOf('H2')], ['host', 'pending'], 'a head the delivery has not seen is pending, never the old success');
+      eq(openHeadStatus({ sha: 'H2', view: await s.view() }).status.description.startsWith('Review in progress'), true, 'in plain words');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'H2 observed');
+      eq([await of('H2'), await stateOf('H2')], ['kernel', 'pending'], 'once seen, the kernel answers H2: review owed');
+      // A merged delivery's PR still showing open (a stale read): the kernel no longer answers; pending, not its last word.
+      const m = await new Delivery(host, 82).open();
+      await m.approvedAt('H1');
+      applied(await m.land('H1'), 'LANDING', 'landing');
+      applied(await m.merged('H1'), 'MERGED', 'merged');
+      eq(openHeadStatus({ sha: 'H1', view: await m.view() }).status.state, 'pending', 'a delivery that is over answers nothing; the head is pending');
+      // No delivery at all.
+      eq(pick(openHeadStatus({ sha: 'R1', view: null }).status, ['state', 'description']), { state: 'pending', description: 'Review not requested: no buildd review covers R1 yet' }, 'a PR with no delivery');
+      // A release candidate: the release gate's answer at its own SHA.
+      const checks = [{ name: 'build', state: 'passing' as const }, { name: 'release candidate verified', state: 'passing' as const }];
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks, review: { verdict: 'pass' } } }).status.state, 'success', 'verified, review passes');
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks: [checks[0]!, { name: 'release candidate verified', state: 'pending' }], review: { verdict: 'pass' } } }).status.state, 'pending', 'not verified yet');
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks, review: { verdict: 'changes_requested', reason: 'x' } } }).status.state, 'failure', 'review stands against it');
     },
   },
 ];
