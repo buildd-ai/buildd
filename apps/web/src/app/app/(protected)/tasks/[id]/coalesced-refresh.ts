@@ -1,3 +1,5 @@
+import { requestPageRefresh } from '@/lib/page-refresh';
+
 interface RouterLike {
   refresh: () => void;
 }
@@ -33,7 +35,7 @@ export function requestRefresh(
 ): void {
   const fire = () => {
     clearPending(taskId);
-    router.refresh();
+    requestPageRefresh(router);
   };
 
   const existing = pending.get(taskId);
@@ -45,11 +47,12 @@ export function requestRefresh(
 }
 
 /**
- * Bypass the debounce and refresh immediately — for status transitions and
- * terminal events, which must never be delayed or coalesced away. Clears any
- * debounced call already pending for this taskId so it doesn't double-fire.
+ * Bypass the debounce — for status transitions and terminal events, which must
+ * never be merged away. Clears any debounced call already pending for this
+ * taskId so it doesn't double-fire. Still one refresh per 5 s per page
+ * (lib/page-refresh.ts): inside the window it runs at the window's end.
  */
 export function flushRefresh(router: RouterLike, taskId: string): void {
   clearPending(taskId);
-  router.refresh();
+  requestPageRefresh(router);
 }

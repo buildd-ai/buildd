@@ -270,8 +270,14 @@ export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
   // BUILDD_DISABLE_SANDBOX=1 is an operator escape hatch. checkBwrapSupport()
   // also reads it, but checking here ensures the cached value reflects the flag
-  // even if the env var is set after the first call.
-  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+  // even if the env var is set after the first call. The opt-out is a decided
+  // state, so it gets a probe time too: the heartbeat sends the isolation
+  // record only once one is set, and without it Health read an opted-out
+  // runner as "never confirmed".
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') {
+    _bwrapProbeAt ??= new Date().toISOString();
+    return false;
+  }
   if (_bwrapSupported === null) {
     _bwrapSupported = checkBwrapSupport();
     _bwrapProbeAt = new Date().toISOString();

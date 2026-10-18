@@ -17,7 +17,8 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { createContext, useContext, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { chatEntryFromAvailability } from './ChatSetupCard';
 import { askAboutHref, isChatShortcut, newWorkHref, type AboutKind, type NewWorkKind } from '@/lib/chat/entry-points';
 import { useChatCanvas } from './canvas-context';
 
@@ -28,12 +29,31 @@ export interface ChatEntryValue {
   teamId: string | null;
   /** Admin, no provider key yet: where to connect one. Null for everyone else. */
   setupHref: string | null;
+  /**
+   * The shell had no answer cached (lib/chat-availability.ts peekChatAvailability):
+   * the buttons start as the form, and the provider asks once, after paint.
+   */
+  pending?: boolean;
 }
 
 const ChatEntryContext = createContext<ChatEntryValue>({ available: false, teamId: null, setupHref: null });
 
 export function ChatEntryProvider({ value, children }: { value: ChatEntryValue; children: ReactNode }) {
-  return <ChatEntryContext.Provider value={value}>{children}</ChatEntryContext.Provider>;
+  const [resolved, setResolved] = useState<ChatEntryValue | null>(null);
+  const { pending, teamId } = value;
+  useEffect(() => {
+    setResolved(null);
+    if (!pending || !teamId) return;
+    let live = true;
+    fetch(`/api/chat/availability?teamId=${encodeURIComponent(teamId)}`, { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : null))
+      .then((avail: { available: boolean; canManageTeamKeys?: boolean } | null) => {
+        if (live && avail) setResolved(chatEntryFromAvailability(avail, teamId));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [pending, teamId]);
+  return <ChatEntryContext.Provider value={resolved ?? value}>{children}</ChatEntryContext.Provider>;
 }
 
 export function useChatEntry(): ChatEntryValue {

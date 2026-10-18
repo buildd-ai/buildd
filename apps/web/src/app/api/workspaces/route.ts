@@ -15,6 +15,7 @@ import { emit } from '@/lib/core-emit';
 import { can } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 /**
  * The account fields a workspace listing may carry. The response spreads each
@@ -315,6 +316,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    if (user) invalidateAppChrome(user.id);
     return NextResponse.json(toPublicWorkspace(workspace));
   } catch (error) {
     console.error('Create workspace error:', error);

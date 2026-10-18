@@ -24,6 +24,7 @@ import {
   type FreshnessCoordinator,
 } from '@/lib/app-freshness';
 import { createPullTracker, PULL_THRESHOLD_PX } from '@/lib/pull-to-refresh';
+import { notePageRefreshed, requestPageRefresh, type Refresher } from '@/lib/page-refresh';
 import { findScrollRoot } from '@/lib/scroll-root';
 import Spinner from './Spinner';
 
@@ -60,12 +61,20 @@ export default function AppFreshness() {
   // ── Lifecycle → coordinator ──
   useEffect(() => {
     const isHidden = () => document.visibilityState === 'hidden';
+    const pageRefresher: Refresher = { refresh: () => startTransition(() => routerRef.current.refresh()) };
     const coordinator = createFreshnessCoordinator({
       isHidden,
       onCatchUp: (reason) => {
         // Subscribers first: the mission page captures its scroll anchor here.
         emitCatchUp(reason);
-        startTransition(() => routerRef.current.refresh());
+        // A pull is a person asking: now. Anything else shares the page's
+        // one-per-5s live refresh (lib/page-refresh.ts) with the Pusher paths.
+        if (reason === 'pull') {
+          notePageRefreshed();
+          pageRefresher.refresh();
+        } else {
+          requestPageRefresh(pageRefresher);
+        }
       },
     });
     coordinatorRef.current = coordinator;

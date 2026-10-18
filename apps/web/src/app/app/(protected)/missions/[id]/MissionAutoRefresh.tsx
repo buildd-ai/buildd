@@ -8,7 +8,7 @@
  * - Subscribes to the workspace and mission Pusher channels and hands every
  *   event to `createMissionRefresher` (MissionLiveStore.ts): steady-status
  *   `worker:progress` patches the live store its children read; structural
- *   events call `router.refresh()`, at most once per 3s per tab.
+ *   events call `router.refresh()`, at most once per 5s per tab.
  * - Around each refresh it anchors the reader's row: `rect.top` before, a
  *   `scrollTop` correction after the new render commits (mission-scroll-anchor.ts).
  * - A task that arrives above the viewport shows a `N new ↑` pill
@@ -19,6 +19,7 @@ import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { Clock } from '@/lib/realtime-throttle';
 import { demandCatchUp, subscribeCatchUp } from '@/lib/app-freshness';
+import { requestPageRefresh, type Refresher } from '@/lib/page-refresh';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';
 import {
@@ -93,16 +94,21 @@ export default function MissionAutoRefresh({
 
   useEffect(() => {
     if (!workspaceId) return;
-    const refresher = createMissionRefresher({
-      missionId,
-      taskIds: latest.current.taskIds,
-      workerStatuses: latest.current.workerStatuses,
-      store,
+    // One refresher per subscription, so the page gate (lib/page-refresh.ts)
+    // collapses repeat asks. The anchor is taken when the render actually starts.
+    const pageRefresher: Refresher = {
       refresh: () => {
         const s = latest.current.scroller();
         anchorRef.current = s ? captureScrollAnchor(s) : null;
         latest.current.router.refresh();
       },
+    };
+    const refresher = createMissionRefresher({
+      missionId,
+      taskIds: latest.current.taskIds,
+      workerStatuses: latest.current.workerStatuses,
+      store,
+      refresh: () => requestPageRefresh(pageRefresher),
       isHidden: () => document.visibilityState === 'hidden',
       onMissed: () => demandCatchUp('missed'),
       clock,

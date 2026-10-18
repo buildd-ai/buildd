@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { demandCatchUp } from '@/lib/app-freshness';
+import { requestPageRefresh } from '@/lib/page-refresh';
 import {
   createThrottle,
   shouldRefreshHomeOnEvent,
@@ -34,8 +35,6 @@ import {
 const REFRESH_EVENTS = [
   'task:created',
   'task:claimed',
-  'task:completed',
-  'task:failed',
   'task:unblocked',
   'worker:progress',
   'worker:completed',
@@ -57,7 +56,7 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
         demandCatchUp('missed');
         return;
       }
-      router.refresh();
+      requestPageRefresh(router);
     }, { waitMs: HOME_THROTTLE_MS });
 
     const handlers = REFRESH_EVENTS.map(event => [event, (data: unknown) => {

@@ -44,7 +44,7 @@ describe('list view', () => {
 
   test('the asking row shows the question, never a status label', () => {
     const t = text(frame(fixtureState(), 120, 40));
-    expect(t).toContain('asks: "Print the URL or open the b');
+    expect(t).toContain('asks: "Print the URL or open the');
     expect(t).not.toMatch(/needs input|needs you/i);
   });
 
@@ -220,7 +220,7 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       expect(row.split('│')[0]).toMatch(/verifying 2\/8 $/);
       // The title, then the live counts; the stage and what it waits on on the line under it.
       expect(lines[3]).toMatch(/│ Runner TUI +\d+ running · \d+ waiting $/);
-      expect(lines[4].split('│')[1]).toBe(' Verifying · 2 checks left'.padEnd(cols - (cols >= 110 ? 28 : 22) - 1));
+      expect(lines[4].split('│')[1]).toBe(' Verifying · 2 checks left'.padEnd(cols - (cols >= 110 ? 30 : 22) - 1));
       for (const l of lines) expect(textWidth(l)).toBeLessThanOrEqual(cols);
     }
   });
@@ -349,7 +349,7 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
   });
 
   test('R-31: with a stage, the missions pane keeps done over total beside it, and has no squares', () => {
-    for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 28]] as const) {
+    for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 30]] as const) {
       const left = text(frame(withProgress(AC14), cols, rows)).split('\n').map(l => l.slice(0, lw));
       const sel = left.find(l => l.includes('▸'))!;
       expect(sel).toMatch(/building 2\/8 $/);

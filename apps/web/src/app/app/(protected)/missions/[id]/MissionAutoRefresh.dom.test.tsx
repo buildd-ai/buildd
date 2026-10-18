@@ -57,6 +57,7 @@ mock.module('@/lib/pusher-client', () => ({
 const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: MissionAutoRefresh } = await import('./MissionAutoRefresh');
+const { resetPageRefreshGate } = await import('@/lib/page-refresh');
 const { useMissionLiveSnapshot, MISSION_REFRESH_WINDOW_MS } = await import('./MissionLiveStore');
 
 function fakeClock(): Clock & { advance(ms: number): void } {
@@ -133,6 +134,8 @@ beforeEach(() => {
   snapshots = 0;
   scrollTop = 0;
   clock = fakeClock();
+  // The page's live-refresh gate (lib/page-refresh.ts) runs on the same clock.
+  resetPageRefreshGate(clock);
   main = document.createElement('main');
   Object.defineProperty(main, 'scrollTop', { get: () => scrollTop, set: (v: number) => { scrollTop = v; }, configurable: true });
   document.body.appendChild(main);

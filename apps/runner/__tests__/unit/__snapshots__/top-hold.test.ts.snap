@@ -32,40 +32,40 @@ exports[`the frame while held 120x40 1`] = `
  Paused since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                   
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
- ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
-   Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
-   Specs import         1/2 │ Working now                                                                               
-   Other tasks       1 open │›● name override               Builder     12m Edit config.ts                       41k tok
-                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
-                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
-                            │ ● heartbeat name              Builder         running on another runner                   
-                            │ Waiting                                                                                   
-                            │ ○ buildd top                  Builder         runner is paused                            
-                            │ ○ docs page                   Writer          runner is paused                            
-                            │ Done today                                                                                
-                            │ ✓ spec draft                                  done                                        
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ MISSIONS                     │ Runner TUI                                                        4 running · 2 waiting 
+ ▸ Runner TUI             2/8 │ 2 of 8 tasks done                                                                       
+   Local on… your session 0/1 │─────────────────────────────────────────────────────────────────────────────────────────
+   Specs import           1/2 │ Working now                                                                             
+   Other tasks         1 open │›● name override              Builder     12m Edit config.ts                      41k tok
+                              │ ? installer hint             Builder      9m asks: "Print the URL or open the …         
+                              │ ● single instance            Builder      4m bun run test __tests__/unit/runne…   8k tok
+                              │ ● heartbeat name             Builder         running on another runner                  
+                              │ Waiting                                                                                 
+                              │ ○ buildd top                 Builder         runner is paused                           
+                              │ ○ docs page                  Writer          runner is paused                           
+                              │ Done today                                                                              
+                              │ ✓ spec draft                                 done                                       
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;

@@ -21,8 +21,9 @@ const layout = code(await Bun.file(new URL('./layout.tsx', import.meta.url)).tex
 const home = code(await Bun.file(new URL('./home/page.tsx', import.meta.url)).text());
 
 describe('one active-team resolver for the shell and Home', () => {
-  it('layout resolves the team via resolveActiveTeamScope, with no first-team default of its own', () => {
-    expect(layout).toContain('resolveActiveTeamScope(');
+  it('layout resolves the team via loadAppChrome, which applies the same default rule, with none of its own', () => {
+    // lib/app-chrome.ts and resolveActiveTeamScope's pickDefaultTeam share chooseDefaultTeam.
+    expect(layout).toContain('loadAppChrome(');
     expect(layout).not.toMatch(/userTeams\[0\]/);
   });
 
