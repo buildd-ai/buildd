@@ -20,7 +20,8 @@ import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/plat
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
-import { loadAccessNeedsYou } from '@/lib/capability-grants-needs-you';
+import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
+import { homeMissionSummaries } from '@/lib/mission-summary-home';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -221,6 +222,15 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
 }
 
 /**
+ * The open-PR status sweep's review reads (lib/workflow/open-pr-status.ts): whether a
+ * review was asked for on a PR no delivery owns, and a release candidate's gate at its SHA.
+ * The releases module's (lib/release/open-pr-review.ts); lazy, so the floor loads it only when it runs.
+ */
+export async function openPrReviewReads(): Promise<import('@/lib/release/open-pr-review').OpenPrReviewReads> {
+  return (await import('@/lib/release/open-pr-review')).openPrReviewReads();
+}
+
+/**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
@@ -250,10 +260,17 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
 
 /**
  * The connectors module's slot for Home (lib/capability-grants-needs-you.ts):
- * pending capability requests the escalation gate gives to a person, for the
- * teams where the viewer can decide them. A fixed rule; no model call.
+ * pending capability requests the escalation gate gives to a person, as one
+ * statement for Home's batch. A fixed rule; no model call, no write.
  */
-export const ACCESS_NEEDS_YOU = loadAccessNeedsYou;
+export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
+
+/**
+ * The missions module's slot for Home (lib/mission-summary-home.ts): live
+ * readings for missions with no stored summary yet, the after-response
+ * summary write, and filing a visual review a mission PR owes.
+ */
+export const HOME_MISSION_SUMMARIES = homeMissionSummaries;
 
 /**
  * The decisions module's slot for the team settings route

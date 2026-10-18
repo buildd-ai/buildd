@@ -111,8 +111,7 @@ export interface HostedRunnerDeps {
 export const dbHostedRunnerDeps: HostedRunnerDeps = {
   async loadAllowanceHours(teamId) {
     const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { hostedRunnerHours: true } });
-    const v = row?.hostedRunnerHours;
-    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+    return allowanceHoursOf(row?.hostedRunnerHours);
   },
   async loadTeamRows(teamId, start, end) {
     const rows = await db.select(rowColumns)
@@ -167,7 +166,16 @@ export async function checkHostedRunnerAllowance(
  * allowance costs one key lookup and reads no usage.
  */
 export async function teamHostedRunnerBanner(teamId: string, now = new Date(), deps: HostedRunnerDeps = dbHostedRunnerDeps): Promise<{ level: 'warn' | 'used'; text: string } | null> {
-  const allowanceHours = await deps.loadAllowanceHours(teamId);
+  return hostedRunnerBannerFor(teamId, await deps.loadAllowanceHours(teamId), now, deps);
+}
+
+/** `allowanceHours` as stored (`teams.hosted_runner_hours`): a usable allowance, else null. */
+export function allowanceHoursOf(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/** The banner for an allowance the caller already read. Without one, no usage is read. */
+export async function hostedRunnerBannerFor(teamId: string, allowanceHours: number | null, now = new Date(), deps: HostedRunnerDeps = dbHostedRunnerDeps): Promise<{ level: 'warn' | 'used'; text: string } | null> {
   if (allowanceHours === null) return null;
   const rows = await deps.loadTeamRows(teamId, monthlyWindowStart(now), nextMonthlyReset(now));
   return hostedRunnerBannerText({ allowanceHours, countedSeconds: rollUpRunnerUsage(rows, now).countedSeconds }, now);

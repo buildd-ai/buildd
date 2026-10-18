@@ -10,7 +10,13 @@ import { AGENT_CREDENTIAL_PURPOSES, AGENT_INFERENCE_KEY_LABELS } from './getting
  * checklist asks whether agents can run at all, not on which machine.
  */
 export async function teamHasAgentCredential(teamId: string): Promise<boolean> {
-  const rows = await db
+  const rows = await agentCredentialProbe(teamId);
+  return rows.length > 0;
+}
+
+/** `teamHasAgentCredential`'s one statement, for a caller's batch: any row means yes. */
+export function agentCredentialProbe(teamId: string) {
+  return db
     .select({ id: secrets.id })
     .from(secrets)
     .where(or(
@@ -19,5 +25,4 @@ export async function teamHasAgentCredential(teamId: string): Promise<boolean> {
       teamCredentialWhere({ teamId, purpose: 'inference_key', label: AGENT_INFERENCE_KEY_LABELS }, ne(secrets.healthStatus, 'revoked')),
     ))
     .limit(1);
-  return rows.length > 0;
 }

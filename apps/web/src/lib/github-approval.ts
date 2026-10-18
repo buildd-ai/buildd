@@ -61,10 +61,13 @@ async function readLive(
 //     including a platform base refresh) and any pull_request_review action
 //     (submitted, dismissed, edited) deletes it.
 // The TTL bounds a lost webhook. Home's use of these facts only picks a manual
-// action label; merge doors re-read GitHub themselves.
+// action label; merge doors re-read GitHub themselves. Home reads the cache
+// only and refreshes a miss after its response (`refreshGithubApprovals`).
 export const GITHUB_APPROVAL_TTL_SEC = 60;
-/** Concurrent GitHub lookups per Home render. */
+/** Concurrent GitHub lookups per refresh. */
 export const GITHUB_APPROVAL_CONCURRENCY = 8;
+/** Most PRs one page's after-response refresh asks GitHub about (spec 3ef37387 R-14). */
+export const GITHUB_APPROVAL_REFRESH_LIMIT = 10;
 
 export interface ApprovalCache {
   /** `undefined` = could not ask (fail open to a live read); `null` = no entry. */
@@ -103,6 +106,59 @@ export async function readGithubApprovalCached(
     await cache.set<CachedApproval>(key, { facts: live.facts, head: live.head, workerSha }, GITHUB_APPROVAL_TTL_SEC);
   } catch { /* fail open: the live answer stands */ }
   return live.facts;
+}
+
+/**
+ * The cached approval for this PR at this worker head, or null. Never calls
+ * GitHub: a page shows what is cached and refreshes a miss after it responds.
+ */
+export async function peekGithubApproval(
+  repoFullName: string, prNumber: number, workerSha: string | null, cache: ApprovalCache = redisCache,
+): Promise<GithubApprovalFacts | null> {
+  let hit: unknown;
+  try { hit = await cache.get<CachedApproval>(githubApprovalCacheKey(repoFullName, prNumber)); } catch { return null; }
+  return isCachedApproval(hit) && hit.workerSha === (workerSha ?? null) ? hit.facts : null;
+}
+
+export interface ApprovalRefresh {
+  repoFullName: string;
+  prNumber: number;
+  workerSha: string | null;
+  /** The PR's own team's installation, resolved only when the refresh runs. */
+  installationId: () => Promise<number | null>;
+}
+
+/** PRs whose refresh is running on this instance: one look per PR at a time. */
+const refreshing = new Set<string>();
+
+/**
+ * Refresh cached approvals a page missed, after its response: at most `limit`
+ * PRs, never two looks at one PR at once, and every failure swallowed (the
+ * next render shows no approval facts, as on any miss).
+ */
+export async function refreshGithubApprovals(
+  items: readonly ApprovalRefresh[],
+  opts: { limit?: number; api?: typeof githubApi; cache?: ApprovalCache } = {},
+): Promise<number> {
+  const fresh = items.filter(i => !refreshing.has(githubApprovalCacheKey(i.repoFullName, i.prNumber)))
+    .slice(0, opts.limit ?? GITHUB_APPROVAL_REFRESH_LIMIT);
+  for (const i of fresh) refreshing.add(githubApprovalCacheKey(i.repoFullName, i.prNumber));
+  let done = 0;
+  try {
+    await mapWithConcurrency(fresh, GITHUB_APPROVAL_CONCURRENCY, async i => {
+      try {
+        const installationId = await i.installationId();
+        if (!installationId) return;
+        await readGithubApprovalCached(installationId, i.repoFullName, i.prNumber, { workerSha: i.workerSha, api: opts.api, cache: opts.cache });
+        done++;
+      } catch {
+        // Unknown approval stays unknown; the next miss tries again.
+      }
+    });
+  } finally {
+    for (const i of fresh) refreshing.delete(githubApprovalCacheKey(i.repoFullName, i.prNumber));
+  }
+  return done;
 }
 
 /** Drop a PR's cached approval: its head or its reviews changed on GitHub. */
