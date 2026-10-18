@@ -34,6 +34,10 @@ describe('top says why, short', () => {
     expect(said({ error: 'x', serverStatus: 429 })).toBe("Not claimed: the account's worker limit is reached.");
   });
 
+  test('a paused runner reads paused', () => {
+    expect(said({ error: 'x', claimReason: 'runner_held' })).toBe('Not claimed: this runner is paused.');
+  });
+
   test('a gate in its words; a local session\'s mission says so', () => {
     expect(said({ error: 'x', claimReason: 'all_candidates_deferred', exclusion: 'soft_overlap' })).toBe('Not claimed: waits for work on the same files.');
     expect(said({ error: 'x', exclusion: 'mission_local' })).toBe('Not claimed: its mission is managed from a local session.');

@@ -235,7 +235,7 @@ export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
       {(lines.length > 0 || hidden > 0) && (
         <ul data-testid="runner-lanes-idle" className="mt-2 space-y-0.5 text-meta text-text-muted">
           {lines.map(l => <li key={l}>{l}</li>)}
-          {hidden > 0 && <li data-testid="runner-lanes-hidden">{hidden === 1 ? '1 slot' : `${hidden} slots`} held no work in this window and {hidden === 1 ? 'is' : 'are'} not drawn.</li>}
+          {hidden > 0 && <li data-testid="runner-lanes-hidden">{hidden === 1 ? '1 slot' : `${hidden} slots`} had no work in this window and {hidden === 1 ? 'is' : 'are'} not drawn.</li>}
         </ul>
       )}
     </div>

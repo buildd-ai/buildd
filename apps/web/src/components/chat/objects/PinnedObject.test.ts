@@ -48,7 +48,7 @@ describe('missionCountsLine', () => {
   });
 
   it('counts landed work once there are tasks', () => {
-    expect(missionCountsLine(board({ landed: { done: 1, total: 3 } }))).toBe('1 of 3 landed');
+    expect(missionCountsLine(board({ landed: { done: 1, total: 3 } }))).toBe('1 of 3 done');
   });
 });
 

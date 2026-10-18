@@ -6,6 +6,7 @@
 import { reportOps } from '@buildd/core/report-ops';
 import { SUBSCRIBERS } from '@/modules';
 import type { AnySubscriber, CoreEvent, CoreEventType } from './core-events';
+import { isEmptyWorkChange, noteWorkChanged, workChangeOfEvent } from './work-changed';
 
 /** Runs one subscriber with its own try/catch. */
 export type Isolate = (label: string, fn: () => Promise<void>) => Promise<void>;
@@ -44,5 +45,11 @@ export async function emit(event: CoreEvent, opts: EmitOptions = {}): Promise<vo
       // A caller's isolate that itself throws must not stop the fan-out.
       console.error(`[core-event ${event.type}] isolate for ${s.label} threw:`, err);
     }
+  }
+  // The rows the event names changed (lib/work-changed.ts). Not under a
+  // test's own subscriber list: that test is about its subscribers.
+  if (!opts.subscribers) {
+    const change = workChangeOfEvent(event);
+    if (!isEmptyWorkChange(change)) noteWorkChanged(change);
   }
 }

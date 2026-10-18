@@ -15,12 +15,15 @@
  *  3. Any other PR passes buildd's review gate at that head
  *     (`guardReviewVerdict`), then merges with GitHub's own `sha` pin, so a
  *     push between the read and the call is GitHub's refusal, not a merge.
+ *     A required check that has not passed yet on that head (GitHub's 405,
+ *     "Required status check ... is expected") is a hold, never a failure.
  *
  * `verifiedHeadSha: null` means the door verified nothing of its own before
  * this call: the head read here is the one gated and pinned.
  */
 import { githubApi } from '@/lib/github';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { requiredCheckHold } from '@/lib/required-check-hold';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { isDoorError } from '@/lib/workflow/kernel-client';
 import type { KernelOps, KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -51,9 +54,11 @@ export interface PinnedMergeInput {
 export type PinnedMergeResult =
   | { merged: true; sha: string | null; message: string; alreadyMerged?: boolean; via: 'kernel' | 'pinned' | 'github' }
   | {
-      merged: false; message: string; refused: 'head_moved' | 'review' | 'kernel' | 'unavailable' | 'unreadable' | 'merge_failed'; headSha?: string | null;
-      /** Wait and retry (the kernel has not approved it yet, or the control plane did not answer): not a failure. */
+      merged: false; message: string; refused: 'head_moved' | 'review' | 'kernel' | 'unavailable' | 'unreadable' | 'merge_failed' | 'required_check'; headSha?: string | null;
+      /** Wait and retry (the kernel has not approved it yet, the control plane did not answer, a required check has not passed yet): not a failure. */
       hold?: true;
+      /** `required_check`: the check GitHub named as not passed yet (null when it gave only a count). */
+      check?: string | null;
       /** GitHub's answer was lost (a timeout, a 5xx with nothing readable): the merge may have gone through. */
       indeterminate?: true;
     };
@@ -75,6 +80,13 @@ async function readPr(api: Api, p: PinnedMergeInput): Promise<{ merged?: boolean
   } catch {
     return null;
   }
+}
+
+function heldOn(check: string | null, head: string, prNumber: number): PinnedMergeResult {
+  return {
+    merged: false, refused: 'required_check', hold: true, check, headSha: head,
+    message: `GitHub is holding PR #${prNumber} at ${short(head)} until ${check ? `required check "${check}"` : 'its required checks'} pass${check ? 'es' : ''}; the release waits and is retried`,
+  };
 }
 
 export async function mergeReleasePrPinned(p: PinnedMergeInput, deps: PinnedMergeDeps = {}): Promise<PinnedMergeResult> {
@@ -133,6 +145,8 @@ export async function mergeReleasePrPinned(p: PinnedMergeInput, deps: PinnedMerg
       body: JSON.stringify({ merge_method: p.mergeMethod, sha: head }),
     });
     if (res?.sha || res?.merged === true) return { merged: true, sha: (res.sha as string | undefined) ?? null, message: 'PR merged', via: 'pinned' };
+    const waiting = requiredCheckHold(typeof res?.message === 'string' ? res.message : null);
+    if (waiting) return heldOn(waiting.check, head, p.prNumber);
     // An empty answer is not evidence of a merge: ask GitHub.
     const after = await readPr(api, p);
     if (after?.merged === true) return { merged: true, sha: after.merge_commit_sha ?? null, message: `PR #${p.prNumber} already merged`, alreadyMerged: true, via: 'github' };
@@ -143,6 +157,9 @@ export async function mergeReleasePrPinned(p: PinnedMergeInput, deps: PinnedMerg
     const after = await readPr(api, p);
     if (after?.merged === true) return { merged: true, sha: after.merge_commit_sha ?? null, message: `PR #${p.prNumber} already merged`, alreadyMerged: true, via: 'github' };
     const moved = /head branch was modified|409/i.test(msg) && after?.head?.sha && after.head.sha !== head;
+    // §4 merge holds: a required check has not passed on this head yet. The release waits, it has not failed.
+    const waiting = !moved ? requiredCheckHold(msg) : null;
+    if (waiting) return heldOn(waiting.check, after?.head?.sha ?? head, p.prNumber);
     // A refusal GitHub gave (a 4xx) is an answer; anything else (a timeout, a 5xx) is not.
     const definite = /GitHub API error: 4\d\d/.test(msg);
     return { merged: false, refused: moved ? 'head_moved' : 'merge_failed', headSha: after?.head?.sha ?? head, message: msg, ...(!moved && !definite ? { indeterminate: true as const } : {}) };

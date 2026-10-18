@@ -27,13 +27,13 @@ describe('groupEpisodesByDay', () => {
     const days = groupEpisodesByDay(eps, 1, NOW, 'UTC');
     expect(days).toHaveLength(1);
     expect(days[0].episodes.map(e => e.id)).toEqual(['a']);
-    expect(days[0].tally).toBe('2 landed · 1 repaired');
+    expect(days[0].tally).toBe('2 merged · 1 repaired');
   });
 });
 
 describe('dayTally', () => {
-  it('names landed, repaired and sent to you, leaving zeros out', () => {
-    expect(dayTally([ep('a', 1), ep('b', 1, { kind: 'needs', repairRounds: 1 })])).toBe('1 landed · 1 repaired · 1 to you');
+  it('names merged, repaired and sent to you, leaving zeros out', () => {
+    expect(dayTally([ep('a', 1), ep('b', 1, { kind: 'needs', repairRounds: 1 })])).toBe('1 merged · 1 repaired · 1 to you');
   });
   it('falls back to a plain count when none of those apply', () => {
     expect(dayTally([ep('a', 1, { kind: 'notlanded' })])).toBe('1 delivery');

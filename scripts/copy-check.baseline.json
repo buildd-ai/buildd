@@ -2,20 +2,26 @@
   "empty-yet": {},
   "of-your-own": {},
   "self-description": {},
-  "reassurance": {},
+  "reassurance": {
+    "apps/web/src/lib/mission-state-view.ts": 1
+  },
   "justification": {},
   "needs-you": {},
   "label-speak": {},
   "exclamation": {},
-  "long-copy": {},
+  "long-copy": {
+    "apps/web/src/lib/mission-state-view.ts": 2
+  },
   "not-this-its-that": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/InteractiveSessions.tsx": 1,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
-    "apps/web/src/components/insights/flow-chart-model.ts": 1
+    "apps/web/src/components/insights/flow-chart-model.ts": 1,
+    "apps/web/src/lib/mission-dependency-gate.ts": 1
   },
   "internal-jargon": {
     "apps/web/src/app/app/(protected)/health/_components/FailureGroups.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/CloudRunnerDeploy.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/CloudflareSection.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
@@ -38,25 +44,28 @@
     "apps/web/src/lib/mission-state-view.ts": 7
   },
   "state-jargon": {
-    "apps/web/src/app/app/(protected)/home/NeedsYouCards.tsx": 2,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 3,
+    "apps/runner/src/claim-words.ts": 3,
+    "apps/runner/src/top/keys.ts": 2,
+    "apps/runner/src/top/state.ts": 1,
+    "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 2,
     "apps/web/src/app/app/(protected)/settings/NotificationsSection.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx": 2,
-    "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": 3,
     "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": 2,
-    "apps/web/src/components/chat/approval-draft.ts": 1,
     "apps/web/src/components/fleet/RunningNow.tsx": 1,
     "apps/web/src/components/fleet/SlotLanes.tsx": 1,
-    "apps/web/src/components/missions/MissionListCards.tsx": 3,
-    "apps/web/src/components/recovery/MissionRecoveryNotice.tsx": 2,
-    "apps/web/src/lib/incident-view.ts": 1,
-    "apps/web/src/lib/mission-state-view.ts": 4
+    "apps/web/src/lib/capability-grants-view.ts": 1,
+    "apps/web/src/lib/mission-state-view.ts": 6,
+    "packages/core/mcp-tools.ts": 35
+  },
+  "catalog-word": {
+    "packages/core/mcp-tools.ts": 19
   },
   "duplicate-explanation": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx": 1,
     "apps/web/src/components/chat/DirectiveCard.tsx": 1,
-    "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
+    "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1,
+    "apps/web/src/lib/mission-state-view.ts": 3
   }
 }

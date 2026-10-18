@@ -71,6 +71,7 @@ describe('amendCandidateOnFixMerge', () => {
     const comment = g.calls.find((c) => c.path === '/repos/o/r/issues/90/comments');
     expect(comment?.opts.method).toBe('POST');
     expect(JSON.parse(comment!.opts.body).body).toContain('amend: 1.2.3');
+    expect(JSON.parse(comment!.opts.body).body).toMatch(/^The fix for this candidate merged in #\d+\. /);
   });
 
   it('does nothing a second time for the same fix PR (marker already taken)', async () => {

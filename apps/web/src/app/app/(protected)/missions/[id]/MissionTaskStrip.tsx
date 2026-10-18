@@ -38,6 +38,7 @@
  */
 import { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import { displayTaskTitle } from '@/lib/task-title';
+import { TERMS } from '@buildd/shared';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -81,7 +82,7 @@ export interface LandedStripProps {
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Has a question',
+  landed: TERMS['pr.merged'].word, review: 'In review', running: 'Running', waiting: 'Has a question',
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
 };
 
@@ -138,14 +139,14 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const nextOpenLabel = open.length > 0
     ? (target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`)
     : counts.failed > 0 ? `Nothing open · ${counts.failed} failed`
-    : held > 0 ? `Nothing open · ${held} waiting` : 'All tasks landed';
+    : held > 0 ? `Nothing open · ${held} waiting` : 'All tasks merged';
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
   const openJumpLabel = stripCountsLabel(counts);
 
   return (
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
       <div className="flex min-h-11 items-center justify-between">
-        <SectionLabel>Landed</SectionLabel>
+        <SectionLabel>{TERMS['pr.merged'].word}</SectionLabel>
         {(open.length > 0 || counts.failed > 0 || held > 0) && (
           <button
             type="button"
@@ -260,7 +261,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
   const pill = stripDrawerPill(t, state, executor);
   const meta = [
     t.pr ? `PR #${t.pr.number}` : null,
-    landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
+    landed && t.endedAt != null ? `merged ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
   // One column at every width: the title and reason take the drawer's full

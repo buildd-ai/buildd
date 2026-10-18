@@ -8,6 +8,7 @@ import type { TaskStripCell, TaskStripWait } from '@/components/ui/TaskStrip';
 import type { StateKey } from '@/components/ui/states';
 import { reasonLine, type StripMark } from '@/components/ui/task-strip';
 import { WAITING_KIND_SPEC, type WaitingKind } from '@buildd/core/waiting-reason';
+import { termFor } from '@buildd/shared';
 import { BOARD_LANDED, type MissionBoardModel } from './mission-board';
 import { isActiveState, isHeldState, stripMarks, stripOrder, stripState, stripTick } from './mission-task-strip';
 
@@ -124,7 +125,13 @@ export function overviewWaitCause(model: Model, id: string): OverviewWaitCause |
   return isHeldState(stripState(model, id)) ? 'tasks' : 'slot';
 }
 
-const WAIT_WORD: Record<OverviewWaitCause, string> = { tasks: 'Waiting on tasks', slot: 'Next in line', hold: 'Held', unknown: 'Waiting', closed: 'Closed without merging' };
+const WAIT_WORD: Record<OverviewWaitCause, string> = { tasks: 'Waiting on tasks', slot: 'Next in line', hold: 'Waiting', unknown: 'Waiting', closed: 'Closed without merging' };
+
+/** A cell's wait word. A hold says its cause in the catalog's word (Paused, Usage limit, Budget reached…). */
+function waitWord(model: Model, id: string, wait: OverviewWaitCause): string {
+  const kind = model.tasks[id]?.waitingKind;
+  return wait === 'hold' && kind ? termFor({ kind: 'waiting', value: kind }).word : WAIT_WORD[wait];
+}
 const WAIT_LEGEND: Record<OverviewWaitCause, string> = { tasks: 'waiting on tasks', slot: 'next in line', hold: 'blocked', unknown: 'not started', closed: 'closed without merging' };
 
 export interface OverviewLegendEntry {
@@ -175,7 +182,7 @@ const NEVER_LINE: Partial<Record<WaitingKind, string>> = {
 export function overviewCells(model: Model, order: readonly string[] = stripOrder(model)): TaskStripCell[] {
   return order.map((id, i) => {
     const wait = overviewWaitCause(model, id);
-    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait, word: WAIT_WORD[wait] } : {}) };
+    return { id, state: overviewCellState(model, id), tick: stripTick(i), title: model.tasks[id].title, ...(wait ? { wait, word: waitWord(model, id, wait) } : {}) };
   });
 }
 
@@ -216,12 +223,12 @@ export function overviewSelection(model: Model, order: readonly string[], select
   return { marks: sel.marks, reason: null };
 }
 
-/** `2 of 7 landed · 1 of 4 criteria`; `{ criteria: false }` leaves the criteria to the Verified pill. */
+/** `2 of 7 done · 1 of 4 criteria`; `{ criteria: false }` leaves the criteria to the Verified pill. */
 export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>, opts: { criteria?: boolean } = {}): string {
-  // "landed", not "merged": this counts every finished task, PR or not (the
-  // Board's LANDED cell), while the PRs merged criterion counts PR-bearing
+  // "done", not "merged": this counts every finished task, PR or not (the
+  // Board's landed cell), while the PRs merged criterion counts PR-bearing
   // tasks only. Both called "merged" read as two contradictory merged counts.
-  const parts = [model.landed.total === 0 ? 'No tasks' : `${model.landed.done} of ${model.landed.total} landed`];
+  const parts = [model.landed.total === 0 ? 'No tasks' : `${model.landed.done} of ${model.landed.total} done`];
   if (opts.criteria !== false && model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
   return parts.join(' · ');
 }

@@ -134,7 +134,7 @@ export const GLYPH = {
   done: '✓',
   /** A human has to act. */
   human: '⚑',
-  /** Ended without landing. */
+  /** Closed without merging. */
   ended: '✕',
 } as const;
 

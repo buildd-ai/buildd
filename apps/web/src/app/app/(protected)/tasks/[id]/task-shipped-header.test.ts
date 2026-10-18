@@ -27,7 +27,7 @@ describe('when the header applies', () => {
 describe('the lede card', () => {
   it('carries the lede and where the change shows; no status chips or actions (the verdict owns those)', () => {
     const v = buildTaskShippedView(input())!;
-    expect(v.eyebrow).toBe('What shipped · Feature');
+    expect(v.eyebrow).toBe('What changed · Feature');
     expect(v.lede).toBe(LEDE);
     expect(v.changeTypeLabel).toBe('On screen');
     expect(Object.keys(v)).not.toContain('chips');
@@ -57,9 +57,9 @@ describe('no lede', () => {
 
 describe('eyebrow', () => {
   it('names the conventional type, then falls back to the category', () => {
-    expect(shippedEyebrow('fix', 'feature')).toBe('What shipped · Fix');
-    expect(shippedEyebrow(null, 'research')).toBe('What shipped · Research');
-    expect(shippedEyebrow('wip', null)).toBe('What shipped');
+    expect(shippedEyebrow('fix', 'feature')).toBe('What changed · Fix');
+    expect(shippedEyebrow(null, 'research')).toBe('What changed · Research');
+    expect(shippedEyebrow('wip', null)).toBe('What changed');
   });
 });
 
@@ -73,7 +73,7 @@ describe('hero shots', () => {
 describe('the heading says what this result is (docs/specs/task-page.md)', () => {
   const SCREENSHOT = JSON.stringify({ summary: 'Both PRs land.\n\nRecovery is unblocked.', verdict: 'approve', confidence: 0.8 });
 
-  it('AC-1: a review run is headed "Review of PR #N", never What shipped, with its summary as prose', () => {
+  it('AC-1: a review run is headed "Review of PR #N", never What changed, with its summary as prose', () => {
     const v = buildTaskShippedView(input({ record: null, conventionalType: null, summary: SCREENSHOT, subject: { kind: 'review', prNumber: 4413 }, shipped: false }))!;
     expect(v.eyebrow).toBe('Review of PR #4413');
     expect(v.resultProse).toBe('Both PRs land.\n\nRecovery is unblocked.');
@@ -82,9 +82,9 @@ describe('the heading says what this result is (docs/specs/task-page.md)', () =>
     expect(v.raw).toEqual({ summary: 'Both PRs land.\n\nRecovery is unblocked.', verdict: 'approve', confidence: 0.8 });
   });
 
-  it('an unmerged deliverable is a Result, not What shipped', () => {
+  it('an unmerged deliverable is a Result, not What changed', () => {
     expect(buildTaskShippedView(input({ shipped: false }))!.eyebrow).toBe('Result · Feature');
-    expect(buildTaskShippedView(input({ shipped: true }))!.eyebrow).toBe('What shipped · Feature');
+    expect(buildTaskShippedView(input({ shipped: true }))!.eyebrow).toBe('What changed · Feature');
   });
 
   it('a fix run is headed as a fix for the PR', () => {

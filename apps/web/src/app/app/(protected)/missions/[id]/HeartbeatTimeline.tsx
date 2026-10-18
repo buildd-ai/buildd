@@ -1,6 +1,6 @@
 'use client';
 
-import { isOpenTaskStatus } from '@buildd/shared';
+import { isOpenTaskStatus, TERMS } from '@buildd/shared';
 import { useState } from 'react';
 import { timeAgo } from '@/lib/mission-helpers';
 import type { OrganizerRun } from '@/lib/mission-checkins';
@@ -34,7 +34,7 @@ function getSummary(run: HeartbeatTimelineProps['runs'][0]): string {
   if (outcome === 'ok') return 'No action';
   if (outcome === 'action_taken') return 'Planned the next step';
   if (outcome === 'error') return 'Failed';
-  return run.status === 'completed' ? 'Completed' : run.status;
+  return run.status === 'completed' ? TERMS['work.done'].word : run.status;
 }
 
 export default function HeartbeatTimeline({ runs, defaultExpanded = false }: HeartbeatTimelineProps) {
