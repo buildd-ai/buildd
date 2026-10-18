@@ -163,6 +163,14 @@
       "method": "POST"
     },
     {
+      "$comment": "Stored mission summary reconcile (spec 3ef37387): recomputes up to 50 mission summaries, missing and oldest computed_at first, writes what differs and counts it (missing, repaired, missedWrites). The floor under the after-response refresh every mission write queues, and the backfill for missions never summarised. Hourly on the hour, sharing the wake window the schedules tick and core maintenance already open, so it never keeps Neon awake on its own.",
+      "title": "Buildd: Mission Summaries",
+      "profile": "module:missions",
+      "path": "/api/cron/mission-summaries",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
       "title": "Buildd: Lease Expiry Guard",
       "profile": "core",

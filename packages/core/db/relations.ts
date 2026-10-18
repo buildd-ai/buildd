@@ -60,6 +60,10 @@ export const relations = defineRelations(schema, (r) => ({
     schedule: r.one.taskSchedules({ from: r.missions.scheduleId, to: r.taskSchedules.id }),
     artifacts: r.many.artifacts({ from: r.missions.id, to: r.artifacts.missionId }),
     notes: r.many.missionNotes({ from: r.missions.id, to: r.missionNotes.missionId }),
+    summary: r.one.missionSummaries({ from: r.missions.id, to: r.missionSummaries.missionId }),
+  },
+  missionSummaries: {
+    mission: r.one.missions({ from: r.missionSummaries.missionId, to: r.missions.id, optional: false }),
   },
   workspaces: {
     team: r.one.teams({ from: r.workspaces.teamId, to: r.teams.id, optional: false }),
