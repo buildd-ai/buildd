@@ -332,8 +332,20 @@ export function verifyCompositionAttestation(
 const ciFactKey = (d: Pick<DeliverySnapshot, 'id' | 'version'>, headSha: string, verdict: 'red' | 'green' | 'running'): string =>
   `cifact:${d.id}:${headSha}:${verdict}@v${d.version}`;
 
+/** AC-45: the one transition a person's decision makes, whatever it was asked through and however often. */
+export function humanDecisionKey(deliveryId: string, decisionId: string): string {
+  return `decision:${deliveryId}:${decisionId}`;
+}
+
+/** The decision a command carries, when it is one of the two a person decides on an escalation. */
+function decisionOf(cmd: Command): { id: string; headSha: string } | null {
+  return (cmd.type === 'ReviewRequested' || cmd.type === 'HumanResolve' || cmd.type === 'FindingDisposed') && cmd.decision ? cmd.decision : null;
+}
+
 export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): string | null {
   const pr = d?.repoFullName && d.prNumber != null ? `${d.repoFullName}#${d.prNumber}` : null;
+  const decision = decisionOf(cmd);
+  if (decision && d) return humanDecisionKey(d.id, decision.id);
   switch (cmd.type) {
     case 'DeliveryOpened': return `open:${cmd.ownerTaskId}`;
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
@@ -646,6 +658,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
 
   if (cmd.type !== 'DeliveryOpened' && !(cmd.type === 'PrBound' && cmd.adoption && !d)) {
     if (!d) return c.rejected('no_delivery');
+    // AC-45/AC-46: a person's decision is a person's, and it is about the head they saw. A head
+    // that moved since refuses it before anything else is read: they decided on something else.
+    const decision = decisionOf(cmd);
+    if (decision) {
+      if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
+      if (!decision.id.trim()) return c.rejected('decision_id_required');
+      if (decision.headSha !== d.currentHeadSha) return c.rejected('decision_head_stale');
+    }
     if (cmd.expectedVersion !== undefined && cmd.expectedVersion !== d.version) return c.stale('version_moved');
   }
 
@@ -723,9 +743,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
       const r = c.startRound(cmd.headSha, cmd.forced || isHumanActor(cmd.actor) ? { trigger: 'manual_force' } : {});
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
-      return c.apply(`round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
+      const decision = cmd.decision ?? null;
+      return c.apply(decision ? humanDecisionKey(dd.id, decision.id) : `round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
         guardHead: true, guardRound: true, patch: r.patch, rounds: r.rounds, attempts, effects: r.effects,
-        bypass: cmd.forced ? { forced: true, actor: cmd.actor } : null,
+        ...(decision ? { evidence: { decision: { id: decision.id, headSha: decision.headSha, action: 'force_re_review' }, heldFrom: dd.state, escalation: dd.stateReason } } : {}),
+        bypass: cmd.forced ? { forced: true, actor: cmd.actor, ...(decision ? { decisionId: decision.id, headSha: decision.headSha } : {}) } : null,
       });
     }
 
@@ -817,7 +839,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!f) return c.rejected('unknown_finding');
       if (f.status === cmd.disposition) return c.duplicate('finding_already_disposed');
       if (f.status !== 'open' && f.status !== 'addressed') return c.rejected('finding_closed');
-      return c.apply(`dispose:${f.id}:${cmd.disposition}`, dd.state, {
+      return c.apply(cmd.decision ? humanDecisionKey(dd.id, cmd.decision.id) : `dispose:${f.id}:${cmd.disposition}`, dd.state, {
         findings: [{
           op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'],
           set: { status: cmd.disposition, closedBy: cmd.actor, closedReason: cmd.reason.trim(), deferredToTaskId: cmd.deferredToTaskId ?? null },
@@ -1525,8 +1547,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'ESCALATED') return c.stale('state_moved');
       if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
       if (cmd.expectedVersion === undefined) return c.rejected('expected_version_required');
-      const key = `resolve:${dd.id}:${dd.version}`;
-      const bypass = { choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason };
+      const key = cmd.decision ? humanDecisionKey(dd.id, cmd.decision.id) : `resolve:${dd.id}:${dd.version}`;
+      const bypass = {
+        choice: cmd.choice, reason: cmd.reason ?? null, actor: cmd.actor, escalation: dd.stateReason,
+        ...(cmd.decision ? { decisionId: cmd.decision.id, headSha: cmd.decision.headSha } : {}),
+      };
       if (cmd.choice === 'approve') {
         if (!dd.currentHeadSha) return c.rejected('no_head');
         // The same evidence T14 requires: an approval of the live head by someone who may merge.

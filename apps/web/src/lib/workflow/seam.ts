@@ -381,6 +381,21 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
   return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
 }
 
+/**
+ * Living Spec r7 AC-45: the id of a person's decision on an escalation: the action, the head
+ * and the delivery version they decided at. The same decision submitted again (a double tap, a
+ * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
+ * answers it with the transition it already made.
+ */
+export function humanDecision(action: 'request_fix' | 'force_re_review', headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `${action}:${headSha}:v${version}`, headSha };
+}
+
+/** AC-45 for one finding: the same finding on the same head and version is one decision; a restated one is a new one. */
+export function findingDisposalDecision(findingId: string, headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `dispose_finding:${findingId}:${headSha}:v${version}`, headSha };
+}
+
 // ── T23: a person applies an escalation's recommendation ────────────────────
 
 export interface HumanApplyOutcome {
@@ -401,6 +416,12 @@ export interface HumanApplyOutcome {
  */
 export async function applyRecommendationThroughKernel(p: {
   workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; instructions?: string | null;
+  /**
+   * Living Spec r7 AC-45: the head the person decided on (with `expectedVersion`, the version
+   * they saw). Given, the fix is one decision bound to that head: a second submission of it is
+   * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
+   */
+  decisionHeadSha?: string | null;
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -421,7 +442,10 @@ export async function applyRecommendationThroughKernel(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:apply_recommendation`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined },
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
+      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
@@ -1376,6 +1400,34 @@ export async function abandonDelivery(p: {
   return { handled: true, deliveryId, result };
 }
 
+// ── §5: a person waives or defers one finding ───────────────────────────────
+
+/**
+ * FindingDisposed from the dashboard door: a person closes exactly one finding, recorded with who
+ * and why (the reducer refuses a non-person actor, an empty reason and a deferral without a full
+ * task id). `handled: false` = the PR is not the kernel's.
+ */
+export async function disposeFinding(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; actor: string;
+  findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
+  /** The head and delivery version the person's screen showed (absent = not bound to a decision). */
+  decision?: { headSha: string; version: number };
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; findingStatus: string | null }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const result = await applyCommand(
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null,
+      ...(p.decision ? { decision: findingDisposalDecision(p.findingId, p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}) },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  // A duplicate is a success only if the finding is closed the way the person asked now.
+  const findingStatus = result.result === 'duplicate'
+    ? ((await loadView({ deliveryId }, deps.exec)).findings ?? []).find((f) => f.id === p.findingId)?.status ?? null
+    : null;
+  return { handled: true, result, findingStatus };
+}
+
 // ── T5: a person or agent asks for a review ─────────────────────────────────
 
 /**
@@ -1384,6 +1436,12 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
+  /**
+   * Living Spec r7 AC-45: a person's forced review, decided on this head at this version. Given,
+   * the request is one decision bound to the head: replayed, it is answered by the first; with
+   * the head moved since, it is refused (`decision_head_stale`) and nothing is queued.
+   */
+  decision?: { headSha: string; version: number } | null;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
@@ -1397,7 +1455,11 @@ export async function requestReview(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
+    {
+      type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
+      // AC-45: bound to the version the person saw too, as the fix door is.
+      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
