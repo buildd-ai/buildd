@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
+verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -256,10 +256,20 @@ GitHub or Next.js.
   for every handler family (a `handlers/...` scenario may also run a handler
   directly, past the drain's guards, so the handler's own guard is what it
   tests). The host's `policy` is part of the `ConformanceHost`: the drain
-  reads the kill switch from it on both stores. NOT IMPLEMENTED: the rest of
-  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences as
-  conformance scenarios (they run today as the epoch reducer's package tests
-  and the Postgres epoch suite, §6).
+  reads the kill switch from it on both stores. Every kernel-decided §16
+  matrix row is a scenario too (`matrix-scenarios.ts`, see
+  workflow-state-kernel.md §16). The incident sequences are scenarios of
+  their own (`incident-scenarios.ts`): the #3787 double ingest of a merged
+  epoch (one successor), the #4663/#4670 refresh with unique work left on a
+  merged branch (held, never retargeted to trunk), the §15 replay of #3754
+  (`head_already_reviewed`), and the #4686 chain end to end (a mission
+  delivery opens, changes are requested, a coordination repair ends with no
+  edits, a person merges on GitHub). The epoch scenarios reach the host's
+  epoch rows through `ConformanceHost.epochs` (`EpochHost`: seed a mission,
+  load its epochs, apply one transition's ops all or nothing), so the
+  in-memory store and buildd's `applyEpochOpsSql` meet the same CAS and
+  unique-index expectations. `conformance.test.ts` plants one adapter fault
+  per incident and checks its scenario fails at the step it guards.
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -510,7 +520,9 @@ the control plane, authenticated as the caller).
   due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
   there. An unconfirmed heal is re-marked while the delivery is still owed,
   and the floor backs it. GitHub sends `synchronize` and a retarget once, so
-  an unanswered `observe_head` or `observe_base` is parked (AC-74); unanswered,
+  an unanswered `observe_head` or `observe_base` is parked (AC-74), and the
+  webhook route gives every door a short shared budget so its response beats
+  GitHub's timeout (AC-65); unanswered,
   refused or failed, ownership is read on the web host so legacy never acts
   beside the kernel. `recordLocalHead` is one provenance
   statement on an attempt row, not a command. `cancelSkippedTask` writes a
@@ -670,6 +682,31 @@ the web host.
   applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
   `command-outbox.test.ts`, `kernel-client.test.ts`).
   replaces: AC-35
+
+- AC-65 (failure): GIVEN `EXECUTION_MODE=own` and a control plane that is slow
+  or hangs WHEN GitHub delivers a webhook whose handler submits a door op
+  (`observe_ci_green`, `observe_pr_state`, `observe_head`, `observe_base`)
+  THEN the response is back well inside GitHub's ten seconds: each door waits
+  at most `WEBHOOK_DOOR_BUDGET_MS` (2.5 s), the request's doors together at most
+  `WEBHOOK_BUDGET_MS` (6 s), and a door left unanswered opens a process-level
+  breaker (`WEBHOOK_SKIP_MS`, 45 s) so the rest of the request and the
+  deliveries after it skip the wait. Nothing is lost: a green, a push and a
+  retarget are parked (AC-74), a close is recorded unapplied and healed
+  (AC-3), and a kernel-owned PR is never handed to legacy. A door's command key
+  derives from the delivery id, the op and the input, so GitHub's redelivery
+  of a request that did apply, slowly, is the same command: the ledger answers
+  with what was done, and the floor's replay of the parked row applies nothing
+  twice. The cap, the request budget and the breaker apply only to doors with a
+  durable fallback (`WEBHOOK_CAPPED_OPS`): the parked ops above, `observe_pr_state`,
+  and two that are not parked, `observe_ci_failure` and `observe_conflict`, which
+  the red-PR sweep and the conflict sweeps re-send. Every other door
+  (`open_delivery`, `land`, the rest) keeps its own budget and runs outside the
+  webhook's scope: a timed-out `open_delivery` would hand the PR to legacy review
+  while the control plane may still finish it, and a timed-out `land` would leave
+  a release PR to the held-release sweep. Such a door is never capped, never opens
+  the breaker and is never refused for a spent request budget
+  (`kernel-client.test.ts`, `route.test.ts` beside
+  `apps/web/src/app/api/github/webhook/route.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
@@ -893,10 +930,36 @@ recorded as such, never as an approval.
 - D4 refuses when no workspace resolves; D5 `force` no longer skips the review
   verdict. `apps/web/src/lib/workflow/merge-door-inventory.test.ts` fails on
   any merge call not in the inventory.
-- Deviation: a PR with no delivery is still merged by its door's legacy arm
-  (worker doors under their own review gate; release PRs under the release
-  gate above). Adopting the delivery first is the follow-up slice; release
-  PRs need an owner decision, since their bookkeeping lives outside the kernel.
+- A PR with no delivery is adopted before a worker door merges it (AC-13,
+  #4686): `adoptBeforeMerge` (`apps/web/src/lib/pr-landing-adoption.ts`)
+  runs in D2/D3 `landPr` (when it acts), D4 `tryAutoMergeWorkerPr`, D5
+  `merge_pr` and D6 the dashboard merge, before the door reads who owns the
+  PR. With no delivery row it calls `open_delivery` with the door's task
+  (an attempt walked to its owner) and the door's principal; the delivery
+  starts as a late open does (the owner's end forwarded, a review of the live
+  head owed), so the door lands it through T15 and a legacy reviewer's
+  approval never carries it. Before opening anything it reads the PR live: a
+  release PR (`classifyReleasePr`: the legacy release branch, or a trusted
+  frozen candidate) or a dependency bot's PR opens no delivery, even when a
+  bookkeeping task owns it (`ci-failure-retry.ts` and `request_pr_review`
+  give a PR with no worker one). The door merges such a PR through the release
+  gate (`mergeOutsideKernel` → `mergeReleasePrPinned`: review gate at the
+  head, GitHub's `sha` pin), so a candidate keeps `releaseCandidateStatus` and
+  no kernel repair ever pushes to a candidate's or a bot's branch. A fork PR
+  cannot be bound, so it is refused at every buildd door, the dashboard
+  included: a fork PR merges only on GitHub. If nothing can adopt a PR (a
+  fork, no task, a review or attempt task, a task bound to another PR, a PR
+  that cannot be bound or read, the control plane unreachable) the door merges
+  nothing and says why. Its legacy
+  merge call is reached only when the workspace's kill switch is off or the
+  PR's delivery was released to legacy (sticky, §14); an adopted PR whose
+  landing the kernel does not answer is refused, never merged on that arm.
+  `merge-door-inventory.test.ts` holds each of these doors to it.
+- Deviation: the release doors D7–D10 do not adopt. A release PR with no
+  delivery merges under the release gate above (`pinned-merge.ts`: review
+  gate, verified head, `sha` pin), because its bookkeeping (the held release
+  task, the release record and its candidate status) lives outside the kernel;
+  moving it is an owner decision.
 
 **Acceptance criteria**:
 - AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked

@@ -62,7 +62,7 @@ import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
-import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
+import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome, adoptBeforeMerge, mergeOutsideKernel } from '@/lib/pr-landing';
 import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
@@ -1926,6 +1926,20 @@ export async function PUT(req: NextRequest) {
     // and owns the post-merge work; this door keeps its policy and rails. A
     // caller acting on a stale view is told so, with the current one, before
     // any rail acts (S20).
+    // AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted first, so it lands
+    // through the kernel's gate; one nothing can adopt is refused, never merged on the legacy arm.
+    // A PR already recorded merged answers below, idempotently, with nothing to adopt.
+    const mergedInDb = !!(worker.mergedAt || worker.prLifecycleStatus === 'merged');
+    const adoption = mergedInDb
+      ? { kind: 'legacy' as const, reason: 'released' as const }
+      : await adoptBeforeMerge(
+          { workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, taskId: worker.taskId ?? null, door: 'merge_pr' },
+          { principal: kernelPrincipalOf({ person: landingActor.kind === 'human' ? landingActor.userId : null, account }) },
+        );
+    if (adoption.kind === 'refused') {
+      recordMergeGate('rejected', adoption.message, { reasonClass: adoption.reason }, GATE_SLUGS.REVIEW_VERDICT);
+      return NextResponse.json({ ok: false, merged: false, error: adoption.message, reason: adoption.reason, hint: 'Ask for a review of the PR (request_pr_review); it merges once the review approves.' }, { status: 409 });
+    }
     const kernelView = await kernelLandingView(worker.workspaceId, repo.fullName, prNumber);
     if (kernelView && expectedVersion !== undefined && kernelView.current.version !== expectedVersion) {
       return NextResponse.json({
@@ -1938,7 +1952,7 @@ export async function PUT(req: NextRequest) {
         hint: 'Read the PR again (get_pr) and decide on what it is now.',
       }, { status: 409 });
     }
-    const kernelOwned = !!kernelView;
+    const kernelOwned = !!kernelView || adoption.kind === 'kernel';
 
     // Idempotent: already-merged PR returns success with existing metadata rather
     // than attempting a re-merge (which would fail with 405 "not mergeable").
@@ -2369,7 +2383,13 @@ export async function PUT(req: NextRequest) {
             idempotencyKey: idempotencyKeyOf(req),
           })
         : null;
-      return kernel ? { kernel } : { legacy: await mergePullRequest(
+      if (kernel) return { kernel };
+      // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+      if (adoption.kind === 'gate') {
+        return { legacy: await mergeOutsideKernel({ workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha, mergeMethod: effectiveMergeMethod, door: 'merge_pr', actorUserId: landingActor.kind === 'human' ? landingActor.userId : null, taskId: worker.taskId ?? null }) };
+      }
+      if (adoption.kind !== 'legacy') return { notLanded: true as const };
+      return { legacy: await mergePullRequest(
         repo.installation.installationId,
         repo.fullName,
         prNumber,
@@ -2393,7 +2413,14 @@ export async function PUT(req: NextRequest) {
       });
       return mergePrKernelResponse(k, { prNumber, prUrl: worker.prUrl ?? null });
     }
+    if (!slotted.result.legacy) {
+      return NextResponse.json({ ok: false, merged: false, error: `PR #${prNumber} is the workflow's, and it did not take the merge; nothing was merged. Retry in a moment.`, reason: 'kernel_not_landed' }, { status: 409 });
+    }
     const result = slotted.result.legacy;
+    // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+    if (!result.merged && 'hold' in result && result.hold) {
+      return NextResponse.json({ ok: false, merged: false, error: result.message, waiting: true, reason: 'release_gate_hold', hint: 'It merges once the release gate passes; retry then.' }, { status: 409 });
+    }
     void recordCapabilityDecision({
       capability: 'pr.merge', decision: result.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
       workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,

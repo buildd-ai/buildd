@@ -15,6 +15,8 @@ import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
 import { parseClaimHandoff, releaseUnacknowledgedClaims } from '@/lib/lost-claim';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { dbLeaseUntil, liveness } from '@/lib/liveness';
+import { redisRunnerBeatStateStore, runnerBeatId, RUNNER_BEAT_TTL_MS } from '@/lib/runner-beats';
 
 /**
  * POST /api/workers/heartbeat
@@ -26,6 +28,11 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  * Returns a viewerToken that the runner should require on its
  * /api/* endpoints. The dashboard retrieves this token via /api/workers/active
  * and passes it to the browser so it can fetch live data directly.
+ *
+ * A beat that changes nothing stays in Redis (lib/runner-beats.ts): the row,
+ * and the leases of the workers it already renewed, are written when content
+ * changes, when a new worker is named, or once per
+ * LIVENESS_DB_WRITE_INTERVAL_MS. Without Redis every beat writes, as before.
  */
 /** The most slots a runner may report (the runner's own `buildd slots` bound). */
 const MAX_RUNNER_SLOTS = 50;
@@ -137,15 +144,26 @@ export async function POST(req: NextRequest) {
     const maxConcurrentWorkers = fleet.ephemeral ? 1 : (reportedSlots ?? account.maxConcurrentWorkers);
 
     const now = new Date();
+    const beatId = runnerBeatId(account.id, String(localUiUrl));
+    const heldIds: string[] = Array.isArray(activeWorkerIds)
+      ? activeWorkerIds.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
 
-    // Check if this instance already has a viewerToken
-    const existing = await db.query.workerHeartbeats.findFirst({
-      where: sqlWhere(and(
-        eq(workerHeartbeats.accountId, account.id),
-        eq(workerHeartbeats.localUiUrl, localUiUrl),
-      )),
-      columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
-    });
+    // What the last write left, from Redis; the row only when Redis has none.
+    const cached = await redisRunnerBeatStateStore.get(beatId);
+    const existing = cached
+      ? {
+          viewerToken: cached.viewerToken,
+          updateAvailable: cached.updateAvailable,
+          updateAvailableSince: cached.updateAvailableSince ? new Date(cached.updateAvailableSince) : null,
+        }
+      : await db.query.workerHeartbeats.findFirst({
+          where: sqlWhere(and(
+            eq(workerHeartbeats.accountId, account.id),
+            eq(workerHeartbeats.localUiUrl, localUiUrl),
+          )),
+          columns: { viewerToken: true, updateAvailable: true, updateAvailableSince: true },
+        });
 
     // Generate token on first registration, reuse on subsequent heartbeats
     const viewerToken = existing?.viewerToken || randomBytes(24).toString('base64url');
@@ -171,21 +189,20 @@ export async function POST(req: NextRequest) {
       ? { since: sinceD.toISOString(), endsAt: endsD.toISOString(), busy: typeof drainIn?.busy === 'number' ? drainIn.busy : 0 }
       : null;
 
-    // Atomic upsert using unique index on (accountId, localUiUrl)
-    // Only update timestamp and worker count - workspaces resolved on-demand
-    await db.insert(workerHeartbeats)
-      .values({
-        accountId: account.id,
-        localUiUrl,
-        viewerToken,
-        workspaceIds: [], // Deprecated - computed on-demand in /api/workers/active
-        maxConcurrentWorkers,
-        activeWorkerCount,
-        environment: storedEnvironment,
-        sandboxEnabled: sandboxEnabled as boolean | null,
-        sandboxProbeAt: sandboxProbeDate,
-        runnerCommit: runnerCommit as string | null,
-        runnerVersion: runnerVersion as string | null,
+    // What this beat would write, bar the timestamps. Equal to the last write's
+    // and naming no new worker: the beat is Redis only.
+    const changes = {
+      maxConcurrentWorkers,
+      activeWorkerCount,
+      environment: storedEnvironment,
+      ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
+      ...(runnerCommit !== null ? { runnerCommit: runnerCommit as string | null } : {}),
+      ...(runnerVersion !== null ? { runnerVersion: runnerVersion as string | null } : {}),
+      // Omitted entirely (not nulled) when the runner didn't send this
+      // heartbeat's bundle, so a degraded beat can never wipe out the last
+      // known-good drift/update status — same convention as runnerCommit
+      // above.
+      ...(updateSnapshotProvided ? {
         currentCommit: (currentCommit ?? null) as string | null,
         diskCommit: (diskCommit ?? null) as string | null,
         commitDrift: (commitDrift ?? null) as boolean | null,
@@ -194,24 +211,34 @@ export async function POST(req: NextRequest) {
         updateAvailableSince,
         updateDrain: storedUpdateDrain,
         trackedBranch: (trackedBranch ?? null) as string | null,
-        modelAuthSource,
-        codexAuthSource,
-        lastHeartbeatAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [workerHeartbeats.accountId, workerHeartbeats.localUiUrl],
-        set: {
-          maxConcurrentWorkers,
-          activeWorkerCount,
-          environment: storedEnvironment,
-          ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
-          ...(runnerCommit !== null ? { runnerCommit: runnerCommit as string | null } : {}),
-          ...(runnerVersion !== null ? { runnerVersion: runnerVersion as string | null } : {}),
-          // Omitted entirely (not nulled) when the runner didn't send this
-          // heartbeat's bundle, so a degraded beat can never wipe out the last
-          // known-good drift/update status — same convention as runnerCommit
-          // above.
-          ...(updateSnapshotProvided ? {
+      } : {}),
+      // Omitted when not sent (or not a listed label), so an older runner
+      // or a garbled beat keeps the last good value — runnerVersion's rule.
+      ...(modelAuthSource !== null ? { modelAuthSource } : {}),
+      ...(codexAuthSource !== null ? { codexAuthSource } : {}),
+    };
+    const fp = JSON.stringify(changes);
+    const due = await liveness.beat('runner', beatId, now, RUNNER_BEAT_TTL_MS);
+    const writeDb = due || !cached || cached.fp !== fp || heldIds.some(id => !cached.leaseIds.includes(id));
+
+    let leasesRenewed = 0;
+    if (writeDb) {
+      // Atomic upsert using unique index on (accountId, localUiUrl)
+      // Only update timestamp and worker count - workspaces resolved on-demand
+      try {
+        await db.insert(workerHeartbeats)
+          .values({
+            accountId: account.id,
+            localUiUrl,
+            viewerToken,
+            workspaceIds: [], // Deprecated - computed on-demand in /api/workers/active
+            maxConcurrentWorkers,
+            activeWorkerCount,
+            environment: storedEnvironment,
+            sandboxEnabled: sandboxEnabled as boolean | null,
+            sandboxProbeAt: sandboxProbeDate,
+            runnerCommit: runnerCommit as string | null,
+            runnerVersion: runnerVersion as string | null,
             currentCommit: (currentCommit ?? null) as string | null,
             diskCommit: (diskCommit ?? null) as string | null,
             commitDrift: (commitDrift ?? null) as boolean | null,
@@ -220,43 +247,48 @@ export async function POST(req: NextRequest) {
             updateAvailableSince,
             updateDrain: storedUpdateDrain,
             trackedBranch: (trackedBranch ?? null) as string | null,
-          } : {}),
-          // Omitted when not sent (or not a listed label), so an older runner
-          // or a garbled beat keeps the last good value — runnerVersion's rule.
-          ...(modelAuthSource !== null ? { modelAuthSource } : {}),
-          ...(codexAuthSource !== null ? { codexAuthSource } : {}),
-          lastHeartbeatAt: now,
-          updatedAt: now,
-        },
-      });
+            modelAuthSource,
+            codexAuthSource,
+            lastHeartbeatAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [workerHeartbeats.accountId, workerHeartbeats.localUiUrl],
+            set: { ...changes, lastHeartbeatAt: now, updatedAt: now },
+          });
+      } catch (err) {
+        await liveness.writeFailed('runner', beatId);
+        throw err;
+      }
 
-    // Renew worker liveness leases.
-    //
-    // This is the point of the whole mechanism: the runner asserts, on a timer,
-    // which workers it still owns. Renewal therefore keeps working while a
-    // worker sits inside one long silent tool call, unlike `updatedAt`, which
-    // only advances when the runner reports a state CHANGE and so froze exactly
-    // when the agent went quiet.
-    //
-    // Scoped by accountId so one account's heartbeat can never extend another's
-    // leases, and to live statuses so a heartbeat cannot resurrect the lease of
-    // a worker that already reached a terminal state.
-    let leasesRenewed = 0;
-    if (Array.isArray(activeWorkerIds) && activeWorkerIds.length > 0) {
-      const ids = activeWorkerIds.filter((id: unknown): id is string => typeof id === 'string');
-      if (ids.length > 0) {
+      // Renew worker liveness leases.
+      //
+      // This is the point of the whole mechanism: the runner asserts, on a timer,
+      // which workers it still owns. Renewal therefore keeps working while a
+      // worker sits inside one long silent tool call, unlike `updatedAt`, which
+      // only advances when the runner reports a state CHANGE and so froze exactly
+      // when the agent went quiet.
+      //
+      // Scoped by accountId so one account's heartbeat can never extend another's
+      // leases, and to live statuses so a heartbeat cannot resurrect the lease of
+      // a worker that already reached a terminal state.
+      //
+      // Written with the row, so it is pushed out by the write interval as well
+      // (dbLeaseUntil): it outlives the beats in between that skip it.
+      let leaseIds: string[] = [];
+      if (heldIds.length > 0) {
         try {
           const renewed = await db
             .update(workers)
-            .set({ leaseExpiresAt: new Date(now.getTime() + WORKER_LEASE_TTL_MS) })
+            .set({ leaseExpiresAt: dbLeaseUntil(now, WORKER_LEASE_TTL_MS) })
             .where(and(
-              inArray(workers.id, ids),
+              inArray(workers.id, heldIds),
               eq(workers.accountId, account.id),
               ...(account.taskScope ? [eq(workers.taskId, account.taskScope.taskId)] : []),
               inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
             ))
             .returning({ id: workers.id });
           leasesRenewed = renewed.length;
+          leaseIds = renewed.map(w => w.id);
         } catch (err) {
           // Non-fatal: a failed renewal must never break the heartbeat itself.
           // The lease simply lapses and the (still authoritative) legacy
@@ -264,6 +296,16 @@ export async function POST(req: NextRequest) {
           console.error('[heartbeat] lease renewal failed:', err);
         }
       }
+      await redisRunnerBeatStateStore.set(beatId, {
+        viewerToken,
+        updateAvailable: updateSnapshotProvided ? newUpdateAvailable : (existing?.updateAvailable ?? null),
+        updateAvailableSince: (updateSnapshotProvided ? updateAvailableSince : (existing?.updateAvailableSince ?? null))?.toISOString() ?? null,
+        fp,
+        leaseIds,
+      });
+    } else {
+      // Every worker named was renewed, by this account, by a write inside the interval.
+      leasesRenewed = heldIds.length;
     }
 
     // Release workers minted for this runner that it says it never received
@@ -271,15 +313,16 @@ export async function POST(req: NextRequest) {
     // exits on a failed claim and never heartbeats again, so it is not asked.
     let claimsReleased = 0;
     const handoff = parseClaimHandoff(claimHandoff);
-    if (handoff && !account.taskScope) {
+    // With nothing waiting to start and no claim on the wire, the search for a
+    // lost claim rides the interval write rather than every beat.
+    const handoffDue = writeDb || (handoff !== null && (handoff.pendingStartIds.length > 0 || handoff.claimInFlight));
+    if (handoff && !account.taskScope && handoffDue) {
       try {
         claimsReleased = await releaseUnacknowledgedClaims({
           accountId: account.id,
           runner: String(localUiUrl),
           report: handoff,
-          heldWorkerIds: Array.isArray(activeWorkerIds)
-            ? activeWorkerIds.filter((id: unknown): id is string => typeof id === 'string')
-            : [],
+          heldWorkerIds: heldIds,
           now,
         });
       } catch (err) {
