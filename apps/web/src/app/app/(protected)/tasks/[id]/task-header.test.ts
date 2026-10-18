@@ -26,7 +26,7 @@ describe('taskHeading', () => {
   test('retry bracket prefixes are peeled into the eyebrow, not the heading', () => {
     const h = taskHeading({ title: '[builder · after CI #1] feat(invoices): render invoices', label: null }, 'Builder');
     expect(h.heading).toBe('Render invoices');
-    expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'after CI #1']);
+    expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'Fix 1 · CI failed']);
   });
 });
 
@@ -48,7 +48,7 @@ describe('taskHeading names the role once (docs/specs/task-page.md AC-9)', () =>
     expect(h.eyebrow.filter(e => e.toLowerCase() === 'reviewer')).toHaveLength(1);
   });
   test('a qualifier that is not the role stays', () => {
-    expect(taskHeading({ title: '[builder · after CI #1] fix: x', label: null }, 'Builder').eyebrow).toContain('after CI #1');
+    expect(taskHeading({ title: '[builder · after CI #1] fix: x', label: null }, 'Builder').eyebrow).toContain('Fix 1 · CI failed');
   });
 });
 

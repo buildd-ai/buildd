@@ -60,7 +60,7 @@ const migrationEdge = (n: number) => makeWaitingReason('dep_inferred', {
 const EDGES = [1, 2, 3, 4, 5].map(migrationEdge);
 const LOCAL = makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
-  blocker: { type: 'mission', id: 'm', label: 'a local-session mission', href: '#' },
+  blocker: { type: 'mission', id: 'm', label: 'a mission run from your session', href: '#' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 

@@ -3,6 +3,7 @@ import { missions, tasks, pathClaims, workers, initiatives, teams } from '@build
 import { eq, and, ne, isNull, isNotNull, sql, desc } from 'drizzle-orm';
 import { computeInitiativeProgress, type MissionStatus } from '@buildd/core/mission-helpers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { TERMS } from '@buildd/shared';
 import { missionGateTerm } from '@buildd/shared';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -193,7 +194,7 @@ function renderSiblingMissions(siblings: SiblingMission[]): string {
   for (const m of siblings.slice(0, 5)) {
     let line = `[${m.progress}%] ${m.title} · ${m.status} · ${m.pacingMode}`;
     if (m.isHeld) line += ` [${missionGateTerm(m).word}]`;
-    else if (m.executor === 'local') line += ' [LOCAL — runs in a local session]';
+    else if (m.executor === 'local') line += ` [${TERMS['mission.your_session'].word} · executor=local]`;
     lines.push(line);
   }
   return cap(lines.join('\n'), BUDGET_SIBLING_MISSIONS);

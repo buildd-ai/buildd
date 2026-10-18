@@ -24,6 +24,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import * as ts from 'typescript';
 import { COPY_RULES, DUPLICATE_MIN_WORDS, copyViolations, type CopyRuleId } from '../packages/core/copy-rules';
+import { bannedWordsIn } from '../packages/shared/src/terms';
 
 export const BASELINE_FILE = 'scripts/copy-check.baseline.json';
 
@@ -69,6 +70,13 @@ export const VOCABULARY_SURFACES: RegExp[] = [
   /^packages\/workflow-kernel\/src\/delivery-display\.ts$/,
 ];
 export const VOCABULARY_RULES: ReadonlySet<CopyRuleId> = new Set(['catalog-word', 'state-jargon']);
+
+/**
+ * Surfaces an agent reads: MCP replies. They are held to the catalog as an
+ * agent reads them, so the words BANNED_WORDS marks `agentsMay` (an agent
+ * passes `workerId`) do not count there.
+ */
+export const AGENT_SURFACES: RegExp[] = [/^packages\/core\/mcp-tools\.ts$/];
 
 /** A non-test file on a VOCABULARY_SURFACES path. */
 export function vocabularyInScope(path: string): boolean {
@@ -220,6 +228,7 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
   for (const { path, content } of sources) {
     const seen = new Set<string>();
     const vocabularyOnly = !inScope(path, content) && vocabularyInScope(path);
+    const agentReads = AGENT_SURFACES.some((r) => r.test(path));
     for (const s of copyOf(path, content)) {
       // Vocabulary surfaces, and one-word labels anywhere, are read for the vocabulary only.
       const onlyVocabulary = vocabularyOnly || s.label === true;
@@ -227,6 +236,7 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
         if (s.label && rule.id !== 'catalog-word') continue;
         if (onlyVocabulary && !VOCABULARY_RULES.has(rule.id)) continue;
         if ((rule.id === 'state-jargon' || rule.id === 'catalog-word') && OPERATOR_PATH.test(path)) continue;
+        if (rule.id === 'catalog-word' && agentReads && bannedWordsIn(s.text, { reader: 'agent' }).length === 0) continue;
         violations.push({ file: path, line: s.line, rule: rule.id, text: s.text });
         counts[rule.id][path] = (counts[rule.id][path] ?? 0) + 1;
       }

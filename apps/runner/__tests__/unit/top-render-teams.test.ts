@@ -53,7 +53,7 @@ describe('teams and missions (R-23, R-24)', () => {
     expect(at('Docs ref')).toBeLessThan(at('Done this week · 1'));
     expect(at('Done this week · 1')).toBeLessThan(at('Billing'));
     expect(t).not.toContain('Retire the old API');
-    expect(t).toContain('local session');
+    expect(t).toContain('Run from your session');
     expect(t).toContain('2 workspaces · 2 teams');
     expect(t).toMatchSnapshot();
   });
@@ -101,7 +101,7 @@ describe('teams and missions (R-23, R-24)', () => {
     expect(delivered).toMatch(/│ Done [A-Z][a-z]{2} \d{1,2}/);
     expect(delivered).toContain('Its work is finished. o opens it on buildd.');
     const local = text(frame({ ...teamed(), selectedMission: 'm-3' }, 80, 24));
-    expect(local).toContain('│ Managed from a local session');
+    expect(local).toContain('│ Run from your session');
     expect(local).toContain('No activity yet.');
     // Never the old sentences, and no detached "local session" row in the sidebar.
     for (const t of [delivered, local]) {
