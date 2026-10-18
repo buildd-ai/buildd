@@ -8,6 +8,7 @@ import {
   LOCAL_SESSION_RECENT_MS,
   localClientLabel,
 } from '@buildd/shared';
+import { latestBeat, liveness } from './liveness';
 
 /**
  * How a local interactive session reads on the dashboard. Pure, so the
@@ -211,8 +212,12 @@ export async function listLocalSessions(opts: {
     list.push({ ...rest, at: boundAt?.getTime() ?? 0 });
     heldBySession.set(h.sessionId, list);
   }
+  // A touch reaches last_seen_at at most once per LIVENESS_DB_WRITE_INTERVAL_MS;
+  // its Redis beat is the live answer (lib/liveness.ts). Null: the stored value.
+  const beats = await liveness.readBeats('session', ids.filter((_, i) => !presences[i].endedAt));
   const rows: LocalSessionRow[] = presences.map(p => ({
     ...p,
+    lastSeenAt: p.endedAt ? p.lastSeenAt : latestBeat(p.lastSeenAt, beats?.get(p.id)),
     held: (heldBySession.get(p.id) ?? []).sort((a, b) => a.at - b.at).map(({ at: _a, ...h }) => h),
   }));
   return sortLocalSessions(rows.map(r => classifyLocalSession(r, now)).filter(shownInSessionList));

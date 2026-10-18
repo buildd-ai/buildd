@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { accountWorkspaces, workerHeartbeats } from '@buildd/core/db/schema';
 import { and, eq, gt } from 'drizzle-orm';
 import { RUNNER_ONLINE_WINDOW_MS } from './runner-heartbeats-shared';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
 import { diagnoseRunnerReach, needsLinkForOwnTeam, type RunnerReachDiagnosis } from './runner-reach-diagnosis';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveLinkCondition } from '@/lib/granted-links';
@@ -16,18 +17,21 @@ export async function loadRunnerReachDiagnosis(workspace: {
   accessMode: string | null;
 }): Promise<RunnerReachDiagnosis | null> {
   if (!needsLinkForOwnTeam(workspace)) return null;
-  const cutoff = new Date(Date.now() - RUNNER_ONLINE_WINDOW_MS);
-  const [links, heartbeats] = await Promise.all([
+  const now = Date.now();
+  const [links, candidates] = await Promise.all([
     db.query.accountWorkspaces.findMany({
       where: sqlWhere(and(eq(accountWorkspaces.workspaceId, workspace.id), liveLinkCondition())),
       columns: { accountId: true, canClaim: true, canCreate: true },
     }),
     db.query.workerHeartbeats.findMany({
-      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
-      columns: { accountId: true },
+      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(now, RUNNER_ONLINE_WINDOW_MS))),
+      columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true },
       with: { account: { columns: { teamId: true } } },
     }),
   ]);
+  // A stored beat can be one write interval old; the Redis beat is "now" (lib/runner-beats.ts).
+  const heartbeats = (await withLiveRunnerBeats(candidates))
+    .filter((hb) => now - hb.lastHeartbeatAt.getTime() < RUNNER_ONLINE_WINDOW_MS);
   const linkByAccount = new Map(links.map((l) => [l.accountId, l]));
   const onlineRunners = heartbeats
     .filter((hb) => hb.account?.teamId)

@@ -36,6 +36,8 @@ const mockReleaseSeats = mock((_ids: any[]) => Promise.resolve());
 mock.module('@/lib/interactive-detach', () => ({ releaseConcurrencySeats: mockReleaseSeats }));
 const mockWake = mock((_ws: string, _ex: string | null) => Promise.resolve());
 mock.module('@/lib/capacity-freed-wake', () => ({ wakeOldestPendingTaskOnCapacityFreed: mockWake }));
+const mockNote = mock((_c: any) => {});
+mock.module('@/lib/work-changed', () => ({ noteWorkChanged: mockNote }));
 
 import { runEndReason } from './fleet-view-end-reason';
 import { sessionlessLiveWorkerSql, settleOrphanedSessionlessWorkers, settleSessionlessWorkersOfTask } from './sessionless-worker-settle';
@@ -50,6 +52,13 @@ describe('settleSessionlessWorkersOfTask', () => {
     mockTriggerEvent.mockClear();
     mockReleaseSeats.mockClear();
     mockWake.mockClear();
+  });
+
+  it('notes the settled worker and task so the mission summary drops the live worker', async () => {
+    mockNote.mockClear();
+    returned = [{ id: 'w1', taskId: 't1', accountId: 'a1', workspaceId: 'ws1' }];
+    await settleSessionlessWorkersOfTask('t1', 'task_cancelled');
+    expect(mockNote).toHaveBeenCalledWith({ workerIds: ['w1'], taskIds: ['t1'] });
   });
 
   it('moves the worker out of the live set, closes its question and keeps the row', async () => {
