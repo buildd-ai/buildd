@@ -1,5 +1,5 @@
 /**
- * Door commands the control plane never answered (docs/specs/workflow-kernel-library.md §3, AC-35):
+ * Door commands the control plane never answered (docs/specs/workflow-kernel-library.md §3, AC-74):
  * kept by their idempotency key (`workflow_command_outbox`) and re-submitted by the kernel floor until
  * the control plane answers.
  *

@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { specRevisions, specs } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { artifactRevisions, specRevisions, specs } from '@buildd/core/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { specCriteria } from '@buildd/spec-contract/requirements';
@@ -110,6 +110,53 @@ export type PinnedRead =
  * or resolves to different bytes, is unavailable (never quietly the head).
  * No caller check: this reads by the pin a task already carries, server-side.
  */
+const pinKey = (pin: Record<string, unknown> | null | undefined) => `${String(pin?.specId)}:${String(pin?.specRevisionId)}:${String(pin?.contentHash)}`;
+
+/**
+ * readPinnedSpecRevision for many pins at once, by pinKey: two statements
+ * whatever the number of pins (the revisions, then their bodies), with the
+ * same checks per pin. Many tasks pinned to one revision read its body once.
+ */
+export async function readPinnedSpecRevisions(pins: ReadonlyArray<Record<string, unknown> | null | undefined>): Promise<Map<string, PinnedRead>> {
+  const out = new Map<string, PinnedRead>();
+  const valid: Array<{ key: string; specId: string; specRevisionId: string; contentHash: string }> = [];
+  for (const pin of pins) {
+    const key = pinKey(pin);
+    if (out.has(key) || valid.some((v) => v.key === key)) continue;
+    const specId = pin?.specId; const specRevisionId = pin?.specRevisionId; const contentHash = pin?.contentHash;
+    if (typeof specId !== 'string' || !isUuid(specId) || typeof specRevisionId !== 'string' || !isUuid(specRevisionId) || typeof contentHash !== 'string') {
+      out.set(key, { ok: false, reason: 'the task names a Living Spec but carries no pinned revision' });
+    } else valid.push({ key, specId, specRevisionId, contentHash });
+  }
+  if (!valid.length) return out;
+  // One statement: each pinned revision with its spec's title and its body.
+  const rows = await db.select({
+    rev: specRevisions, title: specs.title, bodyArtifactId: specs.bodyArtifactId,
+    content: artifactRevisions.content, bodyHash: artifactRevisions.contentHash, bodyRevision: artifactRevisions.revision,
+  })
+    .from(specRevisions).innerJoin(specs, eq(specs.id, specRevisions.specId))
+    .leftJoin(artifactRevisions, and(eq(artifactRevisions.artifactId, specs.bodyArtifactId), eq(artifactRevisions.revision, specRevisions.artifactRevision)))
+    .where(inArray(specRevisions.id, [...new Set(valid.map((v) => v.specRevisionId))]));
+  const byRevisionId = new Map(rows.map((r) => [r.rev.id, r]));
+  for (const v of valid) {
+    const row = byRevisionId.get(v.specRevisionId);
+    if (!row || row.rev.specId !== v.specId) { out.set(v.key, { ok: false, reason: `pinned spec revision ${v.specRevisionId} no longer exists` }); continue; }
+    if (row.rev.contentHash !== v.contentHash) { out.set(v.key, { ok: false, reason: `pinned spec revision ${row.rev.revision} has a different hash than the task was pinned to` }); continue; }
+    const body = row.bodyRevision == null ? null : { content: row.content, contentHash: row.bodyHash };
+    if (!body || body.contentHash !== v.contentHash || typeof body.content !== 'string') {
+      out.set(v.key, { ok: false, reason: `the body of pinned spec revision ${row.rev.revision} is missing or does not match its hash` });
+      continue;
+    }
+    out.set(v.key, { ok: true, specId: v.specId, revision: row.rev.revision, contentHash: v.contentHash, body: body.content, title: row.title, design: row.rev.design ?? null });
+  }
+  return out;
+}
+
+/** The read readPinnedSpecRevisions returned for this pin. */
+export function pinnedReadOf(reads: ReadonlyMap<string, PinnedRead>, pin: Record<string, unknown> | null | undefined): PinnedRead | undefined {
+  return reads.get(pinKey(pin));
+}
+
 export async function readPinnedSpecRevision(pin: Record<string, unknown> | null | undefined): Promise<PinnedRead> {
   const specId = pin?.specId; const specRevisionId = pin?.specRevisionId; const contentHash = pin?.contentHash;
   if (typeof specId !== 'string' || !isUuid(specId) || typeof specRevisionId !== 'string' || !isUuid(specRevisionId) || typeof contentHash !== 'string') {

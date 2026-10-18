@@ -1,0 +1,1 @@
+CREATE INDEX "tasks_degradation_release_idx" ON "tasks" ("workspace_id",((context->>'releaseId'))) WHERE (context->>'type') = 'degradation';

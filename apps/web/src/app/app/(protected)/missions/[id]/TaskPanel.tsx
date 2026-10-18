@@ -18,7 +18,7 @@ import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task
 import type { LiveWorkerViewProps, WorkerSteerProps } from '@/lib/task-live-view';
 import type { TaskChecksSection as TaskChecksSectionData } from '@/lib/task-sections';
 import type { AccessItem } from '@/lib/agent-capabilities/access-log';
-import type { DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { deliveryPillLabel, type DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 import { StoredPrCard } from '@/components/task/StoredPrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { TaskPrFacts } from '@/lib/task-sections';
@@ -353,6 +353,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         isBlocked={isBlocked}
         blockedByCount={data.blockedByCount}
         backend={data.backend}
+        deliveryReading={deliveryPillLabel(data.delivery)}
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
         auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
