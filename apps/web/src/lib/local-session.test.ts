@@ -952,3 +952,74 @@ describe('/clear keeps the claims', () => {
     expect(self.ok && self.event.continuesSessionId).toBeUndefined();
   });
 });
+
+describe('liveness in Redis (spec 3ef37387 R-32)', () => {
+  const { livenessGate, memoryLivenessStore } = require('./liveness') as typeof import('./liveness');
+  let clock: number;
+  const at = (ms: number) => { clock = NOW.getTime() + ms; return new Date(clock); };
+  const runLive = (ev: Record<string, unknown>, now: Date, gate: import('./liveness').LivenessGate) => {
+    const parsed = parseLocalSessionEvent({ client: 'claude', clientSessionId: 'sess-A', ...ev });
+    if (!parsed.ok) throw new Error(parsed.error);
+    return handleLocalSessionEvent(ACCOUNT, parsed.event, { store, now, detach, liveness: gate, resolveWorkspace: async () => 'ws-1' });
+  };
+
+  it('AC-8: a session touching every 30 s for an hour, nothing else changing, writes the database at most 13 times', async () => {
+    const gate = livenessGate(memoryLivenessStore(() => clock).store);
+    await runLive({ event: 'start' }, at(0), gate);
+    for (let s = 30; s <= 3600; s += 30) await runLive({ event: 'touch' }, at(s * 1000), gate);
+    expect(presenceWrites + workerTouches).toBeLessThanOrEqual(13);
+    // Still a durable record: the row was written within the last interval.
+    expect(clock - presences[0].lastSeenAt.getTime()).toBeLessThanOrEqual(5 * 60_000);
+  });
+
+  it('AC-8 with a held worker: each subject still writes at most 13 times an hour', async () => {
+    const gate = livenessGate(memoryLivenessStore(() => clock).store);
+    const id = '00000000-0000-4000-8000-0000000000a1';
+    claimWorker(id);
+    await runLive({ event: 'start' }, at(0), gate);
+    expect((await runLive({ event: 'bind', workerId: id }, at(1000), gate)).outcome).toBe('bound');
+    const afterBind = presenceWrites;
+    for (let s = 30; s <= 3600; s += 30) await runLive({ event: 'touch' }, at(s * 1000), gate);
+    expect(presenceWrites - afterBind).toBeLessThanOrEqual(12);
+    expect(workerTouches).toBeLessThanOrEqual(13);
+    // The held worker's updated_at never falls further behind than one interval.
+    expect(workerTouches).toBeGreaterThan(0);
+    expect(clock - workers.get(id)!.updatedAt.getTime()).toBeLessThanOrEqual(5 * 60_000);
+  });
+
+  it('a turn-state flip is written at once, between interval writes', async () => {
+    const gate = livenessGate(memoryLivenessStore(() => clock).store);
+    await runLive({ event: 'start' }, at(0), gate);
+    const before = presenceWrites;
+    await runLive({ event: 'touch', busy: true }, at(30_000), gate);
+    expect(presenceWrites).toBe(before + 1);
+    expect(presences[0].busySince).toEqual(at(30_000));
+  });
+
+  it('without Redis it fails open: today\'s one write a minute', async () => {
+    const gate = livenessGate(memoryLivenessStore(() => clock, { unavailable: true }).store);
+    await runLive({ event: 'start' }, at(0), gate);
+    const before = presenceWrites;
+    for (let s = 30; s <= 600; s += 30) await runLive({ event: 'touch' }, at(s * 1000), gate);
+    expect(presenceWrites - before).toBe(10);
+  });
+
+  it('a failed interval write reopens the gate for the next beat', async () => {
+    const gate = livenessGate(memoryLivenessStore(() => clock).store);
+    await runLive({ event: 'start' }, at(0), gate);
+    const real = store.touchPresence;
+    store.touchPresence = async () => { throw new Error('neon down'); };
+    await expect(runLive({ event: 'touch' }, at(300_000), gate)).rejects.toThrow('neon down');
+    store.touchPresence = real;
+    expect((await runLive({ event: 'touch' }, at(330_000), gate)).outcome).toBe('touched');
+  });
+
+  it('end forgets the Redis beat', async () => {
+    const mem = memoryLivenessStore(() => clock);
+    const gate = livenessGate(mem.store);
+    await runLive({ event: 'start' }, at(0), gate);
+    expect(mem.keys.size).toBe(2);
+    await runLive({ event: 'end', reason: 'exit' }, at(30_000), gate);
+    expect(mem.keys.size).toBe(0);
+  });
+});
