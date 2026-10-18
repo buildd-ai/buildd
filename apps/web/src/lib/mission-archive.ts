@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
-import { missions, taskSchedules } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
+import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Auto-archive for done missions ("Awaiting review" group): an active
@@ -49,29 +49,52 @@ export function selectMissionsToArchive(
     .map((m) => m.id);
 }
 
-/** Fetch candidates, apply the pure selector, archive. Returns archived ids. */
+/**
+ * Fetch candidates, apply the pure selector, archive. Returns archived ids.
+ *
+ * Only missions that can pass the selector are read (spec "Fast at any size",
+ * R-25): active, quiet past the cutoff, with at least one task, every task
+ * completed and none touched since the cutoff. Their tasks come back as one
+ * summary row (the newest update), not every row: the selector reads nothing
+ * else of them. Criteria come back as a count and the stored verdict.
+ */
 export async function archiveStaleDoneMissions(now = new Date()): Promise<string[]> {
-  const candidates = await db.query.missions.findMany({
-    where: sqlWhere(eq(missions.status, 'active')),
-    columns: { id: true, status: true, updatedAt: true, scheduleId: true, goalCriteria: true, goalCriteriaState: true },
+  const cutoff = new Date(now.getTime() - ARCHIVE_AFTER_MS);
+  const rows = (await db.query.missions.findMany({
+    where: sqlWhere(and(
+      eq(missions.status, 'active'),
+      lt(missions.updatedAt, cutoff),
+      sql`EXISTS (SELECT 1 FROM ${tasks} t WHERE t.mission_id = ${missions.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM ${tasks} t WHERE t.mission_id = ${missions.id} AND (t.status <> 'completed' OR t.updated_at >= ${cutoff.toISOString()}::timestamptz))`,
+    )),
+    columns: { id: true, status: true, updatedAt: true, scheduleId: true },
+    extras: sqlExtras({
+      criteriaCount: sql<number>`CASE WHEN jsonb_typeof(${missions.goalCriteria}) = 'array' THEN jsonb_array_length(${missions.goalCriteria}) ELSE 0 END`,
+      criteriaOverall: sql<string | null>`${missions.goalCriteriaState}->>'overall'`,
+      // Epoch milliseconds, truncated as a JS Date truncates the column.
+      lastTaskUpdateMs: sql<number | null>`(SELECT floor(extract(epoch FROM max(t.updated_at)) * 1000)::float8 FROM ${tasks} t WHERE t.mission_id = ${missions.id})`,
+    }),
     with: {
       schedule: { columns: { enabled: true } },
-      tasks: { columns: { status: true, updatedAt: true } },
     },
-  });
+  })) as Array<{
+    id: string; status: string; updatedAt: Date; scheduleId: string | null;
+    criteriaCount: number | null; criteriaOverall: string | null; lastTaskUpdateMs: number | string | null;
+    schedule: { enabled: boolean } | null;
+  }>;
 
-  const ids = selectMissionsToArchive(
-    candidates.map((m: any) => ({
-      id: m.id,
-      status: m.status,
-      updatedAt: m.updatedAt,
-      scheduleEnabled: m.schedule?.enabled ?? null,
-      tasks: m.tasks ?? [],
-      criteriaCount: Array.isArray(m.goalCriteria) ? m.goalCriteria.length : 0,
-      criteriaOverall: m.goalCriteriaState?.overall ?? null,
-    })),
-    now,
-  );
+  const candidates = rows.map(m => ({
+    id: m.id,
+    status: m.status,
+    updatedAt: m.updatedAt,
+    scheduleEnabled: m.schedule?.enabled ?? null,
+    // Every task is completed (the read above): the newest update stands for them all.
+    tasks: m.lastTaskUpdateMs != null ? [{ status: 'completed', updatedAt: new Date(Number(m.lastTaskUpdateMs)) }] : [],
+    criteriaCount: Number(m.criteriaCount ?? 0),
+    criteriaOverall: m.criteriaOverall ?? null,
+    scheduleId: m.scheduleId,
+  }));
+  const ids = selectMissionsToArchive(candidates, now);
 
   if (ids.length > 0) {
     // Heartbeat schedules are owned by their mission — delete when the mission
