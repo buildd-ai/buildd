@@ -71,6 +71,8 @@ export interface RunnerHeartbeat {
   codexAuthSource?: RunnerCodexAuthSource | null;
   /** Authoritative ownership (managed / team host / personal / unknown); see runner-ownership.ts. */
   runnerClass?: RunnerClass;
+  /** How the runner's model usage is paid: `oauth` = the login on its own machine, `api` = a key. Absent when unknown. */
+  authType?: 'oauth' | 'api';
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */

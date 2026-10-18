@@ -40,6 +40,7 @@ import {
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
+import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
@@ -1020,7 +1021,7 @@ export function HealthClient({
       {show('budget') && budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
 
       {show('credentials') && credentialHealth.length > 0 && (
-        <CredentialStateSection credentials={credentialHealth} now={now} />
+        <CredentialStateSection credentials={credentialHealth} now={now} runners={runners} />
       )}
 
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
@@ -1799,10 +1800,13 @@ const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
 function CredentialStateSection({
   credentials,
   now,
+  runners = [],
 }: {
   credentials: CredentialHealthItem[];
   now: number;
+  runners?: RunnerHeartbeat[];
 }) {
+  const claudeRoute = resolveClaudeRoute(runners, credentials, now);
   return (
     <div data-testid="health-section-credentials" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -1811,6 +1815,9 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
+      <p data-testid="claude-route" data-state={claudeRoute.state} className="mb-2 text-xs text-text-muted">
+        {claudeRoute.summary}
+      </p>
       <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
