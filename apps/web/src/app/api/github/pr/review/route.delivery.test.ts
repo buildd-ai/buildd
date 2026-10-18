@@ -35,6 +35,7 @@ const mockViews = mock(async (_ids: string[], ..._rest: unknown[]) => new Map<st
 mock.module('@/lib/workflow/delivery-view', () => ({ getDeliveryViewsForTasks: mockViews }));
 
 import { GET } from './route';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
 
 const view = (over: Record<string, unknown> = {}) => ({
   state: 'CHANGES_REQUESTED',
@@ -108,5 +109,34 @@ describe('GET /api/github/pr/review — delivery-owned PR', () => {
 
   it('is not_requested only when there is neither a delivery nor a reviewer task', async () => {
     expect((await (await GET(get())).json()).status.state).toBe('not_requested');
+  });
+});
+
+describe('readPrReviewStatus with the delivery its caller already read', () => {
+  it('uses a known delivery for the owning task instead of reading it again', async () => {
+    const status = await readPrReviewStatus({
+      workspaceId: 'ws-1', prNumber: 42,
+      knownDelivery: { taskId: 'task-1', view: Promise.resolve(view() as any) },
+    });
+    expect(mockViews).not.toHaveBeenCalled();
+    expect(status).toMatchObject({ state: 'changes_requested', reviewTaskId: 'rev-2' });
+  });
+
+  it('a known "no delivery" is used too: the legacy reviewer task answers, with no delivery read', async () => {
+    legacyReviewRows.push({ id: 'legacy-1', status: 'pending', result: null, context: { prNumber: 42 } });
+    const status = await readPrReviewStatus({ workspaceId: 'ws-1', prNumber: 42, knownDelivery: { taskId: 'task-1', view: Promise.resolve(null) } });
+    expect(mockViews).not.toHaveBeenCalled();
+    expect(status).toMatchObject({ state: 'queued', reviewTaskId: 'legacy-1' });
+  });
+
+  it('reads the delivery itself when the PR belongs to another task, or the known read failed', async () => {
+    mockViews.mockResolvedValue(new Map([['task-1', view()]]));
+    await readPrReviewStatus({ workspaceId: 'ws-1', prNumber: 42, knownDelivery: { taskId: 'other-task', view: Promise.resolve(null) } });
+    expect(mockViews).toHaveBeenCalledTimes(1);
+    const failed = Promise.reject(new Error('read failed'));
+    failed.catch(() => {});
+    const status = await readPrReviewStatus({ workspaceId: 'ws-1', prNumber: 42, knownDelivery: { taskId: 'task-1', view: failed } });
+    expect(mockViews).toHaveBeenCalledTimes(2);
+    expect(status.state).toBe('changes_requested');
   });
 });
