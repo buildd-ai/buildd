@@ -31,7 +31,7 @@ export function dayTally(episodes: readonly Episode[]): string {
   const repaired = episodes.filter(e => e.repairRounds > 0).length;
   const toYou = episodes.filter(e => e.kind === 'needs').length;
   const parts = [
-    landed && `${landed} landed`,
+    landed && `${landed} merged`,
     repaired && `${repaired} repaired`,
     toYou && `${toYou} to you`,
   ].filter(Boolean);

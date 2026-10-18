@@ -36,3 +36,11 @@ describe('Home compact mission rows', () => {
     }
   });
 });
+
+describe('Home missions header count', () => {
+  it('counts finished missions as done, never shipped', () => {
+    const h = renderToStaticMarkup(<HomeMissionsSummary rows={[]} total={4} shippedToday={2} />);
+    expect(h).toContain('2 done · 4 total');
+    expect(h).not.toContain('shipped');
+  });
+});

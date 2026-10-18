@@ -62,3 +62,13 @@ describe('TaskGrid — empty band drill-down', () => {
     expect(html).not.toContain('data-testid="task-band-filter"');
   });
 });
+
+describe('TaskGrid — status words', () => {
+  it('the finished filter reads Done, never Completed', () => {
+    const now = new Date().toISOString();
+    const task = { id: 't1', title: 'Finished thing', status: 'completed', taskClass: 'work', priority: 0, createdAt: now, updatedAt: now, workers: [] };
+    const html = renderToStaticMarkup(<TaskGrid tasks={[task] as never} missionFilter={null} missionTitle={null} />);
+    expect(html).toMatch(/>\s*Done\s*</);
+    expect(html).not.toMatch(/>\s*Completed\s*</);
+  });
+});

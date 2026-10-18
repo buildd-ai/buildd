@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql as sqlTag, type SQL } from 'drizzle-orm';
-import { claimLegacyHandoffSql, kernelEnabled, kernelOnSql, releaseSql, unclaimLegacyHandoffSql, workspaceKernelOnSql, resolveByIdSql, resolveByOwnerSql, resolveByPrSql } from './authority';
+import { claimLegacyHandoffSql, kernelEnabled, kernelOnSql, releaseSql, unclaimLegacyHandoffSql, workspaceKernelOnSql, resolveByIdSql, resolveByOwnerSql, resolveByPrSql, landingAtHeadSql } from './authority';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
 
@@ -69,6 +69,17 @@ describe('SQL', () => {
     const { sql: text, params } = render(releaseSql('d1'));
     expect(text).toContain("WHERE id = $1::uuid AND authority = 'kernel'");
     expect(params).toEqual(['d1']);
+  });
+});
+
+describe('§4 merge holds SQL', () => {
+  test('the deliveries a status on a head may release: kernel, LANDING at that head on that repo, kill switch on', () => {
+    const { sql: text, params } = render(landingAtHeadSql('o/r', 'H1'));
+    expect(text).toContain("d.authority = 'kernel' AND d.state = 'LANDING'");
+    expect(text).toContain('d.repo_full_name = $1::text');
+    expect(text).toContain('d.current_head_sha = $2::text');
+    expect(text).toContain('JOIN workspaces w ON w.id = d.workspace_id');
+    expect(params.slice(0, 2)).toEqual(['o/r', 'H1']);
   });
 });
 

@@ -67,6 +67,7 @@ export {
 export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from './work-changed';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
 export type CompletionPath =
@@ -905,6 +906,8 @@ export async function completeMissionIfVerified(
     authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
+  // Whichever way it decides, the attempt may move the mission's status: its stored summary is refreshed after the response.
+  noteWorkChanged({ missionIds: [missionId] });
   // S4b: the delivery records the decision reads, fingerprinted before it reads them, so the write
   // below lands only on the epoch state it was decided on (workflow/mission-completion-write.ts).
   const epochFingerprint = await readMissionEpochFingerprint(missionId);

@@ -6,6 +6,7 @@
  * knowledge-base repo under buildd/design/. What stays here:
  *
  *   docs/design/design-system.md, docs/design/DESIGN-FORMAT.md  — any content
+ *   docs/design/terms.md   — generated from packages/shared/src/terms.ts
  *   docs/design/<name>.md   — frontmatter + the standard pointer stub only, so
  *                             spec conformance can still check its assertions
  *   docs/reports/gate-audit.md                                   — any content
@@ -27,6 +28,7 @@ export const GUARDED_DIRS = ['docs/design', 'docs/plans', 'docs/reports'] as con
 export const ALLOWED_FULL = new Set([
   'docs/design/design-system.md',
   'docs/design/DESIGN-FORMAT.md',
+  'docs/design/terms.md',
   'docs/reports/gate-audit.md',
 ]);
 

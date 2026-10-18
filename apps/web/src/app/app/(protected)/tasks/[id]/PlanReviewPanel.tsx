@@ -92,7 +92,7 @@ export function resolveRejectOutcome(data: {
     return {
       text:
         'Proposal rejected. The reason stays on its discrepancy, and the ' +
-        'shipped documentation fix is unchanged.',
+        'merged documentation fix is unchanged.',
       navigateTo: null,
     };
   }

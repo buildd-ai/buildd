@@ -178,7 +178,7 @@ describe('replay: audit fails → repair → re-audit → land, on every surface
       `New head ${H2.slice(0, 7)}; earlier verdicts superseded`,
       `Late approval on ${H1.slice(0, 7)}: stale head, not counted`,
       `Review approved on ${H2.slice(0, 7)}`,
-      'Landed',
+      'Merged',
     ]);
     expect(final.steps.find(s => s.text.startsWith('Late approval'))?.void).toBe(true);
     // The landed episode is now the newest in History.

@@ -8,7 +8,10 @@
  *
  * Scans apps/web/src/app and components, the lib/ modules tagged
  * `@ui-copy` (see UI_COPY_MARKER), and the title/message/urlTitle of every
- * notifyTeamOf payload anywhere in apps/web/src (see NOTIFY_CALL). Extracts rendered strings with the
+ * notifyTeamOf payload anywhere in apps/web/src (see NOTIFY_CALL). Outside the
+ * web, the surfaces in VOCABULARY_SURFACES (`buildd top`, runner CLI output,
+ * MCP replies, the kernel's display table, PR activity comments) are read for
+ * the vocabulary rules only (VOCABULARY_RULES). Extracts rendered strings with the
  * TypeScript AST (JSX text, string and template literals; comments, imports and class lists never count) and runs
  * them through the rules in packages/core/copy-rules.ts. Same ratchet shape as
  * scripts/design-check.ts: per-file counts per rule, the gate compares totals,
@@ -51,6 +54,29 @@ export function inScope(path: string, content?: string): boolean {
 }
 
 /**
+ * Surfaces outside the web app that show state words to a person: `buildd
+ * top`, the runner CLI's printed output, MCP replies, the kernel's delivery
+ * display table and PR activity comments. Their strings are read for the
+ * vocabulary rules only, so the same state reads the same word everywhere
+ * (packages/shared/src/terms.ts) without holding terminal or agent text to
+ * the web's sentence-shape rules.
+ */
+export const VOCABULARY_SURFACES: RegExp[] = [
+  /^apps\/runner\/src\/top\/[^/]+\.ts$/,
+  /^apps\/runner\/src\/(?:runner-hold|claim-words)\.ts$/,
+  /^packages\/core\/mcp-tools\.ts$/,
+  /^apps\/web\/src\/lib\/pr-activity-comment\.ts$/,
+  /^packages\/workflow-kernel\/src\/delivery-display\.ts$/,
+];
+export const VOCABULARY_RULES: ReadonlySet<CopyRuleId> = new Set(['catalog-word', 'state-jargon']);
+
+/** A non-test file on a VOCABULARY_SURFACES path. */
+export function vocabularyInScope(path: string): boolean {
+  if (/\.(test|stories|fixtures?)\.tsx?$/.test(path) || path.includes('/__tests__/')) return false;
+  return VOCABULARY_SURFACES.some((r) => r.test(path));
+}
+
+/**
  * Team notifications (Pushover, the inbox) are UI too, but they are sent from
  * lib/ modules and API routes that also hold agent prompts. So for those files
  * only the payload fields of this call are read, never the rest of the file.
@@ -77,6 +103,11 @@ const looksLikeClassList = (t: string) => {
 };
 /** A rendered string has at least two words and a letter. */
 const isProse = (t: string) => /[A-Za-z]{2}/.test(t) && /\S\s+\S/.test(t) && !looksLikeClassList(t) && !/^(\/|https?:|[\w.-]+\/)/.test(t.trim());
+/**
+ * A one-word label ("Landed", "HELD", "[HELD]"): capitalised, so it reads as
+ * display text, not a key. Only the catalog-word rule reads these.
+ */
+const isLabel = (t: string) => /^\[?[A-Z][A-Za-z]+\]?$/.test(t.trim());
 
 function calleeName(node: ts.Node): string | null {
   if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
@@ -88,7 +119,7 @@ function calleeName(node: ts.Node): string | null {
 
 /** True when a literal sits somewhere its value is code, not copy. */
 function isNonCopyContext(node: ts.Node): boolean {
-  for (let p: ts.Node | undefined = node.parent; p; p = p.parent) {
+  for (let child: ts.Node = node, p: ts.Node | undefined = node.parent; p; child = p, p = p.parent) {
     if (ts.isImportDeclaration(p) || ts.isExportDeclaration(p) || ts.isExternalModuleReference(p)) return true;
     // sql`…` and other tagged templates are code.
     if (ts.isTaggedTemplateExpression(p)) return true;
@@ -97,7 +128,9 @@ function isNonCopyContext(node: ts.Node): boolean {
     const callee = calleeName(p);
     if (callee && NON_COPY_CALL.test(callee)) return true;
     if (ts.isBinaryExpression(p) && /^(===|!==|==|!=)$/.test(p.operatorToken.getText())) return true;
-    if (ts.isCaseClause(p) || ts.isElementAccessExpression(p) || ts.isTypeNode(p)) return true;
+    // A case label is code; the statements under it are not.
+    if (ts.isCaseClause(p)) return child === p.expression;
+    if (ts.isElementAccessExpression(p) || ts.isTypeNode(p)) return true;
     if (ts.isBlock(p) || ts.isSourceFile(p) || ts.isJsxElement(p)) return false;
   }
   return false;
@@ -115,7 +148,7 @@ function flattenJsx(nodes: ts.NodeArray<ts.JsxChild>): string {
   }).join('');
 }
 
-export interface CopyString { line: number; text: string }
+export interface CopyString { line: number; text: string; /** One-word label: only catalog-word applies. */ label?: true }
 
 /** Every rendered string in one source file. Pure, so tests can feed fixtures. */
 export function extractCopy(path: string, content: string): CopyString[] {
@@ -125,6 +158,7 @@ export function extractCopy(path: string, content: string): CopyString[] {
   const push = (n: ts.Node, text: string) => {
     const t = text.replace(/\s+/g, ' ').trim();
     if (isProse(t)) out.push({ line: lineOf(n), text: t });
+    else if (isLabel(t)) out.push({ line: lineOf(n), text: t, label: true });
   };
   const visit = (n: ts.Node) => {
     if (ts.isJsxElement(n) && hasDirectText(n)) {
@@ -170,7 +204,7 @@ export function extractNotifyCopy(path: string, content: string, fields: NotifyF
 
 /** The strings copy:check reads from one file: all of it when in scope, else its notify payloads. */
 export function copyOf(path: string, content: string): CopyString[] {
-  if (inScope(path, content)) return extractCopy(path, content);
+  if (inScope(path, content) || vocabularyInScope(path)) return extractCopy(path, content);
   return notifyInScope(path, content) ? extractNotifyCopy(path, content) : [];
 }
 
@@ -185,15 +219,20 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
   const violations: Violation[] = [];
   for (const { path, content } of sources) {
     const seen = new Set<string>();
+    const vocabularyOnly = !inScope(path, content) && vocabularyInScope(path);
     for (const s of copyOf(path, content)) {
+      // Vocabulary surfaces, and one-word labels anywhere, are read for the vocabulary only.
+      const onlyVocabulary = vocabularyOnly || s.label === true;
       for (const rule of copyViolations(s.text)) {
-        if (rule.id === 'state-jargon' && OPERATOR_PATH.test(path)) continue;
+        if (s.label && rule.id !== 'catalog-word') continue;
+        if (onlyVocabulary && !VOCABULARY_RULES.has(rule.id)) continue;
+        if ((rule.id === 'state-jargon' || rule.id === 'catalog-word') && OPERATOR_PATH.test(path)) continue;
         violations.push({ file: path, line: s.line, rule: rule.id, text: s.text });
         counts[rule.id][path] = (counts[rule.id][path] ?? 0) + 1;
       }
       // duplicate-explanation: the second time one file renders the same sentence.
       const key = s.text.replace(/\s+/g, ' ').trim().toLowerCase();
-      if (key.split(' ').length >= DUPLICATE_MIN_WORDS) {
+      if (!onlyVocabulary && key.split(' ').length >= DUPLICATE_MIN_WORDS) {
         if (seen.has(key)) {
           violations.push({ file: path, line: s.line, rule: 'duplicate-explanation', text: s.text });
           counts['duplicate-explanation'][path] = (counts['duplicate-explanation'][path] ?? 0) + 1;
@@ -206,13 +245,13 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
 
 /** Tracked files only, so the check sees what ships. */
 export function readSources(): { path: string; content: string }[] {
-  const ls = spawnSync('git', ['ls-files', '-z', 'apps/web/src'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const ls = spawnSync('git', ['ls-files', '-z', 'apps/web/src', 'apps/runner/src', 'packages/core/mcp-tools.ts', 'packages/workflow-kernel/src'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (ls.status !== 0) throw new Error(`git ls-files failed: ${ls.stderr}`);
   return ls.stdout.split('\0')
     .filter((path) => /\.tsx?$/.test(path))
     .sort()
     .map((path) => ({ path, content: readFileSync(path, 'utf8') }))
-    .filter(({ path, content }) => inScope(path, content) || notifyInScope(path, content));
+    .filter(({ path, content }) => inScope(path, content) || notifyInScope(path, content) || vocabularyInScope(path));
 }
 
 const total = (perFile: Record<string, number> = {}) => Object.values(perFile).reduce((a, b) => a + b, 0);

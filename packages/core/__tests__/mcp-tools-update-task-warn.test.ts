@@ -72,7 +72,8 @@ describe('update_task — auto-delivery on description changes', () => {
     expect(responseText).not.toContain('WARNING');
     // Should confirm delivery
     expect(responseText).toContain('worker-abc');
-    expect(responseText).toContain('auto-deliver');
+    expect(responseText).toContain('auto-sent to worker');
+    expect(responseText).not.toMatch(/delivered/);
 
     // Should have called the instruct endpoint
     const instructCalls = mockApi.mock.calls.filter(

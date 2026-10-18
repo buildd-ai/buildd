@@ -24,6 +24,7 @@ import { dockToneForDelivery, taskDockModel } from '@/components/chat/dock-model
 import { taskState, taskStateForDelivery } from '@/components/chat/objects/TaskObject';
 import type { TaskObjectView } from '@/components/chat/objects/object-views';
 import { HeaderStatusPill } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { TERMS, bannedWordsIn } from '@buildd/shared';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
   id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
@@ -170,8 +171,9 @@ const TABLE: Row[] = [
   { name: 'red base', input: V({ state: 'BLOCKED_ON_TRUNK' }), label: 'Blocked on base', tone: 'stalled' },
   { name: 'merging', input: V({ state: 'LANDING' }), label: 'Merging', tone: 'live' },
   { name: 'merged', input: V({ state: 'MERGED' }), label: 'Merged', tone: 'landed' },
-  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Shipped elsewhere', tone: 'landed' },
-  { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed', tone: 'closed' },
+  { name: 'superseded', input: V({ state: 'SUPERSEDED', supersededByPr: 9 }), label: 'Merged in another PR', tone: 'landed' },
+  { name: 'closed', input: V({ state: 'CLOSED_UNMERGED' }), label: 'Closed without merging', tone: 'closed' },
+  { name: 'abandoned', input: V({ state: 'ABANDONED' }), label: 'Closed without merging', tone: 'closed' },
   { name: 'failed', input: V({ state: 'FAILED', stateReason: 'attempt_failed' }), label: 'Failed', tone: 'failed' },
 ];
 
@@ -290,8 +292,8 @@ describe('legacy-owned rows keep the fact-cache projection', () => {
   test('chat dock: a completed task whose PR is still open is in review, not landed (§17.5)', () => {
     const legacy = (w: Partial<NonNullable<TaskObjectView['worker']>>): TaskObjectView => ({ ...taskView(display('MERGED')), delivery: null, worker: { ...taskView(display('MERGED')).worker!, ...w } });
     expect(taskDockModel(legacy({ prLifecycleStatus: 'ci_green', mergedAt: null })).badge.label).toBe('In review');
-    expect(taskDockModel(legacy({ prLifecycleStatus: 'merged', mergedAt: null })).badge.label).toBe('Landed');
-    expect(taskDockModel(legacy({ prNumber: null, prUrl: null, prLifecycleStatus: null })).badge.label).toBe('Landed');
+    expect(taskDockModel(legacy({ prLifecycleStatus: 'merged', mergedAt: null })).badge.label).toBe('Merged');
+    expect(taskDockModel(legacy({ prNumber: null, prUrl: null, prLifecycleStatus: null })).badge.label).toBe('Done');
     expect(taskDockModel(legacy({ prLifecycleStatus: 'ci_failed' })).badge.label).toBe('CI failed');
   });
 });
@@ -338,5 +340,34 @@ describe('S35: the failed-task count and the delivery reading agree', () => {
 
   test('a task with no view is never replaced (legacy, or the view read failed)', () => {
     expect(replacedFailedTaskIds(new Map(), ['t1']).size).toBe(0);
+  });
+});
+
+// The kernel imports nothing of buildd (no-buildd-imports.test.ts), so its
+// display table keeps literals. They must stay the terms catalog's words.
+describe('deliveryReading speaks the terms catalog', () => {
+  const label = (o: Partial<DeliverySnapshot>, extra: Partial<DeliveryViewInput> = {}) => deliveryReading(toDeliveryDisplay(deriveDeliveryView(V(o, extra))!))!.label;
+
+  test('each 1:1 label equals its catalog word', () => {
+    expect(label({ state: 'AWAITING_PUSH' })).toBe(TERMS['pr.waiting_push'].word);
+    expect(label({ state: 'AWAITING_REVIEW' })).toBe(TERMS['pr.in_review'].word);
+    expect(label({ state: 'CHANGES_REQUESTED' })).toBe(TERMS['pr.changes_requested'].word);
+    expect(label({ state: 'FIXING' })).toBe(TERMS['pr.fixing'].word);
+    expect(label({ state: 'BLOCKED_ON_TRUNK' })).toBe(TERMS['pr.blocked_on_base'].word);
+    expect(label({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true })).toBe(TERMS['pr.ready_to_merge'].word);
+    expect(label({ state: 'LANDING' })).toBe(TERMS['pr.merging'].word);
+    expect(label({ state: 'ESCALATED', stateReason: 'review_escalated' })).toBe(TERMS['decision.waiting_on_you'].word);
+    expect(label({ state: 'MERGED' })).toBe(TERMS['pr.merged'].word);
+    expect(label({ state: 'SUPERSEDED' })).toBe(TERMS['pr.merged_elsewhere'].word);
+    expect(label({ state: 'CLOSED_UNMERGED' })).toBe(TERMS['pr.closed'].word);
+    expect(label({ state: 'ABANDONED' })).toBe(TERMS['pr.closed'].word);
+    expect(label({ state: 'FAILED', stateReason: 'attempt_failed', prNumber: null })).toBe(TERMS['work.failed'].word);
+  });
+
+  test('no label is a banned word', () => {
+    for (const state of DELIVERY_STATES) {
+      const r = deliveryReading(toDeliveryDisplay(deriveDeliveryView(V({ state, stateReason: REASON[state] ?? null, supersededByPr: state === 'SUPERSEDED' ? 9 : null }))!));
+      if (r) expect({ state, banned: bannedWordsIn(r.label).map((b) => String(b.word)) }).toEqual({ state, banned: [] });
+    }
   });
 });
