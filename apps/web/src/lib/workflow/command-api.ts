@@ -95,6 +95,12 @@ export interface KernelOps {
    * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
    */
   attempt_ended: { input: Parameters<Seam['attemptEnded']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptEnded']>> };
+  /**
+   * AC-1 slice 6: an attempt's task goes back to the queue (the worker PATCH's retries and loop
+   * holds, its budget, mount, auth and codex requeues, the conflict-fix recovery). As attempt_ended,
+   * the task's workspace rides at the top level for the reach check.
+   */
+  attempt_requeued: { input: Parameters<Seam['attemptRequeued']>[0] & { workspaceId: string }; result: Awaited<ReturnType<Seam['attemptRequeued']>> };
   /** T10 from buildd's own CI doors: the red-PR sweep, the landing path and the check_suite subscriber saw a red head. */
   observe_ci_failure: { input: Parameters<Seam['observeCiFailure']>[0]; result: Awaited<ReturnType<Seam['observeCiFailure']>> };
   /** CiGreenObserved (ends a CI repair) or a CiObserved reading, from the check_suite success webhook. */
@@ -143,6 +149,11 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
     return s.attemptEnded(p);
+  },
+  attempt_requeued: (s, { workspaceId, ...p }) => {
+    // As attempt_ended: the requeue it applies must be for a task of the workspace the reach check judged.
+    if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_requeued: input.workspaceId is not the task\'s workspace');
+    return s.attemptRequeued(p);
   },
   observe_ci_failure: (s, i) => s.observeCiFailure(i),
   observe_ci_green: (s, i) => s.observeCiGreen(i),

@@ -620,6 +620,16 @@ export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 
 }
 
 /**
+ * AttemptRequeued from the web host (AC-1 slice 6): an attempt's task goes back to the queue,
+ * applied where the kernel is hosted. The caller also projects the requeue on its own host
+ * (`projectRequeue`) for a control plane that is down or too old; during release skew it is
+ * applied here (`doorOrHereOnSkew`).
+ */
+export async function attemptRequeued(p: Omit<KernelOps['attempt_requeued']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_requeued']['result']> {
+  return doorOrHereOnSkew('attempt_requeued', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s requeue`);
+}
+
+/**
  * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
  * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it
  * is applied here, so a red PR is never left without its repair (`doorOrHereOnSkew`).

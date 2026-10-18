@@ -95,6 +95,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['RepairNotNeeded', V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig' })]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }, 'APPROVED'],
   ['PolicyMergeApproved', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'PolicyMergeApproved', actor: 'rule:escalation_gate', headSha: 'H1', reason: 'policy-only escalation, every gate holds' }, 'APPROVED'],
   ['TreadmillCycleRestarted', V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [1, 2, 3].map((n) => A({ id: `m${n}`, family: 'conflict', mode: 'mechanical', attemptNo: n, boundHeadSha: `B${n}`, triggerReason: 'behind', status: 'ended', taskId: null }))), { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle' }, 'APPROVED'],
+  ['AttemptRequeued', V(D()), { type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry' }, 'WORKING'],
 ];
 
 describe('generic: every applied transition is a version CAS (§7)', () => {
@@ -636,6 +637,48 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const skipped = repairing({ attemptNo: 3 });
     const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
     expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
+  });
+});
+
+describe('AttemptRequeued (AC-1 slice 6): a retried attempt goes back to the queue without moving the delivery', () => {
+  const owner = (o: Partial<Extract<Command, { type: 'AttemptRequeued' }>> = {}): Command => ({ type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry', ...o });
+
+  test('an owner requeue while WORKING applies in place and records the requeue, with no attempt or round op', () => {
+    const dec = applied(run(V(D()), owner({ reason: 'loop_hold' })));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.idempotencyKey).toBe('requeue:w9');
+    expect(dec.evidence).toMatchObject({ requeue: true, reason: 'loop_hold', workerId: 'w9', taskId: 't1' });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.rounds).toEqual([]);
+    expect(dec.patch).toEqual({});
+    expect(effectKinds(dec).sort()).toEqual(['publish_landing_status', 'render_activity']);
+  });
+
+  test('an owner requeue for another task, or after the delivery moved past WORKING, is not bound', () => {
+    expectResult(run(V(D()), owner({ taskId: 'other' })), 'stale', 'attempt_not_bound');
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'AWAITING_PUSH', 'ESCALATED', 'MERGED'] as const) {
+      expectResult(run(V(D({ state })), owner()), 'stale', 'attempt_not_bound');
+    }
+  });
+
+  test('a repair requeue binds only to the open attempt the delivery is bound to', () => {
+    const repairing = (a: Partial<AttemptSnapshot>, o: Partial<DeliverySnapshot> = {}) =>
+      V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'c1', ...o }), [], [A({ id: 'c1', family: 'conflict', triggerReason: 'behind', status: 'running', ...a })]);
+    const repair = (attemptId = 'c1'): Command => ({ type: 'AttemptRequeued', actor: 'sweep:conflict', workerId: 'w3', attemptId, reason: 'conflict_recovery' });
+    const dec = applied(run(repairing({}), repair()));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.evidence).toMatchObject({ requeue: true, attemptId: 'c1', reason: 'conflict_recovery' });
+    expect(dec.attempts).toEqual([]);
+    expectResult(run(repairing({}), repair('c2')), 'stale', 'attempt_not_bound');
+    expectResult(run(repairing({ status: 'ended' }), repair()), 'stale', 'attempt_not_bound');
+    expectResult(run(repairing({}, { state: 'APPROVED', boundAttemptId: null }), repair()), 'stale', 'attempt_not_bound');
+    expect(applied(run(V(D({ state: 'FIXING', boundAttemptId: 'a1', currentRound: 1 }), [decidedRC], [A({ status: 'running' })]), repair('a1'))).toState).toBe('FIXING');
+  });
+
+  test('a requeue naming no attempt is rejected; its key is the worker\'s, so a re-send is a duplicate by key', () => {
+    expectResult(run(V(D()), owner({ taskId: undefined })), 'rejected', 'attempt_not_named');
+    expect(stableIdempotencyKey(owner(), D())).toBe('requeue:w9');
+    expect(stableIdempotencyKey(owner({ workerId: 'w10' }), D())).toBe('requeue:w10');
   });
 });
 

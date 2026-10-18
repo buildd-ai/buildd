@@ -270,3 +270,73 @@ WHERE tk.id = ${p.taskId}::uuid AND o.status IS NOT NULL
   AND ${notKernelMergedTaskSql(tkCols)}
 RETURNING tk.status`;
 }
+
+// ── AC-1 slice 6: a requeued attempt moves its task back to the queue ───────
+
+/**
+ * Whether a worker is its task's current attempt while the task is still open: an attempt row
+ * (never a placeholder no runner executed), the newest one, not older than the claim. The rule a
+ * requeue's projection applies, exported so a requeue's own write of its other fields (context,
+ * backend, start floor) lands under the same condition. `task` names the tasks row in the
+ * enclosing statement (`tasks` inside a drizzle `update(tasks)`).
+ */
+export function requeueingAttemptIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  // The reaper's rule (AC-1 slice 5) is the same question: is this the open task's current attempt.
+  return reapedOwnerAttemptIsCurrentSql(workerId, task);
+}
+
+/** The requeue the move to `pending` is for, read off the decision's evidence (reducer.ts `attemptRequeued`). */
+function requeueOf(evidence: unknown): { workerId: string; attemptId: string | null } | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.requeue !== true || typeof e.workerId !== 'string') return null;
+  return { workerId: e.workerId, attemptId: typeof e.attemptId === 'string' ? e.attemptId : null };
+}
+
+/** The task a requeue moves: the delivery's owner task, or the open repair attempt's own task. */
+function requeuedTaskSql(attemptId: string | null, delivery: SQL): SQL {
+  return attemptId
+    ? sql`tk.id = (SELECT wa.task_id FROM workflow_attempts wa
+        WHERE wa.id = ${attemptId}::uuid AND wa.delivery_id = ${delivery} AND wa.status IN ('queued', 'running'))`
+    : sql`tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${delivery})`;
+}
+
+/** What a requeue writes: back to the queue, with the claim released. */
+const REQUEUE_SET = sql`status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()`;
+
+/**
+ * The `t_requeue` CTE (workflow-kernel-library.md §9, AC-1): AttemptRequeued moves the attempt's
+ * task back to `pending` in the transition's own statement, reading the delivery CTE `d`, so a
+ * version miss writes nothing. Only an open task, only while the requeuing worker is its current
+ * attempt (a requeue that lands late, after the task was claimed again, belongs to the attempt
+ * before), never over a kernel-merged completion. Empty for every other decision.
+ */
+export function requeueTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptRequeued') return [];
+  const r = requeueOf(decision.evidence);
+  if (!r) return [];
+  const a = sql.raw(d);
+  return [sql`t_requeue AS (
+  UPDATE tasks tk SET ${REQUEUE_SET}
+  FROM ${a}
+  WHERE ${requeuedTaskSql(r.attemptId, sql`${a}.id`)}
+    AND ${requeueingAttemptIsCurrentSql(r.workerId)}
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same move outside a transition, for a requeue that applied nothing: a duplicate (a parked
+ * re-send), one the reducer did not bind (the delivery moved on while the task kept running, as a
+ * loop task's next iteration does), one the control plane could not take, or one an older control
+ * plane does not know. Same rules as `t_requeue`. Returns the task id moved, or null.
+ */
+export function projectRequeueSql(p: { deliveryId: string; workerId: string; taskId: string; attemptId?: string | null }): SQL {
+  return sql`-- workflow:project_requeue
+UPDATE tasks tk SET ${REQUEUE_SET}
+WHERE tk.id = ${p.taskId}::uuid
+  AND ${requeuedTaskSql(p.attemptId ?? null, sql`${p.deliveryId}::uuid`)}
+  AND ${requeueingAttemptIsCurrentSql(p.workerId)}
+  AND ${notKernelMergedTaskSql(tkCols)}
+RETURNING tk.id`;
+}
