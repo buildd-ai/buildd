@@ -8,7 +8,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { NextRequest } from 'next/server';
 import { matchLocalRead as match, runLocalRead, shadowedRoutes } from './mcp-local-reads';
-import { MCP_LOCAL_READS as LOCAL_READS, MCP_LOCAL_READ_SHADOWS as SHADOWS } from '../modules';
+import { MCP_LOCAL_READS as LOCAL_READS, MCP_LOCAL_READ_SHADOWS as SHADOWS } from '../mcp-local-read-routes';
 
 const matchLocalRead = (p: string) => match(p, LOCAL_READS, SHADOWS);
 
@@ -84,6 +84,25 @@ describe('a dynamic entry never takes a path a static sibling route serves', () 
       [...SHADOWS].sort(),
       'regenerate: shadowedRoutes(apiRoutes(), MCP_LOCAL_READS) in lib/mcp-local-reads.test.ts',
     ).toEqual(shadowedRoutes(routes, LOCAL_READS));
+  });
+
+  it('the table stays out of modules.ts, and only this reader imports it', () => {
+    // modules.ts is in the server graph of pages and core libraries; a route
+    // import there puts every API route in each of those graphs, and the
+    // production build ran out of memory the day it did.
+    const src = join(import.meta.dir, '..');
+    expect(readFileSync(join(src, 'modules.ts'), 'utf8')).not.toMatch(/import\(['"]@\/app\/[^'"]*\/route['"]\)/);
+    const importers: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
+        if (!/\.tsx?$/.test(e.name) || /\.test\.tsx?$/.test(e.name)) continue;
+        if (/['"]@\/mcp-local-read-routes['"]|['"](\.\.?\/)+mcp-local-read-routes['"]/.test(readFileSync(p, 'utf8'))) importers.push(relative(src, p).split(sep).join('/'));
+      }
+    };
+    walk(src);
+    expect(importers).toEqual(['lib/mcp-local-reads.ts']);
   });
 
   it('a more specific entry wins regardless of table order', () => {

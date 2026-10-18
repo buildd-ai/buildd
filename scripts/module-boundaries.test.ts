@@ -157,8 +157,8 @@ describe('seams that have shipped stay cut', () => {
     expect(writers).toEqual([]);
   });
 
-  test('the composition root is the only exempt importer', () => {
-    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts']);
+  test('the composition roots are the only exempt importers', () => {
+    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts', 'apps/web/src/mcp-local-read-routes.ts']);
   });
 });
 
