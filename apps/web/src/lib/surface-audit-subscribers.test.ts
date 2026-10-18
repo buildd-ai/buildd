@@ -39,6 +39,13 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
+mock.module('next/server', () => ({ after: () => { throw new Error('no request scope'); } }));
+const persisted: Array<[any, number, string | null | undefined]> = [];
+mock.module('@/lib/pr-surface-evidence', () => ({
+  persistMergedSurfaceEvidence: async (repo: any, pr: number, head?: string | null) => { persisted.push([repo, pr, head]); },
+  loadPrSurfaceFiles: async () => null,
+}));
+
 const { surfaceAuditSubscribers } = await import('./surface-audit-subscribers');
 const run = (missionId: string, taskId: string) =>
   (surfaceAuditSubscribers[0] as any).run({ type: 'task.left_mission', taskId, missionId, workspaceId: 'ws-1' });
@@ -52,7 +59,10 @@ describe('surface audit: task.left_mission', () => {
   });
 
   it('subscribes to task.left_mission in the visual-qa module', () => {
-    expect(surfaceAuditSubscribers.map(s => `${s.module}:${s.on}:${s.label}`)).toEqual(['visual-qa:task.left_mission:surface-audit-detach']);
+    expect(surfaceAuditSubscribers.map(s => `${s.module}:${s.on}:${s.label}`)).toEqual([
+      'visual-qa:task.left_mission:surface-audit-detach',
+      'visual-qa:pr.closed:surface-evidence-on-merge',
+    ]);
   });
 
   it('wakes the audit when the departed task was the last thing holding it', async () => {
@@ -74,5 +84,24 @@ describe('surface audit: task.left_mission', () => {
   it('wakes nothing when no audit held the task', async () => {
     await run('m-1', 'gone-1');
     expect(wakes).toEqual([]);
+  });
+});
+
+describe('surface audit: pr.closed records merged file evidence', () => {
+  const onClosed = (e: Record<string, unknown>) => (surfaceAuditSubscribers[1] as any).run({
+    type: 'pr.closed', workspaceId: 'ws-1', prNumber: 42, merged: true, mergeIsNew: true, workerId: 'w', taskId: 't',
+    headSha: 'abc', repoFullName: 'acme/app', installationId: 7, ...e,
+  });
+  beforeEach(() => { persisted.length = 0; });
+
+  it('records a merged PR at its merged head, outside any render', async () => {
+    await onClosed({});
+    expect(persisted).toEqual([[{ installationId: 7, fullName: 'acme/app' }, 42, 'abc']]);
+  });
+
+  it('records nothing for a PR closed without merging, or with no installation', async () => {
+    await onClosed({ merged: false });
+    await onClosed({ installationId: null });
+    expect(persisted).toEqual([]);
   });
 });

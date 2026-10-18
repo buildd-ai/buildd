@@ -25,6 +25,7 @@
  * Each sweep swallows its own failures (logged), so one cannot stop the other.
  * Auth: Bearer CRON_SECRET, via withCronRun.
  */
+import { pruneUnusedClients } from '@/lib/oauth/prune-clients';
 import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { runStaleWorkerCleanup } from './stale-workers';
@@ -60,9 +61,13 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] deleted-team file sweep failed', err instanceof Error ? err.message : err);
     return { removed: 0, objectsRemoved: 0 };
   });
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles };
+  const oauthClientsPruned = await pruneUnusedClients(now).catch((err) => {
+    console.error('[maintenance] unused OAuth client sweep failed', err instanceof Error ? err.message : err);
+    return 0;
+  });
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles, oauthClientsPruned };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed + oauthClientsPruned, errors: 0, result });
   return NextResponse.json(result);
 }
