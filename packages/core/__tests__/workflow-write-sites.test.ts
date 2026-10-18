@@ -379,17 +379,17 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). A kernel owner's requeue (a retry, a loop hold, the budget, mount, auth and codex requeues: AC-1 slice 6) writes no status or claim either: AttemptRequeued moves it (t_requeue, projectRequeue). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). A kernel owner's requeue (a retry, a loop hold, the budget, mount, auth and codex requeues: AC-1 slice 6) writes no status or claim either: AttemptRequeued moves it (t_requeue, projectRequeue). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4). The silent-completion retry and the credential hold of an owner are AttemptRequeued, its spent silent-completion retry AttemptEnded (AC-1 slice 8)`,
   'apps/web/src/app/api/workers/claim/route.ts': `${ATTEMPT('the claim (pending to assigned) of a task with no delivery, a repair or a review, and the rollback of its own assigned claim; the repair-attempt defer is the kernel\'s own decision')}. A kernel owner task's claim (AC-1 slice 7) writes no status: its compare-and-set stamps the claim and AttemptStarted moves it (t_start, projectAttemptStart)`,
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
-  'apps/web/src/lib/stale-workers.ts': `${ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt')}. For the current attempt of a kernel owner task (AC-1 slice 5) the caps write result but not status, and the unanswered-question sweep writes nothing: AttemptEnded(lost) projects it (t_attempt, projectOwnerEnd). A late reap after a re-claim, or a placeholder row, ends nothing (reapedOwnerAttemptIsCurrent)`,
-  'apps/web/src/lib/interactive-detach.ts': ATTEMPT('a released interactive session requeues its open task'),
+  'apps/web/src/lib/stale-workers.ts': `${ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt')}. For the current attempt of a kernel owner task (AC-1 slice 5) the caps write result but not status, and the unanswered-question sweep writes nothing: AttemptEnded(lost) projects it (t_attempt, projectOwnerEnd). A late reap after a re-claim, or a placeholder row, ends nothing (reapedOwnerAttemptIsCurrent). Its infra requeue and its release of an interactive or undelivered claim are AttemptRequeued for an owner (AC-1 slice 8); its loop-wait and reviewer writes skip an owner in their own WHERE (notDeliveryOwnedTaskSql)`,
+  'apps/web/src/lib/interactive-detach.ts': `${ATTEMPT('a released interactive session requeues its open task')}. A delivery owner's goes back through AttemptRequeued (AC-1 slice 8)`,
   'apps/web/src/lib/credential-recovery.ts': ATTEMPT('requeue of tasks failed on an auth error once the credential is back'),
   'apps/web/src/lib/github-repo-access-store.ts': ATTEMPT('requeue of a task failed on blocked GitHub access, once access is verified'),
-  'apps/web/src/lib/task-recovery-hold.ts': ATTEMPT('a credential hold requeues the task to its probe floor'),
-  'apps/web/src/lib/conflict-retry.ts': ATTEMPT('recovery of a stalled conflict-fix attempt task (never the owner)'),
-  'apps/web/src/lib/ci-failure-retry.ts': ATTEMPT('CI retries exhausted; for a kernel-owned PR it is the kernel\'s own Escalate effect that calls it (ci-retry-effects.ts), and the legacy callers return early for a kernel PR'),
-  'apps/web/src/lib/loop-webhook.ts': ATTEMPT('a loop task\'s exit condition (pr_merged, pr_checks_green) is met: loopState and the status it implies; on a merge T17 already completed the task'),
+  'apps/web/src/lib/task-recovery-hold.ts': `${ATTEMPT('a credential hold requeues the task to its probe floor')}. A delivery owner's hold writes the floor only; AttemptRequeued moves it (AC-1 slice 8)`,
+  'apps/web/src/lib/conflict-retry.ts': ATTEMPT('recovery of a stalled conflict-fix attempt task (never the owner); a kernel repair with a worker row goes through AttemptRequeued (AC-1 slice 6), one with no worker row has no attempt to requeue'),
+  'apps/web/src/lib/ci-failure-retry.ts': ATTEMPT('CI retries exhausted; for a kernel-owned PR it is the kernel\'s own Escalate effect that calls it (ci-retry-effects.ts), and the legacy callers return early for a kernel PR. The owner of a kernel delivery keeps its status in the statement itself: the escalating transition fails it (t_escalate, AC-1 slice 8)'),
+  'apps/web/src/lib/loop-webhook.ts': ATTEMPT('a loop task\'s exit condition (pr_merged, pr_checks_green) is met: loopState and the status it implies. For a kernel owner the loop writes its own fields only: T17 completes it on a merge, and a green-checks exit re-sends the held end and runs projectLoopExit (AC-1 slice 8)'),
   'apps/web/src/app/api/tasks/[id]/route.ts': PERSON('PATCH /api/tasks/[id] and update_task; a cancel tells the kernel through the cancel side effects'),
   'apps/web/src/app/api/tasks/bulk/route.ts': PERSON('admin bulk cancel; merges into result, so PR fields survive'),
   'apps/web/src/app/api/tasks/[id]/reassign/route.ts': PERSON('force reassign or retry of a failed task'),
@@ -434,30 +434,171 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
 };
 
 /**
- * AC-1 ratchet: the rest of AC-1 for `tasks.status` (workflow-kernel-library.md §9) moves these
- * ATTEMPT writers behind an attempt-to-task projection one family at a time. Until then each
- * file's count of `tasks.status` / `tasks.result` write statements is pinned here, and the count
- * only goes down: a new ATTEMPT file, or a new statement in one of these, fails CI. Moving a
- * family lowers its number (to 0, then the file leaves TASK_STATUS_WRITERS); never raise one.
+ * AC-1 (workflow-kernel-library.md §9): every `tasks.status` / `tasks.result` statement in an
+ * ATTEMPT file, named by what it writes and classified. `at` must match the statement's own text
+ * (from `update(tasks)` through its WHERE) and exactly one statement, so a site is found by what it
+ * is, not by its line, and a new statement fails CI until it is classified here.
+ *
+ *  - KERNEL: for the owner task of a kernel delivery the statement writes no status: the kernel
+ *    command named in `via` moves it (in its transition's own statement, with its guarded
+ *    projection behind it). The file must still call it (`calls`), and the statement itself must
+ *    keep every `status` it sets behind its owner check (`ownerSkip`): inside the spread an owner
+ *    skips (`spread`, e.g. `ownerAttempt ? {} : {`), as a value that keeps an owner's status in SQL
+ *    (`value`), or on a branch only a non-owner reaches (`branch`, read off the code before it).
+ *  - NOT_OWNER: its status write never reaches a kernel delivery's owner task. With `predicate`
+ *    the statement says so in its own WHERE (`notDeliveryOwnedTaskSql`); otherwise `why` names the
+ *    code path's condition.
+ *  - NO_STATUS: it writes `result` or `context` keys only.
+ *  - DEBT: it still sets a kernel owner's status directly. The rest of AC-1, listed in §9.
  */
-const ATTEMPT_SITE_CEILING: Record<string, number> = {
-  // AC-1 slice 6: the four requeues outside a completion became one helper, and a kernel owner's
-  // requeue (those four, a retry, a loop hold) is AttemptRequeued's move, not this route's.
-  'apps/web/src/app/api/workers/[id]/route.ts': 10,
-  // AC-1 slice 7: a kernel owner's claim is AttemptStarted's move, and the two rollbacks of the
-  // route's own assigned claim are one helper (`rollBackClaim`).
-  'apps/web/src/app/api/workers/claim/route.ts': 3,
-  'apps/web/src/app/api/tasks/cleanup/route.ts': 3,
-  // AC-1 slice 5: the three cap failures are one statement, which writes no status for a kernel owner attempt.
-  'apps/web/src/lib/stale-workers.ts': 9,
-  'apps/web/src/lib/interactive-detach.ts': 1,
-  'apps/web/src/lib/credential-recovery.ts': 1,
-  'apps/web/src/lib/github-repo-access-store.ts': 1,
-  'apps/web/src/lib/task-recovery-hold.ts': 1,
-  'apps/web/src/lib/conflict-retry.ts': 1,
-  'apps/web/src/lib/ci-failure-retry.ts': 1,
-  'apps/web/src/lib/loop-webhook.ts': 2,
+type OwnerSkip = { spread: string } | { value: RegExp } | { branch: RegExp };
+type AttemptSite =
+  | { at: RegExp; kind: 'KERNEL'; via: string; calls: RegExp; ownerSkip: OwnerSkip; why: string }
+  | { at: RegExp; kind: 'NOT_OWNER'; predicate?: true; why: string }
+  | { at: RegExp; kind: 'NO_STATUS'; why: string }
+  | { at: RegExp; kind: 'DEBT'; why: string };
+const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
+  'apps/web/src/app/api/workers/[id]/route.ts': [
+    { at: /\.\.\.\(p\.set \?\? \{\}\), status: 'pending'/, kind: 'NOT_OWNER', why: 'requeueWorkerTask\'s write for a task with no delivery or not its owner; an owner goes through requeueOwnerAttempt' },
+    { at: /status: 'assigned', updatedAt/, kind: 'DEBT', why: 'a worker resuming from completed/failed reopens its task (reactivation)' },
+    { at: /silentCompletionRetryCount/, kind: 'KERNEL', via: 'AttemptRequeued (retry left) / AttemptEnded (retry spent)', calls: /requeueOwnerAttempt\(\{ task: ownerTask[\s\S]*endOwnerAttemptFailed\(\{ task: ownerTask/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: the silent-completion retry' },
+    { at: /\.set\(taskUpdate\)/, kind: 'DEBT', why: 'the completion snapshot: a plain owner end (AC-1 slice 3) and a retry or loop hold (slice 6) write no status, but an output-contract or loop-exhausted failure override still writes failed itself' },
+    { at: /status: 'failed',\s*releaseResult/, kind: 'DEBT', why: 'a release that fails writes failed itself' },
+    { at: /releasePrPending: true/, kind: 'NO_STATUS', why: 'a release held for CI: releaseResult, result and context' },
+    { at: /\.set\(\{ releaseResult, result: resultWithRelease, updatedAt/, kind: 'NO_STATUS', why: 'the release record' },
+    { at: /\.set\(\{ status: 'failed', updatedAt: new Date\(\) \}\)[\s\S]*not\(eq\(tasks\.status, 'cancelled'\)\)/, kind: 'DEBT', why: 'a sandbox mount gap whose cost exhausts its mission fails the requeued task' },
+    { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
+    { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
+  ],
+  'apps/web/src/app/api/workers/claim/route.ts': [
+    { at: /claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending'/, kind: 'DEBT', why: 'rollBackClaim gives back the route\'s own assigned claim (a fix the kernel deferred, a worker the account cap refused)' },
+    { at: /terminalError: 'workspace_mismatch'/, kind: 'DEBT', why: 'a pending task pinned to a project its workspace lacks is failed at claim' },
+    { at: /\.set\(\{ \.\.\.claimFields, status: 'assigned' \}\)/, kind: 'KERNEL', via: 'AttemptStarted', calls: /\bkernelAttemptStarted\(/, ownerSkip: { branch: /= kernelOwner\s*\?\s*await db\s*\.update\(tasks\)\s*\.set\(\{ \.\.\.claimFields \}\)[\s\S]{0,400}:\s*await db\s*\.$/ }, why: 'AC-1 slice 7: a kernel owner\'s claim stamps the claim fields only; this branch is every other task\'s claim' },
+  ],
+  'apps/web/src/app/api/tasks/cleanup/route.ts': [
+    { at: /terminalError: 'retry_cap_exceeded'/, kind: 'DEBT', why: 'the runner\'s cleanup call fails a task past its retry cap' },
+    { at: /status: 'pending'[\s\S]*FORCE_CLAIM_CONTEXT_KEY/, kind: 'DEBT', why: 'the runner\'s cleanup call requeues a stalled task' },
+    { at: /status: 'completed',\s*result: \{\s*branch: completedWorker\.branch/, kind: 'DEBT', why: 'the runner\'s cleanup call completes a task whose worker completed' },
+  ],
+  'apps/web/src/lib/stale-workers.ts': [
+    { at: /error: waitReason/, kind: 'NOT_OWNER', predicate: true, why: 'an expired loop wait; a kernel owner\'s wait ends with its delivery (T17 on a merge, the loop exit on green checks)' },
+    { at: /Agent review stalled/, kind: 'NOT_OWNER', predicate: true, why: 'a reviewer round\'s own task, at its infra cap; a kernel round hears ReviewRoundFailed' },
+    { at: /Agent review failed \(/, kind: 'NOT_OWNER', predicate: true, why: 'a reviewer round\'s own task, requeued after a pre-start failure' },
+    { at: /'agent review timed out'/, kind: 'NOT_OWNER', predicate: true, why: 'a reviewer round\'s own task, timed out; a kernel round hears ReviewRoundFailed' },
+    { at: /reaperAutoCompleted: true/, kind: 'NOT_OWNER', why: 'deliverable promotion runs only with no kernel delivery (hasDeliverables requires !kernelDeliveryId)' },
+    { at: /Previous worker expired \(infra failure\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueReapedOwnerAttempt\(\{[^}]*reason: 'infra_retry'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: the infra requeue' },
+    { at: /result: failure as any/, kind: 'KERNEL', via: 'AttemptEnded(lost)', calls: /workflowAttemptEnded\(\{[\s\S]*status: 'lost'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 5: the silent-start, retry and infra caps' },
+    { at: /CLAIM_RESPONSE_LOST_ERROR/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /reason: undelivered \? 'claim_undelivered' : 'interactive_release'/, ownerSkip: { spread: 'ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: a released interactive lease or an undelivered claim' },
+    { at: /eq\(tasks\.id, originalTask\.id\)/, kind: 'DEBT', why: 'an unanswered question superseded by recovery fails a kernel owner itself (every other owner\'s unanswered question is AttemptEnded(lost), slice 5)' },
+  ],
+  'apps/web/src/lib/interactive-detach.ts': [
+    { at: /notExists\(otherLive\)/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /requeueOwnerThroughKernel\(/, ownerSkip: { branch: /if \(task\?\.deliveryId && task\.deliveryRole === 'owner'\) \{\s*if \(await requeueOwnerThroughKernel\([\s\S]{0,200}return;\s*\}[\s\S]{0,400}const \[requeued\] = await db\s*\.$/ }, why: 'AC-1 slice 8: "Release slot"; an owner task returns before this write' },
+  ],
+  'apps/web/src/lib/credential-recovery.ts': [
+    { at: /eq\(tasks\.status, 'failed'\)/, kind: 'DEBT', why: 'a task failed on an auth error is requeued once its credential is back: a new attempt of a failed task, no requeue of a current one' },
+  ],
+  'apps/web/src/lib/github-repo-access-store.ts': [
+    { at: /githubAccessBlock,resumedAt/, kind: 'DEBT', why: 'a task failed on blocked GitHub access is requeued once access is verified (as credential recovery)' },
+  ],
+  'apps/web/src/lib/task-recovery-hold.ts': [
+    { at: /startAt: plan\.startAt/, kind: 'KERNEL', via: 'AttemptRequeued', calls: /input\.ownerAttempt\.requeue\(\)/, ownerSkip: { spread: 'input.ownerAttempt ? {} : {' }, why: 'AC-1 slice 8: a credential hold; the worker PATCH passes ownerAttempt for an owner task' },
+  ],
+  'apps/web/src/lib/conflict-retry.ts': [
+    { at: /conflictRecovery'->>'at'/, kind: 'NOT_OWNER', why: 'a stalled conflict fix is a repair task, never the delivery\'s owner; a kernel repair with a worker row is requeued by AttemptRequeued (slice 6), and one with no worker row (claimed, never started) has no attempt to requeue, so its status write stays' },
+  ],
+  'apps/web/src/lib/ci-failure-retry.ts': [
+    { at: /CI retry stopped/, kind: 'KERNEL', via: 't_escalate (the escalating transition)', calls: /THEN \$\{tasks\.status\} ELSE 'failed' END/, ownerSkip: { value: /status: sql`CASE WHEN \$\{kernelOwned\} THEN \$\{tasks\.status\} ELSE 'failed' END`/ }, why: 'AC-1 slice 8: CI retries exhausted; the statement keeps a kernel owner\'s status in SQL' },
+  ],
+  'apps/web/src/lib/loop-webhook.ts': [
+    { at: /`PR #\$\{worker\.prNumber\} merged`/, kind: 'KERNEL', via: 'T17 (the merge transition)', calls: /completeParkedOwner\(\{ taskId, deliveryId: kernelDeliveryId \}\)/, ownerSkip: { spread: 'kernelDeliveryId ? {} : {' }, why: 'AC-1 slice 8: a pr_merged loop exit; a task T17 left open because a local session ran it is completed by projectLoopExit' },
+    { at: /checks green \(\$\{prLifecycleStatus\}\)/, kind: 'KERNEL', via: 'AttemptEnded (re-sent) + projectLoopExit', calls: /settleKernelLoopExit\(\{/, ownerSkip: { spread: 'kernelDeliveryId ? {} : {' }, why: 'AC-1 slice 8: a pr_checks_green loop exit' },
+  ],
 };
+
+/**
+ * AC-1 ratchet: the ATTEMPT statements that still set a kernel owner's status directly (DEBT
+ * above). The count only goes down; it is 0 when AC-1 is done for `tasks.status`.
+ */
+const ATTEMPT_SITE_CEILING = 12;
+
+/** A statement's own text: from `update(tasks)` at `i` through the close of its `.where(...)`. */
+function statementText(src: string, i: number): string {
+  const rest = src.slice(i);
+  const next = rest.slice(5).search(/\bupdate\(\s*tasks\s*\)/);
+  const w = rest.indexOf('.where(');
+  if (w < 0 || (next >= 0 && w > next + 5)) return rest.slice(0, 1500);
+  let depth = 0;
+  let j = w + 6;
+  for (; j < rest.length; j++) {
+    if (rest[j] === '(') depth++;
+    else if (rest[j] === ')' && --depth === 0) break;
+  }
+  return rest.slice(0, j + 1);
+}
+/** Each scanned site's statement, in source order: its text and where it starts. */
+function attemptStatementsAt(src: string): Array<{ text: string; at: number }> {
+  return taskStatusSites(src).map((site) => {
+    const line = Number(site.split('@')[1]);
+    const offset = src.split('\n').slice(0, line - 1).join('\n').length;
+    const i = src.slice(offset).search(/\bupdate\(\s*tasks\s*\)|UPDATE\s+"?tasks"?/i);
+    const at = offset + Math.max(0, i);
+    return { text: statementText(src, at), at };
+  });
+}
+/** Each scanned site's statement text, in source order. */
+function attemptStatements(src: string): string[] {
+  return attemptStatementsAt(src).map((s) => s.text);
+}
+
+/** The statement's `.set(...)` part: everything before its WHERE. */
+const setPart = (st: string): string => (st.indexOf('.where(') > 0 ? st.slice(0, st.indexOf('.where(')) : st);
+/** Cut every `prefix … }` (the brace `prefix` opens, balanced) out of `text`. */
+function cutSpreads(text: string, prefix: string): string {
+  let out = text;
+  for (let i = out.indexOf(prefix); i >= 0; i = out.indexOf(prefix)) {
+    let depth = 0;
+    let j = i + prefix.length - 1;
+    for (; j < out.length; j++) {
+      if (out[j] === '{') depth++;
+      else if (out[j] === '}' && --depth === 0) break;
+    }
+    out = out.slice(0, i) + out.slice(j + 1);
+  }
+  return out;
+}
+const STATUS_KEY = /(?<![.\w$])status\s*:/;
+/**
+ * Why a KERNEL statement could set a kernel owner's status itself, or null: a `status` key in its
+ * set that is not behind its own owner check.
+ */
+function ownerSkipProblem(skip: OwnerSkip, stmt: string, before: string): string | null {
+  if ('branch' in skip) return skip.branch.test(before) ? null : 'no longer on a branch only a non-owner reaches';
+  const set = 'spread' in skip ? cutSpreads(setPart(stmt), skip.spread) : setPart(stmt).replace(skip.value, '');
+  return STATUS_KEY.test(set) ? 'sets status outside its owner check' : null;
+}
+/** Every way one ATTEMPT file's statements break their classification. */
+function attemptSiteProblems(f: string, src: string, sites: AttemptSite[]): string[] {
+  const problems: string[] = [];
+  const stmts = attemptStatementsAt(src);
+  stmts.forEach((st, n) => {
+    const hits = sites.filter((e) => e.at.test(st.text));
+    if (hits.length !== 1) problems.push(`${f} statement ${n + 1} matched ${hits.length} entries: ${st.text.replace(/\s+/g, ' ').slice(0, 120)}`);
+  });
+  for (const e of sites) {
+    const mine = stmts.filter((st) => e.at.test(st.text));
+    if (mine.length !== 1) problems.push(`${f} ${e.at}: matched ${mine.length} statements`);
+    if (e.kind === 'KERNEL') {
+      if (!e.calls.test(src)) problems.push(`${f} ${e.at}: routed through ${e.via}, but the file no longer calls it (${e.calls})`);
+      for (const st of mine) {
+        const why = ownerSkipProblem(e.ownerSkip, st.text, src.slice(Math.max(0, st.at - 1500), st.at));
+        if (why) problems.push(`${f} ${e.at}: KERNEL statement ${why}`);
+      }
+    }
+    if (e.kind === 'NOT_OWNER' && e.predicate && !mine.some((st) => /\bnotDeliveryOwnedTaskSql\(\)/.test(st.text))) problems.push(`${f} ${e.at}: lost notDeliveryOwnedTaskSql in its WHERE`);
+    if (e.kind === 'NO_STATUS' && mine.some((st) => STATUS_KEY.test(setPart(st.text)))) problems.push(`${f} ${e.at}: NO_STATUS but sets status`);
+  }
+  return problems;
+}
 
 /**
  * AC-1 slice 4 step 1: a task's PR is derived on read (`apps/web/src/lib/workflow/task-pr.ts`), so
@@ -555,14 +696,44 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
     }
   });
 
-  it('AC-1 ratchet: the ATTEMPT writers only shrink: no new file, and no new statement in one', () => {
+  it('AC-1: every statement of every ATTEMPT writer is named and classified, and each name finds exactly one', () => {
     const attempt = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('ATTEMPT')).map(([f]) => f).sort();
-    expect(attempt).toEqual(Object.keys(ATTEMPT_SITE_CEILING).sort());
-    const over = Object.entries(ATTEMPT_SITE_CEILING)
-      .map(([f, max]) => [f, taskStatusSites(code(f)).length, max] as const)
-      .filter(([, n, max]) => n !== max)
-      .map(([f, n, max]) => `${f}: ${n} statements, pinned at ${max}${n < max ? ' (lower the pin: the ratchet only goes down)' : ''}`);
-    expect(over).toEqual([]);
+    expect(attempt).toEqual(Object.keys(ATTEMPT_SITES).sort());
+    expect(Object.entries(ATTEMPT_SITES).flatMap(([f, sites]) => attemptSiteProblems(f, code(f), sites))).toEqual([]);
+  });
+
+  it('AC-1: a KERNEL statement is checked on its own: putting back a direct status write fails the guard', () => {
+    // The three reverts the slice 8 review made, each on the real file: the guard must name the statement.
+    const reverts: Array<[string, string, string]> = [
+      ['apps/web/src/lib/loop-webhook.ts', "...(kernelDeliveryId ? {} : { status: 'completed' as const }),", "status: 'completed',"],
+      ['apps/web/src/app/api/workers/[id]/route.ts', "...(ownerAttempt ? {} : { status: next.retry ? 'pending' as const : 'failed' as const, claimedBy: null, claimedAt: null }),", "status: next.retry ? 'pending' as const : 'failed' as const, claimedBy: null, claimedAt: null,"],
+      ['apps/web/src/lib/stale-workers.ts', "...(ownerAttempt ? {} : { status: 'pending' as const, claimedBy: null, claimedAt: null }),", "status: 'pending' as const, claimedBy: null, claimedAt: null,"],
+    ];
+    for (const [f, from, to] of reverts) {
+      const src = code(f);
+      expect(`${f}: ${src.includes(from)}`).toBe(`${f}: true`);
+      expect(attemptSiteProblems(f, src, ATTEMPT_SITES[f])).toEqual([]);
+      const problems = attemptSiteProblems(f, src.replace(from, to), ATTEMPT_SITES[f]);
+      expect(problems.some((p) => p.includes('KERNEL statement sets status outside its owner check'))).toBe(true);
+    }
+    // A branch check fails when the owner's early return goes: the write is then reached by an owner.
+    const detach = 'apps/web/src/lib/interactive-detach.ts';
+    const noReturn = code(detach).replace(/if \(task\?\.deliveryId && task\.deliveryRole === 'owner'\) \{[\s\S]*?return;\s*\}/, '');
+    expect(attemptSiteProblems(detach, noReturn, ATTEMPT_SITES[detach]).some((p) => p.includes('no longer on a branch only a non-owner reaches'))).toBe(true);
+    // The pieces: a spread an owner skips is cut whole, nested braces included; a bare status is not.
+    expect(cutSpreads("set({ ...(o ? {} : { status: 'p', ...(u ? { e: null } : {}) }), x: 1 })", 'o ? {} : {')).toBe('set({ ...(), x: 1 })');
+    expect(STATUS_KEY.test("set({ result: { a: 1 }, releaseResult: r.status })")).toBe(false);
+    expect(STATUS_KEY.test("set({ status: 'failed' })")).toBe(true);
+  });
+
+  it('AC-1 ratchet: the statements that still set a kernel owner\'s status directly only go down', () => {
+    const debt = Object.entries(ATTEMPT_SITES).flatMap(([f, sites]) => sites.filter((e) => e.kind === 'DEBT').map((e) => `${f}: ${e.why}`));
+    expect(`${debt.length} DEBT sites`).toBe(`${ATTEMPT_SITE_CEILING} DEBT sites`);
+    // The scanners can fail: a statement whose WHERE drops the predicate, and one with no WHERE.
+    const st = attemptStatements("await db.update(tasks).set({ status: 'failed' }).where(and(eq(tasks.id, id), notDeliveryOwnedTaskSql()));\nawait db.update(tasks).set({ result: { a: 1 } });");
+    expect(st.length).toBe(2);
+    expect(/\bnotDeliveryOwnedTaskSql\(\)/.test(st[0])).toBe(true);
+    expect(st[0].endsWith('notDeliveryOwnedTaskSql()))')).toBe(true);
   });
 
   it('AC-1 slice 7: the claim of a kernel owner task writes no status; AttemptStarted moves it, with the route\'s guarded projection behind it', () => {

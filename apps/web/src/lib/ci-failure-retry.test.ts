@@ -64,7 +64,11 @@ describe('escalateCiRedHead', () => {
 
   it('stamps the head, fails the owner, keeps the agent handoff, and tells the mission and the PR', async () => {
     expect(await escalateCiRedHead(input)).toBe(true);
-    expect(lastSet.status).toBe('failed');
+    // AC-1 slice 8: 'failed', except for the owner of a kernel delivery bound to this PR, whose
+    // status the escalating transition already set (`t_escalate`).
+    const st = new PgDialect().sqlToQuery(lastSet.status);
+    expect(st.sql).toMatch(/^CASE WHEN EXISTS \(SELECT 1 FROM workflow_deliveries kd .*kd\.owner_task_id = "tasks"\."id".* THEN "tasks"\."status" ELSE 'failed' END$/s);
+    expect(st.params).toContain(7);
     expect(lastSet.result.nextSuggestion).toBe('keep me');
     expect(lastSet.result.summary).toContain('pushed nothing');
     const ctx = new PgDialect().sqlToQuery(lastSet.context);
