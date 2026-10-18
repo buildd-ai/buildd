@@ -508,7 +508,10 @@ function reset() {
   mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3000) {
+// Waits return as soon as the predicate holds, so a generous ceiling costs
+// nothing on a quick host and keeps a loaded one (every git spawn in the
+// completion path slows down) from failing on the clock instead of the contract.
+async function waitFor(pred: () => boolean, timeoutMs = 30_000) {
   const start = Date.now();
   while (!pred() && Date.now() - start < timeoutMs) await new Promise(r => setTimeout(r, 10));
 }
@@ -540,7 +543,7 @@ async function runShape(manager: InstanceType<typeof WorkerManager>, shape: Shap
     // well after the local status; a late one would leak into the next test's
     // server state. Wait for the server to record an outcome, then for the
     // trailing PATCHes to go quiet.
-    await waitFor(() => server.status !== null, 5000);
+    await waitFor(() => server.status !== null);
     const deadline = Date.now() + 3000;
     let seen = -1;
     while (seen !== mockUpdateWorker.mock.calls.length && Date.now() < deadline) {
