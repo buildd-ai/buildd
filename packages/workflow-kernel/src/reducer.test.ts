@@ -1472,11 +1472,11 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     // A superseded PR already shipped: abandoning it is refused, not a silent no-op.
     expectResult(ab(V(D({ state: 'SUPERSEDED', supersededByPr: 9 }))), 'rejected', 'not_closed_unmerged');
   });
-  test('T20 and T21 both project the edge onto the worker rows and wake the mission (Slice D)', () => {
+  test('T20 and T21 both project the edge onto the worker rows and wake the mission; only T20 carries findings (Slice D, §5)', () => {
     const c = V(D({ state: 'CLOSED_UNMERGED' }));
     const t20 = applied(run(c, { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'r', authorised: true }));
     const t21 = applied(run(c, { type: 'Abandon', actor: 'human:u', reason: 'dropped' }));
-    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
+    expect(effectKinds(t20)).toEqual(['project_supersession', 'carry_findings', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(t21.patch).toMatchObject({ stateReason: 'dropped', recordedBy: 'human:u' });
   });
