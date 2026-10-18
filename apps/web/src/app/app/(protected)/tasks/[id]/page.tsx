@@ -73,7 +73,7 @@ import PrDetailsCard from './PrDetailsCard';
 import { StoredPrCard } from '@/components/task/StoredPrCard';
 import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
 import { taskPrFacts, taskHeaderMerged, taskDeliverySections } from '@/lib/task-sections';
-import { loadOpenAttempt } from '@/lib/explain';
+import { openAttemptOf, openAttemptQuery } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
@@ -412,13 +412,19 @@ export default async function TaskDetailPage({
         limit: 6,
       })
     : null;
-  // Those four in one round trip.
-  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery]);
+  // The canonical "is a fix attempt open on this task" fact — same
+  // predicate explain.ts and Home's action queue use (mission-state-view.ts
+  // rule 6½). Only while the task's PR is open.
+  const openAttemptRead = prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
+    ? openAttemptQuery(task.id)
+    : null;
+  // Those five in one round trip.
+  const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery, openAttemptRead]);
   // The delivery this task belongs to, started with round 2: the review status
   // below reads the same view when this task owns the PR, so it is read once.
   const deliveryContextPromise = loadTaskDeliveryContext(task.id);
   deliveryContextPromise.catch(() => {});
-  const [evidenceReview, evidenceArtifactCount, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber
       ? RUN_PROGRESS_READERS.review({
           workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
@@ -465,12 +471,6 @@ export default async function TaskDetailPage({
           .catch(() => null)
       : Promise.resolve(null),
     evidenceFilesPromise,
-    // The canonical "is a fix attempt open on this task" fact — same
-    // predicate explain.ts and Home's action queue use (mission-state-view.ts
-    // rule 6½). Joined onto this group, not a fifth serial step.
-    prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
-      ? loadOpenAttempt(task.id)
-      : Promise.resolve(null),
     runnerReachLoad,
     // What this task's runs were given and refused (agent_capability_decisions).
     // A read failure hides the section; it never fails the page.
@@ -486,6 +486,9 @@ export default async function TaskDetailPage({
   const errorTraces = reads2(errorTracesQuery) as Awaited<typeof errorTracesQuery>;
   const ciAttemptRows = (reads2(ciAttemptsQuery) ?? []) as Awaited<NonNullable<typeof ciAttemptsQuery>>;
   const dependentTasks = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
+  const openAttempt = openAttemptRead
+    ? openAttemptOf(reads2(openAttemptRead) as Awaited<NonNullable<typeof openAttemptRead>>)
+    : null;
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
     .map(t => ({ ...t, workers: newestFirst(t.workers, compareWorkersChrono) }));
