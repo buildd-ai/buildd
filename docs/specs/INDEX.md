@@ -213,7 +213,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
 - [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-18
-  Overlapping work MUST start by default, including work that declares no files; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
+  Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)](./decision-model-selection.md) · @max — verified 2026-10-16

@@ -3,7 +3,7 @@ title: Claim Overlap Scheduling
 status: draft
 owner: max
 last_verified: 2026-10-18
-summary: Overlapping work MUST start by default, including work that declares no files; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
+summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
