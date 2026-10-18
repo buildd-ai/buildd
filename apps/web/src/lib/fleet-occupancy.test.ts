@@ -373,3 +373,59 @@ describe('scopeMembers', () => {
     expect(occupancyDiscrepancies(scoped)).toEqual([]);
   });
 });
+
+describe('AC-5 edge cases', () => {
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  it('a personal runner working another team\'s task stays in the personal class', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: 'other-team-member', runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerByClass.personal.peak).toBe(1);
+    expect(s.summary.runnerByClass.managed.peak).toBe(0);
+    expect(s.summary.runnerByClass.team.peak).toBe(0);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('overlapping sessions peak at their count and never raise the runner line', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, runner: 'mcp', ownerId: 'me' }),
+        row({ ...span, runner: 'mcp', ownerId: 'you' }),
+        row({ ...span, runner: 'mcp', ownerId: null }),
+      ],
+    });
+    expect(s.summary.sessions.peak).toBe(3);
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.runner.avg).toBe(0);
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(s.summary.sessionsBy.others.peak).toBe(1);
+    expect(s.summary.sessionsBy.unattributed.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('a session working while no runner slot is occupied reads zero runner occupancy', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ runner: 'mcp', status: 'running', ownerId: 'me', startedAt: NOW - 10 * MIN })],
+    });
+    expect(s.summary.sessions.peak).toBe(1);
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.runnerByClass.unknown.peak).toBe(0);
+  });
+
+  it('a session beside a runner worker is counted once each, not summed', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, runner: 'mcp', ownerId: 'me' }),
+        row({ ...span, ownerId: 'me', taskOwnerId: 'me', runnerClass: 'personal' }),
+      ],
+    });
+    expect(s.summary.runner.peak).toBe(1);
+    expect(s.summary.sessions.peak).toBe(1);
+  });
+});
