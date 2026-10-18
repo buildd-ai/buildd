@@ -28,6 +28,7 @@ import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '..
 import { openHeadStatus } from '../open-pr-status';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
+import type { EpochOp, EpochSnapshot } from '../delivery-epochs';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
 export interface ConformanceHost {
@@ -54,6 +55,25 @@ export interface ConformanceHost {
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
+  /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
+  passTime(ms: number): Promise<void>;
+  /** §6 mission epochs on the host's store. */
+  epochs: EpochHost;
+}
+
+/**
+ * The host's mission epoch rows (docs/specs/workflow-kernel-library.md §6):
+ * `reduceMissionEpochs` decides, the host applies one transition's ops as one
+ * statement with the epoch row's compare-and-set and its unique indexes (one
+ * epoch per number, one successor per predecessor, one open epoch per mission).
+ */
+export interface EpochHost {
+  /** A fresh mission whose integration branch is `branch`. Returns its id. */
+  seedMission(branch: string): Promise<string>;
+  /** The mission's integration branch and its epochs in epoch order, as the host loads them. */
+  load(missionId: string): Promise<{ integrationBranch: string | null; epochs: EpochSnapshot[] }>;
+  /** One transition's ops, all or nothing. false = a lost compare-and-set or a unique index refused it, and nothing was written. */
+  apply(ops: EpochOp[]): Promise<boolean>;
 }
 
 export interface ConformanceScenario {
@@ -214,14 +234,14 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
 
 // ── The package's effect handlers, on fake ports ────────────────────────────
 
-interface FakePorts {
+export interface FakePorts {
   ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest;
   work: RecordingWork; trunk: RecordingTrunk; escalate: RecordingEscalate; evidence: RecordingEvidence;
   reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff; rails: RecordingRails;
 }
 
 /** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
-function fakePorts(host: ConformanceHost, o: {
+export function fakePorts(host: ConformanceHost, o: {
   lifecycle?: RecordingLifecycle; ingest?: RecordingIngest; notify?: RecordingNotify; trunk?: RecordingTrunk; escalate?: RecordingEscalate;
   evidence?: RecordingEvidence; work?: Record<string, WorkAnswer>; omit?: Array<keyof KernelPorts>;
 } = {}): FakePorts {
@@ -259,7 +279,7 @@ async function direct(host: ConformanceHost, s: Delivery, kind: EffectKind, payl
 }
 
 /** Drain one delivery until nothing is due: the package's handlers over `ports`, every other kind recorded. */
-async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
+export async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
   for (let i = 0; i < 6; i++) {
     const r = await drainEffects(host.store, { policy: host.policy, handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
     if (r.claimed === 0) return;
@@ -1421,7 +1441,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'refresh_branch'), ['ok:escalated:update-branch kept failing'], 'a person lands it');
       eq((await c.d()).state, 'ESCALATED', 'escalated');
-      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: landing needs a person`], 'and the team is told');
+      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: merge needs a person`], 'and the team is told');
       eq(fc.work.requested.filter((w) => w.role === 'conflict_fix').length, 0, 'no agent');
     },
   },
@@ -2009,6 +2029,50 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       }
       eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'review_unavailable' }, 'after the retries, a person\'s, in words');
       eq((await s.latestRound()).status, 'failed', 'the round is closed, not left open');
+    },
+  },
+  {
+    name: '0230612e: a verdict read at another commit than the round\'s head is inconclusive: it never approves, the round is asked again at the head, then a person\'s',
+    async run(host) {
+      const reviewer = async (ws: string) => (host.newTaskId ? host.newTaskId(ws) : host.newId());
+      const s = await new Delivery(host, 78).open();
+      await s.ownerPushed('H1');
+      const judged = async (verdict: 'approve' | 'request_changes', evidenceSha: string | null, reviewerTaskId: string) => {
+        const r = await s.latestRound();
+        return s.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${reviewerTaskId}`, roundId: r.id, verdict, effectiveVerdict: verdict, headBound: r.headSha, evidenceSha, reviewerTaskId, maxContractRetries: 1 });
+      };
+      // The reviewer's checkout sat at the base (B0), not the head it was asked about.
+      const r1 = await reviewer(s.workspaceId);
+      applied(await judged('approve', 'B0', r1), 'AWAITING_REVIEW', 'an approval read at the base');
+      eq(pick(await s.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: [], approvalBasis: null }, 'nothing approved');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status', 'failureCount', 'verdict']), { round: 1, headSha: 'H1', status: 'queued', failureCount: 1, verdict: null }, 'the same round, re-queued, with no verdict');
+      eq(await s.count('post_review'), 0, 'no GitHub review posted');
+      eq(await s.count('dispatch_review'), 2, 'a reviewer is asked again at the head');
+      notApplied(await judged('approve', 'B0', r1), 'duplicate', 'idempotency_key_seen', 'the same report twice spends nothing more');
+      // The next reviewer reported no checkout at all: also inconclusive, and the budget is spent.
+      const r2 = await reviewer(s.workspaceId);
+      applied(await judged('approve', null, r2), 'ESCALATED', 'an approval with no checkout reported');
+      eq(pick(await s.d(), ['state', 'stateReason', 'approvedHeads']), { state: 'ESCALATED', stateReason: 'review_unavailable', approvedHeads: [] }, 'a person\'s, never approved');
+      eq((await s.latestRound()).status, 'failed', 'the round is closed');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'nothing lands');
+
+      // Read at the head, the re-asked reviewer's verdict decides the round as any other does.
+      const t = await new Delivery(host, 79).open();
+      await t.ownerPushed('H1');
+      const r3 = await reviewer(t.workspaceId);
+      const round = await t.latestRound();
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r3}`, roundId: round.id, verdict: 'request_changes', effectiveVerdict: 'request_changes', headBound: 'H1', evidenceSha: 'B0', reviewerTaskId: r3, maxContractRetries: 1 }), 'AWAITING_REVIEW', 'a request for changes read at the base');
+      eq(await t.count('dispatch_fix'), 0, 'no fix dispatched on it');
+      const r4 = await reviewer(t.workspaceId);
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r4}`, roundId: round.id, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'H1', reviewerTaskId: r4, maxContractRetries: 1 }), 'APPROVED', 'read at the head, it decides');
+      eq(pick(await t.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: ['H1'], approvalBasis: 'verdict' }, 'approval binds H1');
+
+      // A verdict from outside the kernel's rounds is held to the same rule: never kept as the head's review.
+      const u = await new Delivery(host, 80).open();
+      applied(await u.push('H1'), 'WORKING', 'the owner pushed H1 and is still working');
+      const outside = await reviewer(u.workspaceId);
+      notApplied(await u.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: outside, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'B0' }), 'stale', 'verdict_evidence_not_at_head', 'an outside approval read at the base');
+      eq((await u.view()).rounds.length, 0, 'no decided round kept');
     },
   },
   {
@@ -2684,7 +2748,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    name: 'AC-76: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-77: never a stale success)',
     async run(host) {
       const s = await new Delivery(host, 81).open();
       const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;

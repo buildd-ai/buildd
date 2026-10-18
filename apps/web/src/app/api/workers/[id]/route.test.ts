@@ -176,6 +176,8 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: (table: any) => mockGenericInsert(table),
     select: mockSelect,
+    // One round trip of independent reads (lib/read-round.ts): the mocked reads, in order.
+    batch: (reads: any[]) => Promise.all(reads),
   },
 }));
 
@@ -2583,7 +2585,9 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones).toEqual([runner, { ...agent, origin: 'agent' }]);
     worker.milestones = capturedSet.milestones;
     await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: capturedSet.milestones } }), { params: mockParams });
-    expect(capturedSet.milestones).toHaveLength(2);
+    // The same snapshot again merges to exactly what is stored (no duplicate
+    // narration), so the list is not rewritten at all (R-33).
+    expect(capturedSet.milestones).toBeUndefined();
   });
 
   it('caps full runner snapshots without evicting lifecycle checkpoints', async () => {
@@ -3102,7 +3106,10 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('a re-send of a question the server already disposed reuses it and files nothing twice', async () => {
       await parkWith(BLOCKER, { stored: { ...BLOCKER, disposition: 'recovered', dispositionBy: 'server_recheck', repairTaskId: REPAIR_ID } });
-      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', repairTaskId: REPAIR_ID });
+      // The disposition reused is the one stored, so the stored park stands
+      // unwritten (R-33: only changed fields); the status move is written.
+      expect(capturedSet.status).toBe('waiting_input');
+      expect(capturedSet.waitingFor).toBeUndefined();
       expect(askedSomeone()).toBe(false);
     });
 
@@ -9304,6 +9311,8 @@ describe('PATCH /api/workers/[id]', () => {
             summary: 'Test summary',
             feedback: verdict === 'request-changes' ? 'Fix the missing handler' : undefined,
             escalationReason: verdict === 'escalate' ? 'PR touches schema' : undefined,
+            // The reviewer read the head it was asked about (the fixture's context.headSha).
+            checkoutSha: 'abc123',
             ...extra,
           },
         },
@@ -11264,15 +11273,79 @@ describe('PATCH /api/workers/[id]', () => {
         // The body says what happened without claiming the file list did it.
         expect(note.body).not.toContain('the file list requires a human');
         expect(note.body).toContain('below workspace threshold');
-        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql');
+        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'));
         expect(persisted).toBeDefined();
-        expect(persisted.result.values).toContain('escalate');
       });
 
       it('approve at a confident score still runs the bounded merge', async () => {
         setupReviewerTaskCompletion('approve');
         await PATCH(makeReviewerPatchRequest('approve', { confidence: 0.9 }), { params: mockParams });
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('0230612e: the reviewer\'s checkout is the verdict\'s evidence', () => {
+      function captureTaskSets() {
+        const sets: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            sets.push(updates);
+            return { where: mock(() => ({ catch: () => Promise.resolve() })) };
+          }),
+        });
+        return sets;
+      }
+
+      for (const [label, extra, read] of [
+        ['at the base, not the head', { checkoutSha: 'FFF999' }, 'fff999'],
+        ['with no checkout reported', { checkoutSha: undefined }, null],
+      ] as const) {
+        it(`an approval read ${label} is inconclusive: no APPROVE, no merge, a person's, the evidence recorded`, async () => {
+          setupReviewerTaskCompletion('approve');
+          const sets = captureTaskSets();
+
+          const res = await PATCH(makeReviewerPatchRequest('approve', extra), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+          expect(mockLandPr).not.toHaveBeenCalled();
+          expect(mockPostPrReview.mock.calls.some((c: any) => c[0]?.event === 'APPROVE')).toBe(false);
+          expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+          const note = missionNoteInserts.find((n) => n.type === 'reviewer_escalated');
+          expect(note.title).toContain('inconclusive');
+          expect(note.body).toContain('another commit than this PR\'s head');
+          // Recorded with the verdict: the commit it read, and that it was not the head.
+          const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(false));
+          expect(evidence).toBeDefined();
+          expect(evidence.result.values).toContain(read);
+          expect(sets.some((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'))).toBe(true);
+        });
+      }
+
+      it('a request for changes read at another commit dispatches no fix', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        mockAnnounceTaskCreated.mockClear();
+        await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_request_changes')).toBe(false);
+        expect(missionNoteInserts.find((n) => n.type === 'reviewer_escalated')?.title).toContain('inconclusive');
+      });
+
+      it('read at the head, the approval counts and records its evidence as the head', async () => {
+        setupReviewerTaskCompletion('approve');
+        const sets = captureTaskSets();
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'ABC123' }), { params: mockParams });
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+        const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(true));
+        expect(evidence.result.values).toContain('abc123');
+      });
+
+      it('a kernel round gets the evidence commit with its verdict, so the reducer can refuse to decide on it', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'AWAITING_REVIEW' } }, toState: 'AWAITING_REVIEW' });
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({ verdict: 'approve', headSha: 'abc123', evidenceSha: 'fff999' });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
       });
     });
 
@@ -11312,8 +11385,7 @@ describe('PATCH /api/workers/[id]', () => {
     it('request-changes: creates retry task with baseBranch = workerBranch (no new branch)', async () => {
       setupReviewerTaskCompletion('request-changes');
       // Also need original task for the retry
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11330,14 +11402,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -11416,8 +11492,7 @@ describe('PATCH /api/workers/[id]', () => {
           prNumber: 42,
           prBaseRef: 'mission/mission-example-goal-a1b2c3d4',
         });
-      mockTasksFindFirst
-        .mockResolvedValueOnce({
+      const reviewerRow = {
           id: 'reviewer-task-1',
           category: 'review',
           context: {
@@ -11434,14 +11509,18 @@ describe('PATCH /api/workers/[id]', () => {
           missionId: 'mission-1',
           title: '[reviewer] PR #42: Original task',
           outputRequirement: 'none',
-        })
-        .mockResolvedValueOnce({
+        };
+      const originalRow = {
           id: 'original-task-1',
           title: 'Build feature X',
           description: 'Description',
           missionId: 'mission-1',
           pathManifest: ['apps/web/src/lib/feature-x.ts'],
-        });
+        };
+      mockTasksFindFirst.mockImplementation((opts?: any) =>
+        Promise.resolve(opts?.columns?.status && Object.keys(opts.columns).length === 1
+          ? { status: 'pending' } : opts?.columns?.pathManifest ? originalRow : reviewerRow),
+      );
 
       const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
 
@@ -11636,7 +11715,7 @@ describe('PATCH /api/workers/[id]', () => {
         pathManifest: null,
       });
 
-      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+      const res = await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'def456' }), { params: mockParams });
 
       expect(res.status).toBe(200);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
@@ -14846,7 +14925,7 @@ describe('PATCH /api/workers/[id]', () => {
         }),
       });
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
-      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, branch: 'buildd/claim-time-branch' });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -17529,14 +17608,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
   };
 
   let sets: any[] = [];
+  let rawSets: any[] = [];
+  let queueAtWrite: string | null;
 
   function setup(worker: any = baseWorker) {
     sets = [];
+    rawSets = [];
+    queueAtWrite = worker.pendingInstructions ?? null;
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
     mockWorkersFindFirst.mockResolvedValue(worker);
     mockWorkersUpdate.mockReturnValue({
       set: mock((vals: any) => {
-        sets.push(vals);
+        rawSets.push(vals);
+        // Model the database CASE against the queue at write time, including
+        // an instruction appended after the route read its worker snapshot.
+        const queueExpr = vals.pendingInstructions;
+        const persisted = { ...vals };
+        if (queueExpr?.type === 'sql') {
+          expect(queueExpr.strings.join('?')).toMatch(/CASE\s+WHEN \? = \? THEN NULL\s+ELSE \? END/);
+          persisted.pendingInstructions = queueAtWrite === queueExpr.values[1] ? null : queueAtWrite;
+        }
+        sets.push(persisted);
         return {
           where: mock(() => ({
             returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
@@ -17612,6 +17704,18 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     const marked = sets.find(v => v.instructionHistory);
     expect(marked.instructionHistory[0].deliveryState).toBe('delivered');
+  });
+
+  it('preserves a queue appended between the read and the single acknowledgement write', async () => {
+    setup();
+    queueAtWrite = 'Switch to the other auth flow\n\nAlso add a test';
+    expect((await patch({ instructionsDelivered: 'Switch to the other auth flow' })).status).toBe(200);
+
+    const write = rawSets.find(v => v.pendingInstructions?.type === 'sql');
+    expect(write).toBeDefined();
+    expect(write.pendingInstructions.values[1]).toBe(baseWorker.pendingInstructions);
+    expect(sets.find(v => v.instructionHistory).pendingInstructions).toBe(queueAtWrite);
+    expect(rawSets.filter(v => 'pendingInstructions' in v)).toHaveLength(1);
   });
 
   it('does not clear a queue that grew after the hand-off', async () => {
@@ -17697,6 +17801,27 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(typeof marked[0].deliveredAt).toBe('number');
     expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
     expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('publishes delivery once on the worker channel and suppresses a repeated acknowledgement', async () => {
+    const worker = { ...idWorker, currentAction: 'Editing files' };
+    setup(worker);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
+    const body = { instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'] };
+
+    expect((await patch(body)).status).toBe(200);
+    const progress = mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress');
+    expect(progress).toHaveLength(1);
+    expect(progress[0][0]).toBe('worker-' + (await mockParams).id);
+    expect(progress[0][2]).toMatchObject({ delivery: true });
+    expect(sets.every(v => v.currentAction === undefined)).toBe(true);
+
+    const persisted = Object.assign({}, worker, ...sets);
+    setup(persisted);
+    mockTriggerEvent.mockClear();
+    expect((await patch(body)).status).toBe(200);
+    expect(mockTriggerEvent.mock.calls.filter((call: any[]) => call[1] === 'worker:progress')).toHaveLength(0);
   });
 
   it('B-3: instructionsAcknowledged flips exactly that entry, ignores unknown ids, and is not a turn', async () => {

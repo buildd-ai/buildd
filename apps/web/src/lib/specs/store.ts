@@ -1,6 +1,9 @@
 import { db } from '@buildd/core/db';
 import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { cache } from 'react';
+import { workspaces } from '@buildd/core/db/schema';
+import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
@@ -54,9 +57,31 @@ export const author = (c: SpecCaller) => (c.kind === 'user'
 export type SpecError = { ok: false; status: 400 | 403 | 404 | 409 | 502; error: string; currentVersion?: number; code?: string; duplicates?: DuplicateCandidate[] };
 export const fail = (status: SpecError['status'], error: string, extra: Partial<SpecError> = {}): SpecError => ({ ok: false, status, error, ...extra });
 
+/**
+ * A person's reach on one workspace by id: the workspace is one of their
+ * teams' (resolveWorkspaceAccess's rule for a person, where read and write
+ * reach are the same membership check). Memoized for the request, so a page
+ * that asks several times reads it once, and returns the two columns the
+ * pages show (name, and the Living Specs settings) instead of the whole row.
+ */
+export type ReachedWorkspace = { id: string; name: string; teamId: string; livingSpecs: unknown };
+export const personReach = cache(async (userId: string, workspaceId: string): Promise<ReachedWorkspace | null> => {
+  if (!isUuid(workspaceId)) return null;
+  const teamIds = await getUserTeamIds(userId);
+  if (teamIds.length === 0) return null;
+  const [row] = await db.select({
+    id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId,
+    // Of the git config, only the Living Specs settings (approvers, repo copies).
+    livingSpecs: sql<unknown>`${workspaces.gitConfig}->'livingSpecs'`,
+  }).from(workspaces)
+    .where(and(eq(workspaces.id, workspaceId), inArray(workspaces.teamId, teamIds))).limit(1);
+  return row ?? null;
+});
+
 /** Read (or, with `write`, create and revise) access to a workspace's specs. */
 export async function reach(caller: SpecCaller, workspaceId: string, write: boolean): Promise<boolean> {
   if (caller.kind === 'account' && caller.account.taskScope && caller.account.taskScope.workspaceId !== workspaceId) return false;
+  if (caller.kind === 'user' && isUuid(workspaceId)) return !!(await personReach(caller.userId, workspaceId));
   return (await resolveWorkspaceAccess(workspaceId, accessCaller(caller), write ? 'canCreate' : undefined)).ok;
 }
 
@@ -368,6 +393,27 @@ export async function getSpec(caller: SpecCaller, specId: string, opts: { revisi
   const revisionsHasMore = revisions.length > revisionsLimit;
   const page = revisions.slice(0, revisionsLimit);
   return { ok: true, view: { spec, revision, body, requirements: requirementIds(body), revisions: page, revisionsHasMore, revisionsNextCursor: revisionsHasMore ? page.at(-1)!.revision : null } };
+}
+
+/** What the specs index shows of each spec: never a body, metadata or repo copy, only the import state. */
+export const SPEC_INDEX_COLUMNS = {
+  id: specs.id, workspaceId: specs.workspaceId, title: specs.title, scope: specs.scope, parentSpecId: specs.parentSpecId,
+  status: specs.status, approvedRevision: specs.approvedRevision, headRevision: specs.headRevision, updatedAt: specs.updatedAt,
+  bodyArtifactId: specs.bodyArtifactId,
+  repoSourceState: sql<string | null>`${specs.repoSource}->>'state'`,
+} as const;
+export type SpecIndexRow = Pick<SpecRow, 'id' | 'workspaceId' | 'title' | 'scope' | 'parentSpecId' | 'status' | 'approvedRevision' | 'headRevision' | 'updatedAt' | 'bodyArtifactId'>
+  & { repoSourceState: string | null };
+
+/** Specs one index reads at most; a workspace past this lists its most recently changed. */
+export const MAX_INDEX_SPECS = 1000;
+
+/** The workspace's specs as the index shows them, newest change first, bounded. */
+export async function listSpecIndexRows(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecIndexRow[] } | SpecError> {
+  if (!isUuid(workspaceId) || !(await reach(caller, workspaceId, false))) return fail(404, 'Workspace not found');
+  const rows = await db.select(SPEC_INDEX_COLUMNS).from(specs).where(eq(specs.workspaceId, workspaceId))
+    .orderBy(desc(specs.updatedAt)).limit(MAX_INDEX_SPECS);
+  return { ok: true, specs: rows as SpecIndexRow[] };
 }
 
 export async function listSpecs(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecRow[] } | SpecError> {

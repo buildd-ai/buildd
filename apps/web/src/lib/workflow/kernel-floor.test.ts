@@ -101,7 +101,7 @@ describe('isolation', () => {
   });
 });
 
-// AC-37: the open-PR status coverage is an alert that can fail: every open head still without
+// AC-76: the open-PR status coverage is an alert that can fail: every open head still without
 // Buildd / Review approval is an error of the floor run, and a pass that read nothing is not "covered".
 describe('open PR status coverage', () => {
   const summary = (coverage: Record<string, unknown>, errors = 0) => async () => ({
