@@ -13,7 +13,6 @@
  * the per-turn context survive the navigation.
  */
 import { isUuid } from '@/lib/uuid';
-import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 
 export type NewWorkKind = 'mission' | 'task';
 export type AboutKind = 'mission' | 'task';
@@ -110,17 +109,4 @@ export function isChatShortcut(e: {
   if (t.isContentEditable) return false;
   const tag = (t.tagName ?? '').toUpperCase();
   return tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT';
-}
-
-/** What the create buttons need from a chat availability answer (components/chat/ChatEntry.tsx). */
-export function chatEntryFromAvailability(
-  avail: { available: boolean; canManageTeamKeys?: boolean } | null,
-  teamId: string | null,
-): { available: boolean; teamId: string | null; setupHref: string | null } {
-  return {
-    available: avail?.available === true,
-    teamId,
-    // The missing key is an owner's or admin's to fix.
-    setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
-  };
 }

@@ -18,7 +18,8 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { askAboutHref, chatEntryFromAvailability, isChatShortcut, newWorkHref, type AboutKind, type NewWorkKind } from '@/lib/chat/entry-points';
+import { chatEntryFromAvailability } from './ChatSetupCard';
+import { askAboutHref, isChatShortcut, newWorkHref, type AboutKind, type NewWorkKind } from '@/lib/chat/entry-points';
 import { useChatCanvas } from './canvas-context';
 
 export interface ChatEntryValue {

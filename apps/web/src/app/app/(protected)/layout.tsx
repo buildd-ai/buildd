@@ -14,7 +14,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { isBillingEnforced } from '@buildd/core/entitlements';
 import { loadAppChrome } from '@/lib/app-chrome';
 import { peekChatAvailability } from '@/lib/chat-availability';
-import { chatEntryFromAvailability } from '@/lib/chat/entry-points';
+import { chatEntryFromAvailability } from '@/components/chat/ChatSetupCard';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { KeyHintsProvider } from '@/components/KeyHints';
 import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
