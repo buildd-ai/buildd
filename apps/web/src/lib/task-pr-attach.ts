@@ -18,6 +18,7 @@ import { and, eq } from 'drizzle-orm';
 import { githubApi } from './github';
 import { insertPrOwnerWorker, type AdoptablePr, type PrMergeState } from './pr-review-request';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 
 const PR_URL = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
 
@@ -99,11 +100,14 @@ export async function attachPrToTask(params: {
   const { task, repo, prNumber, accountId } = params;
   const existingResult = (task.result ?? {}) as TaskResult;
 
-  if (typeof existingResult.prNumber === 'number' && existingResult.prNumber !== prNumber) {
+  // The PR the task already has, derived on read (workflow/task-pr.ts), else what it stored.
+  const recordedPr = (await taskPrOf(task.id))?.prNumber
+    ?? (typeof existingResult.prNumber === 'number' ? existingResult.prNumber : null);
+  if (recordedPr != null && recordedPr !== prNumber) {
     return {
       ok: false,
       status: 409,
-      error: `Task already records PR #${existingResult.prNumber}; refusing to replace it with #${prNumber}`,
+      error: `Task already records PR #${recordedPr}; refusing to replace it with #${prNumber}`,
     };
   }
 

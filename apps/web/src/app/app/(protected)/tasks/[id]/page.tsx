@@ -136,6 +136,7 @@ import { statusPill } from '@/components/ui/states';
 import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components/ui/DiagnosticsDisclosure';
 import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -221,7 +222,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat, taskPr] = await Promise.all([
     // The task's workers, open question notes and any failure recovery holding
     // it, picked the way the sheet picks them (lib/task-view.ts): one worker
     // and one question on both surfaces. A mission task's questions carry its
@@ -281,6 +282,8 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // The task's PR, derived on read (workflow/task-pr.ts), for the Deliverables block.
+    taskPrOf(task.id),
   ]);
   if (answerInChat) redirect(answerInChat);
   // Newest first by (createdAt, id).
@@ -1913,7 +1916,7 @@ export default async function TaskDetailPage({
         {!shippedView && (
           <TaskDeliverables
             taskId={task.id}
-            result={task.result as TaskDeliverablesResult | null}
+            result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null}
             prCard={!!prOutcome}
             summaryInPrCard
             suppressedSummary={suppressedSummaryArtifact}
