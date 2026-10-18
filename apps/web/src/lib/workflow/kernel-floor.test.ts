@@ -15,6 +15,7 @@ function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>>
   const step = <T>(name: string, value: T) => async () => { ran.push(name); if (o[name as keyof KernelFloorDeps]) return o[name as keyof KernelFloorDeps]!() as Promise<T>; return value; };
   const deps: KernelFloorDeps = {
     drainDueEffects: step('drainDueEffects', { claimed: 2, done: 2, skipped: 0, failed: 0, lost: 0, dead: [] }) as KernelFloorDeps['drainDueEffects'],
+    drainDueEpochEffects: step('drainDueEpochEffects', { claimed: 1, done: 1, skipped: 0, failed: 0, lost: 0, dead: 0, ran: [] }),
     reconcileTrunkIncidents: step('reconcileTrunkIncidents', { checked: 1, resolved: 1, recovered: 1, stillRed: 0, errors: 0 }),
     reconcileKernelDeliveries: step('reconcileKernelDeliveries', { checked: 3, imported: 1, enqueued: 1, errors: 0 }),
     restartTreadmillCycles: step('restartTreadmillCycles', { checked: 1, restarted: 1, refused: 0, errors: 0 }) as KernelFloorDeps['restartTreadmillCycles'],
@@ -34,8 +35,8 @@ describe('the scheduled pass', () => {
     const s = steps();
     const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
-    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
-    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 11, changed: 9, errors: 0 });
+    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainDueEpochEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
+    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 12, changed: 10, errors: 0 });
   });
 
   it('does nothing in shadow, without the command key (not switched over), or on the web host whatever its mode', async () => {

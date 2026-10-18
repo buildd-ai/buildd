@@ -24,6 +24,7 @@ import { drainParkedCommands, type ParkedDrainSummary } from './command-outbox';
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
 import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
+import { drainDueEpochEffects, type EpochDrainSummary } from './epoch-effects';
 
 type Isolated<T> = T | { error: string };
 
@@ -36,6 +37,8 @@ export const TREADMILL_COOLDOWN_MS = 60 * 60_000;
 
 export interface KernelFloorResult {
   kernelOutbox: Isolated<DrainSummary>;
+  /** The mission epochs' outbox (§6): the writable epoch's refresh a request left due. */
+  epochOutbox: Isolated<EpochDrainSummary>;
   trunk: Isolated<TrunkSweepSummary>;
   kernelFloor: Isolated<FloorSummary>;
   treadmillCycles: Isolated<TreadmillCycleSummary>;
@@ -46,6 +49,7 @@ export interface KernelFloorResult {
 
 export interface KernelFloorDeps {
   drainDueEffects?: typeof drainDueEffects;
+  drainDueEpochEffects?: () => Promise<EpochDrainSummary>;
   reconcileTrunkIncidents?: () => Promise<TrunkSweepSummary>;
   reconcileKernelDeliveries?: () => Promise<FloorSummary>;
   restartTreadmillCycles?: typeof restartTreadmillCycles;
@@ -58,8 +62,9 @@ const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
   Promise.resolve().then(p).catch((err): { error: string } => ({ error: err instanceof Error ? err.message : String(err) }));
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
-  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
+  const [kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
+    isolate(() => (deps.drainDueEpochEffects ?? (() => drainDueEpochEffects()))()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
     isolate(() => (deps.reconcileKernelDeliveries ?? (() => reconcileKernelDeliveries()))()),
     isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: TREADMILL_COOLDOWN_MS })),
@@ -67,7 +72,7 @@ export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<Kernel
     isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
     isolate(() => (deps.publishOpenPrStatuses ?? (() => publishOpenPrStatuses()))()),
   ]);
-  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
+  return { kernelOutbox, epochOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
 }
 
 const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error' in (v as object));
@@ -75,6 +80,7 @@ const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error
 /** The cron-run verdict of one pass: what it moved, and what failed. */
 export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; changed: number; errors: number } {
   const outbox = ok(r.kernelOutbox) ? r.kernelOutbox : null;
+  const epochs = ok(r.epochOutbox) ? r.epochOutbox : null;
   const floor = ok(r.kernelFloor) ? r.kernelFloor : null;
   const trunk = ok(r.trunk) ? r.trunk : null;
   const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
@@ -83,10 +89,10 @@ export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; c
   // AC-76: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
   const open = ok(r.openPrStatuses) ? r.openPrStatuses : null;
   return {
-    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
-    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
+    processed: (outbox?.claimed ?? 0) + (epochs?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
+    changed: (outbox?.done ?? 0) + (epochs?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
       + (open ? open.published + open.republished : 0),
-    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
+    errors: (outbox ? outbox.failed : 1) + (epochs ? epochs.failed + epochs.dead : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
       + (open ? open.errors + open.coverage.missing.length : 1),
   };
 }
@@ -95,6 +101,7 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
   const line = (label: string, v: Isolated<object | number>) =>
     ok(v) ? console.log(`[${label}] ${where} ${JSON.stringify(v)}`) : console.error(`[${label}] ${where} error:`, (v as { error: string }).error);
   line('KernelOutbox', r.kernelOutbox);
+  line('EpochOutbox', r.epochOutbox);
   line('TrunkIncidents', r.trunk);
   line('KernelFloor', r.kernelFloor);
   line('TreadmillCycles', r.treadmillCycles);

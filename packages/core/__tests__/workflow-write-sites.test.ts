@@ -81,7 +81,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'task-pr',
   // AC-1 slice 9: an owner task's moves for the attempt writers outside the worker PATCH, each a door
   // call (kernel-client) then the seam's guarded projection of the same move; never the reducer.
-  'owner-attempt']);
+  'owner-attempt',
+  // §6: the mission epochs' outbox. The refresh triggers owe the writable epoch's refresh row and drain
+  // it; it writes only workflow_effects rows owned by an epoch, never a delivery or an epoch's state.
+  'epoch-effects']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
