@@ -336,7 +336,7 @@ export function deriveTaskHealthSignal(
   } = {},
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
-  if (mission.heartbeatWaitingUntil && new Date(mission.heartbeatWaitingUntil).getTime() > Date.now()) return 'BLOCKED';
+  if (mission.heartbeatWaitingUntil && new Date(mission.heartbeatWaitingUntil).getTime() > (opts.now ?? new Date()).getTime()) return 'BLOCKED';
 
   const countable = tasks.filter(opts.scope === 'family' ? isFamilyHealthTask : isMissionHealthTask);
 
@@ -729,6 +729,8 @@ export function deriveMissionHealth(opts: {
    * flag says — a changed verdict clears the flag on its own once it matters.
    */
   hasPendingDeliverableWork?: boolean;
+  /** The clock the schedule's staleness is read against. Defaults to `Date.now()`. */
+  now?: number;
 }): MissionHealth {
   // 'shipped' is a row transition (the mission closed), not a production
   // signal — see the disambiguating comment on `MissionHealth` above.
@@ -753,7 +755,7 @@ export function deriveMissionHealth(opts: {
 
     // Parse cron interval to determine if stalled
     const intervalMs = estimateCronIntervalMs(opts.cronExpression);
-    const now = Date.now();
+    const now = opts.now ?? Date.now();
 
     if (opts.lastRunAt) {
       const lastRun = new Date(opts.lastRunAt).getTime();
@@ -770,7 +772,7 @@ export function deriveMissionHealth(opts: {
 
   // No cron — if a user deliberately scheduled a task for a future time, treat
   // the mission as on-schedule rather than idle/attention.
-  if (opts.pendingUserScheduledAt && opts.pendingUserScheduledAt.getTime() > Date.now()) {
+  if (opts.pendingUserScheduledAt && opts.pendingUserScheduledAt.getTime() > (opts.now ?? Date.now())) {
     return 'on-schedule';
   }
 

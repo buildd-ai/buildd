@@ -346,12 +346,20 @@ const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undef
 const realKernelClient = await import('@/lib/workflow/kernel-client');
 // Captured before the mock: the namespace is live, so after mock.module its claimFix is the mock.
 const realClaimFix = realKernelClient.claimFix;
+const realAttemptStarted = realKernelClient.attemptStarted;
 const realResetKernelModeCache = realKernelClient.resetKernelModeCache;
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, claimFix: mockClaimKernelFix }));
+// AC-1 slice 7: a kernel owner task's claim is started by the kernel (AttemptStarted), then the
+// route's own guarded projection; real-SQL suite in apps/web/tests/db/claim-attempt-start.test.ts.
+const mockAttemptStarted = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: true, started: true }));
+const mockProjectAttemptStart = mock(async (_p: any): Promise<boolean> => true);
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, claimFix: mockClaimKernelFix, attemptStarted: mockAttemptStarted }));
 mock.module('@/lib/workflow/seam', () => ({
   claimFix: mock(async () => { throw new Error('the claim route called the seam\'s claimFix, not the kernel client\'s'); }),
+  attemptStarted: mock(async () => { throw new Error('the claim route called the seam\'s attemptStarted, not the kernel client\'s'); }),
   cancelSkippedTask: mockCancelSkippedTask,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
+  projectAttemptStart: mockProjectAttemptStart,
+  ownerClaimOpenSql: () => ({ ownerClaimOpen: true }),
 }));
 // Claim planner I/O (./claim-plan-store). Default: no signals, writes captured.
 const emptyPlannerSignals = () => ({ predictions: new Map(), overlapAnswers: [], starvationCredit: new Map(), dependentCount: new Map() });
@@ -9878,6 +9886,147 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
     await claim({ runner: 'mcp' });
     expect(mockClaimKernelFix).not.toHaveBeenCalled();
+  });
+
+  describe('AC-1 slice 7: a kernel owner task is started by the kernel, not by the claim\'s own status write', () => {
+    const STAMP = '2026-10-18 08:00:00.123456+00';
+    /** Every tasks update's set, and the returning the claim's compare-and-set gets (with its stamp). */
+    function captureTaskSets(o: { won?: boolean } = {}) {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => (o.won === false ? [] : [{ id: 'task-1', claimStamp: STAMP }])), catch: mock(() => {}), then: (r: any) => Promise.resolve(undefined).then(r) })) }; }) } as any);
+      return sets;
+    }
+    const ownerTask = (o: Record<string, unknown> = {}) => task({ deliveryId: 'delivery-1', deliveryRole: 'owner', ...o });
+    const reset = () => {
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockAttemptStarted.mockReset();
+      mockAttemptStarted.mockImplementation(async () => ({ handled: true, started: true }));
+      mockProjectAttemptStart.mockReset();
+      mockProjectAttemptStart.mockImplementation(async () => true);
+      mockTasksUpdate.mockReset();
+      mockTasksUpdate.mockImplementation((() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })) })) as any);
+    };
+    afterEach(() => { reset(); realKernelClient.resetAttemptStartBreaker(); });
+
+    it('the compare-and-set stamps the claim but writes no status; AttemptStarted names that exact claim, and the worker starts', async () => {
+      reset();
+      const sets = captureTaskSets();
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+      const data = await (await claim({ runner: 'runner-1' })).json();
+      expect(data.workers).toHaveLength(1);
+      const cas = sets.find((v) => 'claimedBy' in v && v.claimedBy === account().id);
+      expect(cas).toBeDefined();
+      expect('status' in cas).toBe(false);
+      expect(sets.some((v) => v.status === 'assigned')).toBe(false);
+      expect(mockAttemptStarted).toHaveBeenCalledTimes(1);
+      expect(mockAttemptStarted.mock.calls[0][0]).toMatchObject({ task: { id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, claimedBy: account().id, claimedAt: STAMP, source: 'claim' });
+      expect(mockAttemptStarted.mock.calls[0][1]).toMatchObject({ principal: { kind: 'account', id: account().id, grant: null } });
+      // The kernel answered started: no second projection here.
+      expect(mockProjectAttemptStart).not.toHaveBeenCalled();
+    });
+
+    it('a control plane that did not answer: the route projects the start itself under the same guard, and the claim still succeeds', async () => {
+      reset();
+      captureTaskSets();
+      mockAttemptStarted.mockImplementation(async () => { throw new realKernelClient.ControlPlaneUnavailableError('unreachable' as any); });
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+      const data = await (await claim({ runner: 'runner-1' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
+      expect(mockProjectAttemptStart.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'task-1', claimedBy: account().id, claimedAt: STAMP });
+    });
+
+    it('a claim lost after its compare-and-set (cancelled in between): the claim is given back without a status write, and no worker starts', async () => {
+      reset();
+      const sets = captureTaskSets();
+      mockAttemptStarted.mockImplementation(async () => ({ handled: true, started: false }));
+      mockProjectAttemptStart.mockImplementation(async () => false);
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+      const data = await (await claim({ runner: 'runner-1' })).json();
+      expect(data.workers).toHaveLength(0);
+      const giveBack = sets.find((v) => v.claimedBy === null);
+      expect(giveBack).toEqual({ claimedBy: null, claimedAt: null, expiresAt: null });
+      expect(sets.some((v) => 'status' in v)).toBe(false);
+    });
+
+    it('a claim that lost the compare-and-set never reaches the kernel', async () => {
+      reset();
+      captureTaskSets({ won: false });
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+      const data = await (await claim({ runner: 'runner-1' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(mockAttemptStarted).not.toHaveBeenCalled();
+      expect(mockProjectAttemptStart).not.toHaveBeenCalled();
+    });
+
+    it('a task with no delivery, or a repair, keeps the claim\'s own status write and never sends a start', async () => {
+      for (const t of [task({}), task({ deliveryId: 'delivery-1', deliveryRole: 'fix', taskClass: 'attempt', context: { workflowAttemptId: 'a-1' } })]) {
+        reset();
+        const sets = captureTaskSets();
+        mockAuthenticateApiKey.mockResolvedValue(account());
+        mockTasksFindMany.mockResolvedValueOnce([t]);
+        await claim({ runner: 'runner-1' });
+        expect(sets.some((v) => v.status === 'assigned' && v.claimedBy === account().id)).toBe(true);
+        expect(mockAttemptStarted).not.toHaveBeenCalled();
+      }
+    });
+
+    it('hot path at the default budgets: a control plane that hangs costs a runner\'s claim under a second and a half, and the next claim skips the door', async () => {
+      const saved = process.env.KERNEL_CLAIM_BUDGET_MS;
+      delete process.env.KERNEL_CLAIM_BUDGET_MS;
+      let sent = 0;
+      const hanging = ((_u: string, init: RequestInit) => { sent++; return new Promise((_res, rej) => {
+        init.signal?.addEventListener('abort', () => rej(init.signal!.reason));
+      }); }) as unknown as typeof fetch;
+      realResetKernelModeCache();
+      realKernelClient.resetAttemptStartBreaker();
+      try {
+        const times: number[] = [];
+        for (let i = 0; i < 2; i++) {
+          reset();
+          captureTaskSets();
+          mockAttemptStarted.mockImplementation((p: any, c: any) => realAttemptStarted(p, {
+            ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: hanging },
+          }));
+          mockAuthenticateApiKey.mockResolvedValue(account());
+          mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+          const started = Date.now();
+          const data = await (await claim({ runner: 'runner-1' })).json();
+          times.push(Date.now() - started);
+          expect(data.workers).toHaveLength(1);
+          expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
+          if (i === 0) expect(sent).toBeGreaterThan(0);
+        }
+        // The start's own budget bounds the first; the breaker answers the second without a request.
+        expect(times[0]).toBeLessThan(1_500);
+        const afterFirst = sent;
+        expect(times[1]).toBeLessThan(300);
+        expect(sent).toBe(afterFirst);
+      } finally {
+        if (saved === undefined) delete process.env.KERNEL_CLAIM_BUDGET_MS; else process.env.KERNEL_CLAIM_BUDGET_MS = saved;
+        realResetKernelModeCache();
+        realKernelClient.resetAttemptStartBreaker();
+      }
+    });
+
+    it('an interactive session\'s claim never waits on the door: it projects the start at once', async () => {
+      for (const [body, headers] of [[{ runner: 'mcp' }, interactiveHeaders()], [{ runner: 'mcp' }, undefined]] as const) {
+        reset();
+        captureTaskSets();
+        mockAuthenticateApiKey.mockResolvedValue(account());
+        mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+        const data = await (await claim(body as any, headers as any)).json();
+        expect(data.workers).toHaveLength(1);
+        expect(mockAttemptStarted).not.toHaveBeenCalled();
+        expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
+        expect(mockProjectAttemptStart.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'task-1', claimedBy: account().id, claimedAt: STAMP });
+      }
+    });
   });
 
   it('a task that is not an attempt never consults the retry guard', async () => {

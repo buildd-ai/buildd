@@ -73,6 +73,10 @@ describe('the pinned default', () => {
 });
 
 describe('resolveTaskEstimatesState', () => {
+  it('makes forecasts available by default even while calibration fails', () => {
+    expect(taskEstimatesDefaultOn()).toBe(false);
+    expect(resolveTaskEstimatesState(null)).toEqual({ enabled: true, source: 'default', defaultOn: true });
+  });
   it('new and legacy teams (NULL) follow the default, both ways', () => {
     for (const raw of [null, undefined, {}, { setBy: 'u' }]) {
       expect(resolveTaskEstimatesState(raw, false)).toEqual({ enabled: false, source: 'default', defaultOn: false });

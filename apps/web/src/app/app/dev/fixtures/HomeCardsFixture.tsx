@@ -13,7 +13,7 @@ import { LandedThisWeek, type LandedMission } from '../../(protected)/home/Lande
 import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
 import type { ActionQueueItem } from '@/lib/action-queue';
-import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
+import { toDeliveryRow, type DeliveryCounts, type MissionDelivery } from '@/lib/delivery-projection';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import type { AgentsModel } from '@/lib/home-agents';
 import type { IdleStretch } from '@/lib/idle-while-queued';
@@ -35,12 +35,16 @@ function series(levels: number[]): OccupancySeries {
   const bucketMs = 24 * H / levels.length;
   const from = NOW - 24 * H;
   const lvl = (v: number) => ({ avg: v, peak: Math.ceil(v) });
+  const by = (v: number) => ({ mine: lvl(v), others: lvl(0), unattributed: lvl(0) });
   return {
     windowKey: '24h' as OccupancySeries['windowKey'],
     window: { from, to: NOW },
     bucketMs,
-    buckets: levels.map((v, i) => ({ t: from + i * bucketMs, runner: lvl(v), sessions: lvl(0) })),
-    summary: { runner: { avg: levels.reduce((a, b) => a + b, 0) / levels.length, peak: Math.max(...levels) }, sessions: lvl(0) },
+    buckets: levels.map((v, i) => ({ t: from + i * bucketMs, runner: lvl(v), sessions: lvl(0), runnerBy: by(v), sessionsBy: by(0) })),
+    summary: (() => {
+      const runner = { avg: levels.reduce((a, b) => a + b, 0) / levels.length, peak: Math.max(...levels) };
+      return { runner, sessions: lvl(0), runnerBy: { mine: runner, others: lvl(0), unattributed: lvl(0) }, sessionsBy: by(0), runnerByClass: { managed: lvl(0), team: lvl(0), personal: runner, unknown: lvl(0) }, coverage: { total: 0, ownerMissing: 0, runnerMissing: 0 } };
+    })(),
   };
 }
 const BUSY_DAY = series([1, 1, 0, 0, 0, 0, 0, 1, 2, 3, 4, 4, 3, 2, 0, 0, 2, 3, 4, 4, 3, 3, 2, 3].flatMap(v => [v, v, v, v]));
@@ -88,7 +92,7 @@ export default function HomeCardsFixture() {
   const empty = data === 'empty';
   const items = empty ? [] : data === 'one' ? ONE : DECISIONS;
   const agents = <AgentsPanel model={empty ? AGENTS_IDLE : AGENTS} occupancy={empty ? QUIET_DAY : BUSY_DAY} idle={empty ? [] : IDLE} />;
-  const milestones = empty ? [] : MILESTONES;
+  const milestones = empty ? [] : MILESTONES.map(toDeliveryRow);
   const counts = empty ? COUNTS_EMPTY : COUNTS;
   const landed = empty ? null : <LandedThisWeek missions={LANDED} timeZone="UTC" />;
   return (

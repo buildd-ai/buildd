@@ -1,11 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`teams and missions (R-23, R-24) 80x24: the filter line, team headings, open missions, then the delivered ones folded into one row 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
+" buildd · laptop-1234 · 2 workspaces · 2 teams   0 of 3 slots in use · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Pair on the parser                                      
- ▸ Pair on the… local │ Managed from a local session                            
+ ▸ Pair… your session │ Run from your session                                   
    Ship the… building │─────────────────────────────────────────────────────────
    Docs refre… paused │ No activity yet.                                        
    Done this week · 1 │                                                         

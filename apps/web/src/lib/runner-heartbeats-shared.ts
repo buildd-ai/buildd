@@ -10,8 +10,16 @@
  * it. Keep DB access in `runner-heartbeats.ts`. (`@buildd/shared` is fine: it
  * is DB-free and already bundled into client components.)
  */
+import type { RunnerClass } from './runner-ownership';
 
-import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
+import {
+  RUNNER_LIVE_WINDOW_MS,
+  isIsolationRecordCurrent,
+  isolationVerdict,
+  type RunnerCodexAuthSource,
+  type RunnerIsolationRecord,
+  type RunnerModelAuthSource,
+} from '@buildd/shared';
 
 export interface RunnerHeartbeat {
   id: string;
@@ -48,6 +56,29 @@ export interface RunnerHeartbeat {
    * this is false (runner-isolation-health.ts).
    */
   shared: boolean;
+  /**
+   * Pending tasks in the viewed workspaces this runner's claim would refuse
+   * for isolation, by requirement (runner-isolation-health isolationBlockedCounts).
+   * Set by Health's loader; absent elsewhere.
+   */
+  isolationBlocked?: { protected: number; trustedLocal: number };
+  /**
+   * The viewing user created this runner's account: they manage it. False
+   * for a teammate's runner (or one with no recorded creator), which the
+   * Health page lists apart under "Team runners".
+   */
+  mine: boolean;
+  /**
+   * The model login the runner itself reported on its last heartbeat (a label,
+   * never a credential). Null/absent: an older runner that sends none, which
+   * is not the same as `none`.
+   */
+  modelAuthSource?: RunnerModelAuthSource | null;
+  codexAuthSource?: RunnerCodexAuthSource | null;
+  /** Authoritative ownership (managed / team host / personal / unknown); see runner-ownership.ts. */
+  runnerClass?: RunnerClass;
+  /** How the runner's model usage is paid: `oauth` = the login on its own machine, `api` = a key. Absent when unknown. */
+  authType?: 'oauth' | 'api';
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */

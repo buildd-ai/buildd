@@ -78,6 +78,7 @@ import { plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
+import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
@@ -120,6 +121,7 @@ import { taskRunnerLine } from '@/lib/hosted-runner-usage';
 import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
 import TaskVerdictBlock from './TaskVerdictBlock';
+import EscalationDecision from '@/components/EscalationDecision';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
@@ -919,6 +921,15 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
+    escalation: deliveryView?.escalation
+      ? {
+          title: deliveryView.escalation.title,
+          summary: deliveryView.escalation.summary,
+          open: deliveryView.escalation.findings.open.length,
+          awaitingVerification: deliveryView.escalation.findings.addressedAwaitingVerification.length,
+          resolved: deliveryView.escalation.findings.resolved.length,
+        }
+      : null,
     // The platform updating the branch or merging: in progress, not "ready to merge".
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
     // A merged PR is stated once, on the status row, and the time goes with it.
@@ -1014,7 +1025,7 @@ export default async function TaskDetailPage({
     ...(prOutcome && ciAttemptWorkers.length > 0 && prWorker && !shippedViewShown
       ? [{
           key: 'workers',
-          label: 'Workers',
+          label: 'Agents',
           value: (
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
@@ -1056,7 +1067,7 @@ export default async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{displayTaskTitle(dep.title)}</Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}><TaskTitleText short title={dep.title} /></Link>
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1534,6 +1545,9 @@ export default async function TaskDetailPage({
         {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
+        {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
+          <EscalationDecision brief={deliveryView.escalation} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
+        )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
         {checksSection && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
@@ -1673,7 +1687,7 @@ export default async function TaskDetailPage({
                         {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
                       <span className="text-[12px] text-text-muted" title={dep.title}>
-                        {displayTaskTitle(dep.title)}
+                        <TaskTitleText short title={dep.title} />
                       </span>
                     </div>
                   );
@@ -2034,7 +2048,7 @@ export default async function TaskDetailPage({
               <dt>Runner preference</dt><dd>{task.runnerPreference}</dd>
               {task.backend && <><dt>Backend</dt><dd>{task.backend}</dd></>}
               <dt>Claimed by</dt><dd className="truncate">{task.account?.name || '-'}</dd>
-              <dt>Workers</dt><dd>{taskWorkers.length}</dd>
+              <dt>Agents</dt><dd>{taskWorkers.length}</dd>
               {task.claimedAt && <><dt>Claimed at</dt><dd><ZonedTime value={task.claimedAt} format="datetime" /></dd></>}
             </dl>
           </DiagnosticsDisclosure>

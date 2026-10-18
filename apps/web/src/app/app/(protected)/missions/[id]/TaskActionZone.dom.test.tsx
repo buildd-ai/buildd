@@ -112,7 +112,7 @@ describe('TaskActionZone — inline Force start', () => {
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Runs from a local session');
+    expect(container.textContent).toContain('Runs from your session');
     const force = button('Force start');
     expect(force).toBeDefined();
     await act(async () => { force!.click(); });
@@ -344,7 +344,7 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
     await flush();
     await act(async () => { button('Start anyway')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Runs from a local session');
+    expect(container.textContent).toContain('Runs from your session');
     await act(async () => { button('Force start')!.click(); });
     await flush();
     expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
@@ -417,7 +417,7 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     stubFetch({ status: 200, body: {} });
     await mount({ phase: 'failed', failureKind: 'execution', lastError: { excerpt: 'Tests failed: 3 of 12' }, historyHref: '/h' });
     await flush();
-    expect(container.textContent).toContain('Worker failed');
+    expect(container.textContent).toContain('Agent failed');
     expect(button('Retry on Claude')).toBeDefined();
     expect(button('Switch to Codex')).toBeDefined();
     expect(container.textContent).not.toContain('verification failed');
@@ -435,7 +435,7 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     expect(button('Retry')).toBeUndefined();
     expect(button('Switch to Codex')).toBeUndefined();
     expect(text).not.toContain('Retry on Claude');
-    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Agent failed');
     expect(text.length).toBeLessThan(120);
     expect(dupes(text)).toBeLessThan(3);
   });
@@ -449,7 +449,7 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     expect(text).toContain('Implementation complete, verification failed');
     expect(button('Retry on Claude')).toBeUndefined();
     expect(button('Switch to Codex')).toBeUndefined();
-    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Agent failed');
     expect(text).not.toContain('Skip this audit');
     await act(async () => { button('Retry the audit')!.click(); });
     await flush();

@@ -218,3 +218,22 @@ describe('verdictRepeatsOpenQuestion', () => {
     expect(verdictRepeatsOpenQuestion(live, { questionOnPage: true })).toBe(false);
   });
 });
+
+describe('review escalation verdict (PR #4996 shape)', () => {
+  const pr = { url: 'https://github.com/acme/widgets/pull/7', number: 7, lifecycle: null, merged: false };
+  const base: VerdictInput = { taskStatus: 'completed', live: null, openQuestion: false, pr, checks: null, openAttempt: null };
+  const escalation = { title: 'Automated fixes exhausted · 2 of 2 used', summary: 'The automatic fix budget is spent. Nothing runs again until you choose.', open: 1, awaitingVerification: 2, resolved: 3 };
+
+  it('names the cause and counts instead of "Waiting on you", and points at the decision card', () => {
+    const v = deriveTaskVerdict({ ...base, escalation })!;
+    expect(v.state).toBe('needs_you');
+    expect(v.label).toBe('Automated fixes exhausted · 2 of 2 used');
+    expect(v.headline).toContain('1 open, 2 awaiting verification, 3 resolved');
+    expect(v.cause).toContain('Nothing runs again until you choose');
+    expect(v.actions[0]).toMatchObject({ href: '#task-decision', external: false, tone: 'primary' });
+  });
+
+  it('without an escalation the generic PR reading is unchanged', () => {
+    expect(deriveTaskVerdict({ ...base })!.causeKey).toBe('needs_you:pr_open');
+  });
+});

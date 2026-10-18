@@ -292,3 +292,15 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     expect(result.content[0].text).toMatch(/taskId/);
   });
 });
+
+describe('claim_task — a retry assignment (terms catalog §2.10)', () => {
+  it('names the task by its title and attempt, never the machine key', async () => {
+    const api = mock(async () => ({
+      id: WORKER_ID, status: 'running', branch: 'buildd/retry',
+      task: { id: 'task-retry', title: '[builder · after review #1] fix(timeline): duplicate day header', description: 'd', status: 'assigned' },
+    }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'claim_task', {}, ctx());
+    expect(result.content[0].text).toContain('**Task:** fix(timeline): duplicate day header · Fix 1 · review asked for changes (task-retry)');
+    expect(result.content[0].text).not.toContain('[builder');
+  });
+});

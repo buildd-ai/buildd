@@ -457,7 +457,7 @@ async function staleSnapshotParent(
     operationClass: 'CONTRACT',
     kind: 'stale_parent',
     reason:
-      `migration snapshot parent is no longer a leaf of the base: a migration landed since CI ran, so the earlier ` +
+      `migration snapshot parent is no longer a leaf of the base: a migration merged since CI ran, so the earlier ` +
       `green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch`,
   };
 }

@@ -845,7 +845,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         const kv = await kernelStatus();
         if (kv?.current.state === 'ESCALATED') {
           return waiting(
-            `${reason}; the delivery is ESCALATED${kv.stateReason ? ` (${kv.stateReason})` : ''} at v${kv.current.version}, head ${String(kv.current.head ?? '').slice(0, 7)}, so green CI alone will not land it`,
+            `${reason}; the delivery is ESCALATED${kv.stateReason ? ` (${kv.stateReason})` : ''} at v${kv.current.version}, head ${String(kv.current.head ?? '').slice(0, 7)}, so green CI alone will not merge it`,
             { deliveryState: kv.current.state, deliveryVersion: kv.current.version, stateReason: kv.stateReason ?? null },
             true,
           );

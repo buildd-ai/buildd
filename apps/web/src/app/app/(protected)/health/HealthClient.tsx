@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
+import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { isolationProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
+import { isolationProblem, isolationStrandedProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
@@ -39,7 +40,9 @@ import {
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
+import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
 import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
@@ -51,10 +54,13 @@ import { runnerBusyLine } from '@/lib/fleet-view';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { ClaimabilitySection } from './ClaimabilitySection';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
 import { RunnerIsolation } from './_components/RunnerIsolation';
+import { RunnerRoute } from './_components/RunnerRoute';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
@@ -280,12 +286,18 @@ interface Props {
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
   runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
+  /** Claim-planner ledger summary: claimability, shown apart from slot occupancy; null hides it. */
+  claimPlans?: ClaimPlanHealth | null;
   /**
    * A task that needs protection is waiting in the scoped workspaces. Every
    * task needs it by default, so this is "any task pending". An unknown or
    * stale sandbox probe is a Problem only while this holds.
    */
   protectedWorkPending?: boolean;
+  /** Pending tasks every online runner refuses for isolation: a Problem of its own. */
+  isolationStranded?: number;
+  /** May read teammates' work in expanded runner detail; false shows other people's runs unnamed. */
+  seesTeamWork?: boolean;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -336,7 +348,10 @@ export function HealthClient({
   failureGroups: failureGroupsView = null,
   agentAccess = null,
   runnerLanes = null,
+  claimPlans = null,
   protectedWorkPending = false,
+  isolationStranded = 0,
+  seesTeamWork = false,
   now,
   page = 'all',
   top = null,
@@ -456,6 +471,9 @@ export function HealthClient({
     const problem = isolationProblem(r, { protectedWorkPending });
     return problem ? [{ id: r.id, ...problem }] : [];
   });
+  // Work no online runner's sandbox lets it take: one line for the fleet, not one per runner.
+  const strandedIsolation = isolationStrandedProblem(isolationStranded);
+  if (strandedIsolation) isolationProblems.push({ id: 'isolation-stranded', ...strandedIsolation });
   // The four seat-auth confessions collapse into ONE page-level sentence. The
   // per-stat markers stay where they are; this only names the shared cause once
   // instead of four times.
@@ -640,6 +658,13 @@ export function HealthClient({
                           : ''}
                       </p>
                     )}
+                    {b.sampleTasks.some((t) => t.claim) && (
+                      <ul data-testid={`strand-claim-${b.backend}`} className="mt-1 space-y-0.5 text-xs text-text-muted">
+                        {b.sampleTasks.map((t) => (
+                          <li key={t.id} className="truncate">{t.title}: {routeLine(t.route)}{claimBlockerLine(t.claim)}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                   <a
                     href="/app/settings/runners"
@@ -795,6 +820,8 @@ export function HealthClient({
         </div>
       )}
 
+      {show('capacity') && <ClaimabilitySection health={claimPlans} now={now} />}
+
       {show('capacity') && hasLanes && (
         <div data-testid="health-section-lanes" className="mb-6">
           <Disclosure summary="Timeline: each slot over the last hours">
@@ -804,42 +831,52 @@ export function HealthClient({
       )}
 
       {show('capacity') && (
-      <div data-testid="health-section-runners" className="mb-6">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h3 className="text-xs font-medium text-text-secondary">Runners</h3>
-          {runners.length > 0 && (
-            <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
-          )}
-        </div>
-        <div className="border-y border-border-default">
-          {runners.length === 0 ? (
-            <div className="p-4 text-center">
+      <div data-testid="health-section-runners">
+        {runners.length === 0 && (
+          <div className="mb-6">
+            <h3 className="text-xs font-medium text-text-secondary mb-3">Runners</h3>
+            <div className="border-y border-border-default p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
             </div>
-          ) : (
+          </div>
+        )}
+        {[
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+        ].filter(g => g.list.length > 0).map(g => (
+        <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <h3 className="text-xs font-medium text-text-secondary">{g.title}</h3>
+          <span data-testid={`health-runners-${g.key}-capacity`} className="text-meta text-text-muted">
+            {(() => {
+              // Aggregate over this section's online runners, same counts as each row.
+              const on = g.list.filter(r => (fleetById.get(r.id)?.online ?? isRunnerOnline(r.lastHeartbeatAt, now)));
+              const slots = on.reduce((n, r) => n + (fleetById.get(r.id)?.maxSlots ?? r.maxConcurrentWorkers), 0);
+              const busy = on.reduce((n, r) => { const f = fleetById.get(r.id); return n + (f ? f.slots.filter(x => x.worker).length : r.activeWorkerCount); }, 0);
+              return `${countOf(g.list.length, 'runner')} · ${busy} of ${slots} slots busy`;
+            })()}
+          </span>
+        </div>
+        <div className="border-y border-border-default">
+          {(
             <div className="divide-y divide-border-default">
-              {runners.map((hb) => {
+              {g.list.map((hb) => {
                 // The fleet row for this heartbeat (same id): its name, online
                 // state and count are the ones Running now and Settings print.
                 const fleetRow = fleetById.get(hb.id) ?? null;
                 const online = fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now);
-                const busyNow = fleetRow ? fleetRow.slots.filter(s => s.worker).length : hb.activeWorkerCount;
-                const idle = online && busyNow === 0;
                 const name = fleetRow?.name ?? hb.accountName ?? 'Runner';
                 const tokenName = fleetRow && hb.accountName && hb.accountName !== fleetRow.name ? hb.accountName : null;
                 const busyLine = fleetRow
                   ? runnerBusyLine({ ...fleetRow, online: true })
                   : `${hb.activeWorkerCount} of ${hb.maxConcurrentWorkers} busy`;
                 const health = runnerHealth.get(hb.id);
-                const statusLabel = online ? (idle ? 'idle' : 'working') : 'offline';
-                const statusClass = online
-                  ? idle ? 'text-text-muted' : 'text-status-success'
-                  : 'text-text-muted';
                 // Green means ENFORCED (namespace + mount allowlist), never merely
                 // "bwrap is installed here" — see deriveSandboxPosture.
                 const posture = deriveSandboxPosture(hb);
-                // Plain words; an unknown posture says nothing rather than "sandbox unknown".
-                const sandboxLabel = SANDBOX_PLAIN_LABEL[posture.label] ?? null;
+                // Plain words, and only for a checked sandbox: every other state
+                // has its own line under the row (RunnerIsolation), said once.
+                const sandboxLabel = runnerIsolationDetail(hb).state === 'verified' ? SANDBOX_PLAIN_LABEL[posture.label] ?? null : null;
                 const sandboxClass = posture.tier === 'success'
                   ? 'text-status-success'
                   : posture.tier === 'warning'
@@ -858,9 +895,13 @@ export function HealthClient({
                           {tokenName && (
                             <span className="text-meta text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
                           )}
-                          <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
-                            {statusLabel}
-                          </span>
+                          {hb.runnerClass && hb.runnerClass !== 'unknown' && (
+                            <span data-testid="health-runner-class" className="text-chip font-mono text-text-muted">
+                              {hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.mine ? 'personal' : 'teammate\'s'}
+                            </span>
+                          )}
+                          {/* The dot and the busy line already say working or idle; only offline needs words. */}
+                          {!online && <span className="text-[11px] md:text-[10px] font-mono text-text-muted">offline</span>}
                           {sandboxLabel && (
                             <span
                               className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
@@ -883,8 +924,19 @@ export function HealthClient({
                       </button>
                     </div>
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
+                    {health?.expanded && <RunnerRoute runner={hb} />}
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
+                        <RunnerSlotDetail
+                          fleetRow={fleetRow}
+                          online={online}
+                          busyLine={busyLine}
+                          lastHeartbeatAt={hb.lastHeartbeatAt}
+                          now={now}
+                          seesTeamWork={seesTeamWork}
+                          ownerLabel={hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.runnerClass === 'unknown' || !hb.runnerClass ? 'unknown' : hb.mine ? 'personal' : 'teammate\'s'}
+                          route={describeRunnerRoute(hb)}
+                        />
                         {health.pushOnlyResult && (
                           <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
                             Push-only runner · {health.pushOnlyResult.message}
@@ -963,6 +1015,8 @@ export function HealthClient({
             </div>
           )}
         </div>
+        </div>
+        ))}
       </div>
 
       )}
@@ -970,7 +1024,7 @@ export function HealthClient({
       {show('budget') && budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
 
       {show('credentials') && credentialHealth.length > 0 && (
-        <CredentialStateSection credentials={credentialHealth} now={now} />
+        <CredentialStateSection credentials={credentialHealth} now={now} runners={runners} />
       )}
 
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
@@ -1038,6 +1092,76 @@ export function HealthClient({
       </section>
       )}
 
+    </div>
+  );
+}
+
+/**
+ * Expanded runner row: its slots, what each is doing, the last run on each
+ * (recent usage), connectivity, and runs that ended in failure. Read from the
+ * same fleet row the collapsed line uses, so the counts cannot disagree. A
+ * working claim that holds no slot is not shown here as a slot.
+ */
+function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork, ownerLabel, route }: {
+  fleetRow: FleetSnapshot['runners'][number] | null;
+  online: boolean;
+  busyLine: string;
+  lastHeartbeatAt: string | null;
+  now: number;
+  seesTeamWork: boolean;
+  ownerLabel: string;
+  route: { claude: string; codex: string };
+}) {
+  // Another person's run (or one with no known owner) is named only to those
+  // who may read the team's work; everyone else sees that the slot is busy.
+  const hidden = (mine: boolean | null | undefined) => !seesTeamWork && mine !== true && mine !== undefined;
+  const slots = fleetRow?.slots ?? [];
+  const failed = slots.filter(s => !s.worker && s.last?.failed);
+  return (
+    <div data-testid="health-runner-detail" className="pt-3 space-y-2">
+      {/* Three independent facts: who owns the runner, whose work a slot runs
+          (the principal, per slot below), and which credential the runner uses.
+          None implies another. */}
+      <dl data-testid="health-runner-dimensions" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+        <dt className="text-text-muted">Runner</dt>
+        <dd data-testid="health-runner-owner" className="text-text-primary">{ownerLabel}</dd>
+        <dt className="text-text-muted">Work</dt>
+        <dd className="text-text-primary">per slot: yours, a teammate&apos;s, or unattributed</dd>
+        <dt className="text-text-muted">Route</dt>
+        <dd data-testid="health-runner-route" className="text-text-primary">Claude: {route.claude} · Codex: {route.codex}</dd>
+      </dl>
+      <p className="text-meta font-medium text-text-secondary">
+        Slots
+        <span className="ml-2 font-normal normal-case text-text-muted">{busyLine}</span>
+      </p>
+      {slots.length === 0 ? (
+        <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
+      ) : (
+        <ul className="space-y-1">
+          {slots.map(s => (
+            <li key={s.index} data-testid="health-runner-slot" className="flex items-baseline gap-2 text-xs min-w-0">
+              <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
+              {s.worker ? (
+                <span className="text-text-primary truncate">
+                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}
+                </span>
+              ) : (
+                <span className="text-text-muted truncate">
+                  Idle{s.last ? ` · last ${hidden(s.last.mine) ? 'run' : (s.last.label ?? 'run')}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="health-runner-connectivity" className="text-xs text-text-muted">
+        {online ? 'Connected' : 'Offline'} · {online ? 'seen' : 'last seen'} {observedAgo(lastHeartbeatAt, now) ?? (online ? 'just now' : 'never')}
+      </p>
+      <p data-testid="health-runner-failures" className={`text-xs ${failed.length > 0 ? 'text-status-warning' : 'text-text-muted'}`}>
+        {failed.length > 0
+          ? `${countOf(failed.length, 'slot')} last ended in failure`
+          : 'No failed last runs on these slots'}
+      </p>
     </div>
   );
 }
@@ -1692,10 +1816,13 @@ const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
 function CredentialStateSection({
   credentials,
   now,
+  runners = [],
 }: {
   credentials: CredentialHealthItem[];
   now: number;
+  runners?: RunnerHeartbeat[];
 }) {
+  const claudeRoute = resolveClaudeRoute(runners, credentials, now);
   return (
     <div data-testid="health-section-credentials" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -1704,6 +1831,9 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
+      <p data-testid="claude-route" data-state={claudeRoute.state} className="mb-2 text-xs text-text-muted">
+        {claudeRoute.summary}
+      </p>
       <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
@@ -2265,4 +2395,28 @@ function FailureAnalyticsSection({
       )}
     </div>
   );
+}
+
+
+/** Where a queued task actually routes (spec 97b1bd0b AC-7): the effective backend, and what it asked for when the team's mask moved it. */
+export function routeLine(r: { requested: string; effective: string } | undefined): string {
+  if (!r) return '';
+  return r.requested === r.effective
+    ? `routes to ${r.effective}; `
+    : `asked for ${r.requested}, routes to ${r.effective}; `;
+}
+
+/**
+ * One task's claim-scheduler decision as a line (spec 97b1bd0b R-10): blocked
+ * only while the recorded refusal is fresh; stale and unknown are said as such.
+ */
+export function claimBlockerLine(c: ClaimBlocker | undefined): string {
+  if (!c || c.state === 'unknown') return 'no recent scheduler decision (not known to be blocked)';
+  const at = c.evaluatedAt ? ` (claim scheduler, last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+  const why = c.phrase ?? c.reason ?? 'held';
+  const label = c.kind === 'credential_unavailable' ? 'credential unavailable'
+    : c.kind === 'capacity_exhausted' ? 'capacity exhausted'
+    : c.kind === 'sandbox' ? 'sandbox requirement unmet'
+    : 'blocked';
+  return c.state === 'blocked' ? `${label}: ${why}${at}` : `last held (${label}): ${why}, may no longer apply${at}`;
 }

@@ -91,7 +91,7 @@ async function main() {
       const t = byId.get(r.taskId)!;
       const inputs = await loadEstimateInputs(
         { id: t.id, workspaceId: t.workspaceId, title: t.title, description: t.description, kind: t.kind, complexity: t.complexity, createdAt: t.createdAt, pathManifest: t.pathManifest },
-        store ? { storeFactory: async () => store! } : { storeFactory: async () => { throw new Error('no store'); } },
+        { excludedPriorWorkspaceId: heldOut, storeFactory: store ? async () => store! : async () => { throw new Error('no store'); } },
       );
       const e = estimateTask(heldOut ? { ...inputs, neighbours: null, clusters: null } : inputs);
       paired.push({ taskId: r.taskId, actual: r.actual, priorCompleted: r.priorCompleted, current: { p50: r.p50, p80: r.p80 }, currentSource: r.source, blend: { p50: e.p50Minutes, p80: e.p80Minutes } });

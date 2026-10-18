@@ -189,7 +189,8 @@ export class BuilddClient {
 
   async getTask(id: string): Promise<BuilddTask | null> {
     try {
-      return await this.fetch(`/api/tasks/${id}`);
+      // The whole row: the claim path and park restore read context and the workspace config.
+      return await this.fetch(`/api/tasks/${id}?include=full`);
     } catch {
       return null;
     }
@@ -739,7 +740,7 @@ export class BuilddClient {
 
   /** A mission's own row (description, goal criteria and their last grading); null when this key cannot read it. */
   async getMission(id: string): Promise<any | null> {
-    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}`); } catch { return null; }
+    try { return await this.fetch(`/api/missions/${encodeURIComponent(id)}?include=details`); } catch { return null; }
   }
 
   async getWorkspaceConfig(workspaceId: string): Promise<{
@@ -1031,11 +1032,14 @@ export class BuilddClient {
   async getBatchObservations(workspaceId: string, ids: string[]): Promise<Array<{ id: string; title: string; type: string; content: string; files?: string[]; concepts?: string[] }>> {
     if (ids.length === 0) return [];
     try {
-      // The memory proxy returns full content, so just re-fetch by query
-      // Since we don't have a batch endpoint on the proxy, fetch all and filter
-      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?limit=50`);
-      const memories = data.memories || [];
+      // Hydrate the search hits directly, including hits older than the
+      // workspace's most recent page. This also avoids fetching the same
+      // unfiltered page already used by getCompactObservations at task start.
       const idSet = new Set(ids);
+      const params = new URLSearchParams();
+      for (const id of idSet) params.append('ids', id);
+      const data = await this.fetch(`/api/workspaces/${workspaceId}/memory?${params}`);
+      const memories = data.memories || [];
       return memories
         .filter((m: any) => idSet.has(m.id))
         .map((m: any) => ({

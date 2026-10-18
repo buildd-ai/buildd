@@ -17,6 +17,7 @@
  */
 import type { DeliverableRole } from '@buildd/core/mission-helpers';
 import { pickTaskView } from './task-view-pick';
+import { BOARD_MILESTONES_MAX, BOARD_MILESTONE_LABEL_MAX } from './mission-board-limits';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
@@ -462,7 +463,7 @@ export function formatAge(ms: number): string {
  * (`status` entries), in time order. Checkpoints and the runner's audit
  * entries are bookkeeping, not progress.
  */
-export function selectMilestones(raw: unknown, max = 24): BoardMilestone[] {
+export function selectMilestones(raw: unknown, max = BOARD_MILESTONES_MAX): BoardMilestone[] {
   if (!Array.isArray(raw)) return [];
   const out: BoardMilestone[] = [];
   for (const m of raw) {
@@ -472,7 +473,7 @@ export function selectMilestones(raw: unknown, max = 24): BoardMilestone[] {
     const ts = num(r.ts) ?? num(r.timestamp);
     const label = str(r.label);
     if (ts == null || !label) continue;
-    out.push({ ts, label: label.length > 160 ? `${label.slice(0, 159)}…` : label });
+    out.push({ ts, label: label.length > BOARD_MILESTONE_LABEL_MAX ? `${label.slice(0, BOARD_MILESTONE_LABEL_MAX - 1)}…` : label });
   }
   out.sort((a, b) => a.ts - b.ts);
   return out.slice(-max);

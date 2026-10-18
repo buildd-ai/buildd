@@ -110,6 +110,28 @@ history before the squash (`git show v0.284.0:packages/core/drizzle/<file>.sql`)
 pre-squash tree from the `v0.284.0` tag and proves both trees build the same
 schema. Locally it needs the tag (`git fetch origin tag v0.284.0`).
 
+**Page-load budgets run in the same suite.** `apps/web/tests/db/budget-harness.ts`
+seeds a synthetic team (500 missions, 20,000 tasks, 40,000 workers by default)
+and measures a loader's Neon round trips and response bytes with
+`recordNeonQueries` (`packages/core/db/query-label.ts`, the same hook that puts
+`buildd.db.loader` on production query spans). A test compares that with the
+page's budget from the "Fast at any size" spec. A page still over budget is
+marked `knownOver`: its test records the numbers and passes, then fails once the
+page fits, so the change that fixes the page also turns the budget on. For a
+quick local look, `BUDGET_SEED_SCALE=0.05 bun run test:db apps/web/tests/db/home-budget.test.ts`
+seeds a small team. The verdict counts only at the default scale. A seeded team is
+reused on later runs against the same database; adding rows to it by hand
+changes its worker count, and the next run reseeds it.
+
+Measure a page the way production runs it. `seedMissionSummaries` writes the
+stored mission summaries list pages read (production writes them as work
+changes). `requestScopedReact` gives React's `cache()` a request scope, so
+the reads the protected layout already made (the user, the team scope, chat
+availability) are not counted again; make them before measuring. A neon-http
+batch is one round trip, and `byTable` names it by its first statement. Home
+is enforced (AC-1). Its test also renders with the GitHub client and every
+outside fetch failing (AC-3) and checks `byOperation` for writes (R-15).
+
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 

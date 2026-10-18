@@ -1,11 +1,18 @@
 import 'server-only';
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets, workerErrorTraces } from '@buildd/core/db/schema';
-import { and, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
+import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets, workerErrorTraces, teamMembers } from '@buildd/core/db/schema';
+import { and, count, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
+import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import {
+  isolationBlockedCounts,
+  isolationStrandedCount,
+  pendingIsolationTask,
+  type PendingIsolationTask,
+} from '@/lib/runner-isolation-health';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import {
   computeUsageStats,
@@ -27,6 +34,7 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
+import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
@@ -40,6 +48,8 @@ import {
 import { countWorkersInWindow, fetchActionEvents } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { loadClaimPlanHealth } from '@/lib/claim-plan-health-query';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
@@ -163,7 +173,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker; route?: { requested: string; effective: string } }>;
 }
 
 export interface CredentialHealthItem {
@@ -192,7 +202,7 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'runnerLanes' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
+  | 'runnerLanes' | 'claimPlans' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
@@ -204,7 +214,7 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
   failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
-  runners: new Set(['runners', 'runnerLanes', 'budgetForecast', 'credentials']),
+  runners: new Set(['runners', 'runnerLanes', 'claimPlans', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -236,10 +246,16 @@ export interface HealthData {
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
-  /** A task waits in the scoped workspaces; every task needs protection by default. */
+  /** A task waits in the scoped workspaces; a runner with no current sandbox check refuses it. */
   protectedWorkPending: boolean;
+  /** Pending tasks every online runner refuses for isolation (isolationStrandedCount). */
+  isolationStranded: number;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
+  /** Whether the viewer may read teammates' work in expanded runner detail (view_team_usage); a member sees only their own. */
+  seesTeamWork: boolean;
+  /** Claim-planner ledger summary (claimability), apart from slot occupancy; null hides the section. */
+  claimPlans: ClaimPlanHealth | null;
   /** The workspaces `runnerLanes` reads, so the page can re-render on their worker events. */
   laneWorkspaceIds: string[];
   now: number;
@@ -316,11 +332,11 @@ export async function loadHealth({
     dispatchHealth,
     failureGroups,
     agentAccess,
-    protectedWorkPending,
+    pendingIsolation,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
-      ? getRunnerHeartbeats(activeTeamId, scopedWsIds).catch(() => [] as RunnerHeartbeat[])
+      ? getRunnerHeartbeats(activeTeamId, scopedWsIds, userId).catch(() => [] as RunnerHeartbeat[])
       : [] as RunnerHeartbeat[],
 
     // Task-keyed totals over the page window (was a fixed 30d role rollup).
@@ -614,17 +630,17 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     // Agent runs' access: grant failures with their fix, refusals by reason.
     // A read failure hides the section, never the page.
     need('agentAccess') ? loadAgentAccessReport(scopedWsIds).catch(() => null) : null,
-    // Any pending task: every task needs protection until per-task isolation
-    // requirements exist, so an unconfirmed sandbox is a Problem only while
-    // one waits (runner-isolation-health.ts).
+    // Pending tasks as the claim's isolation gate sees them, so each runner's
+    // detail can say how many it refuses (runner-isolation-health.ts).
     need('runners')
-      ? db.select({ id: tasks.id }).from(tasks)
-        .where(and(inArray(tasks.workspaceId, scopedWsIds), eq(tasks.status, 'pending')))
-        .limit(1)
-        .then(rows => rows.length > 0)
-        .catch(() => false)
-      : false,
+      ? loadPendingIsolationTasks(scopedWsIds, activeTeamId).catch(() => [] as PendingIsolationTask[])
+      : [] as PendingIsolationTask[],
   ]);
+  // An unknown or stale probe refuses every task, so any waiting one makes it a Problem.
+  const protectedWorkPending = pendingIsolation.length > 0;
+  const onlineRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now));
+  const isolationStranded = isolationStrandedCount(onlineRunners.map(r => r.isolation), pendingIsolation);
+  for (const r of runners) r.isolationBlocked = isolationBlockedCounts(r.isolation, pendingIsolation);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
     .filter((b) => b.strandedPending > 0)
@@ -698,9 +714,13 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   // Team experiments (model routing A/B). Operator-only rows are dropped for
   // everyone else inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
-    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now, viewerId: userId })
       .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
       .catch(() => null)
+    : null;
+
+  const claimPlans = need('claimPlans')
+    ? await loadClaimPlanHealth({ workspaceIds: scopedWsIds, since: new Date(now - parseWindowMs(window)) }).catch(() => null)
     : null;
 
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId, operator).catch(() => null) : null;
@@ -728,7 +748,12 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
       runnerLanes,
+      seesTeamWork: need('runnerLanes')
+        ? await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false)
+        : false,
+      claimPlans,
       protectedWorkPending,
+      isolationStranded,
       // The workspaces the lanes read, for the page's live refresh.
       laneWorkspaceIds: runnerLanes ? scopedWsIds : [],
       now,
@@ -744,4 +769,40 @@ function countActions(rows: ReadonlyArray<{ action: string | null }>): { totalCa
     .map(([action, calls]) => ({ action, calls }))
     .sort((a, b) => b.calls - a.calls || a.action.localeCompare(b.action));
   return { totalCalls: actions.reduce((sum, a) => sum + a.calls, 0), actions };
+}
+
+/** Enough pending tasks to count what blocks them; a larger backlog reads as at least this many. */
+const PENDING_ISOLATION_LIMIT = 500;
+
+/**
+ * Pending tasks in the scoped workspaces, resolved as the claim's isolation
+ * gate resolves them. The scoped workspaces all belong to the active team, so
+ * one team size serves the single-owner default (isolation-policy.ts).
+ */
+async function loadPendingIsolationTasks(workspaceIds: string[], teamId: string): Promise<PendingIsolationTask[]> {
+  const [rows, team] = await Promise.all([
+    db.select({
+      backend: tasks.backend,
+      kind: tasks.kind,
+      sandboxMode: sql<string | null>`${tasks.context}->>'sandboxMode'`,
+      isolationPolicy: sql<string | null>`${workspaces.gitConfig}->>'isolationPolicy'`,
+      accessMode: workspaces.accessMode,
+    })
+      .from(tasks)
+      .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
+      .where(and(inArray(tasks.workspaceId, workspaceIds), eq(tasks.status, 'pending')))
+      .limit(PENDING_ISOLATION_LIMIT),
+    db.select({ n: count() }).from(teamMembers).where(eq(teamMembers.teamId, teamId))
+      .then(r => Number(r[0]?.n ?? 0))
+      .catch(() => null),
+  ]);
+  return rows.map(r => pendingIsolationTask({
+    backend: r.backend,
+    kind: r.kind,
+    context: { sandboxMode: r.sandboxMode },
+    // A JSON null reads as no policy, as the claim's undefined does.
+    isolationPolicy: r.isolationPolicy ?? undefined,
+    accessMode: r.accessMode,
+    // The claim reads the team size only when the workspace sets no policy.
+  }, r.isolationPolicy == null ? team : null));
 }

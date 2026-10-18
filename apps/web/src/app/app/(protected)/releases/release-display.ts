@@ -27,7 +27,7 @@ export function isSupersededRelease(r: { state: string; failureReason: string | 
 }
 
 const RELEASE_PILL: Record<string, { state: StateKey; label: string; title: string }> = {
-  pending_external: { state: 'ready', label: 'Pending', title: 'Dispatched; waiting for the release to merge' },
+  pending_external: { state: 'ready', label: 'Waiting for merge', title: 'Dispatched; waiting for the release to merge' },
   dispatched: { state: 'review', label: 'Dispatched', title: 'The release workflow is running' },
   deploying: { state: 'landing', label: TERMS['release.releasing'].word, title: 'Merged; the deploy is going out' },
   healthy: { state: 'landed', label: 'Healthy', title: 'Deployed and passing its health checks' },

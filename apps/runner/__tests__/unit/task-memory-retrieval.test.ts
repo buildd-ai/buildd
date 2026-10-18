@@ -271,6 +271,17 @@ describe('retrieveTaskMemory — predicted area (step 2)', () => {
     return s;
   }
 
+  test('identical predicted and inferred scopes are searched once before title fallback', async () => {
+    const s = routed({ declared: [], predicted: [], inferred: [], title: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({
+      pathManifest: [], description: DESC, context: hint(['packages/core/memory-store.ts']),
+    }));
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls).toHaveLength(2);
+    expect(s.calls[0].files).toEqual(['packages/core/memory-store.ts']);
+    expect(s.calls[1].files).toBeUndefined();
+  });
+
   test('a treatment-arm task is scoped by what similar completed tasks touched', async () => {
     const s = routed({ declared: [], predicted: [mem('p')], inferred: [mem('i')], title: [mem('t')] });
     const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC, context: hint() }));

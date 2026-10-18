@@ -14,10 +14,11 @@ import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
-import { TERMS, type LoopState } from '@buildd/shared';
+import { TERMS, OPEN_TASK_STATUSES, type LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
 import { displayTaskTitle } from '@/lib/task-title';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export interface GridTask {
   id: string;
@@ -535,17 +536,16 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
 
   const statusGroups = useMemo((): StatusGroup[] => {
     if (effectiveGroupBy !== 'status') return [];
-    const order: { key: string; label: string }[] = [
-      { key: 'in_progress', label: 'Running' },
-      { key: 'assigned', label: 'Assigned' },
-      { key: 'pending', label: 'Pending' },
-      { key: 'completed', label: TERMS['work.done'].word },
-      { key: 'failed', label: 'Failed' },
+    const order: { keys: string[]; label: string }[] = [
+      { keys: OPEN_TASK_STATUSES.filter(s => s !== 'pending') as string[], label: TERMS['work.working'].word },
+      { keys: ['pending'], label: TERMS['work.ready'].word },
+      { keys: ['completed'], label: TERMS['work.done'].word },
+      { keys: ['failed'], label: 'Failed' },
     ];
     return order
-      .map(({ key, label }) => ({
+      .map(({ keys, label }) => ({
         label,
-        tasks: sortByRecency(nonWaitingTasks.filter(t => t.status === key)),
+        tasks: sortByRecency(nonWaitingTasks.filter(t => keys.includes(t.status))),
       }))
       .filter(g => g.tasks.length > 0);
   }, [nonWaitingTasks, effectiveGroupBy]);
@@ -895,7 +895,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
         {!missionFilter && mobileRecentTasks.length > 0 && filter !== 'active' && (
           <div className="sm:hidden px-4 mb-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">Running now</span>
+              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">Working now</span>
               <button
                 onClick={() => updateFilter('active')}
                 className="text-[12px] text-accent-text hover:underline"
@@ -917,7 +917,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
                     </span>
                   </div>
                   <div className="text-[13px] text-text-primary line-clamp-2 leading-snug" title={task.title}>
-                    {displayTaskTitle(task.title)}
+                    <TaskTitle short title={task.title} />
                   </div>
                 </Link>
               ))}

@@ -155,10 +155,12 @@ describe('Home, Health and the task page read the loader', () => {
 
   it('Home: one read per render, failed cards skip linked tasks, status cards join the one list, one banner', async () => {
     const home = await read('../app/app/(protected)/home/page.tsx');
-    expect(home.match(/loadServiceStatus\(/g)).toHaveLength(1);
-    expect(home).toContain('linkedTaskIds: serviceStatus.linkedTaskIds');
-    expect(home).toContain('status: serviceStatus.needsYou');
-    expect(home).toContain('<ServiceStatusBanner status={serviceStatus.banner}');
+    // One plan per render: its first round rides Home's first batch.
+    expect(home.match(/serviceStatusReads\(/g)).toHaveLength(1);
+    expect(home).toContain('serviceStatusView(statusFacts, userId)');
+    expect(home).toContain('linkedTaskIds: view.serviceStatus.linkedTaskIds');
+    expect(home).toContain('status: view.serviceStatus.needsYou');
+    expect(home).toContain('<ServiceStatusBanner status={view.serviceStatus.banner}');
   });
 
   it('Health: the banner on every page, the list on Overview', async () => {

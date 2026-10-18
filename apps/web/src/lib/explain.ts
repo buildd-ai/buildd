@@ -430,7 +430,25 @@ function touchSetOf(
  * Assemble the accessor's inputs for a mission by running each derivation
  * exactly once, then hand them to `deriveMissionStateView`.
  */
-async function viewForMission(missionId: string): Promise<{
+/**
+ * What a page already loaded for this mission (spec 3ef37387 R-11): explain
+ * reads none of it again. `tasks` are the raw rows (no delivery overlay), each
+ * with its workers newest first and the `context` / `result` keys the
+ * accessor reads; `visualReviewState` is the page's one read of it.
+ */
+export interface MissionExplainInputs {
+  mission: Record<string, unknown>;
+  tasks: ReadonlyArray<Record<string, unknown>>;
+  deliveries: Map<string, DeliveryView>;
+  missionDeliveries: Awaited<ReturnType<typeof missionEpochsOf>>;
+  foreignDeps: Map<string, DependencyRow>;
+  supersededMap: Awaited<ReturnType<typeof computeSupersededFailedTasks>>;
+  visualReviewState: import('@/lib/workflow/visual-review-state').MissionVisualReviewState | null;
+  /** The completion gate's own read of the visual review model, when the page holds it. */
+  visualModel?: import('@buildd/shared').VisualReviewModel;
+}
+
+async function viewForMission(missionId: string, inputs?: MissionExplainInputs): Promise<{
   view: MissionStateView;
   mission: Record<string, unknown>;
   loaded: LoadedTask[];
@@ -439,13 +457,13 @@ async function viewForMission(missionId: string): Promise<{
   disagreements: DeliveryDisagreement[];
   deliveries: Map<string, DeliveryView>;
 } | null> {
-  const mission = await db.query.missions.findFirst({
+  const mission = inputs?.mission ?? await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     with: { schedule: true },
   });
   if (!mission) return null;
 
-  const rawLoaded = (await db.query.tasks.findMany({
+  const rawLoaded = (inputs?.tasks ?? await db.query.tasks.findMany({
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
@@ -457,10 +475,12 @@ async function viewForMission(missionId: string): Promise<{
   // stands is its delivery's, and a mission PR's is its delivery records'
   // (§6). One load each; the worker rows below carry the delivery's lifecycle
   // (derived on read, nothing written), and a row that disagrees is named.
-  const [deliveries, missionDeliveries] = await Promise.all([
-    getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
-    m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
-  ]);
+  const [deliveries, missionDeliveries] = inputs
+    ? [inputs.deliveries, m.integrationBranchEnabled === true ? inputs.missionDeliveries : []]
+    : await Promise.all([
+        getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
+        m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
+      ]);
   const loaded = overlayDeliveryLifecycle(rawLoaded, deliveries);
   const disagreements = deliveryDisagreements(rawLoaded, deliveries);
   const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | null } | null;
@@ -471,10 +491,10 @@ async function viewForMission(missionId: string): Promise<{
 
   // Dependencies outside this mission are judged from their own rows, never
   // guessed (unknown is not unmet): one query by id list.
-  const foreignDeps = await loadDependencyRows(foreignDependencyIds(loaded));
+  const foreignDeps = inputs?.foreignDeps ?? await loadDependencyRows(foreignDependencyIds(loaded));
   const deliverables = loaded.filter(isDeliverableTask);
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
-  const supersededMap = await computeSupersededFailedTasks(
+  const supersededMap = inputs?.supersededMap ?? await computeSupersededFailedTasks(
     missionId,
     (m.workspaceId as string | null) ?? null,
     failedDeliverables.map(t => ({
@@ -519,17 +539,20 @@ async function viewForMission(missionId: string): Promise<{
 
   // evaluateCriteria: false — a read must never dispatch a verification task or
   // spend a token to answer "what is this waiting on".
-  const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
+  // A page's render reads stored evidence only and passes the rows it holds.
+  const completion = await canCompleteMission(missionId, inputs
+    ? { evaluateCriteria: false, render: true, loaded: { mission: m as never, tasks: rawLoaded as never, visualModel: inputs.visualModel } }
+    : { evaluateCriteria: false });
   // A missing visual review is the owner's to run only when the policy asks. Read
   // the canonical state only then, so every other explain stays one query lighter.
   // An open audit row also needs it: the header follows the visual review state
   // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
   const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
-  const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
-    ? await import('@/lib/workflow/visual-review-state-load')
+  const visualReviewState = !(completion.code === 'surface_audit_missing' || openAudit) ? null
+    : inputs ? inputs.visualReviewState
+    : await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
-        .catch(() => null)
-    : null;
+        .catch(() => null);
   const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
   const visualReview = summarizeVisualReview(visualReviewState);
 
@@ -725,8 +748,16 @@ function answerFrom(
   };
 }
 
-export async function explainMission(missionId: string): Promise<ExplainResult | null> {
-  const loadedMission = await viewForMission(missionId);
+/**
+ * `inputs`: what a page already loaded (spec 3ef37387 R-11), so the mission
+ * and its tasks are read once per render. `history: false` leaves out the
+ * attempt history a page does not show.
+ */
+export async function explainMission(
+  missionId: string,
+  opts: { inputs?: MissionExplainInputs; history?: boolean } = {},
+): Promise<ExplainResult | null> {
+  const loadedMission = await viewForMission(missionId, opts.inputs);
   if (!loadedMission) return null;
   const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
@@ -763,7 +794,7 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
     answerExtras,
   ), disagreements, { missionId, workspaceId: subject.workspaceId });
 
-  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded, deliveries), because)] };
+  return { scope: 'mission', subjects: [answerFrom(view, subject, opts.history === false ? [] : buildHistory(loaded, deliveries), because)] };
 }
 
 // ─── Task scope ───────────────────────────────────────────────────────────────

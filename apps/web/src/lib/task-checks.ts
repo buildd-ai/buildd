@@ -12,6 +12,13 @@
 import { TaskStatus } from '@buildd/shared';
 import { repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
 
+/**
+ * The element id of the Code review row's findings on the task page. GitHub's Details link on the
+ * `Buildd / Review approval` status (kernel-ports.ts `links.review`) ends in `#review-findings`, and
+ * the id sits inside the row's <details>, so following the link opens it to the findings (R-43).
+ */
+export const REVIEW_FINDINGS_ANCHOR = 'review-findings';
+
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
 type RoundSnapshot = DeliveryView['rounds'][number];
 type AttemptSnapshot = DeliveryView['ledger'][number];

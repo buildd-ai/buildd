@@ -7,21 +7,23 @@ everything it adds. Nothing else reads it.
 
 ## To turn it off without removing code
 
-- One team: Settings › Features › Turn off, or `PATCH /api/teams/<teamId>` with
-  `{ "taskEstimates": { "enabled": false } }` (owner/admin session). New tasks stop getting a row; existing rows stay and
-  still show in `get_task`. Delete them by hand if wanted:
-  `DELETE FROM task_estimates WHERE team_id = '<teamId>'`.
-- Teams that never chose: keep `TASK_ESTIMATES_ROLLOUT.verdict` at `'no_go'` in
-  `packages/core/task-estimate-rollout.ts`. NULL follows that default, so it is off.
-- Everyone: set the verdict to `'no_go'` and set `teams.task_estimates` to NULL for
-  every team. (Contract and gate: `docs/specs/task-estimates.md`.)
+- One team: `PATCH /api/teams/<teamId>` with
+  `{ "taskEstimates": { "enabled": false } }` (owner/admin session). This legacy
+  operational escape hatch stops new forecasts without deleting frozen rows.
+- Calibration rollback: set `TASK_ESTIMATES_ROLLOUT.verdict` to `'no_go'`.
+  Availability stays on; display returns to indicative ranges or no numeric
+  forecast when evidence is insufficient. A pin for another version never
+  certifies the running one.
+- Global collection rollback: change the availability default in
+  `resolveTaskEstimatesState` to false and deploy. Explicit team choices remain;
+  use the team escape hatch where necessary. No schema change is needed.
+  Contract and gate: `docs/specs/task-estimates.md`.
 
 ## Files (delete them)
 
 - `packages/core/task-estimate-rollout.ts` (default-on gate and the team switch's
   reading) and `packages/core/__tests__/task-estimate-rollout.test.ts`
-- `apps/web/src/app/app/(protected)/settings/features/` (the team switch; drop the
-  `features` item from `apps/web/src/lib/settings-nav.ts` and its test) and
+- `apps/web/src/app/app/(protected)/settings/features/` (the retired-page redirect) and
   `apps/web/src/app/app/(protected)/health/estimates/` (the Health page)
 - `docs/specs/task-estimates.md` (set `status: superseded`)
 - `packages/core/task-estimate.ts` (the pure blend) and

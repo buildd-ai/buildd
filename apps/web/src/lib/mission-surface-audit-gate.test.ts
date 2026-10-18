@@ -45,7 +45,9 @@ const persistMergedSurfaceEvidence = mock(async (repo: any, pr: number) => {
   const files = await filesFromGithub(repo, pr);
   if (files) mergedEvidence.set(pr, files);
 });
-mock.module('@/lib/pr-surface-evidence', () => ({ loadPrSurfaceFiles, persistMergedSurfaceEvidence }));
+const loadMergedSurfaceEvidence = mock(async (_repo: any, prs: readonly number[]) =>
+  new Map(prs.flatMap(pr => (mergedEvidence.has(pr) ? [[pr, mergedEvidence.get(pr)!] as const] : []))));
+mock.module('@/lib/pr-surface-evidence', () => ({ loadPrSurfaceFiles, persistMergedSurfaceEvidence, loadMergedSurfaceEvidence }));
 
 const { evaluateSurfaceAuditGate, loadSurfaceAuditWaiver, PR_READ_CONCURRENCY } = await import('./mission-surface-audit-gate');
 
@@ -402,5 +404,42 @@ describe('evaluateSurfaceAuditGate — PR file evidence', () => {
     expect(loadPrSurfaceFiles).toHaveBeenCalledTimes(12);
     expect(maxInFlight).toBeGreaterThan(1);
     expect(maxInFlight).toBeLessThanOrEqual(PR_READ_CONCURRENCY);
+  });
+});
+
+describe('evaluateSurfaceAuditGate on a render (spec 3ef37387 R-12)', () => {
+  beforeEach(() => {
+    waiverNotes = [];
+    repoRow = { githubRepo: { fullName: 'acme/app', installation: { installationId: 7 } } };
+    mergedEvidence = new Map();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async () => { throw new Error('GitHub called while rendering'); });
+    loadPrSurfaceFiles.mockClear();
+    loadMergedSurfaceEvidence.mockClear();
+  });
+
+  it('reads every merged PR\'s durable evidence in one read, and never GitHub', async () => {
+    mergedEvidence.set(10, [{ path: UI_FILE, patch: '+<div />' }]);
+    mergedEvidence.set(11, [{ path: 'apps/web/src/lib/util.ts', patch: null }]);
+    const merged = (n: number) => builder(n, { workers: [{ prNumber: n, mergedAt: new Date() }] });
+    const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [merged(10), merged(11)], { render: true });
+    expect(gate).toMatchObject({ required: true, source: 'diff', uiPaths: [UI_FILE] });
+    expect(loadMergedSurfaceEvidence).toHaveBeenCalledTimes(1);
+    expect(loadPrSurfaceFiles).not.toHaveBeenCalled();
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('an open PR, or a merged one with no evidence recorded, answers by its declared manifest', async () => {
+    const open = builder(12, { pathManifest: [UI_FILE] });
+    const unrecorded = builder(13, { pathManifest: ['apps/web/src/lib/util.ts'], workers: [{ prNumber: 13, mergedAt: new Date() }] });
+    const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [open, unrecorded], { render: true });
+    expect(gate).toMatchObject({ required: true, source: 'manifest', uiPaths: [UI_FILE] });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('with nothing declared and nothing recorded it says it could not check', async () => {
+    const gate = await evaluateSurfaceAuditGate({ id: 'm1' }, [builder(14)], { render: true });
+    expect(gate).toMatchObject({ required: false, why: 'not_checkable' });
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 });

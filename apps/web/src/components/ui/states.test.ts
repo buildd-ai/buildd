@@ -28,7 +28,8 @@ describe('state table', () => {
   });
 
   it('gives every state its own word', () => {
-    const words = STATE_KEYS.map(k => STATES[k].word);
+    // queued reads Blocked on purpose: the catalog folds it into blocked (§2.3); the glyph and texture still differ.
+    const words = STATE_KEYS.filter(k => k !== 'queued').map(k => STATES[k].word);
     expect(new Set(words).size).toBe(words.length);
   });
 
@@ -77,7 +78,7 @@ describe('statusPill', () => {
   });
 
   it('keeps the display words, never the raw enum', () => {
-    expect(statusPill('in_progress')).toEqual({ state: 'running', label: 'Running' });
+    expect(statusPill('in_progress')).toEqual({ state: 'running', label: 'Working' });
     expect(statusPill('waiting_on_you').state).toBe('needs_you');
     expect(statusPill('completed').state).toBe('landed');
     // A finished task says Done (work.done), never Completed.

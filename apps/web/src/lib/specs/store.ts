@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { artifacts, specRevisions, specs, SPEC_SCOPES, type SpecMetadataBlock, type SpecRevisionImport, type SpecScope } from '@buildd/core/db/schema';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { resolveWorkspaceAccess, type WorkspaceAccessCaller } from '@/lib/workspace-access';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
@@ -346,11 +346,13 @@ export interface SpecView {
   revision: SpecRevisionRow;
   body: string;
   requirements: RequirementRef[];
+  revisionsHasMore: boolean;
+  revisionsNextCursor: number | null;
   revisions: Array<Pick<SpecRevisionRow, 'revision' | 'contentHash' | 'authorKind' | 'changeSummary' | 'approvedAt' | 'createdAt'>>;
 }
 
 /** A spec at its head, or at `revision`, exactly as that revision was written. */
-export async function getSpec(caller: SpecCaller, specId: string, opts: { revision?: number } = {}): Promise<{ ok: true; view: SpecView } | SpecError> {
+export async function getSpec(caller: SpecCaller, specId: string, opts: { revision?: number; revisionsLimit?: number; revisionsBefore?: number } = {}): Promise<{ ok: true; view: SpecView } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, false))) return fail(404, 'Spec not found');
@@ -358,11 +360,14 @@ export async function getSpec(caller: SpecCaller, specId: string, opts: { revisi
   const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, specId), eq(specRevisions.revision, n))).limit(1);
   if (!revision) return fail(404, `Spec has no revision ${n}`);
   const body = (await getArtifactRevision(spec.bodyArtifactId, revision.artifactRevision))?.content ?? '';
+  const revisionsLimit = Math.max(1, Math.min(100, opts.revisionsLimit ?? 20));
   const revisions = await db.select({
     revision: specRevisions.revision, contentHash: specRevisions.contentHash, authorKind: specRevisions.authorKind,
     changeSummary: specRevisions.changeSummary, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
-  }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision));
-  return { ok: true, view: { spec, revision, body, requirements: requirementIds(body), revisions } };
+  }).from(specRevisions).where(and(eq(specRevisions.specId, specId), opts.revisionsBefore === undefined ? undefined : lt(specRevisions.revision, opts.revisionsBefore))).orderBy(desc(specRevisions.revision)).limit(revisionsLimit + 1);
+  const revisionsHasMore = revisions.length > revisionsLimit;
+  const page = revisions.slice(0, revisionsLimit);
+  return { ok: true, view: { spec, revision, body, requirements: requirementIds(body), revisions: page, revisionsHasMore, revisionsNextCursor: revisionsHasMore ? page.at(-1)!.revision : null } };
 }
 
 export async function listSpecs(caller: SpecCaller, workspaceId: string): Promise<{ ok: true; specs: SpecRow[] } | SpecError> {

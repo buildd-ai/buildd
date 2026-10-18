@@ -234,14 +234,17 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
  * mission projection applies (attempt folding, repair count, best status):
  * a one-task mission. No second derivation exists to drift.
  */
-function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery {
+function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery | null {
   // The root stands as the deliverable even when it is an attempt whose parent is not loaded.
   // The mission projection drops cancelled roots, so a cancelled one is projected as
   // failed; History names it "not landed" and adds a Cancelled step.
   const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
   const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
-  return m.tasks.find(t => t.id === d.root.id)!.delivery;
+  // null: the projection hides this task on purpose (a surface audit observes and
+  // opens no PR; a superseded refresh chore is noise). Missions and Home hide it
+  // too, so Activity has no delivery to show for it, rather than a missing one.
+  return m.tasks.find(t => t.id === d.root.id)?.delivery ?? null;
 }
 
 /** The PR a delivery is about, and the head it is on now. */
@@ -458,6 +461,7 @@ export function buildActivityNow(input: {
     const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
     // A mission task reads the mission's own task projection, never a second one.
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+    if (!delivery) continue;
     // Now is work in motion. A finished delivery, landed or not, is History's.
     if (!isInMotionKind(delivery.kind)) continue;
     // Open tasks of a completed mission are regrouped as standalone.
@@ -635,6 +639,7 @@ export function buildActivityHistory(input: {
     .flatMap(d => {
       const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
       const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+      if (!delivery) return [];
       const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
       // History is finished work only; in-flight deliveries are Now's.
       if (!FINISHED.has(kind)) return [];

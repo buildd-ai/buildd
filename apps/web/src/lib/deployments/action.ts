@@ -34,6 +34,7 @@ export type DeploymentProvider = (typeof DEPLOYMENT_PROVIDERS)[number];
  */
 export const DEPLOYMENT_OPERATIONS: Record<CloudflareOperation, { capabilities: readonly AgentCapability[]; summary: string }> = {
   status: { capabilities: ['deployments:read', 'deployment_secrets:use'], summary: 'latest deployment, secret names, workers.dev URL' },
+  release_state: { capabilities: ['deployments:read', 'deployment_secrets:use'], summary: 'whether a release\'s Worker, snapshot bucket and container applications are already live' },
   put_secret: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'set one Worker secret (value never echoed)' },
   upload_worker: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'upload a built module Worker; secrets are kept' },
   ensure_bucket: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'create the project\'s R2 bucket if missing, set lifecycle rules' },

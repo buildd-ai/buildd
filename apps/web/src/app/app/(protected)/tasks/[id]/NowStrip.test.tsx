@@ -91,7 +91,7 @@ describe('Now strip before the first update', () => {
   it('does not restate the status', () => {
     const now = deriveNow([], { status: 'running', currentAction: null, startMs: 0, nowMs: 20, prUrl: null, filesChanged: 0, commitCount: 0 } as never);
     const html = renderToStaticMarkup(<NowStrip now={now} nowMs={20} />);
-    expect(html).not.toContain('Working');
+    expect(html).not.toMatch(/worker-now-headline[^>]*>[^<]*Working/);
     expect(html).toContain('worker-now-headline');
   });
 });

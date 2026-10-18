@@ -18,9 +18,10 @@
  * see the task as it was before this statement, whatever `t_proj` writes.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
+import { tasks } from '@buildd/core/db/schema';
 
 import type { MergeTaskTransition } from '@/lib/pr-merged-work';
 import type { ApplyDecision } from './commands';
@@ -174,12 +175,26 @@ const tkCols = { id: sql`tk.id`, workspaceId: sql`tk.workspace_id`, status: sql`
  * again belongs to the attempt before, so it must not settle the new one. Compared as text: a
  * reaper end with no worker row names a synthetic id, which matches nothing.
  */
-export function endingWorkerIsCurrentSql(workerId: string): SQL {
+export function endingWorkerIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  const tk = sql.raw(task);
   return sql`EXISTS (SELECT 1 FROM workers ew
-      WHERE ew.id::text = ${workerId}::text AND ew.task_id = tk.id
-        AND (tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
-        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id AND ${isAttemptRowSql('nw')}
+      WHERE ew.id::text = ${workerId}::text AND ew.task_id = ${tk}.id
+        AND (${tk}.claimed_at IS NULL OR ew.created_at >= ${tk}.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
+        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = ${tk}.id AND ${isAttemptRowSql('nw')}
           AND (nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id))))`;
+}
+
+/**
+ * AC-1 slice 5: a worker the reaper expired is the end of its owner task's attempt only when it
+ * is that attempt: an attempt row itself (a placeholder no runner executed ends nothing) and the
+ * task's current one (`endingWorkerIsCurrentSql`), on a task still open. `task` names the tasks
+ * row in the enclosing statement (`tasks` inside a drizzle `update(tasks)`).
+ */
+export function reapedOwnerAttemptIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  const tk = sql.raw(task);
+  return sql`(${tk}.status IN (${open})
+    AND EXISTS (SELECT 1 FROM workers rw WHERE rw.id::text = ${workerId}::text AND ${isAttemptRowSql('rw')})
+    AND ${endingWorkerIsCurrentSql(workerId, task)})`;
 }
 
 /**
@@ -195,6 +210,70 @@ export function isAttemptRowSql(alias: string): SQL {
 /** The JS side of `isAttemptRowSql`, for a worker row already read. */
 export const isAttemptRow = (w: { runner?: string | null }): boolean => !w.runner || !NON_RUNNER_EXECUTOR_IDS.includes(w.runner);
 
+// ── AC-1 slice 7: a claim starts the owner attempt ──────────────────────────
+
+/**
+ * The claim's compare-and-set for a kernel owner task (beside `status = 'pending'`): no other
+ * claim on it, by the claim query's own rule (claim-candidate-where.ts `claimFree`): unclaimed, or
+ * a claim past its expiry. A kernel owner's claim stamps claimed_by / claimed_at / expires_at and
+ * leaves the status to AttemptStarted, so without this a second claimer would see the task still
+ * pending. Every requeue releases the claim; one a request left behind when it died expires.
+ */
+export function ownerClaimOpenSql(): SQL {
+  return sql`(${tasks.claimedBy} IS NULL OR ${tasks.expiresAt} < now())`;
+}
+
+/** The claim a start is for, read off the decision's evidence (reducer.ts `attemptStarted`). */
+function startOf(evidence: unknown): { taskId: string; claimedBy: string; claimedAt: string } | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.start !== true || typeof e.taskId !== 'string' || typeof e.claimedBy !== 'string' || typeof e.claimedAt !== 'string') return null;
+  return { taskId: e.taskId, claimedBy: e.claimedBy, claimedAt: e.claimedAt };
+}
+
+/** Only the claim that won: still pending, still carrying exactly that claim, never a kernel-merged task. */
+function startGuardSql(p: { taskId: string; claimedBy: string; claimedAt: string }): SQL {
+  return sql`tk.id = ${p.taskId}::uuid
+    AND tk.status = 'pending'
+    AND tk.claimed_by::text = ${p.claimedBy}::text
+    AND tk.claimed_at = ${p.claimedAt}::timestamptz
+    AND ${notKernelMergedTaskSql(tkCols)}`;
+}
+
+/**
+ * The `t_start` CTE (workflow-kernel-library.md §9, AC-1): AttemptStarted moves the owner task to
+ * `assigned` in the transition's own statement, reading the delivery CTE `d`, so a version miss
+ * writes nothing. The claim route's compare-and-set already chose the winner; this moves the task
+ * only while it still carries that claim (a cancel, a requeue or a stale takeover in between keeps
+ * the task where it is). Empty for every other decision.
+ */
+export function startTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptStarted') return [];
+  const s = startOf(decision.evidence);
+  if (!s) return [];
+  const a = sql.raw(d);
+  return [sql`t_start AS (
+  UPDATE tasks tk SET status = 'assigned', updated_at = now()
+  FROM ${a}
+  WHERE tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${a}.id)
+    AND ${startGuardSql(s)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same move outside a transition: for a start the reducer did not bind (the delivery moved on
+ * while the task was requeued, as a loop task's next iteration is), a duplicate, or one the control
+ * plane could not take or does not know. Same guard as `t_start`. Returns the task id moved, or none.
+ */
+export function projectAttemptStartSql(p: { deliveryId: string; taskId: string; claimedBy: string; claimedAt: string }): SQL {
+  return sql`-- workflow:project_attempt_start
+UPDATE tasks tk SET status = 'assigned', updated_at = now()
+WHERE tk.id = ${p.taskId}::uuid
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND ${startGuardSql(p)}
+RETURNING tk.id`;
+}
+
 /** The worker an end names, from its idempotency key (`end:<workerId>`, reducer.ts). */
 const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ? key.slice(4) : null);
 
@@ -206,11 +285,14 @@ const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ?
  * owner). Only for the task's current attempt (`endingWorkerIsCurrentSql`). Empty when the
  * decision projects nothing.
  */
-export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'>, d = 'd'): SQL[] {
+export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'> & { effects?: ApplyDecision['effects'] }, d = 'd'): SQL[] {
   if (decision.command !== 'AttemptEnded' || decision.fromState !== 'WORKING') return [];
-  const status = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
+  const ended = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
   const workerId = endingWorkerOf(decision.idempotencyKey);
-  if (!status || !workerId) return [];
+  if (!ended || !workerId) return [];
+  // AC-1 slice 8: an end whose hand-off read red CI with the CI budget spent escalates the delivery
+  // in the same transition; the owner task fails then, as `t_escalate` would fail it (one write per row).
+  const status = escalatesCi(decision) ? 'failed' : ended;
   const a = sql.raw(d);
   return [sql`t_attempt AS (
   UPDATE tasks tk SET status = ${status}::text, updated_at = now()
@@ -255,4 +337,128 @@ WHERE tk.id = ${p.taskId}::uuid AND o.status IS NOT NULL
   AND ${endingWorkerIsCurrentSql(p.workerId)}
   AND ${notKernelMergedTaskSql(tkCols)}
 RETURNING tk.status`;
+}
+
+// ── AC-1 slice 6: a requeued attempt moves its task back to the queue ───────
+
+/**
+ * Whether a worker is its task's current attempt while the task is still open: an attempt row
+ * (never a placeholder no runner executed), the newest one, not older than the claim. The rule a
+ * requeue's projection applies, exported so a requeue's own write of its other fields (context,
+ * backend, start floor) lands under the same condition. `task` names the tasks row in the
+ * enclosing statement (`tasks` inside a drizzle `update(tasks)`).
+ */
+export function requeueingAttemptIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  // The reaper's rule (AC-1 slice 5) is the same question: is this the open task's current attempt.
+  return reapedOwnerAttemptIsCurrentSql(workerId, task);
+}
+
+/** The requeue the move to `pending` is for, read off the decision's evidence (reducer.ts `attemptRequeued`). */
+function requeueOf(evidence: unknown): { workerId: string; attemptId: string | null } | null {
+  const e = (evidence ?? {}) as Record<string, unknown>;
+  if (e.requeue !== true || typeof e.workerId !== 'string') return null;
+  return { workerId: e.workerId, attemptId: typeof e.attemptId === 'string' ? e.attemptId : null };
+}
+
+/** The task a requeue moves: the delivery's owner task, or the open repair attempt's own task. */
+function requeuedTaskSql(attemptId: string | null, delivery: SQL): SQL {
+  return attemptId
+    ? sql`tk.id = (SELECT wa.task_id FROM workflow_attempts wa
+        WHERE wa.id = ${attemptId}::uuid AND wa.delivery_id = ${delivery} AND wa.status IN ('queued', 'running'))`
+    : sql`tk.id = (SELECT od.owner_task_id FROM workflow_deliveries od WHERE od.id = ${delivery})`;
+}
+
+/** What a requeue writes: back to the queue, with the claim released. */
+const REQUEUE_SET = sql`status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL, updated_at = now()`;
+
+/**
+ * The `t_requeue` CTE (workflow-kernel-library.md §9, AC-1): AttemptRequeued moves the attempt's
+ * task back to `pending` in the transition's own statement, reading the delivery CTE `d`, so a
+ * version miss writes nothing. Only an open task, only while the requeuing worker is its current
+ * attempt (a requeue that lands late, after the task was claimed again, belongs to the attempt
+ * before), never over a kernel-merged completion. Empty for every other decision.
+ */
+export function requeueTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'evidence'>, d = 'd'): SQL[] {
+  if (decision.command !== 'AttemptRequeued') return [];
+  const r = requeueOf(decision.evidence);
+  if (!r) return [];
+  const a = sql.raw(d);
+  return [sql`t_requeue AS (
+  UPDATE tasks tk SET ${REQUEUE_SET}
+  FROM ${a}
+  WHERE ${requeuedTaskSql(r.attemptId, sql`${a}.id`)}
+    AND ${requeueingAttemptIsCurrentSql(r.workerId)}
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
+/**
+ * The same move outside a transition, for a requeue that applied nothing: a duplicate (a parked
+ * re-send), one the reducer did not bind (the delivery moved on while the task kept running, as a
+ * loop task's next iteration does), one the control plane could not take, or one an older control
+ * plane does not know. Same rules as `t_requeue`. Returns the task id moved, or null.
+ */
+export function projectRequeueSql(p: { deliveryId: string; workerId: string; taskId: string; attemptId?: string | null }): SQL {
+  return sql`-- workflow:project_requeue
+UPDATE tasks tk SET ${REQUEUE_SET}
+WHERE tk.id = ${p.taskId}::uuid
+  AND ${requeuedTaskSql(p.attemptId ?? null, sql`${p.deliveryId}::uuid`)}
+  AND ${requeueingAttemptIsCurrentSql(p.workerId)}
+  AND ${notKernelMergedTaskSql(tkCols)}
+RETURNING tk.id`;
+}
+
+// ── AC-1 slice 8: an exhausted CI repair fails the owner task in its own statement ──────
+
+/** Whether a decision escalates the delivery because its CI repairs are spent (`escalate_exhaustion`, family `ci`). */
+export function escalatesCi(decision: { effects?: ApplyDecision['effects'] }): boolean {
+  return (decision.effects ?? []).some((e) => e.kind === 'escalate_exhaustion' && (e.payload as { family?: unknown } | null)?.family === 'ci');
+}
+
+/**
+ * The `t_escalate` CTE (workflow-kernel-library.md §9, AC-1): when the CI repairs of a delivery are
+ * spent, the transition that escalates it to a person fails the owner task in its own statement,
+ * reading the delivery CTE `d`, so a version miss writes nothing. This is the move
+ * `escalateCiRedHead` made from the Escalate effect; the effect still writes the summary, the
+ * mission note and the PR comment, and writes no status for a delivery-owned task. A cancelled or
+ * already failed task keeps what it has, and a kernel-merged completion is never failed. An owner
+ * end that escalates in the same transition is projected by `t_attempt` instead (one write per row).
+ */
+export function escalationTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'effects'>, d = 'd'): SQL[] {
+  if (!escalatesCi(decision)) return [];
+  if (decision.command === 'AttemptEnded' && decision.fromState === 'WORKING') return [];
+  const a = sql.raw(d);
+  return [sql`t_escalate AS (
+  UPDATE tasks tk SET status = 'failed', updated_at = now()
+  FROM ${a} JOIN workflow_deliveries od ON od.id = ${a}.id
+  WHERE tk.id = od.owner_task_id
+    AND tk.status NOT IN ('failed', 'cancelled')
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
+// ── AC-1 slice 8: a loop's exit settles the owner task it held ──────────────────────────
+
+/**
+ * A loop task's exit condition held (its PR's checks went green, or its PR merged and T17 left the
+ * task open because a local session ran it): the owner task the loop parked in the queue
+ * (`pending`, its attempt ended and recorded) completes. Outside a transition, because
+ * no delivery state moves: the kernel already has the held attempt's end, which the loop exit
+ * re-sends (AttemptEnded, a duplicate when recorded). Moves only the delivery's owner task, only
+ * while it is still `pending` with the loop satisfied (the exit's own compare-and-set wrote that),
+ * only with no live attempt on it (a claim of the next iteration keeps its task), never over a
+ * kernel-merged completion. Returns the task id moved, or null.
+ */
+export function projectLoopExitSql(p: { deliveryId: string; taskId: string }): SQL {
+  return sql`-- workflow:project_loop_exit
+UPDATE tasks tk SET status = 'completed', updated_at = now()
+WHERE tk.id = ${p.taskId}::uuid
+  AND tk.status = 'pending' AND tk.loop_state = 'satisfied'
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND NOT EXISTS (SELECT 1 FROM workers lw WHERE lw.task_id = tk.id AND ${isAttemptRowSql('lw')}
+    AND lw.status NOT IN (${sql.join(TERMINAL_WORKER_STATUSES.map((s) => sql`${s}::text`), sql`, `)}))
+  AND ${notKernelMergedTaskSql(tkCols)}
+RETURNING tk.id`;
 }
