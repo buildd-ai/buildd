@@ -1246,9 +1246,37 @@ async function loadBaseSideMerges(input: {
 }
 
 /**
- * Explain a PR. The state answer is its task's (a PR is not a separate subject
- * with its own lifecycle — it is how a task ships), and when the PR is
- * conflicted the conflict chain is prepended so `because[]` opens on the cause.
+ * The task a PR ships: the owner of its kernel delivery, else the task that
+ * opened it. Every fix attempt on the PR (a CI fix, a review fix) records the
+ * same PR number on its own worker, so the worker a PR number resolves to can
+ * be an attempt's; read as the subject, a cancelled CI fix reported an open,
+ * red PR as complete. An attempt that opened a PR of its own keeps it.
+ */
+export async function prOwnerTaskId(taskId: string, prNumber: number): Promise<string> {
+  const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
+  if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
+  let id = taskId;
+  for (let hop = 0; hop < 8; hop++) {
+    const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, id)), columns: { id: true, parentTaskId: true, taskClass: true } });
+    if (!t?.parentTaskId || t.taskClass !== 'attempt') break;
+    const parent = (await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, t.parentTaskId)),
+      columns: { id: true },
+      with: { workers: { columns: { prNumber: true } } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any as { id: string; workers?: Array<{ prNumber: number | null }> } | undefined;
+    if (!parent?.workers?.some(w => w.prNumber === prNumber)) break;
+    id = parent.id;
+  }
+  return id;
+}
+
+/**
+ * Explain a PR. The state answer is its owner task's (a PR is not a separate
+ * subject with its own lifecycle — it is how a task ships; `prOwnerTaskId`),
+ * and when the PR is conflicted the conflict chain is prepended so `because[]`
+ * opens on the cause. A kernel-owned PR carries its delivery's reading, owner
+ * included.
  */
 export async function explainPr(worker: {
   id: string;
@@ -1267,9 +1295,10 @@ export async function explainPr(worker: {
 }, actor: EvidenceActor): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
-  const loaded = await viewForTask(worker.taskId);
+  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
+  const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, ownDelivery } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -1277,11 +1306,11 @@ export async function explainPr(worker: {
     label: `PR #${worker.prNumber}: ${task.title}`,
     workspaceId: workspaceId ?? worker.workspaceId,
     missionId,
-    taskId: worker.taskId,
+    taskId,
     prNumber: worker.prNumber,
   };
 
-  let because = buildStateBecause(view, { taskId: worker.taskId, missionId, workspaceId }, answerExtras);
+  let because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
 
   // `mergeable: dirty` is stored locally as prLifecycleStatus='conflict'
   // (kept live by the GitHub webhook), so naming the cause needs no API call.
@@ -1302,7 +1331,7 @@ export async function explainPr(worker: {
 
     const conflict: ConflictSubject = {
       prNumber: worker.prNumber,
-      taskId: worker.taskId,
+      taskId,
       branch: worker.branch,
       baseRef: worker.prBaseRef,
       lifecycleStatus: worker.prLifecycleStatus,
@@ -1324,9 +1353,9 @@ export async function explainPr(worker: {
 
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
-  const gateHistory = await loadGateHistory(worker.taskId);
-  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
+  const gateHistory = await loadGateHistory(taskId);
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, taskId, { surface: 'explain', actor });
+  return { scope: 'pr', subjects: [withDelivery(withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task), ownDelivery ?? null)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────
