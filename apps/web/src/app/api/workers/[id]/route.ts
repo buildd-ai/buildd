@@ -1860,17 +1860,18 @@ async function patchWorker(
     if (worker.taskId) {
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
+      const observedTaskId = worker.taskId;
       await afterReply('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
+      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, observedTaskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
-      await recordTaskAreaOutcome(worker.taskId, finalPaths);
+      await recordTaskAreaOutcome(observedTaskId, finalPaths);
       // Final touched-file label for orchestration decisions (conflict-aware
       // orchestration §5), from the same observation, before the clear. Writes
       // only for a task a decision looked at; never throws into this PATCH.
       try {
         await recordOrchestrationTouchLabel({
-          taskId: worker.taskId,
+          taskId: observedTaskId,
           workspaceId: worker.workspaceId,
           workerId: worker.id,
           workerStatus: status,
@@ -4437,13 +4438,14 @@ async function patchWorker(
         workerId: id,
       };
 
+      const completedTaskId = worker.taskId;
       await afterReply('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
       // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
       const releaseRuns = status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail';
-      const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      const releaseInput = { taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
       if (releaseRuns) {
         try {
           const release = await COMPLETION_POLICIES.release.evaluate(releaseInput);
@@ -4466,7 +4468,7 @@ async function patchWorker(
                 result: resultWithRelease,
                 updatedAt: new Date(),
               })
-              .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
+              .where(and(eq(tasks.id, completedTaskId), notKernelMergedTaskSql()));
             taskUpdate.result = resultWithRelease;
             slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
@@ -4476,7 +4478,7 @@ async function patchWorker(
               title: 'Release failed',
               message: `${release.reason}${prLink}`,
               priority: 1,
-              url: release.prUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
+              url: release.prUrl || `https://buildd.dev/app/tasks/${completedTaskId}`,
               urlTitle: release.prUrl ? 'Open PR' : 'View task',
             });
           } else if (release.kind === 'hold') {
@@ -4488,7 +4490,7 @@ async function patchWorker(
               await db
                 .select({ context: tasks.context })
                 .from(tasks)
-                .where(eq(tasks.id, worker.taskId))
+                .where(eq(tasks.id, completedTaskId))
                 .limit(1)
             )[0]?.context as Record<string, unknown> | null ?? {};
             await db
@@ -4507,13 +4509,13 @@ async function patchWorker(
                 },
                 updatedAt: new Date(),
               })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           } else {
             await db
               .update(tasks)
               .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           }
         } catch (releaseErr) {
@@ -4543,7 +4545,7 @@ async function patchWorker(
         const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
         if (!row?.deliveryId || retryCovers || releaseHeld) return;
         await workflowAttemptEnded({
-          task: { id: worker.taskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          task: { id: completedTaskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
           workerId: id,
           ...end,
           source: 'runner',
@@ -4574,7 +4576,7 @@ async function patchWorker(
       if (ownerEndProjects && terminalRow?.deliveryId) {
         try {
           await projectOwnerEnd({
-            deliveryId: terminalRow.deliveryId, taskId: worker.taskId, workerId: id,
+            deliveryId: terminalRow.deliveryId, taskId: completedTaskId, workerId: id,
             status: contractViolation || slotFailure || status !== 'completed' ? 'failed' : 'completed',
           });
         } catch (projErr) {
@@ -4593,7 +4595,7 @@ async function patchWorker(
       // Subscribers (the evidence record) are awaited — a serverless function
       // may freeze an un-awaited write — and isolated by emit, which never throws.
       if (!shouldAutoRetry && loop?.kind !== 'hold' && !releaseHeld) {
-        await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
+        await emit({ type: 'task.terminal', taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -4604,11 +4606,11 @@ async function patchWorker(
       const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
-          recordTaskOutcome({ ...outcomeAnalytics, taskId: worker.taskId, outcome: effectiveOutcome }).catch(() => {});
+          recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
         }
         // Model policy: the run's duration and cost against the policy decision
         // the claim stored. A no-op unless a policy service issued it.
-        await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
+        await reportTaskPolicyOutcome(completedTaskId, codingRunObservations({
           durationMs,
           costUsd: updates.costUsd ?? worker.costUsd ?? null,
         }));
@@ -4623,8 +4625,8 @@ async function patchWorker(
       // Each step is guarded independently so one failure can't mask the others,
       // and every silent failure pages via reportOps instead of dying in logs.
       // Capture under the active non-null narrowing: inside the closures below,
-      // control-flow narrowing of worker.taskId (string | null) is dropped.
-      const taskId = worker.taskId;
+      // control-flow narrowing of completedTaskId (string | null) is dropped.
+      const taskId = completedTaskId;
       const runStep = async (label: string, fn: () => Promise<void>) => {
         try {
           await fn();
@@ -4862,7 +4864,7 @@ async function patchWorker(
           // trigger's scheduled row instead of spending an immediate no-op one.
           const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
           const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
-          await wakeTask(worker.taskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
+          await wakeTask(completedTaskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
         }
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
