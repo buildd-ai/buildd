@@ -2198,23 +2198,23 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
       if (waitingOn.missionPr && waitingOn.missionPrState === 'closed') {
-        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
+        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or merge the work another way.';
       }
       if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
-        return 'The mission PR opens once every task PR has landed on the integration branch. If it doesn’t open, the opener is stuck.';
+        return 'The mission PR opens once every task PR has merged into the integration branch. If it doesn’t open, the opener is stuck.';
       }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
-        : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
+        : 'Resolve and merge the open PR(s). A finished task is not done until its PR merges.';
     case 'ci_red':
       return 'The automatic fix attempts are used up and CI is still red, so this is not ready to review. Open the failing check, fix it or take the branch over, then push.';
     case 'landing_blocked':
       return waitingOn.nextAction;
     case 'pr_closed_unmerged':
       if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
-        return 'GitHub will not let this PR merge. Confirm the suggested PR if the work shipped there, or mark the PR abandoned with a reason if the work is not shipping.';
+        return 'GitHub will not let this PR merge. Confirm the suggested PR if the work merged there, or mark the PR abandoned with a reason if the work will not merge.';
       }
-      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work is not shipping.';
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work merged under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work will not merge.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';

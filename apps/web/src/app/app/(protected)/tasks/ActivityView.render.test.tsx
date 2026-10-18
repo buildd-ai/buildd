@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ActivityView from './ActivityView';
+import ActivityView, { deliveryBreakdown } from './ActivityView';
 import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SEQUENCE, activityFixture } from '../../dev/fixtures/activity-delivery-fixtures';
 
 const hrefs = { now: '/app/tasks', history: '/app/tasks?view=history' };
@@ -11,6 +11,15 @@ function render(step: number, mode: 'now' | 'history', openRowIds: string[] = ['
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 /** The opening tag carrying a test id, attributes in any order. */
 const tag = (html: string, testId: string) => html.match(new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? '';
+
+describe('deliveryBreakdown words', () => {
+  it('reads merging and closed without merging, never landing', () => {
+    const rows = (['landing', 'notlanded'] as const).map(kind => ({ delivery: { kind } }));
+    const now = { groups: [{ rows, hiddenWaitingRows: [] }] } as unknown as Parameters<typeof deliveryBreakdown>[0];
+    const words = deliveryBreakdown(now).map(b => b.text.replace(/^\S+ \d+ /, ''));
+    expect(words).toEqual(['merging', 'closed without merging']);
+  });
+});
 
 describe('ActivityView: Now', () => {
   const html = render(4, 'now');
@@ -66,7 +75,8 @@ describe('ActivityView: Now', () => {
     const order = [...html.matchAll(/data-mission="([^"]+)"/g)].map(m => m[1]);
     expect(order[order.length - 1]).toBe('standalone');
     expect(new Set(order).size).toBe(order.length);
-    expect(html).toContain('33/35 landed ›');
+    expect(html).toContain('33/35 merged ›');
+    expect(html).not.toContain('33/35 landed');
   });
 
   it('expanded evidence shows the current head before the older one', () => {
@@ -111,7 +121,7 @@ describe('ActivityView: History', () => {
   it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
-    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you', 'Not landed']);
+    expect(chips).toEqual(['All', 'Merged', 'Had repairs', 'Sent to you', 'Closed without merging']);
     expect(html).toContain('data-testid="activity-day"');
     expect(html).not.toContain('aria-label="Mission"');
   });

@@ -37,6 +37,14 @@ if ! bun run scripts/check-specs.ts --check; then
   exit 1
 fi
 
+# Terms catalog doc: docs/design/terms.md is generated from
+# packages/shared/src/terms.ts. Regenerate it in place so it never drifts.
+if [ -f scripts/terms-doc.ts ]; then
+  if ! bun run scripts/terms-doc.ts --check >/dev/null 2>&1; then
+    bun run scripts/terms-doc.ts >/dev/null && git add docs/design/terms.md
+  fi
+fi
+
 # Public-docs boundary gate. Pure file I/O, sub-second. Design/strategy prose
 # belongs in the private knowledge-base repo; docs/design keeps stubs only.
 if [ -f scripts/check-public-docs.ts ]; then

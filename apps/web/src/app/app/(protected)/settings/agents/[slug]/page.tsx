@@ -7,6 +7,7 @@ import SettingsPage from '../../_components/SettingsPage';
 import Section from '@/components/ui/Section';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import StatePill, { TonePill } from '@/components/ui/StatePill';
+import { TERMS } from '@buildd/shared';
 import type { StateTone } from '@/components/ui/states';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -292,7 +293,7 @@ export default async function RoleProfilePage({
 
       <Section title="Stats">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat value={String(completedTasks)} label="Completed" />
+          <Stat value={String(completedTasks)} label={TERMS['work.done'].word} />
           <Stat value={`${successRate}%`} label="Success rate" />
           <Stat value={`${avgDurationMin}m`} label="Avg duration" />
           <Stat value={String(failedTasks)} label="Failed" />

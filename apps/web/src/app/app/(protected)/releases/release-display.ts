@@ -4,6 +4,7 @@
  * Pure and client-safe.
  */
 import type { StateKey } from '@/components/ui/states';
+import { TERMS } from '@buildd/shared';
 
 export type ReleaseRowState =
   | 'dispatched' | 'deploying' | 'healthy' | 'failed' | 'degraded' | 'pending_external'
@@ -28,7 +29,7 @@ export function isSupersededRelease(r: { state: string; failureReason: string | 
 const RELEASE_PILL: Record<string, { state: StateKey; label: string; title: string }> = {
   pending_external: { state: 'ready', label: 'Pending', title: 'Dispatched; waiting for the release to merge' },
   dispatched: { state: 'review', label: 'Dispatched', title: 'The release workflow is running' },
-  deploying: { state: 'landing', label: 'Deploying', title: 'Merged; the deploy is going out' },
+  deploying: { state: 'landing', label: TERMS['release.releasing'].word, title: 'Merged; the deploy is going out' },
   healthy: { state: 'landed', label: 'Healthy', title: 'Deployed and passing its health checks' },
   degraded: { state: 'ci_failed', label: 'Degraded', title: 'Deployed, but its health checks are failing' },
   failed: { state: 'failed', label: 'Failed', title: 'The release did not ship' },
@@ -40,7 +41,7 @@ const RELEASE_PILL: Record<string, { state: StateKey; label: string; title: stri
  */
 export function releasePill(r: { state: string; failureReason: string | null }): { state: StateKey; label: string; title: string } {
   if (isSupersededRelease(r)) {
-    return { state: 'queued', label: 'Superseded', title: 'A newer release shipped these commits' };
+    return { state: 'queued', label: 'Superseded', title: 'A newer release carried these commits to production' };
   }
   return RELEASE_PILL[r.state] ?? { state: 'ready', label: r.state, title: r.state };
 }

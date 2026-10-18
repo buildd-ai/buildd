@@ -87,7 +87,7 @@ export function ShippedChart({ days, previousLabel }: { days: readonly DayBar[];
     <div data-testid="shipped-chart">
       <div ref={boxRef}>
         <svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full" role="img"
-          aria-label={`Tasks shipped and failed or abandoned per 24 hours: ${shipped} shipped, ${lost} failed or abandoned. The table below lists each day.`}>
+          aria-label={`Tasks done and failed or abandoned per 24 hours: ${shipped} done, ${lost} failed or abandoned. The table below lists each day.`}>
           {geo.bars.map((b, i) => (
             <g key={i}>
               {b.prevShipped && <rect {...rect(b.prevShipped)} fill="var(--flow-released)" fillOpacity={0.18} />}
@@ -107,7 +107,7 @@ export function ShippedChart({ days, previousLabel }: { days: readonly DayBar[];
         </svg>
       </div>
       <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-meta text-text-secondary" data-testid="shipped-legend">
-        <li className="flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 shrink-0" style={{ background: 'var(--flow-released)' }} />Shipped</li>
+        <li className="flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 shrink-0" style={{ background: 'var(--flow-released)' }} />Done</li>
         <li className="flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 shrink-0" style={{ background: 'var(--flow-lost)' }} />Failed or abandoned</li>
         {hasPrev && <li className="flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 shrink-0" style={{ background: 'var(--flow-released)', opacity: 0.25 }} />{previousLabel}</li>}
         {hasPartial && <li className="flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 shrink-0" style={{ background: 'var(--flow-released)', opacity: 0.55 }} />Partial day</li>}
@@ -119,9 +119,9 @@ export function ShippedChart({ days, previousLabel }: { days: readonly DayBar[];
             <thead>
               <tr className="text-left text-text-muted">
                 <th className="py-1 pr-3 font-normal">Day</th>
-                <th className="py-1 pr-3 text-right font-normal">Shipped</th>
+                <th className="py-1 pr-3 text-right font-normal">Done</th>
                 <th className="py-1 pr-3 text-right font-normal">Failed or abandoned</th>
-                {hasPrev && <th className="py-1 text-right font-normal">{previousLabel} (shipped / failed)</th>}
+                {hasPrev && <th className="py-1 text-right font-normal">{previousLabel} (done / failed)</th>}
               </tr>
             </thead>
             <tbody className="font-mono">

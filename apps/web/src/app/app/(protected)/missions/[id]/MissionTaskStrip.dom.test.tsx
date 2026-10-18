@@ -117,7 +117,9 @@ describe('Landed strip', () => {
     await mount(missionTaskStripFixture('all-landed'));
     expect(pressed()).toBe(9);
     expect(drawer().querySelector('[data-testid="task-action-zone"]')).toBeNull();
-    expect(container.querySelector('[data-testid="landed-strip-next-open"]')?.textContent).toBe('All tasks landed');
+    expect(container.querySelector('[data-testid="landed-strip-next-open"]')?.textContent).toBe('All tasks merged');
+    expect(container.querySelector('[data-testid="landed-strip-band"]')?.textContent).toContain('Merged');
+    expect(container.querySelector('[data-testid="landed-strip-band"]')?.textContent).not.toMatch(/landed/i);
   });
 
   it('a cell click selects without navigating or fetching', async () => {

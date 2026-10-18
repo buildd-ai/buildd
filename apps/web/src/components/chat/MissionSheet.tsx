@@ -52,7 +52,7 @@ export function MissionContextCard({ objRef }: { objRef: BuilddObjectRef }) {
       </div>
       {s && (
         <div className="grid grid-cols-2 divide-x divide-[var(--chat-rule)] border-t border-[var(--chat-rule)]">
-          <Meter label="Landed" testId="mission-context-landed" done={s.landed.done} total={s.landed.total} unchecked="border border-[var(--chat-rule-strong)]" />
+          <Meter label="Done" testId="mission-context-landed" done={s.landed.done} total={s.landed.total} unchecked="border border-[var(--chat-rule-strong)]" />
           <Meter label="Goal" testId="mission-context-goal" done={s.goal.passed} total={s.goal.total} unchecked="border border-[var(--mood-needs)]" />
         </div>
       )}

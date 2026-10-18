@@ -298,7 +298,7 @@ describe('formatDeliverySummary', () => {
       mergedAt: ['2026-03-11T08:00:00.000Z'],
       release: { releasedThrough: '2026-03-10T12:00:00.000Z' },
     }));
-    expect(line).toBe('Integrated ◐ 4/6 · Verified ◐ 2/3 · Shipped ○ –');
+    expect(line).toBe('Integrated ◐ 4/6 · Verified ◐ 2/3 · Release ○ –');
   });
 
   it('is empty for no steps', () => {

@@ -585,8 +585,13 @@ notification text) follows the same rules as a PR lede:
    placeholder; render nothing or a muted value instead
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
-   surface (`STATUS_PILL`'s labels in `components/ui/states.ts`). A PR you
-   can merge reads **Ready to merge**.
+   surface: web, `buildd top`, runner CLI output, MCP replies, notifications
+   and PR comments. The words live in the terms catalog,
+   `packages/shared/src/terms.ts`; `docs/design/terms.md` is generated from it
+   (`bun run terms:doc`). The internal enum is never renamed; the catalog maps
+   it (`termFor`). The `catalog-word` copy rule counts the words it retires:
+   held, on hold, landing, landed, shipped, delivered, and Completed as a pill.
+   A PR you can merge reads **Ready to merge**.
    An agent's question is said in words, not labelled: the question itself is
    the heading ("Tabs or spaces?"), with **Waiting for your answer** only where
    something must be said and the question is not on screen. Counts are words

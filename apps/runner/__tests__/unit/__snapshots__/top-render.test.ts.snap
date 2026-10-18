@@ -129,7 +129,7 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`]
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
- ▸ Runn… building 2/8 │ Building · 8 of 13 landed                               
+ ▸ Runn… building 2/8 │ Building · 8 of 13 merged                               
    Local o… local 0/1 │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
    Specs import   1/2 │─────────────────────────────────────────────────────────
    Other tasks 1 open │ Running now                                             
@@ -156,7 +156,7 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
- ▸ Runner TUI  building 2/8 │ Building · 8 of 13 landed                                                                 
+ ▸ Runner TUI  building 2/8 │ Building · 8 of 13 merged                                                                 
    Local only     local 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                          
    Specs import         1/2 │───────────────────────────────────────────────────────────────────────────────────────────
    Other tasks       1 open │ Running now                                                                               

@@ -31,9 +31,10 @@ describe('TaskVerdictBlock: one compact outcome (docs/specs/task-page.md)', () =
   });
 
   it('a headline that starts with the label keeps only the rest', () => {
-    const html = render(V({ state: 'shipped', headline: 'Shipped · PR #12 merged', actions: [{ label: 'View PR #12', href: 'https://x/pull/12', tone: 'quiet', external: true }] }));
-    expect(html).toContain('PR #12 merged');
-    expect(count(html, 'Shipped')).toBe(1);
+    const html = render(V({ state: 'shipped', headline: 'Merged · PR #12 released', actions: [{ label: 'View PR #12', href: 'https://x/pull/12', tone: 'quiet', external: true }] }));
+    expect(html).toContain('PR #12 released');
+    expect(count(html, 'Merged')).toBe(1);
+    expect(html).not.toContain('Shipped');
     // A quiet link stays inline: no card, no button row.
     expect(html).not.toContain('task-verdict-actions');
     expect(html).toContain('View PR #12');

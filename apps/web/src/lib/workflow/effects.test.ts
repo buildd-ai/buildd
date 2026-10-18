@@ -16,6 +16,7 @@ import {
   parkEffectSql,
   renewEffectLeaseSql,
   runEffects,
+  wakeHeldMergesSql,
   EFFECT_MAX_ATTEMPTS,
   KERNEL_ONLY_EFFECTS,
 } from './effects';
@@ -33,6 +34,18 @@ describe('SQL', () => {
     expect(text).toContain('attempt_count = e.attempt_count + 1');
     expect(text).toContain("jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version)");
     expect(params).toEqual([10, 120_000]);
+  });
+  test('claim reports each row\'s age by the database clock (the merge hold\'s bound)', () => {
+    const { sql: text } = render(claimDueEffectsSql(10));
+    expect(text).toContain('EXTRACT(EPOCH FROM (now() - e.created_at)) * 1000');
+    expect(text).toContain('AS age_ms');
+  });
+  test('§4 merge holds: a wake makes only this delivery\'s held merge call for this head due now', () => {
+    const { sql: text, params } = render(wakeHeldMergesSql('d1', 'H1'));
+    expect(text).toContain("kind = 'merge_call' AND status = 'pending'");
+    expect(text).toContain('SET not_before = now()');
+    expect(text).toContain("payload->>'headSha' = $3::text");
+    expect(params).toEqual(['d1', 'held:%', 'H1']);
   });
   test('an inline drain claims only its own delivery\'s effects', () => {
     const { sql: text, params } = render(claimDueEffectsSql(10, 120_000, 'd1'));

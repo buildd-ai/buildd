@@ -223,6 +223,7 @@ describe('cause: mission_evaluate', () => {
     const siblings: SiblingMission[] = [
       { id: 'ms-1', title: 'Build dashboard', status: 'active', isHeld: false, pacingMode: 'eager', progress: 65 },
       { id: 'ms-2', title: 'Fix API bugs', status: 'active', isHeld: true, pacingMode: 'paced', progress: 30 },
+      { id: 'ms-3', title: 'Tidy docs', status: 'active', isHeld: true, armedAt: '2026-10-01T00:00:00Z', pacingMode: 'paced', progress: 10 },
     ];
     const q = makeQuerier({
       async getSiblingMissions() { q.calls.getSiblingMissions++; return siblings; },
@@ -236,7 +237,10 @@ describe('cause: mission_evaluate', () => {
     expect(out).toContain('Build dashboard');
     expect(out).toContain('65%');
     expect(out).toContain('Fix API bugs');
-    expect(out).toContain('HELD');
+    // Terms catalog: a gated mission names its gate, never HELD.
+    expect(out).toContain('Fix API bugs · active · paced [Not started]');
+    expect(out).toContain('Tidy docs · active · paced [Paused]');
+    expect(out).not.toMatch(/held/i);
     expect(out).toContain('paced');
   });
 
