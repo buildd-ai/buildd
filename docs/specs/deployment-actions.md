@@ -190,7 +190,7 @@ credential reference, and never a credential value.
   `runCloudRunnerDeployStep`, `CLOUD_RUNNER_DEPLOY_STEPS`.
 - `apps/web/src/lib/deployments/cloud-runner-store.ts`:
   `cloudRunnerDeployStore`, `saveWebhook`, runner key CRUD.
-- `apps/web/src/lib/deployments/cloud-runner-release.ts`:
+- `apps/web/src/lib/deployments/cloud-runner-bundle.ts`:
   `releaseBundleLoader`, `currentCloudRunnerRelease`.
 - `apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts`:
   the Settings Deploy route (GET workspaces, POST step).

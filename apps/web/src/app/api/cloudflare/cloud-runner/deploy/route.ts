@@ -32,7 +32,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { findCloudflareSecret } from '@/lib/cloudflare-credential';
 import { runDeploymentAction } from '@/lib/deployments/action';
 import { credentialRefOf, deploymentStore } from '@/lib/deployments/store';
-import { releaseBundleLoader } from '@/lib/deployments/cloud-runner-release';
+import { releaseBundleLoader } from '@/lib/deployments/cloud-runner-bundle';
 import { cloudRunnerDeployStore } from '@/lib/deployments/cloud-runner-store';
 import {
   CLOUD_RUNNER_SCRIPT, isCloudRunnerDeployStep, runCloudRunnerDeployStep, type StoredWebhook,

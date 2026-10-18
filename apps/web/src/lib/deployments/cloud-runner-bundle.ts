@@ -10,7 +10,7 @@
  * release yet); CLOUD_RUNNER_RELEASE_REPO points a self-hosted buildd at its
  * own fork's releases.
  */
-import { DEPLOYED_VERSION } from '../deploy-identity';
+import pkg from '../../../package.json';
 import type { FetchLike } from '../cloudflare-credential-shared';
 import { RELEASE_TAG_RE, parseReleaseBundle, releaseBundleAssetName, type ReleaseBundle } from '../../../../cloud-runner/src/release-bundle';
 import type { LoadReleaseBundle } from './cloudflare';
@@ -21,7 +21,7 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export function currentCloudRunnerRelease(env: Record<string, string | undefined> = process.env): string {
   const pinned = env.CLOUD_RUNNER_RELEASE?.trim();
   if (pinned && RELEASE_TAG_RE.test(pinned)) return pinned;
-  return `v${DEPLOYED_VERSION}`;
+  return `v${pkg.version || '0.0.0'}`;
 }
 
 export function cloudRunnerReleaseUrl(tag: string, env: Record<string, string | undefined> = process.env): string {

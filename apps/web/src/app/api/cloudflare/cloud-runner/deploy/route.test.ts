@@ -54,7 +54,7 @@ mock.module('@/lib/deployments/store', () => ({
   credentialRefOf: () => 'cloudflare',
   deploymentStore: {},
 }));
-mock.module('@/lib/deployments/cloud-runner-release', () => ({
+mock.module('@/lib/deployments/cloud-runner-bundle', () => ({
   releaseBundleLoader: mockLoadRelease,
 }));
 mock.module('@/lib/deployments/cloud-runner-store', () => ({

@@ -9,7 +9,7 @@ const LABELS: Record<DeployStep, string> = {
   check: 'Checking…',
   bucket: 'Creating snapshot bucket…',
   worker: 'Uploading Worker…',
-  containers: 'Deploying containers…',
+  containers: 'Starting the runner…',
   connect: 'Connecting workspace…',
 };
 

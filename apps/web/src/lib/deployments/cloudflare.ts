@@ -31,7 +31,7 @@ export type CloudflareOperation = 'status' | 'put_secret' | 'upload_worker' | 'e
 
 /**
  * Where the cloud runner operations get a release's Worker bundle and image
- * (cloud-runner-release.ts). `tag` null = the release this server runs.
+ * (cloud-runner-bundle.ts). `tag` null = the release this server runs.
  */
 export type LoadReleaseBundle = (tag: string | null) => Promise<{ ok: true; bundle: ReleaseBundle } | { ok: false; error: string }>;
 
