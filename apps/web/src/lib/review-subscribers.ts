@@ -248,4 +248,11 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
     const r = await sweepSupersededRefreshPrs();
     console.log(`[SupersededRefreshPrs] candidates=${r.candidates} retired=${r.retired} kept=${r.kept} skipped=${r.skipped} deferred=${r.deferred}`);
   }),
+  // Hourly: an open buildd/<task> PR no worker or delivery holds (opened outside
+  // create_pr) is attached to its task and put to a person (lib/orphan-pr-sweep.ts).
+  subscriber('reviews', 'sweep.pr_hourly', 'orphan-pr-sweep', async e => {
+    const { sweepOrphanAgentPrs } = await import('@/lib/orphan-pr-sweep');
+    const r = await sweepOrphanAgentPrs(e.at);
+    console.log(`[OrphanPrSweep] workspaces=${r.workspaces} openAgentPrs=${r.openAgentPrs} orphans=${r.orphans} adopted=${r.adopted} unattributed=${r.unattributed} deferred=${r.deferred} errors=${r.errors}`);
+  }),
 ];
