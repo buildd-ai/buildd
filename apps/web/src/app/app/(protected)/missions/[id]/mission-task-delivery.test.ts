@@ -1,6 +1,6 @@
 /**
  * Mission detail's per-task delivery (`missionTaskDeliveries`): each task's
- * Build › Audit › Land and its audit/repair evidence, from the page's rows.
+ * Build › Verify › Deliver and its audit/repair evidence, from the page's rows.
  * Illustrative rows only: the dev fixture's 35-task, 2-remaining mission.
  */
 import { describe, expect, it } from 'bun:test';
@@ -28,7 +28,7 @@ describe('missionTaskDeliveries', () => {
     const t = of(DELIVERY_REPAIRING);
     expect(t.kind).toBe('repair');
     expect(t.repairRounds).toBe(2);
-    expect(t.stages).toEqual({ build: 'PR #434 opened', audit: 'Repair 2 · CI failed', land: 'After Audit' });
+    expect(t.stages).toEqual({ build: 'PR #434 opened', audit: 'Repair 2 · CI failed', land: 'After Verify' });
   });
 
   it('its evidence is revision-scoped, newest first, with each repair between two heads', () => {
@@ -47,7 +47,7 @@ describe('missionTaskDeliveries', () => {
   it('the held task has not started and has nothing to expand', () => {
     const t = of(DELIVERY_HELD);
     expect(t.kind).toBe('waiting');
-    expect(t.stages).toEqual({ build: 'Not started', audit: 'After Build', land: 'After Audit' });
+    expect(t.stages).toEqual({ build: 'Not started', audit: 'After Build', land: 'After Verify' });
     expect(t.evidence).toEqual([]);
   });
 

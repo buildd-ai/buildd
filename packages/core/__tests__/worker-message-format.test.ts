@@ -196,3 +196,29 @@ describe('human answer rendering', () => {
     expect(out).toContain('AGENT MESSAGE');
   });
 });
+
+describe('describeInjectedMessage: who a follow-up came from', () => {
+  const { describeInjectedMessage } = require('../worker-message-format') as typeof import('../worker-message-format');
+
+  it('names a rendered agent message as an agent message, with its type and sender', () => {
+    const text = formatWorkerMessages([released('merged')]);
+    expect(describeInjectedMessage(text)).toEqual({ source: 'agent', label: 'Agent message: path released, from task task-hol' });
+  });
+
+  it('keeps several batched agent messages as one agent message', () => {
+    const text = formatWorkerMessages([released('merged'), { ...released('abandoned'), id: 'msg-2' }]);
+    expect(describeInjectedMessage(text).source).toBe('agent');
+  });
+
+  it('treats anything else as a person, without guessing', () => {
+    expect(describeInjectedMessage('also update the docs')).toEqual({ source: 'user', label: 'User: also update the docs' });
+  });
+
+  it('does not call a person\'s text an agent message just because it mentions the marker mid-line', () => {
+    expect(describeInjectedMessage('why does it say **AGENT MESSAGE** here?').source).toBe('user');
+  });
+
+  it('truncates a long person message', () => {
+    expect(describeInjectedMessage('x'.repeat(100)).label).toBe(`User: ${'x'.repeat(30)}...`);
+  });
+});

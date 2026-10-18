@@ -7,6 +7,7 @@ import { roleHas, isTeamRole } from '@/lib/permissions';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam } from '@/lib/personal-team';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
@@ -198,6 +199,8 @@ export async function DELETE(
       ? await clampCreatorKeys({ teamId, userId: targetUserId, role: null })
       : 0;
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    invalidateAppChrome(user.id);
     return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
     console.error('Remove team member error:', error);

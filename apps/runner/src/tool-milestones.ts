@@ -188,3 +188,15 @@ export function recordPhaseOp(ops: string[], op: string | null): void {
   if (!op || ops.includes(op) || ops.length >= PHASE_OPS_CAP) return;
   ops.push(op);
 }
+
+/**
+ * The message a `git commit` command carries, or null when it is not in the
+ * command text (`--amend --no-edit`, `-F file`). Callers label a null one as a
+ * plain commit rather than inventing a message.
+ */
+export function commitMessageOf(cmd: string): string | null {
+  const heredoc = cmd.match(/cat\s*<<\s*['"]?EOF['"]?\n([\s\S]*?)\nEOF/);
+  if (heredoc) return heredoc[1].split('\n')[0].trim() || null;
+  const simple = cmd.match(/\s-[a-zA-Z]*m\s+["']([^"']+)["']/);
+  return simple ? simple[1] : null;
+}

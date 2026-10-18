@@ -1,6 +1,6 @@
 /**
  * The one delivery projection every surface reads: where a task or a mission
- * stands on Build → Audit → Land, how many repair rounds it took, and whether
+ * stands on Build → Verify → Deliver, how many repair rounds it took, and whether
  * anything genuinely waits on a person. Pure.
  *
  * Contract: knowledge-base `cross-surface-delivery-spec` (v2), approved in the
@@ -78,10 +78,10 @@ const STATUS_OF: Record<DeliveryKind, DeliveryStatus> = {
   unavailable: 'audit_unavailable', notlanded: 'not_landed', needs: 'needs_human',
 };
 
-export const DELIVERY_STAGES = ['Build', 'Audit', 'Land'] as const;
+export const DELIVERY_STAGES = ['Build', 'Verify', 'Deliver'] as const;
 
 /**
- * Position on the Build › Audit › Land track: 0..2 is the current stage, 3 is
+ * Position on the Build › Verify › Deliver track: 0..2 is the current stage, 3 is
  * past Land, -1 is not on the track yet (waiting, held, planning). Repair is
  * Audit with a round count, never a fourth stage.
  */

@@ -5,14 +5,14 @@ exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Pair on the parser                                      
- ▸ Pair… your session │ Run from your session                                   
-   Ship the… building │─────────────────────────────────────────────────────────
-   Docs refre… paused │ No activity yet.                                        
+ ▸ Pair  your session │ Run from your session                                   
+   on the parser      │─────────────────────────────────────────────────────────
+   Ship the… building │ No activity yet.                                        
+   Docs refre… paused │                                                         
    Done this week · 4 │                                                         
  Initech              │                                                         
    Billing… verifying │                                                         
    Done this week · 1 │                                                         
-                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -31,25 +31,25 @@ exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its
 " buildd · laptop-1234 · 2 workspaces · 2 teams   0 of 3 slots in use · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
- Acme                 │ 4 done in the last 7 days                               
-   Pair… your session │─────────────────────────────────────────────────────────
-   Ship the… building │ Mar 9   Retire the old API                              
-   Docs refre… paused │ Mar 8   Billing export                                  
- ▸ Done this week · 4 │ Mar 6   Search ranking                                  
-   Retire the … Mar 9 │ Mar 4   Onboarding copy                                 
-   Billing exp… Mar 8 │                                                         
-   Search rank… Mar 6 │                                                         
-   Onboarding … Mar 4 │                                                         
- Initech              │                                                         
-   Billing… verifying │                                                         
-   Done this week · 1 │                                                         
-                      │                                                         
-                      │                                                         
-                      │                                                         
-                      │                                                         
-                      │                                                         
-                      │                                                         
-                      │                                                         
+ Acme                       │ 4 done in the last 7 days                         
+   Pair on th… your session │───────────────────────────────────────────────────
+   Ship the impor… building │ Mar 9   Retire the old API                        
+   Docs refresh      paused │ Mar 8   Billing export                            
+ ▸ Done this week · 4       │ Mar 6   Search ranking                            
+   Retire the old API Mar 9 │ Mar 4   Onboarding copy                           
+   Billing export     Mar 8 │                                                   
+   Search ranking     Mar 6 │                                                   
+   Onboarding copy    Mar 4 │                                                   
+ Initech                    │                                                   
+   Billing clean… verifying │                                                   
+   Done this week · 1       │                                                   
+                            │                                                   
+                            │                                                   
+                            │                                                   
+                            │                                                   
+                            │                                                   
+                            │                                                   
+                            │                                                   
 ────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
 `;
@@ -59,10 +59,10 @@ exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Billing export (filter: billing)                        
- ▸ Billing exp… Mar 8 │ Done Mar 8                                              
- Initech              │─────────────────────────────────────────────────────────
-   Billing… verifying │ Nothing matches the filter.                             
-                      │                                                         
+ ▸ Billing      Mar 8 │ Done Mar 8                                              
+   export             │─────────────────────────────────────────────────────────
+ Initech              │ Nothing matches the filter.                             
+   Billing… verifying │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -85,41 +85,41 @@ exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instea
 " buildd · laptop-1234 · 2 workspaces · 2 teams                                0 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Acme                       │ Pair on the parser                                                                        
- ▸ Pair on th… your session │ Run from your session                                                                     
-   Ship the impor… building │───────────────────────────────────────────────────────────────────────────────────────────
-   Docs refresh      paused │ No activity yet.                                                                          
-   Done this week · 4       │                                                                                           
- Initech                    │                                                                                           
-   Billing clean… verifying │                                                                                           
-   Done this week · 1       │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ Acme                         │ Pair on the parser                                                                      
+ ▸ Pair on the   your session │ Run from your session                                                                   
+   parser                     │─────────────────────────────────────────────────────────────────────────────────────────
+   Ship the importer building │ No activity yet.                                                                        
+   Docs refresh        paused │                                                                                         
+   Done this week · 4         │                                                                                         
+ Initech                      │                                                                                         
+   Billing cleanup  verifying │                                                                                         
+   Done this week · 1         │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
@@ -128,41 +128,41 @@ exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on it
 " buildd · laptop-1234 · 2 workspaces · 2 teams                                0 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Acme                       │ 4 done in the last 7 days                                                                 
-   Pair on th… your session │───────────────────────────────────────────────────────────────────────────────────────────
-   Ship the impor… building │ Mar 9   Retire the old API                                                                
-   Docs refresh      paused │ Mar 8   Billing export                                                                    
- ▸ Done this week · 4       │ Mar 6   Search ranking                                                                    
-   Retire the old API Mar 9 │ Mar 4   Onboarding copy                                                                   
-   Billing export     Mar 8 │                                                                                           
-   Search ranking     Mar 6 │                                                                                           
-   Onboarding copy    Mar 4 │                                                                                           
- Initech                    │                                                                                           
-   Billing clean… verifying │                                                                                           
-   Done this week · 1       │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ Acme                                   │ 4 done in the last 7 days                                                     
+   Pair on the parser      your session │───────────────────────────────────────────────────────────────────────────────
+   Ship the importer           building │ Mar 9   Retire the old API                                                    
+   Docs refresh                  paused │ Mar 8   Billing export                                                        
+ ▸ Done this week · 4                   │ Mar 6   Search ranking                                                        
+   Retire the old API             Mar 9 │ Mar 4   Onboarding copy                                                       
+   Billing export                 Mar 8 │                                                                               
+   Search ranking                 Mar 6 │                                                                               
+   Onboarding copy                Mar 4 │                                                                               
+ Initech                                │                                                                               
+   Billing cleanup            verifying │                                                                               
+   Done this week · 1                   │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
+                                        │                                                                               
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
@@ -171,41 +171,41 @@ exports[`frames (R-7, R-21, AC-10) 120x40 filtering: a delivered match shows wit
 " buildd · laptop-1234 · 2 workspaces · 2 teams                                0 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Acme                       │ Billing export (filter: billing)                                                          
- ▸ Billing export     Mar 8 │ Done Mar 8                                                                                
- Initech                    │───────────────────────────────────────────────────────────────────────────────────────────
-   Billing clean… verifying │ Nothing matches the filter.                                                               
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
-                            │                                                                                           
+ Acme                         │ Billing export (filter: billing)                                                        
+ ▸ Billing export       Mar 8 │ Done Mar 8                                                                              
+ Initech                      │─────────────────────────────────────────────────────────────────────────────────────────
+   Billing cleanup  verifying │ Nothing matches the filter.                                                             
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
+                              │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;

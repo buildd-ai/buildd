@@ -6,7 +6,7 @@ import { lifecycleState } from './lifecycle-state';
 const KINDS = Object.keys(DELIVERY_KIND) as DeliveryKind[];
 
 describe('lifecycleState: a delivery kind on the one Lifecycle track', () => {
-  it('every kind sits on the same step it did on the Build › Audit › Land track', () => {
+  it('every kind sits on the same step it did on the Build › Verify › Deliver track', () => {
     for (const k of KINDS) {
       const at = deliveryStageIndex(k);
       expect([k, STEP_OF[lifecycleState(k)]]).toEqual([k, at]);
