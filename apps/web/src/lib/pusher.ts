@@ -105,6 +105,56 @@ export async function triggerEventChecked(
   }
 }
 
+// ── Worker progress dedup ──────────────────────────────────────────────────
+//
+// A runner's 30-second sync cycle PATCHes the worker endpoint even when
+// nothing visible has changed (no new currentAction, no status transition,
+// no taskProgress). Each PATCH fires 2 Pusher messages (worker + workspace
+// channel) — enough to exhaust the daily message quota with a modest fleet.
+//
+// `hasVisibleWorkerChange` returns true only when the event carries something
+// the dashboard or other subscribers would act on. Callers MUST still fire
+// for terminal events (WORKER_COMPLETED, WORKER_FAILED) unconditionally; this
+// guard applies only to WORKER_PROGRESS.
+
+export interface WorkerProgressSnapshot {
+  status: string | null | undefined;
+  currentAction: string | null | undefined;
+}
+
+/**
+ * Should a WORKER_PROGRESS Pusher event be published for this sync tick?
+ *
+ * Returns true when:
+ * - The worker status changed (e.g. waiting_input → running)
+ * - The currentAction text changed (visible progress line)
+ * - Transient taskProgress data is present (sub-agent steps, not persisted)
+ *
+ * Returns false for bare heartbeat acks / instruction delivery acks where
+ * nothing the subscriber would render has changed.
+ */
+export function hasVisibleWorkerChange(
+  prev: WorkerProgressSnapshot,
+  next: WorkerProgressSnapshot,
+  taskProgress: unknown[] | null | undefined,
+): boolean {
+  // Status transition is always visible.
+  if (prev.status !== next.status) return true;
+
+  // New currentAction text: the runner reports what it's doing.
+  // Treat both null and undefined as "no action" — so
+  // null→undefined is NOT a change.
+  const prevAction = prev.currentAction ?? null;
+  const nextAction = next.currentAction ?? null;
+  if (prevAction !== nextAction) return true;
+
+  // Transient sub-agent progress that must travel over Pusher
+  // (not persisted in the DB, so polling won't pick it up).
+  if (taskProgress && Array.isArray(taskProgress) && taskProgress.length > 0) return true;
+
+  return false;
+}
+
 // Optional channel prefix for environment isolation (e.g. "preview-")
 const CHANNEL_PREFIX = process.env.PUSHER_CHANNEL_PREFIX || '';
 
