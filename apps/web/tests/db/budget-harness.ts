@@ -79,7 +79,7 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
     WHERE t.slug = ${slug} LIMIT 1`);
   if (existing) {
     const ws = await q<{ id: string }>(sql`SELECT id FROM workspaces WHERE team_id = ${existing.id}::uuid ORDER BY name`);
-    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workers WHERE workspace_id = ANY(${pgArray(ws.map(w => w.id))}::uuid[])`);
+    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workers WHERE workspace_id IN (SELECT id FROM workspaces WHERE team_id = ${existing.id}::uuid)`);
     if (n === scale.workers) {
       return { teamId: existing.id, userId: existing.user_id, workspaceIds: ws.map(w => w.id), scale, reused: true };
     }
@@ -142,7 +142,7 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
   await q(sql`
     WITH t AS (
       SELECT id, workspace_id, status, created_at, row_number() OVER (ORDER BY created_at, id) - 1 AS rn
-      FROM tasks WHERE workspace_id = ANY(${pgArray(wsIds)}::uuid[])
+      FROM tasks WHERE workspace_id IN (SELECT id FROM workspaces WHERE team_id = ${team.id}::uuid)
     ), n AS (SELECT count(*) AS c FROM t)
     INSERT INTO workers (task_id, workspace_id, name, runner, branch, status, milestones, mcp_calls, result_meta,
       instruction_history, error, pr_url, pr_number, merged_at, pr_lifecycle_status, started_at, completed_at, created_at, updated_at)
@@ -165,7 +165,7 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
     CROSS JOIN n
     JOIN t ON t.rn = g % n.c`);
 
-  for (const table of ['missions', 'tasks', 'workers']) await q(sql.raw(`ANALYZE ${table}`));
+  for (const table of ['missions', 'tasks', 'workers']) await q(sql`ANALYZE ${sql.identifier(table)}`);
   return { teamId: team.id, userId: user.id, workspaceIds: wsIds, scale, reused: false };
 }
 
