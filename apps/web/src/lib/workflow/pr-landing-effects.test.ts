@@ -64,8 +64,13 @@ describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
     expect(at({ merged: false, message: 'Resource not accessible by integration', status: 403 })).toBeNull();
     expect(at({ merged: true, message: 'merged', status: 200 })).toBeNull();
   });
+  test('a required check that has not passed yet is a hold, never a person\'s (§4 merge holds)', () => {
+    expect(classifyMergeCall({ merged: false, message: 'Required status check "build" is expected.', status: 405 })).toBe('held');
+    expect(classifyMergeCall({ merged: false, message: 'Required status check "Buildd / Review approval" is in progress.', status: 405 })).toBe('held');
+    expect(classifyMergeCall({ merged: false, message: 'Repository rule violations found\n\n2 of 3 required status checks are expected.', status: 405 })).toBe('held');
+  });
   test('anything else GitHub definitely refused goes to a person', () => {
-    expect(no('Required status check "build" is expected.')).toBe('refused');
+    expect(no('Required status check "build" is failing.')).toBe('refused');
     expect(no('Resource not accessible by integration')).toBe('refused');
   });
 });
@@ -77,6 +82,8 @@ describe('mergeAnswerOf: the port answer the package handler applies as T16', ()
     expect(mergeAnswerOf({ merged: false, message: 'You have exceeded a secondary rate limit.', status: 429, retryAfterMs: 120_000 }, now))
       .toEqual({ outcome: 'not_merged', detail: 'You have exceeded a secondary rate limit.', retryAt: '2026-10-01T00:02:00.000Z' });
     expect(mergeAnswerOf({ merged: false, message: 'Merge conflict' }, now)).toEqual({ outcome: 'conflict', detail: 'Merge conflict', retryAt: null });
+    expect(mergeAnswerOf({ merged: false, message: 'Required status check "build" is expected.', status: 405 }, now))
+      .toEqual({ outcome: 'held', detail: 'Required status check "build" is expected.', retryAt: null, check: 'build' });
   });
 });
 

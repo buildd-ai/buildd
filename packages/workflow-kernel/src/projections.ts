@@ -301,6 +301,7 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
     };
   }
   if (t?.command === 'MergeCallResult' && ev?.outcome === 'gate_refused') return { headline: 'The review approval check refused the merge when it ran; a person has to look', detail: str('detail') };
+  if (t?.command === 'MergeCallResult' && ev?.outcome === 'held') return { headline: 'GitHub kept the merge waiting on a required check that has not passed; a person has to look', detail: str('detail') };
   if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to merge it', detail: str('detail') };
   if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to merge it', detail: str('reason') };
   return { headline: ESCALATION_COPY.landing_needs_human!, detail: evidenceDetail(t) };
