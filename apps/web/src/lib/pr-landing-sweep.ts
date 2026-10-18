@@ -40,8 +40,8 @@ import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db
 import type { LandingOutcome, LandPrInput } from '@/lib/pr-landing';
 import type { LandingMarker } from '@/lib/pr-landing-marker';
 
-/** The Redis due-queue (`buildd:due:pr-landing`) the gated tick reads. */
-export const PR_LANDING_DUE_QUEUE = 'pr-landing';
+/** The Redis due-queue (`buildd:due:pr-landing`) the gated tick reads. Defined in core so the kernel can wake it. */
+export { PR_LANDING_DUE_QUEUE } from '@/lib/landing-due-queue';
 
 /** PRs landed per run. Each costs a peek plus a full `landPr` read, well over one GitHub call. */
 export const LANDING_SWEEP_BATCH_CAP = 20;
