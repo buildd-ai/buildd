@@ -35,12 +35,16 @@ function series(levels: number[]): OccupancySeries {
   const bucketMs = 24 * H / levels.length;
   const from = NOW - 24 * H;
   const lvl = (v: number) => ({ avg: v, peak: Math.ceil(v) });
+  const by = (v: number) => ({ mine: lvl(v), others: lvl(0), unattributed: lvl(0) });
   return {
     windowKey: '24h' as OccupancySeries['windowKey'],
     window: { from, to: NOW },
     bucketMs,
-    buckets: levels.map((v, i) => ({ t: from + i * bucketMs, runner: lvl(v), sessions: lvl(0) })),
-    summary: { runner: { avg: levels.reduce((a, b) => a + b, 0) / levels.length, peak: Math.max(...levels) }, sessions: lvl(0) },
+    buckets: levels.map((v, i) => ({ t: from + i * bucketMs, runner: lvl(v), sessions: lvl(0), runnerBy: by(v), sessionsBy: by(0) })),
+    summary: (() => {
+      const runner = { avg: levels.reduce((a, b) => a + b, 0) / levels.length, peak: Math.max(...levels) };
+      return { runner, sessions: lvl(0), runnerBy: { mine: runner, others: lvl(0), unattributed: lvl(0) }, sessionsBy: by(0) };
+    })(),
   };
 }
 const BUSY_DAY = series([1, 1, 0, 0, 0, 0, 0, 1, 2, 3, 4, 4, 3, 2, 0, 0, 2, 3, 4, 4, 3, 3, 2, 3].flatMap(v => [v, v, v, v]));
