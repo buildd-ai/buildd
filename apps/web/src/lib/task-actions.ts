@@ -89,11 +89,13 @@ export const STARTABLE_PHASES: ReadonlySet<TaskPhase> = new Set<TaskPhase>([
  * - `retry` / `switch_backend` / `history`: a task whose worker failed;
  * - `verification_failed` / `history`: a task whose work landed and whose audit
  *   failed — no retry of the build, the audit's own surface retries the audit;
+ * - `waiting_on_failed` / `history`: a task that never ran because a task it
+ *   depends on failed — no retry of its own, a link to that task (spec 072de598 I-14);
  * - `blocked`: the dependency notice (no action, by design);
  * - `claim_hint`: `claim_task {taskId}` for a task only a local session claims;
  * - `run_now`: ask for a start now (a gate refusal becomes Force start inline).
  */
-export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'blocked' | 'claim_hint' | 'run_now';
+export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'waiting_on_failed' | 'blocked' | 'claim_hint' | 'run_now';
 
 export interface TaskActionState {
   phase: TaskPhase;
@@ -111,7 +113,7 @@ export interface TaskActionState {
    * produces a second failure); omitted means unknown and keeps it.
    */
   otherBackendAvailable?: boolean;
-  /** `classifyTaskFailure`; `verification` swaps the build's recovery for the audit's. */
+  /** `classifyTaskFailure`; `verification` swaps the build's recovery for the audit's, `dependency` drops it for a link to the failed task. */
   failureKind?: TaskFailureKind | null;
 }
 
@@ -132,6 +134,9 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
   if (waiting && s.hasQuestion) out.push('answer');
   if (s.phase === 'failed' && !waiting && s.failureKind === 'verification') {
     out.push('verification_failed');
+    if (s.hasHistory) out.push('history');
+  } else if (s.phase === 'failed' && !waiting && s.failureKind === 'dependency') {
+    out.push('waiting_on_failed');
     if (s.hasHistory) out.push('history');
   } else if (s.phase === 'failed' && !waiting) {
     out.push('retry');

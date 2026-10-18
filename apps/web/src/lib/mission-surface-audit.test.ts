@@ -657,5 +657,9 @@ describe('isLiveAudit (failure-incident-recovery §16.4 mission adapter)', () =>
     expect(isLiveAudit({ status: 'failed', context: {} })).toBe(false);
     expect(isLiveAudit({ status: 'cancelled', context: { incidentRecovery: { incidentId: 'inc-1', generation: 1 } } })).toBe(false);
     expect(isLiveAudit({ status: 'failed', context: { incidentRecovery: { incidentId: 'inc-1', generation: 2 } } })).toBe(true);
+    // Spec 072de598 I-14: failed only because build work it checks failed. It never ran and is
+    // re-queued when that work completes; a replacement would skip the failed work.
+    expect(isLiveAudit({ status: 'failed', result: { error: 'Blocked: dependency "Build" (b1) failed', errorType: 'dependency_failed', blockedBy: { taskId: 'b1', title: 'Build' } } })).toBe(true);
+    expect(isLiveAudit({ status: 'failed', result: { error: 'Ran out of turns', errorType: 'max_turns' } })).toBe(false);
   });
 });
