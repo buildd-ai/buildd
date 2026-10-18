@@ -24,7 +24,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, type LandingStatus } from '@buildd/workflow-kernel/landing-gate';
-import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
+import { openHeadStatus, statusCoverage, type CandidateGateInput, type OpenHeadAnswer, type OpenHead, type StatusCoverage, type UnownedReview } from '@buildd/workflow-kernel/open-pr-status';
 import type { KernelView } from '@buildd/workflow-kernel/types';
 import { githubApi } from '@/lib/github';
 import { kernelDeliveryForPr } from './authority';
@@ -141,16 +141,95 @@ async function publishLive(installationId: number, p: { repoFullName: string; sh
 /** The republish effect's key: one per delivery version, so a pass repeats nothing the outbox holds. */
 export const republishKey = (deliveryId: string, version: number) => `landing_status:${deliveryId}:${version}:open-pr-sweep`;
 
-export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promise<OpenPrStatusSummary> {
-  const exec = deps.exec ?? dbExec;
-  const statusOf = deps.statusOf ?? ((i, r, sha, c) => githubReader(i).statusOf!(r, sha, c));
+interface HeadRun {
+  deps: OpenPrStatusDeps;
+  exec: Exec;
+  reviews: OpenPrReviews;
+  /** False on the web host's webhook path: a kernel write (an effect and its drain) is the control plane's, so only the floor does it. */
+  kernelRepublish: boolean;
+}
+
+type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean };
+
+/** Write `answer` on one open head (the sweep's and the webhooks' shared step): what GitHub shows now is compared first, so a repeat writes nothing. */
+async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha: string): Promise<HeadResult> {
+  const { deps, exec, reviews } = run;
+  const { installationId, repoFullName } = links[0]!;
+  const statusOf = deps.statusOf ?? ((i, r, h, c) => githubReader(i).statusOf!(r, h, c));
   const publish = deps.publish ?? publishLive;
   const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, exec));
   const loadView = deps.loadView ?? ((id) => loadKernelView({ deliveryId: id }, exec));
   const enqueueRepublish = deps.enqueueRepublish ?? (async (id, version) =>
     ((await exec(enqueueEffectSql(id, version, { kind: 'publish_landing_status', dedupeKey: republishKey(id, version), payload: { version } }))).rows ?? []).length > 0);
   const drain = deps.drain ?? (async (id) => (await import('./seam')).drainDelivery(id));
+
+  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false };
+  const read = () => Promise.all(LANDING_STATUS_CONTEXTS.map((c) => statusOf(installationId, repoFullName, sha, c).catch(() => null)));
+  const matches = (cur: Shown[], want: LandingStatus) => cur.every((x) => x && x.state === want.state && x.description === want.description);
+  const ownerOf = async () => {
+    for (const l of links) {
+      const id = await owned(l.workspaceId, repoFullName, pr.number);
+      if (id) return { link: l, deliveryId: id };
+    }
+    return null;
+  };
+  const republish = async (deliveryId: string, view: KernelView) => {
+    const inserted = await enqueueRepublish(deliveryId, view.delivery!.version);
+    if (inserted) out.republished = true;
+    await drain(deliveryId);
+  };
+
+  const owner = await ownerOf();
+  const view = owner ? await loadView(owner.deliveryId) : null;
+  const link = owner?.link ?? links[0]!;
+  const facts = {
+    headRef: pr.head?.ref, baseRef: pr.base?.ref, headSha: sha, author: pr.user?.login ?? null,
+    headRepoFullName: pr.head?.repo?.full_name ?? null, baseRepoFullName: pr.base?.repo?.full_name ?? repoFullName, body: pr.body ?? null,
+  };
+  const candidateLink = links.find((l) => reviews.isCandidate(l.releaseConfig, facts)) ?? null;
+  const workspaceId = candidateLink?.workspaceId ?? link.workspaceId;
+  // Only what the answer needs: the kernel's own answer reads no review state.
+  const kernelHere = openHeadStatus({ sha, view });
+  const answer = kernelHere.by === 'kernel' ? kernelHere : openHeadStatus({
+    sha, view,
+    candidate: candidateLink ? await reviews.candidate({ workspaceId, installationId, repoFullName, prNumber: pr.number, sha }) : null,
+    review: candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number }),
+  });
+  out.by = answer.by;
+  const current = await read();
+  if (matches(current, answer.status)) {
+    out.shown = true;
+    out.unchanged = true;
+  } else if (answer.by === 'kernel') {
+    if (run.kernelRepublish) {
+      await republish(owner!.deliveryId, view!);
+      out.shown = !!(await statusOf(installationId, repoFullName, sha, LANDING_STATUS_CONTEXT).catch(() => null));
+    } else {
+      out.shown = current.some((x) => x);
+    }
+  } else {
+    // Under both names, the legacy one first, as the kernel writes them.
+    for (const context of LANDING_STATUS_CONTEXTS) {
+      await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
+    }
+    out.wrote = true;
+    out.shown = true;
+    if (run.kernelRepublish) {
+      // A delivery that took the PR (or saw this head) while this pass wrote: its answer is the last write.
+      const now = await ownerOf();
+      if (now) {
+        const v = await loadView(now.deliveryId);
+        if (openHeadStatus({ sha, view: v }).by === 'kernel') await republish(now.deliveryId, v);
+      }
+    }
+  }
+  return out;
+}
+
+export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promise<OpenPrStatusSummary> {
+  const exec = deps.exec ?? dbExec;
   const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
+  const run: HeadRun = { deps, exec, reviews, kernelRepublish: true };
 
   const s: Omit<OpenPrStatusSummary, 'coverage'> = { repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, errors: 0 };
   const heads: Array<OpenHead & { shown: boolean }> = [];
@@ -180,59 +259,12 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
       const head: OpenHead = { repoFullName, prNumber: pr.number, sha };
       let shown = false;
       try {
-        const read = () => Promise.all(LANDING_STATUS_CONTEXTS.map((c) => statusOf(installationId, repoFullName, sha, c).catch(() => null)));
-        const matches = (cur: Shown[], want: LandingStatus) => cur.every((x) => x && x.state === want.state && x.description === want.description);
-        const ownerOf = async () => {
-          for (const l of links) {
-            const id = await owned(l.workspaceId, repoFullName, pr.number);
-            if (id) return { link: l, deliveryId: id };
-          }
-          return null;
-        };
-        const republish = async (deliveryId: string, view: KernelView) => {
-          const inserted = await enqueueRepublish(deliveryId, view.delivery!.version);
-          if (inserted) s.republished++;
-          await drain(deliveryId);
-        };
-
-        const owner = await ownerOf();
-        const view = owner ? await loadView(owner.deliveryId) : null;
-        const link = owner?.link ?? links[0]!;
-        const facts = {
-          headRef: pr.head?.ref, baseRef: pr.base?.ref, headSha: sha, author: pr.user?.login ?? null,
-          headRepoFullName: pr.head?.repo?.full_name ?? null, baseRepoFullName: pr.base?.repo?.full_name ?? repoFullName, body: pr.body ?? null,
-        };
-        const candidateLink = links.find((l) => reviews.isCandidate(l.releaseConfig, facts)) ?? null;
-        const workspaceId = candidateLink?.workspaceId ?? link.workspaceId;
-        // Only what the answer needs: the kernel's own answer reads no review state.
-        const kernelHere = openHeadStatus({ sha, view });
-        const answer = kernelHere.by === 'kernel' ? kernelHere : openHeadStatus({
-          sha, view,
-          candidate: candidateLink ? await reviews.candidate({ workspaceId, installationId, repoFullName, prNumber: pr.number, sha }) : null,
-          review: candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number }),
-        });
-        if (answer.by === 'release_candidate') s.candidates++;
-        const current = await read();
-        if (matches(current, answer.status)) {
-          s.unchanged++;
-          shown = true;
-        } else if (answer.by === 'kernel') {
-          await republish(owner!.deliveryId, view!);
-          shown = !!(await statusOf(installationId, repoFullName, sha, LANDING_STATUS_CONTEXT).catch(() => null));
-        } else {
-          // Under both names, the legacy one first, as the kernel writes them.
-          for (const context of LANDING_STATUS_CONTEXTS) {
-            await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
-          }
-          s.published++;
-          shown = true;
-          // A delivery that took the PR (or saw this head) while this pass wrote: its answer is the last write.
-          const now = await ownerOf();
-          if (now) {
-            const v = await loadView(now.deliveryId);
-            if (openHeadStatus({ sha, view: v }).by === 'kernel') await republish(now.deliveryId, v);
-          }
-        }
+        const r = await publishHead(run, links, pr, sha);
+        shown = r.shown;
+        if (r.by === 'release_candidate') s.candidates++;
+        if (r.republished) s.republished++;
+        if (r.wrote) s.published++;
+        else if (r.unchanged) s.unchanged++;
       } catch (err) {
         s.errors++;
         console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} failed:`, err);
@@ -241,4 +273,55 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
     }
   }
   return { ...s, coverage: statusCoverage(heads) };
+}
+
+export type PrEventOutcome = 'published' | 'unchanged' | 'skipped_not_open' | 'skipped_stale_head' | 'skipped_unlinked';
+
+/** The PR as GitHub shows it now (null: gone). */
+async function getPullLive(installationId: number, repoFullName: string, prNumber: number): Promise<OpenPull & { state?: string } | null> {
+  const raw = (await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`)) as (OpenPull & { state?: string }) | null;
+  return raw && typeof raw === 'object' && 'number' in raw ? raw : null;
+}
+
+/** Most times one event re-derives its answer after writing, to follow inputs that moved under it. */
+const MAX_SETTLE = 3;
+
+/**
+ * An event (a PR opened or pushed, a check finished, a review verdict recorded) re-derives one open
+ * head's `Buildd / Review approval` now instead of at the next hourly floor (AC-40, AC-42).
+ *
+ * Ordered by construction, never by the event's arrival: the answer is derived from what GitHub and
+ * the review state show *now*, not from the payload, so a late or duplicate event repeats the newest
+ * answer. A PR no longer open, or whose head is not the event's `sha`, is skipped, so an older head's
+ * event never writes. After writing, the answer is derived again and rewritten if its inputs moved
+ * meanwhile (a concurrent newer event's write is never left overwritten by an older one's).
+ * Writes only when GitHub shows something else, so a duplicate writes nothing.
+ *
+ * Runs on the web host: it writes commit statuses only. A head a delivery owns is the kernel's to
+ * publish (through the door), so this never enqueues or drains kernel effects; the floor does.
+ */
+export async function publishOpenPrHead(
+  p: { installationId: number; repoFullName: string; prNumber: number; sha?: string | null },
+  deps: OpenPrStatusDeps & { getPull?: (installationId: number, repoFullName: string, prNumber: number) => Promise<(OpenPull & { state?: string }) | null> } = {},
+): Promise<PrEventOutcome> {
+  const exec = deps.exec ?? dbExec;
+  const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
+  const links = (await (deps.repos ?? (() => linkedRepos(exec)))()).filter((r) => r.repoFullName.toLowerCase() === p.repoFullName.toLowerCase());
+  if (!links.length) return 'skipped_unlinked';
+  const linked = [{ ...links[0]!, installationId: p.installationId }, ...links.slice(1)];
+  const getPull = deps.getPull ?? getPullLive;
+  const run: HeadRun = { deps, exec, reviews, kernelRepublish: false };
+
+  let outcome: PrEventOutcome = 'unchanged';
+  for (let i = 0; i < MAX_SETTLE; i++) {
+    const pr = await getPull(p.installationId, links[0]!.repoFullName, p.prNumber);
+    if (!pr || (pr.state && pr.state !== 'open')) return i === 0 ? 'skipped_not_open' : outcome;
+    const sha = pr.head?.sha;
+    if (!sha || (p.sha && p.sha !== sha && i === 0)) return i === 0 ? 'skipped_stale_head' : outcome;
+    const r = await publishHead(run, linked, pr, sha);
+    if (!r.wrote) return outcome;
+    outcome = 'published';
+    // It wrote: derive again, so inputs that moved while it wrote are not left behind.
+  }
+  return outcome;
 }
