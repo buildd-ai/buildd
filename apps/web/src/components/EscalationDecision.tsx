@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import Sheet from '@/components/ui/Sheet';
+import FindingDisposeForm from './FindingDisposeForm';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { DECISION_LABELS, parseDecisionHash, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
@@ -81,10 +82,13 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
     [DECISION_LABELS.open, copy.unresolved.open],
     [DECISION_LABELS.awaitingVerification, copy.unresolved.awaitingVerification],
   ];
-  const groups: Array<[string, typeof brief.findings.open]> = [
-    [DECISION_LABELS.open, brief.findings.open],
-    [DECISION_LABELS.awaitingVerification, brief.findings.addressedAwaitingVerification],
-    ['Resolved', brief.findings.resolved],
+  // #5154: a finding can be waived or deferred while it is open or awaiting verification.
+  const groups: Array<{ label: string; list: typeof brief.findings.open; disposable: boolean }> = [
+    { label: DECISION_LABELS.open, list: brief.findings.open, disposable: true },
+    { label: DECISION_LABELS.awaitingVerification, list: brief.findings.addressedAwaitingVerification, disposable: true },
+    { label: 'Resolved', list: brief.findings.resolved, disposable: false },
+    { label: 'Waived', list: brief.findings.waived ?? [], disposable: false },
+    { label: 'Deferred', list: brief.findings.deferred ?? [], disposable: false },
   ];
 
   return (
@@ -100,7 +104,7 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
       ))}
       {showFindings && (
         <div data-testid="decision-findings" className="mt-3 flex flex-col gap-3 border-t border-border-default pt-3">
-          {groups.filter(([, list]) => list.length > 0).map(([label, list]) => (
+          {groups.filter((g) => g.list.length > 0).map(({ label, list, disposable }) => (
             <div key={label}>
               <h3 className="text-meta font-medium text-text-muted">{label}</h3>
               <ul className="mt-1 flex flex-col gap-1">
@@ -109,6 +113,7 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
                     {f.title}
                     {f.path && <span className="font-mono text-meta text-text-muted"> {f.path}{f.line != null ? `:${f.line}` : ''}</span>}
                     {f.stale && <span className="text-meta text-text-muted"> · touched by an older push</span>}
+                    {disposable && <FindingDisposeForm prNumber={prNumber} workspaceId={workspaceId} findingId={f.id} decisionHead={brief.decisionHead} />}
                   </li>
                 ))}
               </ul>

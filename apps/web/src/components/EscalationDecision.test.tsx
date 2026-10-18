@@ -58,3 +58,12 @@ describe('EscalationDecision confirm', () => {
     expect(src).toContain('data.error');
   });
 });
+
+describe('EscalationDecision findings list (#5154)', () => {
+  test('keeps waive and defer on open and awaiting findings', async () => {
+    const src = await Bun.file(new URL('./EscalationDecision.tsx', import.meta.url)).text();
+    expect(src).toContain('<FindingDisposeForm');
+    expect(src).toContain("label: 'Waived'");
+    expect(src).toContain("label: 'Deferred'");
+  });
+});
