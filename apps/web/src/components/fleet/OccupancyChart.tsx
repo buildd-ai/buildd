@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type OccupancyOwner, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
+import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type OccupancyCoverage, type OccupancyOwner, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
 import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sample';
 import Segmented from '@/components/ui/Segmented';
@@ -125,12 +125,23 @@ function Metric({ label, value, testId }: { label: string; value: string; testId
 const OWNER_LABELS: Record<OccupancyOwner, string> = { mine: 'Yours', others: 'Teammates', unattributed: 'Other / unattributed' };
 
 /** Average busy slots by owner. The parts sum to the average above; work with no recorded owner is its own line, never folded into anyone's. */
-function OwnerSplit({ by }: { by: OccupancyBreakdown }) {
+function OwnerSplit({ by, coverage }: { by: OccupancyBreakdown; coverage?: OccupancyCoverage }) {
+  const gaps = coverage ? [
+    coverage.ownerMissing > 0 && `${coverage.ownerMissing} of ${coverage.total} have no recorded owner`,
+    coverage.runnerMissing > 0 && `${coverage.runnerMissing} ran on a runner with no recorded owner`,
+  ].filter(Boolean) : [];
   return (
-    <div data-testid="occupancy-owner-split" className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
-      {OCCUPANCY_OWNERS.map(o => (
-        <Metric key={o} testId={`occupancy-owner-${o}`} label={`${OWNER_LABELS[o]}, average`} value={fmtLevel(by[o].avg)} />
-      ))}
+    <div className="mb-3">
+      <div data-testid="occupancy-owner-split" className="flex flex-wrap gap-x-6 gap-y-2">
+        {OCCUPANCY_OWNERS.map(o => (
+          <Metric key={o} testId={`occupancy-owner-${o}`} label={`${OWNER_LABELS[o]}, average`} value={fmtLevel(by[o].avg)} />
+        ))}
+      </div>
+      {gaps.length > 0 && (
+        <p data-testid="occupancy-coverage-note" className="mt-2 text-meta text-text-muted">
+          Of {coverage!.total} runner jobs: {gaps.join('; ')}.
+        </p>
+      )}
     </div>
   );
 }
@@ -261,7 +272,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
-      {!runnerIdle && <OwnerSplit by={series.summary.runnerBy} />}
+      {!runnerIdle && <OwnerSplit by={series.summary.runnerBy} coverage={series.summary.coverage} />}
       {runnerIdle ? (
         <p data-testid="occupancy-runner-idle" className="py-2 text-body text-text-muted">No runner work in the {words}.</p>
       ) : (
