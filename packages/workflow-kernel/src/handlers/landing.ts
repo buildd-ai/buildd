@@ -134,9 +134,11 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const writes = github?.writes;
     if (!github || !writes) throw new Error(NO_INSTALLATION);
     // Under both names (legacy first) until nothing reads the old one.
+    // Details on GitHub opens the delivery's review and findings in the host (R-43), when it has a page for it.
+    const targetUrl = ports.links?.review(d) ?? null;
     const publish = async (s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }) => {
       for (const context of LANDING_STATUS_CONTEXTS) {
-        await writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context, state: s.state, description: s.description });
+        await writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context, state: s.state, description: s.description, ...(targetUrl ? { targetUrl } : {}) });
       }
     };
     let wrote = false;
@@ -149,7 +151,11 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
         // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
         const want = status;
         const shown = await Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(d.repoFullName, want.sha, c).catch(() => null) : null)));
-        if (shown.some((current) => !current || current.state !== want.state || current.description !== want.description)) {
+        const stale = (current: { state: string; description: string; targetUrl?: string | null } | null) => !current
+          || current.state !== want.state || current.description !== want.description
+          // A reader that reports the link: a status published before it had one is written again.
+          || (current.targetUrl !== undefined && targetUrl !== null && current.targetUrl !== targetUrl);
+        if (shown.some(stale)) {
           await publish(want);
           wrote = true;
         }

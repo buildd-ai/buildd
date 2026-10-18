@@ -140,6 +140,8 @@ export interface TopState {
     maxConcurrent: number;
     builddServer: string | null;
     online: boolean;
+    /** The event stream has been up at least once: offline before that is loading, after it reconnecting. */
+    connectedOnce: boolean;
     /** A person's hold (`buildd hold`, `h`): nothing new starts while set (R-33). */
     hold: RunnerHold | null;
     /** The routes this machine's own credentials give (R-39), from GET /api/config. */
@@ -235,7 +237,7 @@ export const NO_MISSION_TITLE = 'Other tasks';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, hold: null, routes: [], routeProblems: [] },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [] },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -265,7 +267,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
   | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[] }
-  | { type: 'workers'; workers: TopWorker[] }
+  | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
   | { type: 'missions'; missions: RecentMission[] }
@@ -318,8 +320,12 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         },
       };
     }
-    case 'workers':
-      return { ...state, workers: mergeWorkers({}, (event as any).workers ?? []) };
+    case 'workers': {
+      // fresher: workers the stream updated after this snapshot was asked for; their pushed copy is newer.
+      const next = mergeWorkers({}, (event as any).workers ?? []);
+      for (const id of (event as any).fresher ?? []) if (state.workers[id]) next[id] = state.workers[id];
+      return { ...state, workers: next };
+    }
     case 'tasks': {
       if (!Array.isArray((event as any).tasks)) return state;
       const tasks: TopTask[] = (event as any).tasks;
@@ -369,8 +375,10 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       const n = (event as any).maxConcurrent;
       return typeof n === 'number' && n > 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
     }
-    case 'connection':
-      return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
+    case 'connection': {
+      const online = !!(event as any).online;
+      return { ...state, runner: { ...state.runner, online, connectedOnce: state.runner.connectedOnce || online } };
+    }
     case 'status':
       return { ...state, status: (event as any).status ?? null };
     case 'init': {
@@ -382,7 +390,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
       // An older runner sends no `hold`: it cannot be held, so none.
-      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
+      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, connectedOnce: true, hold: parseRunnerHold(e.hold) } };
     }
     case 'runner_hold': {
       return { ...state, runner: { ...state.runner, hold: parseRunnerHold((event as any).hold) } };

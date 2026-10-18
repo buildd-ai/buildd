@@ -1255,8 +1255,9 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     expect(taskUpdateSet.status).toBe('completed');
     // result must be populated so mission review sees a real completion
     expect(taskUpdateSet.result).toBeDefined();
-    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/1591');
-    expect(taskUpdateSet.result.prNumber).toBe(1591);
+    // AC-1 slice 4: the PR stays on the worker row and is derived on read; result does not copy it.
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
+    expect(taskUpdateSet.result.prNumber).toBeUndefined();
     expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
   });
 
@@ -1416,7 +1417,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     // Even with artifact query failure, prUrl being set must promote to completed
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('completed');
-    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/99');
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
   });
 });
 

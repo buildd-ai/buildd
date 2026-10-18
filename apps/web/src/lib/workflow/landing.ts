@@ -313,7 +313,7 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     return { ...base, merged: false, outcome, reason: d.stateReason, message: detail || (outcome === 'behind' ? 'The branch is behind its base; it is being updated.' : 'The PR has merge conflicts; a fix is queued.') };
   }
   // §4: the gate, asked again when the merge effect ran, refused before any merge call.
-  if (last?.outcome === 'gate_refused') return { ...base, merged: false, outcome: 'rejected', reason: 'gate_refused', message: detail || 'The landing check refused the merge when it ran; nothing was merged.' };
+  if (last?.outcome === 'gate_refused') return { ...base, merged: false, outcome: 'rejected', reason: 'gate_refused', message: detail || 'The review approval check refused the merge when it ran; nothing was merged.' };
   if (last?.outcome === 'not_merged') return { ...base, merged: false, outcome: 'not_merged', reason: 'not_merged', message: detail || 'Nothing was merged.' };
   return { ...base, merged: false, outcome: 'refused', reason: d.stateReason ?? last?.outcome ?? 'refused', message: detail || 'GitHub refused the merge; a person needs to look at it.' };
 }
