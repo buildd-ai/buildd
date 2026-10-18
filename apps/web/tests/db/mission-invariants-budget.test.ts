@@ -37,8 +37,15 @@ const { loadInvariantSnapshot } = await import('../../src/lib/mission-invariant-
 const { evaluateInvariants } = await import('../../src/lib/mission-invariants');
 const { POST } = await import('../../src/app/api/cron/mission-invariants/route');
 
-/** R-25: no single run reads more than 5 MB. Queries: the bounded batch's own set. */
-const CRON_BUDGET = { queries: 25, bytes: 5 * 1024 * 1024 };
+/**
+ * R-25: no single run reads more than 5 MB. Queries: the batch's own fixed set,
+ * plus at most two per mission base ref it checks (the owner's installation
+ * lookup; the checks themselves are capped at MAX_REMOTE_REF_CHECKS). Other
+ * files in a shared test database can leave open PRs on mission branches.
+ */
+const CRON_BYTES = 5 * 1024 * 1024;
+const BASE_QUERIES = 20;
+const QUERIES_PER_REF = 2;
 
 const HOUR = 3_600_000;
 
@@ -176,15 +183,19 @@ describe('mission-invariant sweep run budget', () => {
   it('fits R-25 at AC-1 scale: at most 5 MB per run', async () => {
     process.env.CRON_SECRET = 'budget-test-secret';
     let status = 0;
+    let refs = 0;
     const m = await measureLoader('cron:mission-invariants', async () => {
       const res = await POST(new NextRequest('http://localhost/api/cron/mission-invariants', {
         method: 'POST', headers: { authorization: 'Bearer budget-test-secret' },
       }));
       status = res.status;
+      const body = await res.json() as { scanned?: { remoteRefs?: number; remoteRefsSkipped?: number } };
+      refs = (body.scanned?.remoteRefs ?? 0) + (body.scanned?.remoteRefsSkipped ?? 0);
     });
-    reportBudget(m, CRON_BUDGET, scale);
+    const budget = { queries: BASE_QUERIES + QUERIES_PER_REF * refs, bytes: CRON_BYTES };
+    reportBudget(m, budget, scale);
     expect(status).toBe(200);
     expect(m.count).toBeGreaterThan(0);
-    expectWithinBudget(m, CRON_BUDGET);
+    expectWithinBudget(m, budget);
   }, 300_000);
 });
