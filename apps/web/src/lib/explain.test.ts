@@ -1028,3 +1028,14 @@ describe('visual task browser claimability explanation', () => {
     browserHeartbeats = [];
   });
 });
+
+describe('isInfraFailedTask', () => {
+  it('flags a worktree setup failure that refused the shared clone', async () => {
+    const { isInfraFailedTask } = await import('./explain');
+    const error = 'Worktree setup failed for branch b in /repo; refusing to run in the shared clone: git worktree add failed (timed out): x';
+    expect(isInfraFailedTask({ result: { error } })).toBe(true);
+    expect(isInfraFailedTask({ context: { failureContext: { summary: error } } })).toBe(true);
+    expect(isInfraFailedTask({ result: { errorType: 'infra_stalled' } })).toBe(true);
+    expect(isInfraFailedTask({ result: { error: 'tests failed' } })).toBe(false);
+  });
+});
