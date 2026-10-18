@@ -1360,6 +1360,27 @@ export async function abandonDelivery(p: {
   return { handled: true, deliveryId, result };
 }
 
+// ── §5: a person waives or defers one finding ───────────────────────────────
+
+/**
+ * FindingDisposed from the dashboard door: a person closes exactly one finding, recorded with who
+ * and why (the reducer refuses a non-person actor, an empty reason and a deferral without a full
+ * task id). `handled: false` = the PR is not the kernel's.
+ */
+export async function disposeFinding(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; actor: string;
+  findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const result = await applyCommand(
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, result };
+}
+
 // ── T5: a person or agent asks for a review ─────────────────────────────────
 
 /**

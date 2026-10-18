@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import FindingDisposeForm from './FindingDisposeForm';
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
@@ -72,6 +73,7 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
                     {f.title}
                     {f.path && <span className="font-mono text-meta text-text-muted"> {f.path}{f.line != null ? `:${f.line}` : ''}</span>}
                     {f.stale && <span className="text-meta text-text-muted"> · touched by an older push</span>}
+                    {label !== 'Resolved' && <FindingDisposeForm prNumber={prNumber} workspaceId={workspaceId} findingId={f.id} />}
                   </li>
                 ))}
               </ul>

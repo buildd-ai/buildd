@@ -29,7 +29,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
-  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
+  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, personOpRefusal, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
@@ -326,6 +326,9 @@ export function newIdempotencyKey(op: KernelOp): string {
 export async function submitKernelCommand<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions): Promise<KernelAnswer<K>> {
   const deps = opts.deps ?? {};
   const idempotencyKey = opts.idempotencyKey ?? (deps.newKey ?? (() => newIdempotencyKey(op)))();
+  // Checked on this host too, so running here never skips what the control plane would refuse.
+  const notPerson = personOpRefusal(op, input, opts.principal);
+  if (notPerson) throw new KernelCommandRefusedError(403, { code: 'person_only', error: notPerson });
   if (await hostsKernelHere(deps)) {
     // After an unknown outcome the control plane may have applied it: the web host never runs it as well.
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
@@ -585,6 +588,7 @@ export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCa
 export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);
 export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
 export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
+export const disposeFinding = (p: KernelOps['dispose_finding']['input'], c: DoorCall) => door('dispose_finding', p, c);
 export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
 /**
  * Whether the control plane refused `op` because it does not know it: a 400 from `commandProblem`
