@@ -60,7 +60,7 @@ export function shippedEyebrow(conventionalType: string | null | undefined, cate
   const type = (conventionalType && CONVENTIONAL_TYPE_LABEL[conventionalType.toLowerCase()])
     || (category && CATEGORY_LABEL[category.toLowerCase()])
     || null;
-  return type ? `What shipped · ${type}` : 'What shipped';
+  return type ? `What changed · ${type}` : 'What changed';
 }
 
 /**
@@ -78,7 +78,7 @@ export function resultEyebrow(p: {
   if (p.subject?.kind === 'review') return `Review of${pr}`;
   if (p.subject?.kind === 'fix') return `Fix for${pr}`;
   const shipped = shippedEyebrow(p.conventionalType, p.category);
-  return p.shipped === false ? shipped.replace(/^What shipped/, 'Result') : shipped;
+  return p.shipped === false ? shipped.replace(/^What changed/, 'Result') : shipped;
 }
 
 export interface TaskShippedView {

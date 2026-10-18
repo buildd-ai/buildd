@@ -24,6 +24,7 @@
 import type { ApplyDecision, AttemptOp, Command, EffectKind, FindingOp, RecordOnly, RoundOp } from '../commands';
 import { effectRetry } from '../effects';
 import { holdsLane, LANE_PARKED_OUTCOME } from '../landing-lane';
+import { MERGE_HELD_OUTCOME } from '../merge-hold';
 import type {
   ClaimedEffect, DeliveryRef, EffectAuthority, EffectSnapshot, FactInsert, FollowupEffect, LaneKey, Store, StoredFact, TransitionWrite,
 } from '../ports';
@@ -321,7 +322,7 @@ export class MemoryStore implements Store {
       e.leaseUntil = new Date(now + o.leaseMs).toISOString();
       return {
         id: e.id, deliveryId: e.deliveryId, transitionId: e.transitionId, kind: e.kind, dedupeKey: e.dedupeKey,
-        payload: structuredClone(e.payload), attemptCount: e.attemptCount, ...this.snapshot(e),
+        payload: structuredClone(e.payload), attemptCount: e.attemptCount, ageMs: Math.max(0, now - ms(e.createdAt)), ...this.snapshot(e),
       };
     });
   }
@@ -432,6 +433,13 @@ export class MemoryStore implements Store {
     if (!next) return null;
     next.notBefore = this.clock.now();
     return next.deliveryId;
+  }
+
+  async wakeHeldMerges(deliveryId: string, headSha: string): Promise<number> {
+    const held = this.effectLog.filter((e) => e.deliveryId === deliveryId && e.kind === 'merge_call' && e.status === 'pending'
+      && (e.outcome ?? '').startsWith(`${MERGE_HELD_OUTCOME}:`) && e.payload.headSha === headSha);
+    for (const e of held) e.notBefore = this.clock.now();
+    return held.length;
   }
 }
 

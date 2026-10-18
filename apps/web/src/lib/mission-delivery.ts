@@ -39,7 +39,7 @@ export const DELIVERY_STEP_LABEL: Record<DeliveryStepKey, string> = {
   integrated: 'Integrated',
   verified: 'Verified',
   visual: 'Visual review',
-  shipped: 'Shipped',
+  shipped: 'Release',
   budget: 'Budget',
 };
 

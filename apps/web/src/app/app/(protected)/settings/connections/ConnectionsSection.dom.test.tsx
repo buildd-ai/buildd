@@ -134,6 +134,8 @@ describe('ConnectionsSection', () => {
 
   it('a person connection can be made an agent, after a confirm', async () => {
     await mount({}, person.id);
+    expect(q('connection-kind')!.textContent).toContain('force a review, override a merge, abandon work.');
+    expect(q('connection-kind')!.textContent).not.toMatch(/landing/i);
     await click(q('connection-make-agent'));
     expect(calls).toEqual([]);
     await click(q('connection-make-agent-confirm'));

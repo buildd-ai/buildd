@@ -18,6 +18,7 @@ import { allCheckSuitesPassed, githubApi, mergePullRequest } from '@/lib/github'
 import { notifyTeamOf } from '@/lib/notify';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { requiredCheckHold } from '@/lib/required-check-hold';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 
@@ -139,6 +140,13 @@ export async function handleReleasePrCiSuccess(
   if (!merged) {
     const after = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null);
     merged = after?.merged === true;
+  }
+  // §4 merge holds: GitHub is waiting on a required check that has not passed yet. The release
+  // stays pending for the next green or the held-release sweep (which bounds it), never failed.
+  const waiting = !merged ? requiredCheckHold(mergeResult.message) : null;
+  if (waiting) {
+    console.log(`[release-pr] ${repoFullName}#${prNumber} held by GitHub on ${waiting.check ? `required check "${waiting.check}"` : 'a required check'}; the release stays pending`);
+    return;
   }
   // Every write goes through the guarded settle: a task the close-settle or the other door
   // already settled is not settled (or announced) again.

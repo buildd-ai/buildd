@@ -211,7 +211,7 @@ function ConnectionItem({
         <p className="text-title font-semibold text-text-primary">{KIND_LABEL[c.actsAs]}</p>
         {c.actsAs === 'person' ? (
           <>
-            <p className="text-body text-text-secondary">It can take the actions only a person may: force a review, override a landing, abandon work.</p>
+            <p className="text-body text-text-secondary">It can take the actions only a person may: force a review, override a merge, abandon work.</p>
             {confirm === 'kind' ? (
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <span className="text-body text-text-primary">Make it an agent? To undo this you would connect it again.</span>

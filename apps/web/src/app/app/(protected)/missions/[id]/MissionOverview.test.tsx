@@ -98,7 +98,9 @@ describe('MissionOverview groups', () => {
     expect(out).toContain('data-wait="slot"');
     expect(out).toContain('data-wait="hold"');
     expect(out).toMatch(/aria-label="\d\d Next in line: /);
-    expect(out).toMatch(/aria-label="\d\d Held: /);
+    // A hold names its cause (terms catalog); with no cause known it reads Waiting, never Held.
+    expect(out).toMatch(/aria-label="\d\d Waiting: /);
+    expect(out).not.toMatch(/aria-label="\d\d Held: /);
   });
 
   it('the legend says the groups in words', () => {

@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`the frame while held 80x24: "on hold" in place of "online", and the line under the header 1`] = `
-" buildd · laptop-1234                        2 of 3 busy · ● on hold · v0.340.0 
- On hold since 09:12: nothing new starts, 2 running finish. h resumes.          
+exports[`the frame while held 80x24: "paused" in place of "online", and the line under the header 1`] = `
+" buildd · laptop-1234                         2 of 3 busy · ● paused · v0.340.0 
+ Paused since 09:12: nothing new starts, 2 running finish. h resumes.           
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
@@ -14,8 +14,8 @@ exports[`the frame while held 80x24: "on hold" in place of "online", and the lin
                       │ ● single instance  Builder      4m bun run test __tests…
                       │ ● heartbeat name   Builder         running on another r…
                       │ Waiting                                                 
-                      │ ○ buildd top       Builder         runner is on hold    
-                      │ ○ docs page        Writer          runner is on hold    
+                      │ ○ buildd top       Builder         runner is paused     
+                      │ ○ docs page        Writer          runner is paused     
                       │ Done today                                              
                       │ ✓ spec draft                       done                 
                       │                                                         
@@ -28,8 +28,8 @@ exports[`the frame while held 80x24: "on hold" in place of "online", and the lin
 `;
 
 exports[`the frame while held 120x40 1`] = `
-" buildd · laptop-1234                                                                2 of 3 busy · ● on hold · v0.340.0 
- On hold since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                  
+" buildd · laptop-1234                                                                 2 of 3 busy · ● paused · v0.340.0 
+ Paused since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.                                   
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
@@ -41,8 +41,8 @@ exports[`the frame while held 120x40 1`] = `
                             │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
                             │ ● heartbeat name              Builder         running on another runner                   
                             │ Waiting                                                                                   
-                            │ ○ buildd top                  Builder         runner is on hold                           
-                            │ ○ docs page                   Writer          runner is on hold                           
+                            │ ○ buildd top                  Builder         runner is paused                            
+                            │ ○ docs page                   Writer          runner is paused                            
                             │ Done today                                                                                
                             │ ✓ spec draft                                  done                                        
                             │                                                                                           

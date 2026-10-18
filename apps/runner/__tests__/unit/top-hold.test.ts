@@ -1,8 +1,8 @@
 /**
  * `h` in `buildd top` (spec "Runner on your terminal" R-33, AC-17): holds or
- * resumes with no confirmation, the header reads "on hold" in place of
+ * resumes with no confirmation, the header reads "paused" in place of
  * "online" with a line saying since when, what still runs and that h resumes,
- * waiting rows and the Queue view say "on hold", and the help lists h.
+ * waiting rows and the Queue view say "paused", and the help lists h.
  */
 import { describe, expect, test } from 'bun:test';
 import { createPalette, stripAnsi } from '../../src/terminal-palette';
@@ -38,16 +38,16 @@ describe('the hold in state', () => {
 
   test('the line says since when, what still runs, and that h resumes', () => {
     // The fixture has two agents working (the asking one holds no slot).
-    expect(holdLine(held(fixtureState()), NOW)).toBe('On hold since 09:12: nothing new starts, 2 running finish. h resumes.');
-    expect(holdLine(held(fixtureState(), at(17, 0)), NOW)).toBe('On hold since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.');
+    expect(holdLine(held(fixtureState()), NOW)).toBe('Paused since 09:12: nothing new starts, 2 running finish. h resumes.');
+    expect(holdLine(held(fixtureState(), at(17, 0)), NOW)).toBe('Paused since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.');
     expect(holdLine(fixtureState(), NOW)).toBeNull();
     const paused = reduce(held(fixtureState()), { type: 'worker_update', worker: { id: 'w-p', taskId: 't-loose', taskTitle: 'fix flaky test', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } } as any });
-    expect(holdLine(paused, NOW)).toBe('On hold since 09:12: nothing new starts, 2 running finish, 1 paused. h resumes.');
+    expect(holdLine(paused, NOW)).toBe('Paused since 09:12: nothing new starts, 2 running finish, 1 paused. h resumes.');
   });
 
-  test('a waiting row says the runner is on hold', () => {
+  test('a waiting row says the runner is paused', () => {
     const t = text(frame(held(fixtureState()), 120, 40));
-    expect(t).toContain('runner is on hold');
+    expect(t).toContain('runner is paused');
   });
 });
 
@@ -78,20 +78,20 @@ describe('h', () => {
   });
 
   test('the result line', () => {
-    expect(actionResultText({ type: 'hold', on: true }, { status: 200, body: { running: 2 } }).text).toBe('On hold: nothing new starts, 2 running finish. h resumes.');
+    expect(actionResultText({ type: 'hold', on: true }, { status: 200, body: { running: 2 } }).text).toBe('Paused: nothing new starts, 2 running finish. h resumes.');
     expect(actionResultText({ type: 'hold', on: false }, { status: 200, body: { running: 2 } }).text).toBe('Resumed: looking for work now.');
     expect(actionResultText({ type: 'hold', on: true }, { status: 404, body: { error: 'Not found' } }).text).toBe('Hold refused: Not found (HTTP 404)');
   });
 });
 
 describe('the frame while held', () => {
-  test('80x24: "on hold" in place of "online", and the line under the header', () => {
+  test('80x24: "paused" in place of "online", and the line under the header', () => {
     const lines = frame(held(fixtureState()), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines);
-    expect(lines[0]).toContain('● on hold');
+    expect(lines[0]).toContain('● paused');
     expect(lines[0]).not.toContain('online');
-    expect(stripAnsi(lines[1])).toBe(' On hold since 09:12: nothing new starts, 2 running finish. h resumes.'.padEnd(80));
+    expect(stripAnsi(lines[1])).toBe(' Paused since 09:12: nothing new starts, 2 running finish. h resumes.'.padEnd(80));
     expect(t).toMatchSnapshot();
   });
 
@@ -121,11 +121,11 @@ describe('the frame while held', () => {
 });
 
 describe('Queue view while held', () => {
-  test('the order stays, with "on hold" in place of start times', () => {
+  test('the order stays, with "paused" in place of start times', () => {
     const s = held(queueState());
     const before = queueSections(queueState(), NOW);
     const after = queueSections(s, NOW);
     expect(after.map(x => x.rows.map(r => r.taskId))).toEqual(before.map(x => x.rows.map(r => r.taskId)));
-    for (const sec of after) for (const r of sec.rows) expect(r.starts).toBe('on hold');
+    for (const sec of after) for (const r of sec.rows) expect(r.starts).toBe('paused');
   });
 });

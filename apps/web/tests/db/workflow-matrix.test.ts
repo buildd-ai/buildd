@@ -1037,9 +1037,9 @@ describe('S9–S15', () => {
     expect(mergeCalls).toEqual([]);
     // GitHub refusing for a reason no repair answers goes to a person.
     await verdict(o, 'approve');
-    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is expected.' });
+    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is failing.' });
     const refused = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
-    expect(refused).toMatchObject({ merged: false, outcome: 'refused', reason: 'landing_needs_human', message: 'Required status check "build" is expected.' });
+    expect(refused).toMatchObject({ merged: false, outcome: 'refused', reason: 'landing_needs_human', message: 'Required status check "build" is failing.' });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
     // A person merges past it from the dashboard: a new landing request at the same head, recorded as a bypass.
     gh.state = 'open'; gh.merged = false;
@@ -1049,6 +1049,23 @@ describe('S9–S15', () => {
     expect(human).toMatchObject({ merged: true });
     const t15 = (await q<{ bypass: Record<string, unknown> | null }>(sql`SELECT bypass FROM workflow_transitions WHERE delivery_id = ${o.deliveryId}::uuid AND command = 'LandingRequested' ORDER BY to_version`));
     expect(t15.map((t) => t.bypass?.reason ?? null)).toEqual([null, 'checks are advisory here']);
+  });
+
+  test('S10 (doors): a required check not yet reported holds the merge — LANDING, approval standing, no person — and a check on the head lands it', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    mergeAnswer = () => ({ merged: false, message: 'Required status check "build" is expected.' });
+    const held = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(held).toMatchObject({ merged: false, outcome: 'landing', reason: 'merge_held' });
+    expect(held.message).toContain('"build"');
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'LANDING' });
+    expect(mergeCalls.length).toBe(1);
+    expect((await effects(o.deliveryId, 'merge_call')).map((e) => e.status)).toEqual(['pending']);
+    // The check reports on the held head: the parked merge call is due now and lands.
+    mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; return { merged: true, message: 'merged' }; };
+    await seam.observeCiGreen({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect(mergeCalls.map((c) => c.sha)).toEqual(['H1', 'H1']);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'MERGED' });
   });
 
   test('S11: a person merges on GitHub while AWAITING_REVIEW → MERGED from any state; open rounds superseded; classified merged_unreviewed', async () => {

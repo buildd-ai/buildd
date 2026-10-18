@@ -636,3 +636,29 @@ describe('appendPrActivity — redelivery', () => {
     expect(result).toEqual({ action: 'updated', commentId: 55 });
   });
 });
+
+// The comment's state words are the terms catalog's (packages/shared/src/terms.ts):
+// Merging, Merged, Closed without merging. Never landed, shipped, delivered or held.
+describe('state words come from the terms catalog', () => {
+  const KINDS = [
+    'review_queued', 'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
+    'review_escalated', 'review_failed', 'lede_corrected', 'copy_review', 'human_review_required', 'ci_fixing',
+    'migration_collision_fixing', 'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
+    'review_superseded_by_merge', 'work_superseded', 'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
+    'push_pending', 'push_undeliverable', 'composition_verified', 'composition_delta_approved', 'blocked_on_trunk', 'trunk_recovered',
+  ] as const;
+
+  it('no header or row uses a banned word', async () => {
+    const { bannedWordsIn } = await import('@buildd/shared');
+    for (const kind of KINDS) {
+      const body = renderPrActivityComment([reviewing, { kind, iteration: 1, maxIterations: 3, at: at(5) } as never], 'UTC', { stateBlock: false });
+      expect({ kind, banned: bannedWordsIn(body.replace(SPINNER_PATH, '')).map((b) => String(b.word)) }).toEqual({ kind, banned: [] });
+    }
+  });
+
+  it('the terminal headers are the catalog words', async () => {
+    const { TERMS } = await import('@buildd/shared');
+    expect(headerOf(renderPrActivityComment([reviewing, { kind: 'merged', at: at(5) }]))).toContain(`**${TERMS['pr.merged'].word}**`);
+    expect(headerOf(renderPrActivityComment([reviewing, { kind: 'closed_unmerged', at: at(5) }]))).toContain(`**${TERMS['pr.closed'].word}**`);
+  });
+});
