@@ -532,7 +532,7 @@ export async function PATCH(
     // workspace dropping same-team keys without a link, apply on the next call.
     if ('accessMode' in updates || 'dataClass' in updates) {
       await invalidateWorkspacePermissionsCache(id);
-      await clearCallerCache(callerDep.workspace(id));
+      await clearCallerCache(callerDep.workspace(id), ...(workspaceTeamId ? [callerDep.teamOpenWorkspaces(workspaceTeamId)] : []));
     }
 
     // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec §1.1).

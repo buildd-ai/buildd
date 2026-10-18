@@ -56,6 +56,8 @@ export const callerDep = {
   task: (id: string): CallerDep => `task:${id}`,
   /** The schedules of a workspace: their delegations. */
   workspaceSchedules: (workspaceId: string): CallerDep => `schedules:${workspaceId}`,
+  /** Which of a team's workspaces are open to its accounts: a workspace created open, opened, closed or moved. */
+  teamOpenWorkspaces: (teamId: string): CallerDep => `team-open:${teamId}`,
 };
 
 interface Entry<T> {
