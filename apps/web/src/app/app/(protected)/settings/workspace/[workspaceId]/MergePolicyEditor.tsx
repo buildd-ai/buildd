@@ -79,6 +79,11 @@ const GATE_LABEL: Record<'approve-and-merge' | 'approve-only', string> = {
   'approve-only': 'Approve only',
 };
 
+const REVIEW_OVERRIDE_LABEL: Record<'admins' | 'off', string> = {
+  admins: 'Owners and admins with merge permission',
+  off: 'Nobody',
+};
+
 const DATA_MIGRATIONS_LABEL: Record<'person' | 'agent-review', string> = {
   person: 'A person decides',
   'agent-review': 'Reviewer agent decides',
@@ -115,6 +120,9 @@ export default function MergePolicyEditor({
   // Who decides a migration that moves data (agent-review tier only)
   const [dataMigrations, setDataMigrations] = useState<'person' | 'agent-review'>(policy.dataMigrations ?? 'person');
 
+  // Who may approve past open review findings
+  const [reviewOverride, setReviewOverride] = useState<'admins' | 'off'>(policy.reviewOverride ?? 'admins');
+
   // Stall notify
   const [stallMinutes, setStallMinutes] = useState(String(policy.stallNotifyMinutes ?? ''));
 
@@ -140,6 +148,8 @@ export default function MergePolicyEditor({
       };
       if (dataMigrations === 'agent-review') p.dataMigrations = 'agent-review';
     }
+
+    if (reviewOverride === 'off') p.reviewOverride = 'off';
 
     const stall = parseInt(stallMinutes);
     if (!isNaN(stall) && stall > 0) p.stallNotifyMinutes = stall;
@@ -220,6 +230,7 @@ export default function MergePolicyEditor({
                     { label: 'Data migrations', value: DATA_MIGRATIONS_LABEL[dataMigrations] },
                   ]
                 : []),
+              { label: 'Approve past open findings', value: REVIEW_OVERRIDE_LABEL[reviewOverride] },
               { label: 'Stall notification', value: stallMinutes ? `${stallMinutes} minutes` : 'Default' },
             ]}
           />
@@ -352,6 +363,21 @@ export default function MergePolicyEditor({
           router.refresh();
         }}
       />
+
+      {/* Who may approve a PR past open review findings */}
+      <div className="space-y-1">
+        <label className="text-sm text-text-primary">Approve past open findings</label>
+        <Select
+          aria-label="Approve past open findings"
+          value={reviewOverride}
+          onChange={v => setReviewOverride(v as 'admins' | 'off')}
+          options={[
+            { value: 'admins', label: REVIEW_OVERRIDE_LABEL.admins },
+            { value: 'off', label: REVIEW_OVERRIDE_LABEL.off, description: 'Findings have to be fixed, waived or deferred' },
+          ]}
+        />
+        <p className="text-xs text-text-muted">When a review leaves findings and the PR waits on you, who can approve it anyway.</p>
+      </div>
 
       {/* Stall notify */}
       <div className="space-y-1">

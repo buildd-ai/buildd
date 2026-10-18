@@ -8,11 +8,13 @@ import type { EscalationAction, EscalationActionId, EscalationBrief } from '@bui
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'apply-recommendation',
   force_re_review: 're-review',
+  approve_override: 'approve-override',
 };
 
 const DONE: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'One more fix was requested. The automatic budget is still spent.',
   force_re_review: 'A forced re-review was requested for the current head.',
+  approve_override: 'You approved the current head over the remaining findings. Merge follows the workspace policy.',
 };
 
 /**
@@ -26,26 +28,35 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
   const [busy, setBusy] = useState<EscalationActionId | null>(null);
   const [note, setNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const [showFindings, setShowFindings] = useState(false);
+  // Approve and override asks once more, with an optional reason, before it records anything.
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
 
   async function run(a: EscalationAction) {
     if (a.id === 'review_findings') { setShowFindings((v) => !v); return; }
+    if (a.id === 'approve_override' && !confirmingOverride) { setConfirmingOverride(true); return; }
     const path = ENDPOINT[a.id];
     if (!path) return;
     setBusy(a.id);
     setNote(null);
+    // Every decision is bound to the head and version this card showed (AC-45).
+    const head = brief.decisionHead.headSha ? { headSha: brief.decisionHead.headSha, version: brief.decisionHead.version } : {};
+    const extra = a.id === 'approve_override' && overrideReason.trim() ? { reason: overrideReason.trim() } : {};
     try {
       const res = await fetch(`/api/prs/${prNumber}/${path}`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId, ...head, ...extra }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setNote({ tone: 'err', text: data.error || `Could not ${a.label.toLowerCase()}.` });
-      else { setNote({ tone: 'ok', text: DONE[a.id] ?? 'Done.' }); router.refresh(); }
+      else { setNote({ tone: 'ok', text: DONE[a.id] ?? 'Done.' }); setConfirmingOverride(false); router.refresh(); }
     } catch {
       setNote({ tone: 'err', text: `Could not ${a.label.toLowerCase()}.` });
     } finally {
       setBusy(null);
     }
   }
+
+  const remaining = brief.totals.open + brief.totals.addressedAwaitingVerification;
 
   // A finding can be waived or deferred only while it is open or awaiting verification; chosen by key.
   const groups: Array<{ key: string; label: string; list: typeof brief.findings.open; count: number; disposable: boolean }> = [
@@ -89,12 +100,20 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
           <li key={a.id} data-testid={`decision-action-${a.id}`} className="flex flex-col gap-1">
             <button
               type="button"
-              disabled={!a.available || busy !== null || a.id === 'approve_override'}
+              disabled={!a.available || busy !== null}
               onClick={() => run(a)}
               className={`inline-flex min-h-11 w-full items-center justify-center border-2 px-4 text-body font-medium md:w-auto md:self-start ${a.id === 'request_fix' ? 'btn-primary' : 'border-border-strong text-text-primary hover:bg-surface-3'} disabled:opacity-50`}
             >
-              {busy === a.id ? 'Working…' : a.label}
+              {busy === a.id ? 'Working…' : a.id === 'approve_override' && confirmingOverride ? `Approve over ${remaining} ${remaining === 1 ? 'finding' : 'findings'}` : a.label}
             </button>
+            {a.id === 'approve_override' && confirmingOverride && (
+              <div data-testid="decision-override-confirm" className="flex flex-col gap-2">
+                <label className="flex flex-col gap-1 text-meta">Why you are approving it anyway (optional)
+                  <textarea value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} rows={2} className="border border-border-default bg-surface-1 px-2 py-1 text-body" />
+                </label>
+                <button type="button" onClick={() => setConfirmingOverride(false)} disabled={busy !== null} className="min-h-11 self-start text-meta underline md:min-h-0">Cancel</button>
+              </div>
+            )}
             <p className="text-meta text-text-secondary">{a.impact}</p>
             <p className="text-meta text-text-muted">Needs: {a.requires}.{a.unavailableReason ? ` Unavailable: ${a.unavailableReason}` : ''}</p>
           </li>

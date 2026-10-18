@@ -635,7 +635,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   // The same load carries the review rounds' findings and the deliverable's
   // title for the page's checks list and attempt framing (docs/specs/task-page.md).
-  const deliveryContext = await loadTaskDeliveryContext(task.id);
+  const deliveryContext = await loadTaskDeliveryContext(task.id, user.id);
   const deliveryView = deliveryContext.view;
   // §7 (workflow-kernel-library.md): the PR's merged/open/closed reading is the
   // delivery's when it owns this PR, never a worker row that disagrees (AC-26).

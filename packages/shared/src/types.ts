@@ -480,9 +480,19 @@ export interface MergePolicy {
    * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
    */
   dataMigrations?: DataMigrationsPolicy;
+
+  /**
+   * Who may approve a PR past review findings that are still open or awaiting
+   * verification ("Approve and override" on a review escalation). 'admins'
+   * (default): a team owner or admin who also holds merge permission on the repo
+   * on GitHub. 'off': nobody; the findings have to be fixed, waived or deferred.
+   */
+  reviewOverride?: ReviewOverridePolicy;
 }
 
 export type DataMigrationsPolicy = 'person' | 'agent-review';
+export type ReviewOverridePolicy = 'admins' | 'off';
+export const VALID_REVIEW_OVERRIDE: ReviewOverridePolicy[] = ['admins', 'off'];
 const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
 
 /**
@@ -577,7 +587,7 @@ export function visualReviewPolicyOf(gitConfig: unknown): VisualReviewPolicyMode
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations', 'reviewOverride']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -670,6 +680,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
       field: 'dataMigrations',
+    };
+  }
+
+  if (obj.reviewOverride !== undefined && !VALID_REVIEW_OVERRIDE.includes(obj.reviewOverride as ReviewOverridePolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.reviewOverride must be one of: ${VALID_REVIEW_OVERRIDE.join(', ')}`,
+      field: 'reviewOverride',
     };
   }
 
