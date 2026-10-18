@@ -342,6 +342,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             backend={t.backend}
             lastError={null}
             failureKind={t.failureKind}
+            waitingOn={t.failedDependency ?? null}
             auditTaskId={t.failureKind === 'verification' && isSurfaceAuditTask(t.title) ? t.id : null}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}

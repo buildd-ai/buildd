@@ -17,7 +17,8 @@ const p = { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/app', prNu
 describe('the review reads behind an open PR\'s status', () => {
   test('nobody asked is "not requested"; any review state past that is in progress', () => {
     expect(unownedReviewOf('not_requested')).toBe('not_requested');
-    for (const s of ['queued', 'reviewing', 'approved', 'changes_requested', 'escalated', 'review_failed'] as const) expect(unownedReviewOf(s)).toBe('in_progress');
+    for (const s of ['queued', 'reviewing', 'approved', 'escalated', 'review_failed'] as const) expect(unownedReviewOf(s)).toBe('in_progress');
+    expect(unownedReviewOf('changes_requested')).toBe('changes_requested');
   });
 
   test('the review verdict gate at the candidate SHA', () => {

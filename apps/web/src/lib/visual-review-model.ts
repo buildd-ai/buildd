@@ -35,6 +35,7 @@ import type {
   VisualReviewSupersededShot,
 } from '@buildd/shared';
 import { isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { dependencyFailureOf } from '@buildd/core/dependency-failure';
 import { captureRefMatch, normalizeCaptureRef } from '@buildd/core/visual-qa-capture-ref';
 import { DEP_SATISFYING_STATUSES } from './dep-gate-contract';
 import {
@@ -93,6 +94,8 @@ export interface VisualReviewTaskInput {
   errorType?: string | null;
   /** `result.summary`, pre-projected the same way: an audit's `why`. */
   resultSummary?: string | null;
+  /** A failed audit's `result` keys `dependencyFailureOf` reads, pre-projected the same way. */
+  dependencyFailure?: unknown;
   workers?: readonly VisualReviewWorkerInput[] | null;
 }
 
@@ -574,6 +577,8 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   // 5. Phase.
   const latest = latestAuditOf(tasks);
   const latestFailed = !!latest && latest.status === 'failed' && !replacedIds.has(latest.id);
+  // It never ran: build work it depends on failed. Not a failure of the check (spec 072de598 I-14).
+  const waitingOn = latestFailed ? dependencyFailureOf(latest.dependencyFailure ?? latest.result) : null;
   const bootFailed = auditBootFailed(unreplaced);
   const bootFailure = bootFailed ? bootFailureOf(unreplaced.filter(isAudit)) : null;
   const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
@@ -586,6 +591,8 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || (latest.status !== 'pending' && !TERMINAL.has(latest.status) && (latest.workers ?? []).some(w => RUNNING_WORKER.has(w.status ?? ''))));
   if (bootFailed) {
     phase = 'boot_failed';
+  } else if (waitingOn) {
+    phase = 'waiting_on_failed_work';
   } else if (latestFailed && errorTypeOf(latest) === 'infra_stalled') {
     phase = 'stalled';
   } else if (latestFailed) {
@@ -669,6 +676,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     captureGaps,
     resolvedElsewhere,
     replacedAudits,
+    waitingOn: phase === 'waiting_on_failed_work' ? waitingOn : null,
     generatedAt: new Date(now).toISOString(),
   };
 }

@@ -657,6 +657,7 @@
     },
     "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": {
       "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-bar.ts": "missions",
+      "apps/web/src/app/app/(protected)/tasks/[id]/mission-context-load.ts": "missions",
       "apps/web/src/components/chat/ChatEntry.tsx": "chat",
       "apps/web/src/lib/evidence-read.ts": "knowledge",
       "apps/web/src/lib/explain.ts": "health-quality",

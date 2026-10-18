@@ -11,6 +11,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { can } from '@/lib/permissions';
 import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/token-delegation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -191,6 +192,13 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       .where(eq(taskSchedules.id, scheduleId))
       .returning();
 
+    // Task tokens of this schedule's tasks read its delegation through the
+    // caller cache (lib/task-token-auth.ts).
+    if ('delegation' in updates) {
+      const scheduleWorkspaces = [existing.workspaceId, updated?.workspaceId, id].filter((w): w is string => !!w);
+      await clearCallerCache(...scheduleWorkspaces.map(callerDep.workspaceSchedules));
+    }
+
     return NextResponse.json({ schedule: updated });
   } catch (error) {
     console.error('Update schedule error:', error);
@@ -217,6 +225,8 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
   if (!deleted) {
     return NextResponse.json({ error: 'Schedule not found' }, { status: 404 });
   }
+  // Its tasks' tokens lose the schedule's delegation.
+  await clearCallerCache(callerDep.workspaceSchedules(id));
 
   return NextResponse.json({ success: true });
 }

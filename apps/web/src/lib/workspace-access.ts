@@ -10,6 +10,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { readReachLink } from '@/lib/granted-links';
+import { cachedCaller, callerDep } from '@/lib/caller-cache';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -52,10 +53,7 @@ export async function listReachableWorkspaceIds(
   }
   const [links, ownOpen] = await Promise.all([
     getAccountWorkspacePermissions(account.id, { includeRevoked: true }),
-    db.query.workspaces.findMany({
-      where: sqlWhere(and(eq(workspaces.teamId, account.teamId), eq(workspaces.accessMode, 'open'))),
-      columns: { id: true, teamId: true, accessMode: true },
-    }),
+    teamOpenWorkspaces(account.teamId),
   ]);
 
   const ids = new Set<string>();
@@ -71,6 +69,27 @@ export async function listReachableWorkspaceIds(
   }
   // A workspace-restricted token reaches its own list and nothing else.
   return [...ids].filter(id => tokenWorkspaceAllowed(account.workspaceIds, id));
+}
+
+/**
+ * A team's open workspaces, cached with the caller (lib/caller-cache.ts, at
+ * most 60 s). Cleared when a workspace of the team is created, opened,
+ * closed or moved (callerDep.teamOpenWorkspaces), and when a listed one
+ * changes or is deleted (callerDep.workspace). An empty list is cached too:
+ * every write that can open a workspace clears it.
+ */
+async function teamOpenWorkspaces(teamId: string): Promise<Array<{ id: string; teamId: string; accessMode: string }>> {
+  const hit = await cachedCaller(`team-open-ws:${teamId}`, async () => ({
+    rows: await db.query.workspaces.findMany({
+      where: sqlWhere(and(eq(workspaces.teamId, teamId), eq(workspaces.accessMode, 'open'))),
+      columns: { id: true, teamId: true, accessMode: true },
+    }),
+  }), {
+    known: [callerDep.teamOpenWorkspaces(teamId)],
+    depsOf: (v) => v.rows.map((w) => callerDep.workspace(w.id)),
+    valid: (v) => Array.isArray(v?.rows),
+  });
+  return hit?.rows ?? [];
 }
 
 /**

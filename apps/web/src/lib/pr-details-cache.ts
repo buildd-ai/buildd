@@ -119,14 +119,28 @@ export async function fetchPrDetails(workspaceId: string, prNumber: number, othe
   };
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * The answer stored in a cache row's jsonb `value`, or null: a claim's
+ * placeholder (`{ details: null }`) and any row not in `PrDetails` shape read
+ * as no answer, so the card refreshes rather than rendering a malformed one.
+ */
+export function prDetailsOf(value: unknown): PrDetails | null {
+  if (!isObject(value)) return null;
+  const d = (value as { details?: unknown }).details;
+  if (!isObject(d) || !isObject(d.reviews) || !isObject(d.runsByRef)) return null;
+  if (d.ciChecks !== null && !isObject(d.ciChecks)) return null;
+  return d as unknown as PrDetails;
+}
+
 /** The cached answer for `key` and whether it is still fresh. Never throws, never calls GitHub. */
 export async function readPrDetails(key: string, now: number = Date.now()): Promise<{ details: PrDetails | null; fresh: boolean }> {
   try {
     const [row] = await db.select({ value: systemCache.value, expiresAt: systemCache.expiresAt })
       .from(systemCache).where(eq(systemCache.key, key)).limit(1);
     if (!row) return { details: null, fresh: false };
-    const value = row.value as { details?: PrDetails | null } | null;
-    return { details: value?.details ?? null, fresh: !!row.expiresAt && row.expiresAt.getTime() > now };
+    return { details: prDetailsOf(row.value), fresh: !!row.expiresAt && row.expiresAt.getTime() > now };
   } catch {
     return { details: null, fresh: false };
   }

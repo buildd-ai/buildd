@@ -28,6 +28,7 @@ import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '..
 import { openHeadStatus } from '../open-pr-status';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
+import type { EpochOp, EpochSnapshot } from '../delivery-epochs';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
 export interface ConformanceHost {
@@ -56,6 +57,23 @@ export interface ConformanceHost {
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
   /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
   passTime(ms: number): Promise<void>;
+  /** §6 mission epochs on the host's store. */
+  epochs: EpochHost;
+}
+
+/**
+ * The host's mission epoch rows (docs/specs/workflow-kernel-library.md §6):
+ * `reduceMissionEpochs` decides, the host applies one transition's ops as one
+ * statement with the epoch row's compare-and-set and its unique indexes (one
+ * epoch per number, one successor per predecessor, one open epoch per mission).
+ */
+export interface EpochHost {
+  /** A fresh mission whose integration branch is `branch`. Returns its id. */
+  seedMission(branch: string): Promise<string>;
+  /** The mission's integration branch and its epochs in epoch order, as the host loads them. */
+  load(missionId: string): Promise<{ integrationBranch: string | null; epochs: EpochSnapshot[] }>;
+  /** One transition's ops, all or nothing. false = a lost compare-and-set or a unique index refused it, and nothing was written. */
+  apply(ops: EpochOp[]): Promise<boolean>;
 }
 
 export interface ConformanceScenario {
@@ -216,14 +234,14 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
 
 // ── The package's effect handlers, on fake ports ────────────────────────────
 
-interface FakePorts {
+export interface FakePorts {
   ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest;
   work: RecordingWork; trunk: RecordingTrunk; escalate: RecordingEscalate; evidence: RecordingEvidence;
   reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff; rails: RecordingRails;
 }
 
 /** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
-function fakePorts(host: ConformanceHost, o: {
+export function fakePorts(host: ConformanceHost, o: {
   lifecycle?: RecordingLifecycle; ingest?: RecordingIngest; notify?: RecordingNotify; trunk?: RecordingTrunk; escalate?: RecordingEscalate;
   evidence?: RecordingEvidence; work?: Record<string, WorkAnswer>; omit?: Array<keyof KernelPorts>;
 } = {}): FakePorts {
@@ -261,7 +279,7 @@ async function direct(host: ConformanceHost, s: Delivery, kind: EffectKind, payl
 }
 
 /** Drain one delivery until nothing is due: the package's handlers over `ports`, every other kind recorded. */
-async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
+export async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
   for (let i = 0; i < 6; i++) {
     const r = await drainEffects(host.store, { policy: host.policy, handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
     if (r.claimed === 0) return;
@@ -275,6 +293,15 @@ async function outcomesOf(host: ConformanceHost, s: Delivery, kind: EffectKind):
 const neverAsked: Decide = { id: 'never', decide: async () => { throw new ConformanceFailure('a replay called the decider'); } };
 
 // ── Scenarios ───────────────────────────────────────────────────────────────
+
+/** r7 §7: a one-round budget spent by a request for changes that raised two findings, at H1. */
+async function exhaustedWithTwoFindings(host: ConformanceHost, pr: number): Promise<Delivery> {
+  const s = await new Delivery(host, pr).open({ maxRounds: 1 });
+  applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+  applied(await s.verdictWith('request_changes', { findings: [{ title: 'fix a', path: 'src/a.ts' }, { title: 'fix b', path: 'src/b.ts' }] }), 'ESCALATED', 'the budget is spent');
+  eq((await s.d()).stateReason, 'review_exhausted', 'review_exhausted');
+  return s;
+}
 
 export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
   {
@@ -1423,7 +1450,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'refresh_branch'), ['ok:escalated:update-branch kept failing'], 'a person lands it');
       eq((await c.d()).state, 'ESCALATED', 'escalated');
-      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: landing needs a person`], 'and the team is told');
+      eq(fc.notify.teams.map((t) => t.title), [`PR #${c.prNumber}: merge needs a person`], 'and the team is told');
       eq(fc.work.requested.filter((w) => w.role === 'conflict_fix').length, 0, 'no agent');
     },
   },
@@ -1799,6 +1826,24 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'AC-13: a PR adopted when a door is asked to merge it (no delivery until then) lands only once a review of its head approves; until then every unattended door is refused and nothing merges',
+    async run(host) {
+      // The door's open_delivery: DeliveryOpened, PrBound and the head GitHub holds, owner still running.
+      const s = await new Delivery(host, 69).open();
+      applied(await s.push('H1'), 'WORKING', 'the live head is recorded');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'adopted while the owner runs: not landable');
+      // The owner's end is forwarded (a late open): review of the live head is owed, never assumed.
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the adopted delivery owes a review');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status']), { round: 1, headSha: 'H1', status: 'queued' }, 'round 1 at the adopted head');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'every unattended door is refused before the review');
+      eq(await s.count('merge_call'), 0, 'no merge owed');
+      eq(pick(landingStatusOf(await s.view()), ['state', 'sha']), { state: 'pending', sha: 'H1' }, 'Buildd / Review approval is pending at H1, never success');
+      applied(await s.verdict('approve'), 'APPROVED', 'the kernel review approves H1');
+      applied(await s.land('H1'), 'LANDING', 'then it lands through the gate');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.payload.headSha), ['H1'], 'pinned to the approved head');
+    },
+  },
+  {
     name: 'AC-13: a person waives a finding (recorded with who and why), a deferral names its task, an agent cannot waive, and an optional finding never blocks',
     async run(host) {
       const s = await new Delivery(host, 63).open();
@@ -1836,6 +1881,29 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const task = ['00000000', '0000', '4000', '8000', '0000000000aa'].join('-');
       applied(await s.submit({ type: 'FindingDisposed', actor: 'human:owner', findingId: b, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: task }), 'CHANGES_REQUESTED', 'a resolved task');
       eq(pick(((await s.view()).findings ?? []).find((f) => f.id === b), ['status', 'deferredToTaskId']), { status: 'deferred', deferredToTaskId: task }, 'deferred to it');
+    },
+  },
+  {
+    name: '§5: a finding deferred, restated by a later round, and deferred again ends deferred: the second disposal is a new decision, not a replay of the first',
+    async run(host) {
+      const s = await new Delivery(host, 91).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'x.ts', title: 'needs a test' }] });
+      const id = await s.findingId('x.ts');
+      const task = ['00000000', '0000', '4000', '8000', '0000000000aa'].join('-');
+      const defer = async (headSha: string) => s.submit({
+        type: 'FindingDisposed', actor: 'human:owner', findingId: id, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: task,
+        decision: { id: `dispose_finding:${id}:${headSha}:v${(await s.d()).version}`, headSha },
+      });
+      applied(await defer('H1'), 'CHANGES_REQUESTED', 'deferred');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'closed');
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['y.ts'] });
+      await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } });
+      await s.verdictWith('request_changes', { findings: [{ id, path: 'x.ts', title: 'needs a test' }] });
+      eq(await s.findingStates(), { 'x.ts': 'open' }, 'the later round restated it, so it is open again');
+      applied(await defer('H2'), 'CHANGES_REQUESTED', 'deferred again, at the head and version the person saw');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'ends deferred');
     },
   },
   {
@@ -2011,6 +2079,50 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       }
       eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'review_unavailable' }, 'after the retries, a person\'s, in words');
       eq((await s.latestRound()).status, 'failed', 'the round is closed, not left open');
+    },
+  },
+  {
+    name: '0230612e: a verdict read at another commit than the round\'s head is inconclusive: it never approves, the round is asked again at the head, then a person\'s',
+    async run(host) {
+      const reviewer = async (ws: string) => (host.newTaskId ? host.newTaskId(ws) : host.newId());
+      const s = await new Delivery(host, 78).open();
+      await s.ownerPushed('H1');
+      const judged = async (verdict: 'approve' | 'request_changes', evidenceSha: string | null, reviewerTaskId: string) => {
+        const r = await s.latestRound();
+        return s.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${reviewerTaskId}`, roundId: r.id, verdict, effectiveVerdict: verdict, headBound: r.headSha, evidenceSha, reviewerTaskId, maxContractRetries: 1 });
+      };
+      // The reviewer's checkout sat at the base (B0), not the head it was asked about.
+      const r1 = await reviewer(s.workspaceId);
+      applied(await judged('approve', 'B0', r1), 'AWAITING_REVIEW', 'an approval read at the base');
+      eq(pick(await s.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: [], approvalBasis: null }, 'nothing approved');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status', 'failureCount', 'verdict']), { round: 1, headSha: 'H1', status: 'queued', failureCount: 1, verdict: null }, 'the same round, re-queued, with no verdict');
+      eq(await s.count('post_review'), 0, 'no GitHub review posted');
+      eq(await s.count('dispatch_review'), 2, 'a reviewer is asked again at the head');
+      notApplied(await judged('approve', 'B0', r1), 'duplicate', 'idempotency_key_seen', 'the same report twice spends nothing more');
+      // The next reviewer reported no checkout at all: also inconclusive, and the budget is spent.
+      const r2 = await reviewer(s.workspaceId);
+      applied(await judged('approve', null, r2), 'ESCALATED', 'an approval with no checkout reported');
+      eq(pick(await s.d(), ['state', 'stateReason', 'approvedHeads']), { state: 'ESCALATED', stateReason: 'review_unavailable', approvedHeads: [] }, 'a person\'s, never approved');
+      eq((await s.latestRound()).status, 'failed', 'the round is closed');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'nothing lands');
+
+      // Read at the head, the re-asked reviewer's verdict decides the round as any other does.
+      const t = await new Delivery(host, 79).open();
+      await t.ownerPushed('H1');
+      const r3 = await reviewer(t.workspaceId);
+      const round = await t.latestRound();
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r3}`, roundId: round.id, verdict: 'request_changes', effectiveVerdict: 'request_changes', headBound: 'H1', evidenceSha: 'B0', reviewerTaskId: r3, maxContractRetries: 1 }), 'AWAITING_REVIEW', 'a request for changes read at the base');
+      eq(await t.count('dispatch_fix'), 0, 'no fix dispatched on it');
+      const r4 = await reviewer(t.workspaceId);
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r4}`, roundId: round.id, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'H1', reviewerTaskId: r4, maxContractRetries: 1 }), 'APPROVED', 'read at the head, it decides');
+      eq(pick(await t.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: ['H1'], approvalBasis: 'verdict' }, 'approval binds H1');
+
+      // A verdict from outside the kernel's rounds is held to the same rule: never kept as the head's review.
+      const u = await new Delivery(host, 80).open();
+      applied(await u.push('H1'), 'WORKING', 'the owner pushed H1 and is still working');
+      const outside = await reviewer(u.workspaceId);
+      notApplied(await u.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: outside, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'B0' }), 'stale', 'verdict_evidence_not_at_head', 'an outside approval read at the base');
+      eq((await u.view()).rounds.length, 0, 'no decided round kept');
     },
   },
   {
@@ -2829,6 +2941,71 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await withdraw({ claim: null }), 'rejected', 'claim_not_named', 'a requeue names its claim');
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       notApplied(await withdraw({ claim: { ...claim, claimedAt: '2026-10-18 09:00:00+00' } }), 'stale', 'attempt_not_bound', 'a withdrawal after the hand-off records nothing');
+    },
+  },
+  // ── Living Spec r7 §7 (task 59f2c591): findings after a spent budget, and a person's decisions ──
+  {
+    name: 'r7 AC-44: after the review budget runs out, a pushed fix shows its finding addressed, awaiting verification, and green CI does not lift the hold',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 131);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a fix pushed after the escalation');
+      eq(await s.findingStates(), { 'src/a.ts': 'addressed', 'src/b.ts': 'open' }, 'the touched finding is addressed, not resolved');
+      eq({ rounds: (await s.view()).rounds.length, reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { rounds: 1, reviewers: 1, fixes: 0 }, 'no review and no fix started on its own');
+      await s.submit({ type: 'CiObserved', actor: 'webhook', headSha: 'H2', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true });
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'review_exhausted' }, 'green CI leaves it a person\'s');
+      ok((await s.land('H2')).result !== 'applied', 'nothing lands it');
+      eq(await s.count('merge_call'), 0, 'no merge call');
+      const v = deriveDeliveryView({ view: await s.view() })!;
+      eq(v.findingTotals, { open: 1, addressedAwaitingVerification: 1, verifiedResolved: 0, waived: 0, deferred: 0, total: 2, advisory: 0 }, 'one open, one awaiting verification, nothing verified');
+      eq(v.escalation?.findings.addressedAwaitingVerification.map((f) => f.path), ['src/a.ts'], 'the decision brief lists it as awaiting verification');
+      eq(v.escalation?.findings.resolved.length, 0, 'and not as resolved');
+    },
+  },
+  {
+    name: 'r7 AC-45: a person\'s forced review and bounded fix at the current head are one audited command each; replaying the same decision changes nothing',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 132);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a fix pushed after the escalation');
+      const before = (await host.transitions(s.deliveryId)).length;
+      const force = (v: number) => s.submit({ type: 'ReviewRequested', actor: 'human:u1', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: `force_re_review:H2:v${v}`, headSha: 'H2' } });
+      const v1 = (await s.d()).version;
+      applied(await force(v1), 'AWAITING_REVIEW', 'the forced review');
+      notApplied(await force(v1), 'duplicate', 'idempotency_key_seen', 'the same decision again');
+      eq({ transitions: (await host.transitions(s.deliveryId)).length - before, reviewers: await s.count('dispatch_review'), rounds: (await s.view()).rounds.length }, { transitions: 1, reviewers: 2, rounds: 2 }, 'one transition, one reviewer, one round');
+      eq(pick(await s.latestRound(), ['headSha', 'trigger']), { headSha: 'H2', trigger: 'manual_force' }, 'at the head the person decided on');
+
+      // The forced review verifies the addressed finding and keeps the other open: past the budget, a person's again.
+      const a = await s.findingId('src/a.ts');
+      const b = await s.findingId('src/b.ts');
+      applied(await s.verdictWith('request_changes', { resolvedFindings: [a], findings: [{ id: b, title: 'fix b', path: 'src/b.ts' }] }), 'ESCALATED', 'it asks for changes again');
+      eq(await s.findingStates(), { 'src/a.ts': 'resolved', 'src/b.ts': 'open' }, 'verified only by the review, not by the push');
+      // A stale tab replays the first decision: answered by its transition, nothing runs, and the
+      // delivery is still the person's (the door reads that and leaves the new escalation's note).
+      notApplied(await force(v1), 'duplicate', 'idempotency_key_seen', 'the old decision replayed after it escalated again');
+      eq({ state: (await s.d()).state, reviewers: await s.count('dispatch_review') }, { state: 'ESCALATED', reviewers: 2 }, 'still escalated, no new reviewer');
+
+      // A bounded fix: one more fix attempt, at the head, once.
+      const v2 = (await s.d()).version;
+      const fix = () => s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'apply_recommendation', expectedVersion: v2, decision: { id: `request_fix:H2:v${v2}`, headSha: 'H2' } });
+      applied(await fix(), 'CHANGES_REQUESTED', 'the bounded fix');
+      notApplied(await fix(), 'duplicate', 'idempotency_key_seen', 'the same fix decision again');
+      eq(await s.count('dispatch_fix'), 1, 'one fix dispatched');
+      const owed = (await host.effects(s.deliveryId)).find((e) => e.kind === 'dispatch_fix')!;
+      eq(pick(owed.payload as Record<string, unknown>, ['headSha', 'trigger', 'actor']), { headSha: 'H2', trigger: 'human', actor: 'human:u1' }, 'bound to the head, recorded as the person\'s');
+    },
+  },
+  {
+    name: 'r7 AC-46: a decision for a stale head, by an agent, or an approval without merge permission is refused and changes nothing',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 133);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a push the person has not seen');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'human:u1', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: 'force_re_review:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'a forced review decided on the older head');
+      notApplied(await s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'apply_recommendation', expectedVersion: v, decision: { id: 'request_fix:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'a fix decided on the older head');
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t9', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: 'force_re_review:H2', headSha: 'H2' } }), 'rejected', 'human_required', 'an agent deciding for a person');
+      notApplied(await s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'approve', expectedVersion: v, commitId: 'H2', hasMergePermission: false, decision: { id: 'approve_override:H2', headSha: 'H2' } }), 'rejected', 'no_merge_permission', 'an override without merge permission');
+      eq(pick(await s.d(), ['state', 'stateReason', 'version']), { state: 'ESCALATED', stateReason: 'review_exhausted', version: v }, 'nothing moved');
+      eq({ reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { reviewers: 1, fixes: 0 }, 'nothing dispatched');
     },
   },
 ];

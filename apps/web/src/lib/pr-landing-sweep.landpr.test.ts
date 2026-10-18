@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 // code under test imports it lazily, where a partial landing mock would fail its re-exports.
 await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({ landThroughKernel: async () => null, kernelLandingView: async () => null, staleLandingVersion: async () => null }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: async () => ({ kind: 'legacy', reason: 'kernel_off' }) }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 

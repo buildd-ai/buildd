@@ -28,7 +28,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 const {
-  loadActivity, overlayActivityRows, mayBeInMotionSql, mayBeFinishedSql,
+  loadActivity, overlayActivityRows, mayBeInMotionSql, mayBeFinishedSql, activityScopeWhere, liveRootsWhere,
   ACTIVITY_WORKERS_PER_TASK, ACTIVITY_LIVE_ROOT_LIMIT, ACTIVITY_ROOT_LIMIT, ACTIVITY_CHILD_LIMIT,
 } = await import('./activity-data');
 const rules = await import('@buildd/core/mission-helpers');
@@ -168,5 +168,36 @@ describe('the page', () => {
 
   it('reads local sessions only for Now', () => {
     expect(page).toMatch(/mode === 'now'\s*\?\s*listLocalSessions/);
+  });
+});
+
+describe('the scope and live-root predicates, rendered', () => {
+  const render = (q: Parameters<InstanceType<typeof import('drizzle-orm/pg-core').PgDialect>['sqlToQuery']>[0]) =>
+    norm(new (require('drizzle-orm/pg-core').PgDialect)().sqlToQuery(q).sql);
+
+  it('activityScopeWhere narrows to the workspaces, then the mission or the initiative\'s missions', () => {
+    expect(render(activityScopeWhere({ workspaceIds: WS })!)).toBe('"tasks"."workspace_id" in ($)');
+    expect(render(activityScopeWhere({ workspaceIds: WS, missionId: 'm1' })!))
+      .toBe('(("tasks"."workspace_id" in ($)) and ("tasks"."mission_id" = $))');
+    expect(render(activityScopeWhere({ workspaceIds: WS, initiativeId: 'i1' })!))
+      .toContain('"tasks"."mission_id" in (select "id" from "missions" where "missions"."initiative_id" = $)');
+  });
+
+  it('liveRootsWhere reads open roots and roots with a live agent, bounded, minus the recent window', () => {
+    const { tasks: tasksTable } = require('@buildd/core/db/schema');
+    const recent = offline.select({ id: tasksTable.id }).from(tasksTable).limit(5);
+    const now = render(liveRootsWhere({ workspaceIds: WS }, recent, 'now')!);
+    expect(now).toContain('"tasks"."parent_task_id" is null');
+    expect(now).toContain('"tasks"."status" not in');
+    expect(now).toContain('coalesce("tasks"."parent_task_id", "tasks"."id")');
+    expect(now).toContain('inner join "tasks" on "workers"."task_id" = "tasks"."id"');
+    expect(now).toContain('"workers"."status" in');
+    expect(now.match(/ limit \$/g)?.length).toBe(3);
+    expect(now).toContain('"tasks"."id" not in (select "id" from "tasks" limit $)');
+    // History adds the "may be finished" filter; Now does not.
+    const finished = render(mayBeFinishedSql());
+    expect(now).not.toContain(finished);
+    expect(render(liveRootsWhere({ workspaceIds: WS }, recent, 'history')!)).toContain(finished);
+    expect(ACTIVITY_LIVE_ROOT_LIMIT).toBeGreaterThan(0);
   });
 });

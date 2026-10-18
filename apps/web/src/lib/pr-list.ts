@@ -30,6 +30,16 @@ const TERMINAL: Lifecycle[] = ['merged', 'closed', 'unresolvable'];
 
 export const DEFAULT_MERGED_WINDOW_DAYS = 7;
 export const MAX_PR_LIST = 50;
+/** Most PRs one list read considers: every open PR for `attention`, else headroom over the page. */
+export const MAX_PR_CANDIDATES = 200;
+/** A backstop on the rows of those PRs (a PR has a handful of worker rows). */
+export const MAX_PR_ROWS = 1000;
+
+/** How many PRs a list read takes as candidates before collapsing them. */
+export function prCandidateCap(state: PrListState, limit: number): number {
+  if (state === 'attention') return MAX_PR_CANDIDATES;
+  return Math.min(MAX_PR_CANDIDATES, Math.max(limit * 3, 30));
+}
 
 export function parsePrListState(raw: string | null | undefined): { state: PrListState } | { error: string } {
   if (!raw) return { state: 'open' };
@@ -296,9 +306,17 @@ export type PrListItemRow = Omit<ShapedPr, 'workerIds' | 'missionWorkingBranch' 
 
 export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrListState; since?: Date; limit?: number }): Promise<PrListItemRow[]> {
   if (opts.workspaceIds.length === 0) return [];
+  const limit = Math.min(opts.limit ?? 20, MAX_PR_LIST);
   // Every row of each candidate PR, so the collapse sees a newer merged or
   // closed row even when only an older row matched the candidate filter.
-  const candidates = db.selectDistinct({ prUrl: workers.prUrl }).from(workers).where(buildPrListWhere(opts));
+  // Candidates are bounded in SQL (R-10, R-22): the newest PRs first, with
+  // headroom for the ones the collapse drops (closed, merged elsewhere, not in
+  // the asked state); `attention` ranks every open PR's signals, so it takes
+  // the most.
+  const candidates = db.select({ prUrl: workers.prUrl }).from(workers).where(buildPrListWhere(opts))
+    .groupBy(workers.prUrl)
+    .orderBy(opts.state === 'merged' ? sql`max(${workers.mergedAt}) desc nulls last` : sql`max(${workers.startedAt}) desc nulls last`)
+    .limit(prCandidateCap(opts.state, limit));
   const rows = await db
     .select({
       workerId: workers.id,
@@ -325,8 +343,7 @@ export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrList
     .leftJoin(missions, eq(missions.id, tasks.missionId))
     .where(and(inArray(workers.workspaceId, opts.workspaceIds), inArray(workers.prUrl, candidates)))
     .orderBy(desc(workers.startedAt))
-    .limit(1000);
-  const limit = Math.min(opts.limit ?? 20, MAX_PR_LIST);
+    .limit(MAX_PR_ROWS);
   const kernel = kernelPrStatuses(await getDeliveryViewsForTasks(rows.flatMap(r => (r.taskId ? [r.taskId] : []))));
   const shaped = shapePrRows(rows as PrListRow[], opts.state, kernel);
   // attention filters on the signals, so it reads them for every open PR first.

@@ -4,6 +4,7 @@ import { teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { teamBillingFromSubscription, type BillingPrices, type SubscriptionLike } from '@buildd/core/billing';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearTeamCache } from '../team-cache';
 
 /**
  * Apply one verified Stripe event to the team it belongs to. The webhook route
@@ -100,4 +101,6 @@ async function findTeam(customerId: string | null, teamId: string | null | undef
 
 async function writeTeam(teamId: string, values: Partial<typeof teams.$inferInsert>): Promise<void> {
   await db.update(teams).set({ ...values, updatedAt: new Date() }).where(eq(teams.id, teamId));
+  // The plan may have changed: the cached one (lib/team-cache.ts) goes now.
+  await clearTeamCache(teamId, 'plan');
 }

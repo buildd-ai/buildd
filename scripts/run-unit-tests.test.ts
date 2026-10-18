@@ -834,6 +834,12 @@ describe('host-aware admission', () => {
     expect(admissionLimit(1, 100, 4)).toBe(1);
   });
 
+  it('quarters concurrency when the host is severely oversubscribed', () => {
+    expect(admissionLimit(8, 12.4, 4)).toBe(2);
+    expect(admissionLimit(8, 12, 4)).toBe(4);
+    expect(admissionLimit(2, 50, 4)).toBe(1);
+  });
+
   it('never runs more files than the live limit, but always makes progress', async () => {
     let active = 0;
     let peak = 0;

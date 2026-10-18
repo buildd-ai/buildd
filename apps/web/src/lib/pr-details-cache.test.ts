@@ -30,7 +30,7 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
-const { fetchPrDetails, prDetailsKey, prDetailsTtlMs, PR_DETAILS_PENDING_MS, PR_DETAILS_SETTLED_MS } = await import('./pr-details-cache');
+const { fetchPrDetails, prDetailsKey, prDetailsOf, prDetailsTtlMs, PR_DETAILS_PENDING_MS, PR_DETAILS_SETTLED_MS } = await import('./pr-details-cache');
 
 describe('fetchPrDetails', () => {
   beforeEach(() => {
@@ -124,5 +124,25 @@ describe('cache key and freshness', () => {
     expect(prDetailsTtlMs(settled)).toBe(PR_DETAILS_SETTLED_MS);
     expect(prDetailsTtlMs({ ...settled, ciChecks: { ...settled.ciChecks, pending: 1 } })).toBe(PR_DETAILS_PENDING_MS);
     expect(prDetailsTtlMs({ ...settled, mergeable: null })).toBe(PR_DETAILS_PENDING_MS);
+  });
+});
+
+describe('prDetailsOf (the cached jsonb read back)', () => {
+  const stored = {
+    headSha: 'abc', ciChecks: null, reviews: { approved: 1, changesRequested: 0, pending: 0 },
+    mergeable: true, mergeableState: 'clean', runsByRef: {},
+  };
+
+  it('returns a stored answer', () => {
+    expect(prDetailsOf({ details: stored })).toEqual(stored);
+  });
+
+  it('reads a claim placeholder, a missing row value or a malformed one as no answer', () => {
+    expect(prDetailsOf({ details: null })).toBeNull();
+    expect(prDetailsOf(null)).toBeNull();
+    expect(prDetailsOf('details')).toBeNull();
+    expect(prDetailsOf({ details: 'stale' })).toBeNull();
+    expect(prDetailsOf({ details: { headSha: 'abc' } })).toBeNull();
+    expect(prDetailsOf({ details: { ...stored, runsByRef: null } })).toBeNull();
   });
 });
