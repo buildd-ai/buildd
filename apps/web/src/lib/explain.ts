@@ -31,7 +31,7 @@ import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-in
 import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
@@ -327,19 +327,40 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
 }
 
 /**
+ * The read behind {@link loadOpenAttempt}: `taskId`'s open attempts with only
+ * what `deriveOpenAttempt` reads (two context keys, the workers' status), not
+ * the full rows `viewForTask` loads. A page batches it and hands the rows to
+ * {@link openAttemptOf}.
+ */
+export function openAttemptQuery(taskId: string) {
+  return db.query.tasks.findMany({
+    where: sqlWhere(and(
+      eq(tasks.parentTaskId, taskId),
+      eq(tasks.taskClass, 'attempt'),
+      inArray(tasks.status, [...SHARED_OPEN_TASK_STATUSES]),
+    )),
+    columns: { id: true, title: true, status: true, taskClass: true, category: true, createdAt: true },
+    extras: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      context: (t: any, _ops?: unknown) => sql<Record<string, unknown>>`jsonb_build_object('iteration', ${t.context}->'iteration', 'maxIterations', ${t.context}->'maxIterations')`.as('attempt_context'),
+    },
+    with: { workers: { columns: { status: true } } },
+  });
+}
+
+/** The open-attempt fact from {@link openAttemptQuery}'s rows. */
+export function openAttemptOf(rows: Awaited<ReturnType<typeof openAttemptQuery>>): OpenAttemptInfo | null {
+  return deriveOpenAttempt(rows as unknown as LoadedTask[]);
+}
+
+/**
  * Convenience wrapper for a caller that only wants the open-attempt fact, not
  * a full `explainTask` answer (history, gate history, evidence objects, …).
- * One extra query — children of `taskId` with their latest worker — reading
- * the exact same columns and the exact same predicate `viewForTask` uses.
+ * One extra query — open children of `taskId` with their workers' status —
+ * under the same predicate `viewForTask` applies.
  */
 export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
-  const attempts = (await db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
-    columns: TASK_COLUMNS,
-    with: { workers: WORKER_WITH },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as LoadedTask[];
-  return deriveOpenAttempt(attempts);
+  return openAttemptOf(await openAttemptQuery(taskId));
 }
 
 function iso(d: Date | string | null | undefined): string | null {

@@ -89,7 +89,7 @@ describe('task detail keeps GitHub off the critical path', () => {
   it('streams the PR panel behind a boundary whose fallback is the stored card', () => {
     const source = page();
     expect(source).toContain('<Suspense fallback={<StoredPrCard {...storedPrFacts} />}>');
-    expect(source).toContain('<PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />');
+    expect(source).toContain('<PrDetailsCard workspaceId={task.workspaceId} headSha={prWorker?.lastCommitSha ?? null} {...storedPrFacts} />');
   });
 });
 
