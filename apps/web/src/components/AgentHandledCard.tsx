@@ -19,7 +19,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   // §17.5): the headline, then the evidence below the title.
   const delivery = item.delivery ?? null;
   const deliveryReads = delivery
-    ? deliveryReading({ stage: delivery.stage, state: delivery.state, headline: delivery.headline, owner: delivery.owner, prState: 'prState' in delivery ? delivery.prState : undefined })
+    ? deliveryReading({ stage: delivery.stage, state: delivery.state, headline: delivery.headline, owner: delivery.owner, prState: delivery.prState })
     : null;
   const label = delivery && deliveryReads
     ? deliveryReads.label
