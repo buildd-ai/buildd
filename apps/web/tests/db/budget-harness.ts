@@ -79,7 +79,12 @@ export async function seedLargeTeam(scale: SeedScale = seedScale()): Promise<See
     WHERE t.slug = ${slug} LIMIT 1`);
   if (existing) {
     const ws = await q<{ id: string }>(sql`SELECT id FROM workspaces WHERE team_id = ${existing.id}::uuid ORDER BY name`);
-    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workers WHERE workspace_id IN (SELECT id FROM workspaces WHERE team_id = ${existing.id}::uuid)`);
+    // Only the seed's own workers: test files add a few of their own to the
+    // shared team (health's edge workers), and counting those would take a
+    // finished seed for a half-finished one and cascade-delete the team.
+    const [{ n }] = await q<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM workers
+      WHERE workspace_id IN (SELECT id FROM workspaces WHERE team_id = ${existing.id}::uuid) AND name LIKE 'worker-%'`);
     if (n === scale.workers) {
       return { teamId: existing.id, userId: existing.user_id, workspaceIds: ws.map(w => w.id), scale, reused: true };
     }

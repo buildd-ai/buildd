@@ -1616,6 +1616,9 @@ describe('GET /api/cron/schedules', () => {
       enabled: true,
       nextRunAt: new Date(Date.now() - 90 * 60 * 1000),
       lastOverdueAlertAt: null,
+      // The overdue read picks taskTemplate.context.heartbeat in SQL and
+      // carries it as `heartbeat` (maintenance/overdue-heartbeats.ts).
+      heartbeat: true,
       taskTemplate: {
         title: 'Heartbeat check',
         mode: 'execution',
@@ -1643,7 +1646,8 @@ describe('GET /api/cron/schedules', () => {
 
     mockIsOverdue.mockReturnValue(true);
     mockEstimateCronIntervalMs.mockReturnValue(30 * 60 * 1000);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'My Mission' });
+    // The overdue check reads every linked mission in one query.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-1', scheduleId: 'sched-overdue', title: 'My Mission' }]);
 
     const res = await GET(makeRequest());
     const body = await res.json();
@@ -1668,7 +1672,7 @@ describe('GET /api/cron/schedules', () => {
       .mockResolvedValueOnce([makeOverdueHeartbeatSchedule({ name: 'Finance Heartbeat' })]);
 
     mockIsOverdue.mockReturnValue(true);
-    mockMissionsFindFirst.mockResolvedValue(null); // no linked mission
+    mockMissionsFindMany.mockResolvedValue([]); // no linked mission
 
     const res = await GET(makeRequest());
     const body = await res.json();
@@ -1745,7 +1749,8 @@ describe('GET /api/cron/schedules', () => {
 
     mockIsOverdue.mockReturnValue(true);
     mockEstimateCronIntervalMs.mockReturnValue(intervalMs);
-    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'My Mission' });
+    // The overdue check reads every linked mission in one query.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-1', scheduleId: 'sched-overdue', title: 'My Mission' }]);
 
     const res = await GET(makeRequest());
     const body = await res.json();
