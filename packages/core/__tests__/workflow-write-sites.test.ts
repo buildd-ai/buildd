@@ -65,6 +65,8 @@ const ALLOWED = new Set<string>();
 const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-keys', 'kernel-floor', 'kernel-host', 'seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'escalation-brief', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy', 'visual-review-impact', 'pr-display',
   // 58c8961e: rounds per merged PR by trigger, for get_failure_analytics. A read-only aggregate, like projections.
   'review-round-metrics',
+  // Living Spec r7 AC-46: a refused decision in plain words (pure strings from a reason code; no command).
+  'decision-refusal',
   // The landing gate's pure answer and the `buildd/landing` context (workflow-kernel-library.md §4): read-only, like projections.
   'landing-gate',
   // S4a: the PR fact funnel's scope for terminal facts (a predicate, no command): the way a funnel caller
