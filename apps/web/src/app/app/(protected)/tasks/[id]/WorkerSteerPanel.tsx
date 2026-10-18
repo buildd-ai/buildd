@@ -98,13 +98,13 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         <div data-testid="worker-release-slot" className="space-y-2">
           <p className="text-meta text-text-muted">
             {taskTerminal
-              ? 'Task ended, but a local session still holds a slot.'
-              : 'Runs in a local session. buildd can’t stop it.'}
+              ? 'Task ended, but your session still holds a slot.'
+              : 'Runs in your session. buildd can’t stop it.'}
           </p>
           {confirm ? (
             <>
               <p data-testid="worker-release-slot-confirm-copy" className="text-meta text-text-secondary">
-                Frees the slot in buildd. The local session keeps running; close it yourself.
+                Frees the slot in buildd. Your session keeps running; close it yourself.
                 {!taskTerminal && ' The task goes back to the queue.'}
               </p>
               <div className="flex items-center justify-end gap-2">

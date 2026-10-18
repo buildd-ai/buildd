@@ -43,10 +43,10 @@ describe('quietMissionCauses', () => {
   it('names dependency, local-session and held waits by their own cause', () => {
     const causes = quietMissionCauses([
       m({ id: 'a', next: 'After its dependencies land' }),
-      m({ id: 'b', next: 'Waiting for a local session (none for 33h)' }),
+      m({ id: 'b', next: 'Waiting for your session (none for 33h)' }),
       m({ id: 'c', kind: 'held', next: 'You start it' }),
     ]).map(c => c.cause);
-    expect(causes).toEqual(['waiting on earlier work', 'waiting for a local session', 'not started']);
+    expect(causes).toEqual(['waiting on earlier work', 'waiting for your session', 'not started']);
   });
 
   it('never says capacity or another mission', () => {

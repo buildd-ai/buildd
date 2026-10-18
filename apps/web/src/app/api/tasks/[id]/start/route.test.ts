@@ -149,7 +149,7 @@ import { makeWaitingReason, type WaitingReason } from '@buildd/core/waiting-reas
 /** The shapes the probe produces for a local mission and for dependency edges (lib/coordination-probe.ts). */
 const localReason = (): WaitingReason => makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
-  blocker: { type: 'mission', id: 'mission-1', label: 'a local-session mission' },
+  blocker: { type: 'mission', id: 'mission-1', label: 'a mission run from your session' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 const migrationEdge = (id: string): WaitingReason => makeWaitingReason('dep_inferred', {
@@ -1703,7 +1703,7 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
     expect(refused.canForce).toBe(true);
     // The local mission leads; the five overlap edges are ordering, never "dependencies".
-    expect(refused.error).toContain('Waiting on a local-session mission');
+    expect(refused.error).toContain('Waiting on a mission run from your session');
     expect(refused.error).not.toMatch(/dependenc/);
     expect(refused.force.kinds.sort()).toEqual(['dep_inferred', 'mission_local']);
     expect(refused.force.checklist).toHaveLength(6);

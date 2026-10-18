@@ -5,7 +5,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Pair on the parser                                      
- ▸ Pair on the… local │ Managed from a local session                            
+ ▸ Pair… your session │ Run from your session                                   
    Ship the… building │─────────────────────────────────────────────────────────
    Docs refre… paused │ No activity yet.                                        
    Done this week · 4 │                                                         
@@ -32,7 +32,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ 4 done in the last 7 days                               
-   Pair on the… local │─────────────────────────────────────────────────────────
+   Pair… your session │─────────────────────────────────────────────────────────
    Ship the… building │ Mar 9   Retire the old API                              
    Docs refre… paused │ Mar 8   Billing export                                  
  ▸ Done this week · 4 │ Mar 6   Search ranking                                  
@@ -86,7 +86,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instea
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ Pair on the parser                                                                        
- ▸ Pair on the parser local │ Managed from a local session                                                              
+ ▸ Pair on th… your session │ Run from your session                                                                     
    Ship the impor… building │───────────────────────────────────────────────────────────────────────────────────────────
    Docs refresh      paused │ No activity yet.                                                                          
    Done this week · 4       │                                                                                           
@@ -129,7 +129,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on it
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Acme                       │ 4 done in the last 7 days                                                                 
-   Pair on the parser local │───────────────────────────────────────────────────────────────────────────────────────────
+   Pair on th… your session │───────────────────────────────────────────────────────────────────────────────────────────
    Ship the impor… building │ Mar 9   Retire the old API                                                                
    Docs refresh      paused │ Mar 8   Billing export                                                                    
  ▸ Done this week · 4       │ Mar 6   Search ranking                                                                    

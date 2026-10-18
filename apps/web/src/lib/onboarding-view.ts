@@ -51,7 +51,7 @@ export function orderedItems(items: WorkspaceReadinessItem[]): WorkspaceReadines
 export const NEXT_STEP_COPY: Record<WorkspaceReadinessNextStep, { title: string; body: string }> = {
   'link-repo': {
     title: 'Link a repository',
-    body: 'Workers need a repo to work in. Link an existing one or create a new one.',
+    body: 'Agents need a repo to work in. Link an existing one or create a new one.',
   },
   'review-policy': {
     title: 'Review the merge policy',

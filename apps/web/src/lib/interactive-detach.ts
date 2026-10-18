@@ -77,7 +77,7 @@ export function detachedWorkerOutcome(taskStatus: string | null | undefined): {
 /** The audit line written on the worker's timeline. */
 export function detachAuditLabel(actor: DetachActor, reason: string): string {
   const who = actor.kind === 'user' ? actor.label : 'buildd';
-  return `Slot released by ${who}: ${reason}. The local session was not stopped.`;
+  return `Slot released by ${who}: ${reason}. The session itself was not stopped.`;
 }
 
 const liveInteractive = (): SQL => and(

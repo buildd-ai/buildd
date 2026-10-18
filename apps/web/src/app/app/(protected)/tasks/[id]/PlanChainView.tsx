@@ -1,7 +1,7 @@
 import Link from 'next/link';
-import { displayTaskTitle } from '@/lib/task-title';
 import { deriveTaskEyebrow, taskEyebrowText, type TaskEyebrow } from '@/lib/task-eyebrow';
 import { statusPill } from '@/components/ui/states';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 interface ChainTask {
   id: string;
@@ -125,7 +125,7 @@ function ChainNode({
 
       {/* Title */}
       <div className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2" title={task.title}>
-        {displayTaskTitle(task.title)}
+        <TaskTitle short title={task.title} />
       </div>
 
       {/* Status + artifacts row */}

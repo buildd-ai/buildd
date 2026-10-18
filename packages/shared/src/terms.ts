@@ -36,7 +36,9 @@ export type InternalKind =
   | 'waiting'         // core WaitingKind
   | 'strip'           // web strip / pill StateKey
   | 'runner'          // runner-level states (buildd hold)
-  | 'release';        // a release's deploy state
+  | 'release'         // a release's deploy state
+  | 'mission.executor' // missions.executor
+  | 'worker.runner';  // workers.runner: `mcp` is an interactive session's claim
 
 /**
  * One internal value. `when` narrows it: `task.status completed` reads Merged
@@ -68,6 +70,7 @@ export type TermKey =
   | 'work.cancelled'
   | 'work.replaced'
   | 'work.recovering'
+  | 'work.your_session'
   // A PR (kernel delivery)
   | 'pr.waiting_push'
   | 'pr.in_review'
@@ -136,7 +139,7 @@ const TERM_LIST: Term[] = [
     means: 'Every task is finished and the mission’s checks passed.', from: [st('delivered')] },
   { key: 'mission.your_session', word: 'Run from your session', short: 'your session', tone: 'q',
     means: 'Its tasks start from a person’s own Claude Code session, not a runner.', liftedBy: 'Claim a task from your session',
-    from: wk('mission_local') },
+    from: [...wk('mission_local'), { kind: 'mission.executor', value: 'local' }] },
 
   // ── A task's work ─────────────────────────────────────────────────────────
   { key: 'work.ready', word: 'Ready', short: 'ready', tone: 'q', glyph: '□',
@@ -166,6 +169,9 @@ const TERM_LIST: Term[] = [
     means: 'Another task took over this work.', from: [ws('superseded')] },
   { key: 'work.recovering', word: 'Recovering', short: 'recovering', tone: 'q', glyph: '⊘',
     means: 'A check can’t run; buildd is restoring it.', from: [sk('recovering')] },
+  { key: 'work.your_session', word: 'Running in your session', short: 'your session', tone: 'act', glyph: '▶',
+    means: 'A person claimed it from their own Claude Code session; buildd does not run or stop it.',
+    from: [{ kind: 'worker.runner', value: 'mcp' }] },
 
   // ── A PR ──────────────────────────────────────────────────────────────────
   { key: 'pr.waiting_push', word: 'Waiting for push', short: 'waiting for push', tone: 'run',
@@ -271,12 +277,28 @@ export function missionGateTerm(m: { armedAt?: Date | string | null }): Term {
 }
 
 /**
+ * The nouns for what runs the work (§2.7). "Worker" is the internal row and
+ * "seat" an old billing word: neither is shown to a person.
+ */
+export const NOUNS = Object.freeze({
+  runner: { word: 'runner', means: 'A machine that runs agents.' },
+  slot: { word: 'slot', means: 'Room for one agent on a runner.' },
+  agent: { word: 'agent', means: 'The AI working on a task.' },
+  session: { word: 'your session', means: 'A person’s own Claude Code session, which claims tasks without a runner.' },
+} as const);
+
+/** Who reads a string: a person (the default), or an agent reading an MCP reply. */
+export type Reader = 'person' | 'agent';
+
+/**
  * Words never shown to a person as a state, and what to say instead.
  * `scripts/copy-check.ts` counts them (rule `catalog-word`) on the web, in
  * `top`, runner CLI output, MCP replies, the kernel's display table and PR
  * activity comments. It is a ratchet: each slice of the migration lowers it.
+ * `agentsMay` marks a word an agent reading an MCP reply needs (it passes
+ * `workerId`), so MCP replies are not counted for it.
  */
-export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: string }> = [
+export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: string; agentsMay?: true }> = [
   { word: /\bheld\b|\bon hold\b|\bstart mode\b/i, use: 'Not started, Paused, Scheduled, Usage limit, Waiting for files, or Waiting + the reason',
     why: '"Held" covers a person’s pause, a schedule, a usage limit and a file lock, each with a different way out. Name the cause.' },
   { word: /\bnot landed\b|\blanded\b|\blanding\b/i, use: 'Merging, Merged, Merged in #N, Closed without merging',
@@ -287,11 +309,18 @@ export const BANNED_WORDS: ReadonlyArray<{ word: RegExp; use: string; why: strin
     why: '"Delivery" is the kernel’s internal noun for a PR’s journey.' },
   { word: /^completed$|\bcompleted this week\b/i, use: 'Done, Merged',
     why: 'A task marked Completed drew the merged glyph even when it had no PR.' },
+  { word: /\blocal[- ]sessions?\b|\[LOCAL\b|^LOCAL$|\bbuilding locally\b/i, use: 'Your session, Run from your session, Running in your session',
+    why: 'One claim read LOCAL, local session, Your sessions and claimed. It is the person’s own session; say so.' },
+  { word: /(?<![/.])\bworkers?\b(?!\.)|^\[?Workers?\b(?! (?:URL|upload|AI|Scripts)\b)/, use: 'runner, slot, agent', agentsMay: true,
+    why: '"Worker" is the internal row behind an agent. A person sees runners, their slots and the agents in them.' },
+  { word: /\bseats?\b/i, use: 'slot, plan, sign-in, plan limit',
+    why: '"Seat" was a billing word for a subscription sign-in. Say the plan, the sign-in or the slot.' },
 ];
 
-/** Every banned word a string uses. */
-export function bannedWordsIn(text: string): Array<(typeof BANNED_WORDS)[number]> {
-  return BANNED_WORDS.filter((b) => b.word.test(text));
+/** Every banned word a string uses. An agent reading an MCP reply may see the words marked `agentsMay`. */
+export function bannedWordsIn(text: string, opts?: { reader?: Reader }): Array<(typeof BANNED_WORDS)[number]> {
+  const agent = opts?.reader === 'agent';
+  return BANNED_WORDS.filter((b) => !(agent && b.agentsMay) && b.word.test(text));
 }
 
 /**
@@ -303,7 +332,8 @@ export function bannedWordsIn(text: string): Array<(typeof BANNED_WORDS)[number]
 const ATTEMPT_PREFIX = /^\s*\[[^\]·]*·\s*after (CI|review|conflict)\s*#(\d+)\]\s*/i;
 const ATTEMPT_WORDS: Record<string, string> = { ci: 'CI failed', review: 'review asked for changes', conflict: 'merge conflict' };
 
-export function displayTitle(title: string): { title: string; attempt?: string } {
+export function displayTitle(title: string | null | undefined): { title: string; attempt?: string } {
+  title ??= '';
   let rest = title;
   let attempt: string | undefined;
   for (let m = ATTEMPT_PREFIX.exec(rest); m; m = ATTEMPT_PREFIX.exec(rest)) {
@@ -311,4 +341,14 @@ export function displayTitle(title: string): { title: string; attempt?: string }
     rest = rest.slice(m[0].length);
   }
   return attempt ? { title: rest.trim() || title, attempt } : { title };
+}
+
+/**
+ * The plain-text form of `displayTitle` for surfaces with no room for a chip
+ * (`buildd top`, MCP replies, PR comments, notifications): the title, then the
+ * attempt as appended detail. Never the machine key.
+ */
+export function titleWithAttempt(title: string | null | undefined): string {
+  const d = displayTitle(title);
+  return d.attempt ? `${d.title} · ${d.attempt}` : d.title;
 }
