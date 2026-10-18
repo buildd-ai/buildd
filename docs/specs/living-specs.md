@@ -34,6 +34,13 @@ assertions:
 ---
 # Living Specs
 
+> **The source of truth is in buildd, not this file.** These rules now live in
+> the approved Living Specs tree: the parent spec `ab77f0bb` and its five parts
+> (writing and approving, checking work, where a spec is kept, finding and
+> organising, what a spec can hold). Each part keeps this file's ids. Change
+> the rules there. This file stays until the parts' generated copies replace
+> it, because tests and code comments cite its ids; do not add rules here.
+
 Governed intent, database-canonical for specs created through Buildd (decision
 D-1; repo-owned `docs/specs` stay Git-canonical, except in a workspace that
 opts in to a native source with a generated repo copy, D-13, §18).

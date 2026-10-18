@@ -293,8 +293,7 @@ async function resolveStaleTask(
           summary: outcomeSummary,
           reaperAutoCompleted: true,
           reaperForensics,
-          ...(staleWorker.prUrl ? { prUrl: staleWorker.prUrl } : {}),
-          ...(staleWorker.prNumber ? { prNumber: staleWorker.prNumber } : {}),
+          // The PR is derived on read from the worker row (workflow/task-pr.ts).
           ...(staleWorker.branch ? { branch: staleWorker.branch } : {}),
           ...(typeof staleWorker.commitCount === 'number' && staleWorker.commitCount > 0
             ? { commits: staleWorker.commitCount }

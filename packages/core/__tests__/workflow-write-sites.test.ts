@@ -75,7 +75,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'kernel-heal',
   // S4b: the one automated mission-completion write, compare-and-set on the mission's delivery records
   // (a fingerprint read and one UPDATE of missions; it reads the epochs and writes no kernel table).
-  'mission-completion-write']);
+  'mission-completion-write',
+  // AC-1 slice 4: a task's PR derived on read (one SELECT fragment over the task's delivery and
+  // worker rows); no command, so it cannot assign a state, like delivery-view.
+  'task-pr']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
@@ -355,7 +358,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (S7, projections, task c16eb202: derive on read)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
   'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
@@ -427,6 +430,29 @@ const ATTEMPT_SITE_CEILING: Record<string, number> = {
   'apps/web/src/lib/ci-failure-retry.ts': 1,
   'apps/web/src/lib/loop-webhook.ts': 2,
 };
+
+/**
+ * AC-1 slice 4 step 1: a task's PR is derived on read (`apps/web/src/lib/workflow/task-pr.ts`), so
+ * no ATTEMPT writer puts `prUrl` / `prNumber` into a result it writes. The scan finds every object
+ * literal assigned to `result` (`result: {…}`, `result = {…}`, `.result = {…}`) and flags one that
+ * names either key. A person's act (correct_task_result) still attaches a PR, and is not scanned.
+ */
+function resultPrWrites(src: string): string[] {
+  const out: string[] = [];
+  const line = (i: number) => src.slice(0, i).split('\n').length;
+  for (const m of src.matchAll(/\bresult\s*(?::|=(?!=))\s*(?:\(?\s*)?\{/g)) {
+    const open = m.index! + m[0].length - 1;
+    let depth = 0;
+    let end = open;
+    for (; end < src.length; end++) {
+      if (src[end] === '{') depth++;
+      else if (src[end] === '}' && --depth === 0) break;
+    }
+    // A key (`prUrl:`, shorthand `{ prUrl, …}`), never a member read such as `${w.prNumber}`.
+    if (/(?<![.\w$])pr(?:Url|Number)\s*[:,}]/.test(src.slice(open, end + 1))) out.push(`result@${line(m.index!)}`);
+  }
+  return out;
+}
 
 /** The GUARDED writers: each must still carry the delivery-owned predicate. */
 const GUARDED_WRITERS = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('GUARDED')).map(([f]) => f);
@@ -525,6 +551,20 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
     const kernel = code(`${KERNEL_DIR}kernel.ts`);
     expect(/attemptEndTaskProjectionCtes\(/.test(kernel)).toBe(true);
     expect(/t_attempt AS \(/.test(code(`${KERNEL_DIR}task-projection.ts`))).toBe(true);
+  });
+
+  it('AC-1 slice 4: no ATTEMPT writer stores result.prUrl / prNumber; the PR is derived on read', () => {
+    const attempt = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('ATTEMPT')).map(([f]) => f);
+    expect(attempt.flatMap((f) => resultPrWrites(code(f)).map((s) => `${f} ${s}`))).toEqual([]);
+    // The one reader exists and the helper is what surfaces import.
+    expect(/export function taskPrJsonSql\(/.test(code(`${KERNEL_DIR}task-pr.ts`))).toBe(true);
+    // The scan can fail: each shape a snapshot took.
+    expect(resultPrWrites(`taskUpdate.result = {\n summary,\n prUrl: w.prUrl ?? undefined,\n};`)).toEqual(['result@1']);
+    expect(resultPrWrites(`.set({ status: 'completed', result: { summary: s, ...(w.prNumber ? { prNumber: w.prNumber } : {}) } })`)).toEqual(['result@1']);
+    expect(resultPrWrites(`const result = { prUrl, commits };`)).toEqual(['result@1']);
+    expect(resultPrWrites(`.set({ result: { summary: 'PR merged', loopHistory } })`)).toEqual([]);
+    expect(resultPrWrites('.set({ result: { summary: `PR #${worker.prNumber} merged` } })')).toEqual([]);
+    expect(resultPrWrites(`if (result == null) { prUrl: 1 }`)).toEqual([]);
   });
 
   it('S4b: a GUARDED writer still skips a delivery-owned task in its own statement', () => {
