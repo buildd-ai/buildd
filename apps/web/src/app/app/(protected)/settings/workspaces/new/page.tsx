@@ -10,6 +10,7 @@ import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import Segmented from '@/components/ui/Segmented';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
+import { isPersonalTeam } from '@/lib/personal-team';
 import { createRepoNextStep, extractRepoInfo, plainCreateError, resolveWorkspaceName } from './new-workspace-form';
 
 interface Installation {
@@ -69,7 +70,7 @@ export default function NewWorkspacePage() {
   const [accessMode, setAccessMode] = useState<'open' | 'restricted'>('open');
 
   // Team selection
-  const [userTeams, setUserTeams] = useState<{ id: string; name: string; slug: string }[]>([]);
+  const [userTeams, setUserTeams] = useState<{ id: string; name: string; slug: string; personalUserId: string | null }[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
 
   // Toggle repo selection
@@ -96,7 +97,7 @@ export default function NewWorkspacePage() {
         const res = await fetch('/api/teams');
         if (res.ok) {
           const data = await res.json();
-          const teams: { id: string; slug: string }[] = data.teams || [];
+          const teams: { id: string; personalUserId: string | null }[] = data.teams || [];
           setUserTeams(data.teams || []);
           // Prefer the team the user is currently viewing (set by the team switcher)
           const initial = defaultTeamId(teams, readActiveTeamCookie());
@@ -396,7 +397,7 @@ export default function NewWorkspacePage() {
                 onChange={setSelectedTeamId}
                 options={userTeams.map((team) => ({
                   value: team.id,
-                  label: team.name + (team.slug.startsWith('personal-') ? ' (Personal)' : ''),
+                  label: team.name + (isPersonalTeam(team) ? ' (Personal)' : ''),
                 }))}
               />
               <p className="text-xs text-text-muted mt-1">

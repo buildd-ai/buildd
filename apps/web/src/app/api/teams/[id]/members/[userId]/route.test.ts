@@ -15,7 +15,7 @@ let memberships: Record<string, { role: string } | undefined> = {};
 const updates: any[] = [];
 let deletes = 0;
 // The team row: its slug (personal or not).
-let team: { slug: string };
+let team: { slug: string; personalUserId?: string | null };
 // When set, what the owner-count query returns instead of the owners in `memberships`.
 let ownerRows: { userId: string }[] | null = null;
 
@@ -100,7 +100,7 @@ beforeEach(() => {
   memberships = {};
   updates.length = 0;
   deletes = 0;
-  team = { slug: 'acme' };
+  team = { slug: 'acme', personalUserId: null };
   ownerRows = null;
   writeMatches = true;
   clamps.length = 0;
@@ -363,13 +363,20 @@ describe('DELETE /api/teams/[id]/members/[userId] — leave the team', () => {
   });
 
   it('refuses leaving a personal team', async () => {
-    team.slug = 'personal-caller';
+    team.personalUserId = 'caller';
     memberships.caller = { role: 'owner' };
     memberships.other = { role: 'owner' };
     const res = await del('caller');
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/personal/i);
     expect(deletes).toBe(0);
+  });
+
+  it('a personal- slug alone does not make a team personal', async () => {
+    team.slug = 'personal-caller';
+    memberships.caller = { role: 'owner' };
+    memberships.other = { role: 'owner' };
+    expect((await del('caller')).status).toBe(200);
   });
 
   it('404s leaving a team you are not in', async () => {

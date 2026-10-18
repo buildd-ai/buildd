@@ -16,6 +16,7 @@ import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permission
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isPersonalTeam } from '@/lib/personal-team';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,7 +59,7 @@ export default async function TeamSettingsPage({
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, shown.id)),
-      columns: { id: true, name: true, slug: true, createdAt: true },
+      columns: { id: true, name: true, slug: true, personalUserId: true, createdAt: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
       where: sqlWhere(eq(teamMembers.teamId, shown.id)),
@@ -69,7 +70,7 @@ export default async function TeamSettingsPage({
   const role = shown.role as 'owner' | 'admin' | 'member';
   // The shown team's flags (it can differ from the active team via ?team=).
   // A failed team read leaves the page read-only, as it says it could not load.
-  const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
+  const perms = team ? settingsPermissions({ role, personalUserId: team.personalUserId }, user.id) : NO_PERMISSIONS;
 
   const sections = (
     <>
@@ -101,7 +102,7 @@ export default async function TeamSettingsPage({
           })), qaState)}
           currentUserRole={role}
           currentUserId={user.id}
-          isPersonal={team.slug.startsWith('personal-')}
+          isPersonal={isPersonalTeam(team)}
           canManage={roleHas(role, 'manage_team_members')}
         >
           {sections}

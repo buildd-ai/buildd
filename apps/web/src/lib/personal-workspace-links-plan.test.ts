@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { planPersonalWorkspaceLinks, personalTeamSlug } from './personal-workspace-links-plan';
+import { planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
 
 const userId = 'user-1';
-const team = { id: 'team-p', slug: personalTeamSlug(userId) };
+const team = { id: 'team-p', personalUserId: userId };
 const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-p', workspaceIds: null };
 const myWorkspace = { id: 'ws-mine', teamId: 'team-p', accessMode: 'restricted' };
 
@@ -23,13 +23,13 @@ describe('planPersonalWorkspaceLinks', () => {
 
   it("never links in a shared team, even one the user owns", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, canManageTeamKeys: true, team: { id: 'team-p', slug: 'acme' }, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: true, team: { id: 'team-p', personalUserId: null }, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([]);
   });
 
   it("never links in someone else's personal team", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, canManageTeamKeys: true, team: { id: 'team-p', slug: personalTeamSlug('user-2') }, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: true, team: { id: 'team-p', personalUserId: 'user-2' }, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([]);
   });
 

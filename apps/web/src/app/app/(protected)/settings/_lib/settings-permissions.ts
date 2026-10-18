@@ -1,4 +1,5 @@
 import { PERMISSIONS, roleHas, type Permission } from '@/lib/permission-registry';
+import { isPersonalTeamOf } from '@/lib/personal-team';
 
 /**
  * What a settings page may offer: one flag per named permission, for one team.
@@ -7,7 +8,7 @@ import { PERMISSIONS, roleHas, type Permission } from '@/lib/permission-registry
  *
  * The rule is the server's (`can` in permissions.ts): the person's role in the
  * team holds the permission. A personal team
- * (slug `personal-<userId>`) counts as owned, as `can` treats it.
+ * (`personalUserId`, lib/personal-team) counts as owned, as `can` treats it.
  */
 export type SettingsPermissions = Readonly<Record<Permission, boolean>>;
 
@@ -19,11 +20,11 @@ export const NO_PERMISSIONS: SettingsPermissions = Object.freeze(
 );
 
 export function settingsPermissions(
-  team: { role: string; slug: string } | null,
+  team: { role: string; personalUserId: string | null } | null,
   userId: string,
 ): SettingsPermissions {
   if (!team) return NO_PERMISSIONS;
-  const role = team.slug === `personal-${userId}` ? 'owner' : team.role;
+  const role = isPersonalTeamOf(team, userId) ? 'owner' : team.role;
   return Object.freeze(
     Object.fromEntries(ALL_PERMISSIONS.map((p) => [p, roleHas(role, p)])) as Record<Permission, boolean>,
   );

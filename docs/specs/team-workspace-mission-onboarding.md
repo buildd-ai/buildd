@@ -69,7 +69,7 @@ pasting a repo URL, in a single form submission.
 - AC-3: GIVEN ≥2 repos selected, WHEN the user submits, THEN one workspace is
   created per repo and a per-repo error list is shown for any that fail.
 - AC-4 (error): GIVEN no team is resolvable, WHEN submitting, THEN the workspace
-  is still created under the user's personal team (slug `personal-*`).
+  is still created under the user's personal team.
 - AC-5 (error): WHEN `POST /api/workspaces` rejects, THEN the inline error region
   renders the API `error` string and no navigation occurs.
 
