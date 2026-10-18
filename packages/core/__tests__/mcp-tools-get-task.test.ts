@@ -60,7 +60,7 @@ describe('get_task', () => {
     const [endpoint] = mockApi.mock.calls[0];
     const url = new URL(endpoint, 'http://localhost');
     expect(url.pathname).toBe(`/api/tasks/${TASK_ID}`);
-    expect(url.searchParams.get('include')).toBe('workers,artifacts');
+    expect(url.searchParams.get('include')).toBe('workers,artifacts,evidence');
   });
 
   it('honors explicit include array', async () => {
@@ -75,7 +75,7 @@ describe('get_task', () => {
 
     const [endpoint] = mockApi.mock.calls[0];
     const url = new URL(endpoint, 'http://localhost');
-    expect(url.searchParams.get('include')).toBe('workers');
+    expect(url.searchParams.get('include')).toBe('workers,evidence');
   });
 
   it('formats result with summary, PR, workers, and artifacts', async () => {
@@ -587,7 +587,7 @@ describe('get_task — include validation and scheduling view', () => {
     expect(text).toContain('**Verification command:** `bun run test`');
     expect(text).toContain('**Spec source:** docs/specs/x.md (planning task cccccccc-cccc-cccc-cccc-cccccccccccc)');
     // Scheduling is rendered from the task row; the server only adds the frozen estimate.
-    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=estimate`);
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('estimate,evidence')}`);
     // No estimate on the row: nothing about one is said.
     expect(text).not.toContain('Estimate');
   });
@@ -600,7 +600,7 @@ describe('get_task — include validation and scheduling view', () => {
       },
     });
     const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers', 'scheduling'] }, ctx());
-    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('workers,estimate')}`);
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('workers,estimate,evidence')}`);
     expect(out.content[0].text).toContain(
       '**Estimate (blend-v1):** About 30–75 min · Based on limited comparable tasks in this repo.',
     );
@@ -609,7 +609,7 @@ describe('get_task — include validation and scheduling view', () => {
   it('the estimate is never asked for or shown without include scheduling', async () => {
     const a = api({ estimate: { estimatorVersion: 'blend-v1', p50Minutes: 40, p80Minutes: 70, p50Tokens: 1, p80Tokens: 2, summary: 's' } });
     const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers'] }, ctx());
-    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=workers`);
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('workers,evidence')}`);
     expect(out.content[0].text).not.toContain('Estimate');
   });
 

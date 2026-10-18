@@ -12,6 +12,11 @@ import { join } from 'path';
 const src = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
 
 describe('missions page header', () => {
+  it('mission plan link requires calibration as well as team availability', () => {
+    expect(src).toContain('taskEstimatesDefaultOn() && await taskEstimatesEnabled(activeTeamId)');
+    expect(src).toContain('{planEnabled && (');
+  });
+
   it('the h1 is a sans title, hidden visually below md', () => {
     const h1 = src.match(/<h1[^>]*data-testid="missions-headline"[^>]*>/)?.[0] ?? '';
     expect(h1).toContain('sr-only md:not-sr-only');

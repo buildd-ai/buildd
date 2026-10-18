@@ -148,7 +148,8 @@ export const TASK_ESTIMATES_ROLLOUT: TaskEstimatesRolloutPin = {
   failing: ['prior_only', 'cold_start'],
 };
 
-/** Whether teams that never chose get estimates. */
+/** Whether the running version passed numeric calibration.
+ * Kept for operator gate consumers; forecast availability is independent. */
 export function taskEstimatesDefaultOn(
   pin: TaskEstimatesRolloutPin = TASK_ESTIMATES_ROLLOUT,
   runningVersion: string = ESTIMATOR_VERSION,
@@ -168,8 +169,9 @@ export interface TaskEstimatesState {
   defaultOn: boolean;
 }
 
-/** Only a boolean `enabled` is a choice; anything else follows the default. */
-export function resolveTaskEstimatesState(raw: unknown, defaultOn: boolean = taskEstimatesDefaultOn()): TaskEstimatesState {
+/** Availability defaults on; numeric confidence is gated separately by taskEstimatePayload.
+ * Retain explicit legacy opt-outs as a reversible operational escape hatch. */
+export function resolveTaskEstimatesState(raw: unknown, defaultOn: boolean = true): TaskEstimatesState {
   const chosen = !!raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).enabled : undefined;
   if (typeof chosen === 'boolean') return { enabled: chosen, source: 'team', defaultOn };
   return { enabled: defaultOn, source: 'default', defaultOn };

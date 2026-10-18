@@ -3,17 +3,12 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId } from '@/lib/team-access';
-import { and, eq } from 'drizzle-orm';
-import { db } from '@buildd/core/db';
-import { teamMembers } from '@buildd/core/db/schema';
 import { loadTaskEstimatesState } from '@buildd/core/task-estimate-source';
-import { roleHas } from '@/lib/permission-registry';
 import { EstimatesOff } from './EstimatesOff';
 import { fetchLiveEstimateRows } from '@buildd/core/task-estimate-accuracy-source';
 import { computeTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 import { EstimatesClient } from './EstimatesClient';
 import { FIXTURE_READOUTS, isEstimatesFixtureState } from './estimates-fixtures';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,15 +18,6 @@ function LoadError() {
       Couldn&apos;t load estimate accuracy. Try again in a moment.
     </p>
   );
-}
-
-/** Whether the viewer may switch the team's features (Settings › Features). A failed read is "no". */
-async function canManageTeam(userId: string, teamId: string): Promise<boolean> {
-  const m = await db.query.teamMembers.findFirst({
-    where: sqlWhere(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId))),
-    columns: { role: true },
-  }).catch(() => null);
-  return !!m && roleHas(m.role, 'manage_team_settings');
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -53,9 +39,9 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
   if (isEstimatesFixtureState(fixture)) {
     if (fixture === 'error') return <Shell><LoadError /></Shell>;
     if (fixture === 'off-admin' || fixture === 'off-member') {
-      return <Shell><EstimatesOff canManage={fixture === 'off-admin'} /></Shell>;
+      return <Shell><EstimatesOff /></Shell>;
     }
-    return <EstimatesClient readout={FIXTURE_READOUTS[fixture]} canManage />;
+    return <EstimatesClient readout={FIXTURE_READOUTS[fixture]} />;
   }
 
   const cookieStore = await cookies();
@@ -75,7 +61,7 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
   if (!state.enabled) {
     return (
       <Shell>
-        <EstimatesOff canManage={await canManageTeam(user.id, teamId)} />
+        <EstimatesOff />
       </Shell>
     );
   }
@@ -85,5 +71,5 @@ export default async function HealthEstimatesPage({ searchParams }: { searchPara
     return null;
   });
   if (!rows) return <Shell><LoadError /></Shell>;
-  return <EstimatesClient readout={computeTaskEstimateReadout(rows)} canManage={await canManageTeam(user.id, teamId)} />;
+  return <EstimatesClient readout={computeTaskEstimateReadout(rows)} />;
 }

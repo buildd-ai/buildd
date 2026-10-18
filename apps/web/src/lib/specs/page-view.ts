@@ -5,7 +5,7 @@ import { artifacts, specFilings, specRevisions, specs, users, workspaces } from 
 import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
-import { fail, listSpecs, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { fail, importedRefusal, listSpecs, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { commentsOnRevision, type CommentView } from './comments';
 import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
@@ -23,6 +23,7 @@ import { readSpecDelivery, type SpecDelivery } from './delivery';
 import { specRetirement, type RetirementView } from './retire';
 import { revisionReview, type RevisionReview } from './revision-changes';
 import { readCriterionHistory, type CriterionHistory } from './criteria';
+import { importConfirmPath } from './import';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -295,6 +296,13 @@ export type SpecPageView =
     retireTargets?: Array<{ id: string; title: string }>;
     /** With `history`: that criterion's wordings ("Reviewing a spec revision" R-12); null when the spec never had it. */
     criterionHistory?: { criterionId: string; history: CriterionHistory | null } | null;
+    /**
+     * An import waiting for a person's confirmation (§18, R-19). While it is
+     * set the repo file is the source: nothing waits for approval, there is no
+     * review, and confirming is the one act. `previous` is the earlier
+     * import a re-import replaced, to compare the repo's own change against.
+     */
+    importConfirmation?: { revision: number; path: string; commit: string; href: string | null; canConfirm: boolean; batchHref: string; previous: number | null } | null;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -353,6 +361,8 @@ export async function specReviewView(caller: SpecCaller, specId: string): Promis
   const [ok, approver] = await Promise.all([reached, specApprover(caller, row.workspaceId, reached)]);
   if (!ok) return fail(404, 'Spec not found');
   if (!approver) return fail(403, 'Only someone who may approve specs here can review a revision for approval.');
+  const importRefused = importedRefusal(row);
+  if (importRefused) return importRefused;
   const pending = row.approvedRevision == null || row.headRevision > row.approvedRevision;
   if (!pending || row.status === 'retired' || row.status === 'superseded') return fail(409, 'No revision of this spec waits for approval.');
   const review = await reviewPanes(row, null);
@@ -396,8 +406,10 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     return { state: 'not_found' };
   }
 
-  const pending = spec.approvedRevision == null || spec.headRevision > spec.approvedRevision;
   const open = spec.status !== 'retired' && spec.status !== 'superseded';
+  // An unconfirmed import is not waiting for approval (approve refuses it, store.ts importedRefusal): it waits for confirm_import.
+  const imported = spec.repoSource?.state === 'imported' ? spec.repoSource : null;
+  const pending = !imported && (spec.approvedRevision == null || spec.headRevision > spec.approvedRevision);
   const readN = opts.revision ?? spec.approvedRevision ?? spec.headRevision;
   const readP = readRevision(spec, readN);
   const wsP = db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
@@ -510,10 +522,14 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   const approver = !!approverId;
   const native = nativeSourceOn(ws?.gitConfig);
   const source: (ReturnType<typeof repoCopyLine> & { href?: string }) | null = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
-  if (source?.path) {
-    const fullName = await linkedRepoFullName(spec.workspaceId);
-    if (fullName) source.href = `https://github.com/${fullName}/blob/HEAD/${source.path.split('/').map(encodeURIComponent).join('/')}`;
-  }
+  const fullName = source?.path || imported ? await linkedRepoFullName(spec.workspaceId) : null;
+  if (source?.path && fullName) source.href = `https://github.com/${fullName}/blob/HEAD/${source.path.split('/').map(encodeURIComponent).join('/')}`;
+  const importConfirmation = imported && open ? {
+    revision: imported.revision, path: imported.path, commit: imported.commitSha.slice(0, 7),
+    href: fullName ? `https://github.com/${fullName}/blob/${imported.commitSha}/${imported.path.split('/').map(encodeURIComponent).join('/')}` : null,
+    canConfirm: approver, batchHref: importConfirmPath(spec.workspaceId),
+    previous: imported.revision > 1 ? imported.revision - 1 : null,
+  } : null;
 
   return {
     state: 'ok',
@@ -524,7 +540,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     repoChecks: native && pending && open && approver,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
-    standing: specStanding(spec).standing,
+    standing: importConfirmation ? 'imported, awaiting confirmation' : specStanding(spec).standing,
     reading: { revision: readRev, approved: spec.approvedRevision === readRev, isHead: readRev === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     // With the review open the page shows the review panel, which carries its own text: the read revision's is not sent twice.
@@ -537,5 +553,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     compare, canApprove: pending && open && approver, review,
     retirement, canRetire: approver, retireTargets,
     criterionHistory,
+    importConfirmation,
   };
 }

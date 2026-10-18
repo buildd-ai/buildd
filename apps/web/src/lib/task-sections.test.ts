@@ -72,7 +72,7 @@ describe('taskDeliverySections: the header reading and checks both surfaces rend
 
   it("reads the header pill from the delivery's own words", () => {
     const { delivery } = taskDeliverySections({ view, findings, findingsUnavailable: false }, null);
-    expect(delivery).toEqual({ headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, prState: 'awaiting_ci', state: 'AWAITING_REVIEW' });
+    expect(delivery).toEqual({ headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, prState: 'awaiting_ci', state: 'AWAITING_REVIEW', escalationTitle: null });
   });
 
   it('carries the checks with JSON-safe findings and the PR link', () => {

@@ -203,8 +203,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-11
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
-- [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-15
-  Frozen forecasts use shared evidence-aware display and auditable sample selection; estimates follow the team's switch or a quality-gated default and never order work.
+- [Task Estimates (Availability and Calibration)](./task-estimates.md) · @max — verified 2026-10-17
+  Eligible teams receive frozen evidence-aware forecasts by default; calibration gates numeric confidence, team health stays compact, and forecasts never order work.
 - [Task and Worker State Machines](./task-state-machine.md) · @max — verified 2026-10-15
   Task and worker transitions MUST preserve output requirements, terminal-state guards and dependency resolution.
 

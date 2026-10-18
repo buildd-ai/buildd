@@ -42,6 +42,24 @@ function req() {
 describe('GET /api/tasks/[id]/messages', () => {
   beforeEach(() => mockWorkersFindFirst.mockClear());
 
+  it('rejects malformed pagination before reading any rows', async () => {
+    const res = await GET(new NextRequest(`https://buildd.test/api/tasks/${TASK_ID}/messages?before=-1`), { params: Promise.resolve({ id: TASK_ID }) });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns an older-page cursor and bounds history in the database projection', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: {} });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', instructionHistory: [], messageCount: 75 });
+    const data = await (await GET(req(), { params: Promise.resolve({ id: TASK_ID }) })).json();
+    expect(data.hasMore).toBe(true);
+    expect(data.nextCursor).toBe(25);
+    const query = mockWorkersFindFirst.mock.calls.at(-1)?.[0] as any;
+    expect(query.columns.instructionHistory).toBeUndefined();
+    expect(query.extras.instructionHistory).toBeDefined();
+  });
   it('returns 404 when the task does not exist', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue(null);

@@ -79,3 +79,12 @@ describe('OccupancySparkline', () => {
     });
   });
 });
+
+import { sparklineScale } from './OccupancySparkline';
+describe('sparklineScale', () => {
+  it('scales to the highest bucket average, not up to a whole slot', () => {
+    expect(sparklineScale([0, 0.2, 0.1])).toBe(0.5);
+    expect(sparklineScale([0, 0.8, 0.1])).toBe(0.8);
+    expect(sparklineScale([0, 3.4])).toBe(3.4);
+  });
+});
