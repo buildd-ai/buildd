@@ -61,7 +61,7 @@ export function overlayActivityRows<W extends object, M extends { tasks?: unknow
   return { workersByTask, missions };
 }
 
-const iso = (ms: number | null | undefined) => (ms != null ? new Date(ms).toISOString() : null);
+const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null);
 
 /** Recent roots: the History window. Live work outside it is added on Now. */
 export const ACTIVITY_WINDOW_DAYS = 30;
@@ -122,16 +122,16 @@ export interface ActivityWorkerRow {
   status: string;
   /** Live workers only: Activity names the runner of the agent working a row, never a finished one. */
   name: string | null;
-  // Epoch ms.
-  startedAt: number | null;
-  completedAt: number | null;
-  updatedAt: number | null;
+  // Read as epoch ms (a third the bytes of a timestamp's text), held as dates.
+  startedAt: Date | null;
+  completedAt: Date | null;
+  updatedAt: Date | null;
   prUrl: string | null;
   prNumber: number | null;
-  mergedAt: number | null;
+  mergedAt: Date | null;
   prLifecycleStatus: string | null;
   supersededByPrNumber: number | null;
-  abandonedAt: number | null;
+  abandonedAt: Date | null;
   lastCommitSha: string | null;
   /** A waiting worker's question: '' when it has none, null when not waiting. */
   waitingPrompt: string | null;
@@ -182,8 +182,18 @@ export function liveRootsWhere(scope: ActivityScope, recentIds: SQLWrapper, tab:
     tab === 'history' ? mayBeFinishedSql() : undefined);
 }
 
+/**
+ * A canonical GitHub PR URL is sent as its `owner/repo` and rebuilt here from
+ * it and the PR number (the overlay matches a delivery by repo); any other
+ * URL is sent whole. Half the bytes of a worker row's URL, the same URL.
+ */
+const PR_REPO = sql`substring(${workers.prUrl} from '^https://github\\.com/([^/]+/[^/]+)/pull/[0-9]+$')`;
+const CANONICAL_PR_URL = sql`(${workers.prUrl} = 'https://github.com/' || ${PR_REPO} || '/pull/' || ${workers.prNumber}::text)`;
+export const prUrlOf = (w: { prUrl: string | null; prRepo?: string | null; prNumber: number | null }): string | null =>
+  w.prUrl ?? (w.prRepo && w.prNumber != null ? `https://github.com/${w.prRepo}/pull/${w.prNumber}` : null);
+
 const LIVE_WORKER = sql`${workers.status} in (${sql.join(LIVE_WORKER_STATUSES.map(st => sql`${st}`), sql`, `)})`;
-const toMs = (v: unknown): number | null => (v == null ? null : Number(v));
+const toDate = (v: unknown): Date | null => (v == null ? null : new Date(Number(v)));
 
 /** Each named task's newest `ACTIVITY_WORKERS_PER_TASK` workers, the columns Activity reads. */
 function workersQuery(taskIdsIn: SQL | undefined) {
@@ -194,7 +204,9 @@ function workersQuery(taskIdsIn: SQL | undefined) {
     startedAt: epochMs(workers.startedAt).as('started_ms'),
     completedAt: epochMs(workers.completedAt).as('completed_ms'),
     updatedAt: epochMs(workers.updatedAt).as('updated_ms'),
-    prUrl: workers.prUrl, prNumber: workers.prNumber,
+    prUrl: sql<string | null>`case when ${CANONICAL_PR_URL} then null else ${workers.prUrl} end`.as('pr_url_raw'),
+    prRepo: sql<string | null>`case when ${CANONICAL_PR_URL} then ${PR_REPO} end`.as('pr_repo'),
+    prNumber: workers.prNumber,
     mergedAt: epochMs(workers.mergedAt).as('merged_ms'),
     prLifecycleStatus: workers.prLifecycleStatus, supersededByPrNumber: workers.supersededByPrNumber,
     abandonedAt: epochMs(workers.abandonedAt).as('abandoned_ms'),
@@ -206,7 +218,7 @@ function workersQuery(taskIdsIn: SQL | undefined) {
   return db.select({
     id: ranked.id, taskId: ranked.taskId, status: ranked.status, name: ranked.name,
     startedAt: ranked.startedAt, completedAt: ranked.completedAt, updatedAt: ranked.updatedAt,
-    prUrl: ranked.prUrl, prNumber: ranked.prNumber, mergedAt: ranked.mergedAt, prLifecycleStatus: ranked.prLifecycleStatus,
+    prUrl: ranked.prUrl, prRepo: ranked.prRepo, prNumber: ranked.prNumber, mergedAt: ranked.mergedAt, prLifecycleStatus: ranked.prLifecycleStatus,
     supersededByPrNumber: ranked.supersededByPrNumber, abandonedAt: ranked.abandonedAt, lastCommitSha: ranked.lastCommitSha,
     waitingPrompt: ranked.waitingPrompt,
   }).from(ranked).where(lte(ranked.rn, ACTIVITY_WORKERS_PER_TASK)).orderBy(sql`${ranked.taskId}`, sql`${ranked.rn}`);
@@ -291,7 +303,7 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   const [recent, live] = await db.batch([
     recentQuery,
     db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(liveRootsWhere(scope, recentIds, tab)),
-  ]);
+  ]) as [ActivityTaskRow[], ActivityTaskRow[]];
   const historyReach = tab === 'history' && recent.length >= ACTIVITY_ROOT_LIMIT ? { oldestAt: new Date(recent[recent.length - 1].updatedAt).toISOString() } : null;
   const roots = [...recent, ...live];
   if (roots.length === 0) return { ...empty, historyReach };
@@ -315,9 +327,9 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
   );
   const childQuery = db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(childWhere)
     .orderBy(desc(tasksTable.createdAt)).limit(ACTIVITY_CHILD_LIMIT);
-  const [children, workerRows, dependencies] = depWhere
+  const [children, workerRows, dependencies] = (depWhere
     ? await db.batch([childQuery, workersQuery(workerTasks), db.select(ACTIVITY_TASK_COLUMNS).from(tasksTable).where(depWhere)])
-    : [...await db.batch([childQuery, workersQuery(workerTasks)]), [] as ActivityTaskRow[]];
+    : [...await db.batch([childQuery, workersQuery(workerTasks)]), []]) as [ActivityTaskRow[], Array<Record<string, unknown>>, ActivityTaskRow[]];
 
   const rows = [...new Map([...roots, ...children].map(t => [t.id, t])).values()];
   const missionIds = uniq([...rows.map(t => t.missionId), scope.missionId]);
@@ -327,11 +339,12 @@ export async function loadActivityRows(scope: ActivityScope, tab: ActivityTab, n
     // (workflow-kernel-library §7); work without one keeps the worker rows.
     getDeliveryViewsForTasks(uniq([...rows, ...dependencies].map(t => t.id))).catch(() => new Map()),
   ]);
-  const ms = (w: Record<string, unknown>): ActivityWorkerRow => ({
+  const dated = ({ prRepo, ...w }: Record<string, unknown>): ActivityWorkerRow => ({
     ...(w as unknown as ActivityWorkerRow),
-    startedAt: toMs(w.startedAt), completedAt: toMs(w.completedAt), updatedAt: toMs(w.updatedAt), mergedAt: toMs(w.mergedAt), abandonedAt: toMs(w.abandonedAt),
+    prUrl: prUrlOf({ prUrl: w.prUrl as string | null, prRepo: prRepo as string | null, prNumber: w.prNumber as number | null }),
+    startedAt: toDate(w.startedAt), completedAt: toDate(w.completedAt), updatedAt: toDate(w.updatedAt), mergedAt: toDate(w.mergedAt), abandonedAt: toDate(w.abandonedAt),
   });
-  return { rows, dependencies, workers: (workerRows as Array<Record<string, unknown>>).map(ms), missions: missionRows as ActivityMissionRow[], historyReach, views };
+  return { rows, dependencies, workers: workerRows.map(dated), missions: missionRows as ActivityMissionRow[], historyReach, views };
 }
 
 /**

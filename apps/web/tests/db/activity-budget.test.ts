@@ -15,7 +15,7 @@
  * Measured: the page's own server load (TasksPage), signed in as the team's
  * owner, in a request whose layout already ran (page-render.ts).
  */
-import { describe, it, expect, beforeAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q } from './harness';
 import {
@@ -75,6 +75,13 @@ beforeAll(async () => {
   initiativeId = init.id;
   await q(sql`UPDATE missions SET initiative_id = ${initiativeId}::uuid WHERE id = ${busyMission}::uuid`);
 }, 900_000);
+
+// The seeded team is shared with the other budget tests: leave it as found.
+afterAll(async () => {
+  if (!initiativeId) return;
+  await q(sql`UPDATE missions SET initiative_id = NULL WHERE initiative_id = ${initiativeId}::uuid`);
+  await q(sql`DELETE FROM initiatives WHERE id = ${initiativeId}::uuid`);
+});
 
 describe('Activity load budget', () => {
   for (const view of ['now', 'history'] as const) {

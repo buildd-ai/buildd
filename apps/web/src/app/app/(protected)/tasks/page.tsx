@@ -10,13 +10,12 @@ import ActivityView from './ActivityView';
 import { loadActivity, type ActivityData, type ActivityMissionRow } from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { localHoldsByWorker } from '@/lib/local-session-display';
-import { deriveHomeReadings } from '@/lib/mission-summary-home';
-import { refreshMissionSummary } from '@/lib/mission-summary-store';
+import { HOME_MISSION_SUMMARIES } from '@/modules';
 
 /** Header for open missions with no stored summary yet: derived live now, stored after the response. */
 async function deriveHeads(ids: string[]): Promise<Map<string, ActivityMissionRow['head']>> {
-  refreshMissionSummary(...ids);
-  const live = await deriveHomeReadings(ids, Date.now());
+  HOME_MISSION_SUMMARIES.refresh(...ids);
+  const live = await HOME_MISSION_SUMMARIES.derive(ids, Date.now());
   return new Map(live.map(r => [r.id, { kind: r.home.delivery.kind, landed: r.home.delivery.landed, total: r.home.delivery.total, next: r.home.delivery.next }]));
 }
 

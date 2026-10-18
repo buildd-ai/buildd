@@ -660,7 +660,6 @@
       "apps/web/src/components/chat/ChatEntry.tsx": "chat",
       "apps/web/src/lib/evidence-read.ts": "knowledge",
       "apps/web/src/lib/explain.ts": "health-quality",
-      "apps/web/src/lib/mission-card-views.ts": "missions",
       "apps/web/src/lib/mission-shipped.ts": "missions",
       "apps/web/src/lib/mission-task-href.ts": "missions",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
