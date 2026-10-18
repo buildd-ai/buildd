@@ -102,7 +102,7 @@ function FeedView({
         {notesEntry && <div data-testid="feed-notes-entry" className="mb-3">{notesEntry}</div>}
         {history.days.length === 0 && (
           <p data-testid="feed-empty" className="text-body text-text-muted">
-            {lens === 'highlights' ? 'No highlights.' : 'Nothing has happened yet.'}
+            {lens === 'highlights' ? 'No highlights.' : 'No activity.'}
           </p>
         )}
         {history.days.map((d, di) => {
