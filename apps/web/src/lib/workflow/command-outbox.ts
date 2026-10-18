@@ -51,6 +51,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // The floor imports a PR it does not know (reconcile.ts), and re-drains effects on its own.
   open_delivery: false,
   drain: false,
+  // The heal tick re-marks a delivery still owed its heal, and the floor reconciles it anyway.
+  heal: false,
   mission_epoch: false,
   mission_scope: false,
   // The runner reports an attempt's end once; the floor re-sends an owner's end, never a repair's or a review's.
@@ -67,6 +69,12 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // Never: the claim it revalidates is rolled back to pending when unanswered and claimed afresh on the
   // next poll, under a new key. Re-sending the old one would claim a fix for a claim that moved on.
   claim_fix: false,
+  // A close the control plane did not answer is recorded unapplied on the web host and healed
+  // (kernel-client.ts observePrState), and the sweeps read every open PR again: both re-send it.
+  observe_pr_state: false,
+  // GitHub sends `synchronize` and a retarget's `edited` once.
+  observe_head: true,
+  observe_base: true,
 };
 
 export const shouldPark = (op: KernelOp): boolean => PARK_ON_UNAVAILABLE[op] === true;
