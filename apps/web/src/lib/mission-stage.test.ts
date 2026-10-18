@@ -71,6 +71,10 @@ describe('visual verification (review of #4778): the list never says delivered p
     expect(direct([{ status: 'failed' }])).toEqual({ step: 'verifying', waitingOn: 'unable to run' });
   });
 
+  it('an audit failed only because build work it checks failed waits on that work, never "unable to run" (072de598 I-14)', () => {
+    expect(direct([{ status: 'failed', dependencyFailed: true }])).toEqual({ step: 'verifying', waitingOn: 'waiting on failed work' });
+  });
+
   it('a queued audit stays verifying: queued', () => {
     expect(direct([{ status: 'pending' }])).toEqual({ step: 'verifying', waitingOn: 'queued' });
   });

@@ -177,7 +177,7 @@ beforeEach(() => {
   noteRows = [];
   // URL-shaped, because that is what `workspaces.repo` holds in production. A
   // slug-shaped fixture here kept the ref check green while it could never run.
-  workspaceRows = [{ id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: null, gitConfig: { defaultBranch: 'dev' } }];
+  workspaceRows = [{ id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: null, defaultBranchSql: 'dev' }];
   installationRows = [{ installationId: 4242, accountLogin: 'acme' }];
   githubRepoRows = [];
   childCountRows = [];
@@ -263,7 +263,7 @@ describe('loadInvariantSnapshot cost', () => {
 
   it('skips the check when the workspace has no resolvable repo', async () => {
     openPrRows = [openPr()];
-    workspaceRows = [{ id: 'ws-1', repo: null, gitConfig: {} }];
+    workspaceRows = [{ id: 'ws-1', repo: null }];
     const checkRef = mock(async () => false as boolean | null);
 
     const { coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
@@ -299,7 +299,7 @@ describe('loadInvariantSnapshot repo resolution', () => {
   it('prefers the github_repos FK over the free-text column, which goes stale on a rename', async () => {
     openPrRows = [openPr()];
     workspaceRows = [{
-      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', gitConfig: { defaultBranch: 'dev' },
+      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', defaultBranchSql: 'dev',
     }];
     githubRepoRows = [{ id: 'ghr-1', fullName: 'acme/widgets-renamed', installationId: 777 }];
     const checkRef = mock(async () => true as boolean | null);
@@ -312,7 +312,7 @@ describe('loadInvariantSnapshot repo resolution', () => {
   it("asks the PR's own repo when its prUrl names one", async () => {
     openPrRows = [openPr({ prUrl: 'https://github.com/acme/mobile/pull/10' })];
     workspaceRows = [{
-      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', gitConfig: { defaultBranch: 'dev' },
+      id: 'ws-1', repo: 'https://github.com/acme/widgets', githubRepoId: 'ghr-1', defaultBranchSql: 'dev',
     }];
     githubRepoRows = [{ id: 'ghr-1', fullName: 'acme/widgets', installationId: 777 }];
     const checkRef = mock(async () => true as boolean | null);
@@ -356,7 +356,8 @@ describe('loadInvariantSnapshot mapping', () => {
 
   it('takes trunk names from the workspace git config', async () => {
     openPrRows = [openPr({ prBaseRef: 'dev' })];
-    workspaceRows = [{ id: 'ws-1', repo: 'acme/widgets', gitConfig: { defaultBranch: 'dev', targetBranch: 'main' } }];
+    // The loader lifts the two git-config keys in SQL (tests/db/mission-invariants-budget.test.ts pins that SQL).
+    workspaceRows = [{ id: 'ws-1', repo: 'acme/widgets', defaultBranchSql: 'dev', targetBranchSql: 'main' }];
 
     const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
 
@@ -365,7 +366,7 @@ describe('loadInvariantSnapshot mapping', () => {
 
   it('falls back to main/master when a workspace declares no branches', async () => {
     openPrRows = [openPr({ prBaseRef: 'main' })];
-    workspaceRows = [{ id: 'ws-1', repo: 'acme/widgets', gitConfig: null }];
+    workspaceRows = [{ id: 'ws-1', repo: 'acme/widgets', defaultBranchSql: null, targetBranchSql: null }];
 
     const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
 
@@ -377,14 +378,15 @@ describe('loadInvariantSnapshot mapping', () => {
       {
         id: 'm-1', workspaceId: 'ws-1', title: 'Live', status: 'active',
         integrationBranchEnabled: true, workingBranch: null, criteriaEscalatedAt: null,
-        goalCriteria: [{ type: 'all_prs_merged' }],
-        goalCriteriaState: { overall: 'PENDING' },
+        // Lifted in SQL from goalCriteria / goalCriteriaState.overall.
+        hasGoalCriteriaSql: true,
+        criteriaOverallVerdictSql: 'PENDING',
         updatedAt: NOW,
       },
       {
         id: 'm-2', workspaceId: 'ws-1', title: 'Gone', status: 'archived',
         integrationBranchEnabled: false, workingBranch: null, criteriaEscalatedAt: null,
-        goalCriteria: null, goalCriteriaState: null, updatedAt: NOW,
+        hasGoalCriteriaSql: false, criteriaOverallVerdictSql: null, updatedAt: NOW,
       },
     ];
 
@@ -404,7 +406,7 @@ describe('loadInvariantSnapshot mapping', () => {
       {
         id: 'm-3', workspaceId: 'ws-1', title: 'Archived but still escalated', status: 'archived',
         integrationBranchEnabled: false, workingBranch: null, criteriaEscalatedAt: NOW,
-        goalCriteria: [{ type: 'all_prs_merged' }], goalCriteriaState: { overall: 'fail' },
+        hasGoalCriteriaSql: true, criteriaOverallVerdictSql: 'fail',
         updatedAt: NOW,
       },
     ];
@@ -419,8 +421,9 @@ describe('loadInvariantSnapshot mapping', () => {
       {
         id: 't-1', workspaceId: 'ws-1', missionId: null, parentTaskId: null, title: 'X',
         status: 'completed', mode: 'planning', taskClass: 'work', outputRequirement: 'auto',
-        context: { baseBranch: 'mission/example-1234', requiresPlanApproval: true },
-        result: { structuredOutput: { plan: [{ ref: 'a' }] } },
+        // Lifted in SQL from context.baseBranch, context.requiresPlanApproval, result.structuredOutput.plan.
+        contextBaseBranchSql: 'mission/example-1234', requiresPlanApprovalSql: true,
+        planSql: [{ ref: 'a' }],
         createdAt: NOW, updatedAt: NOW,
       },
     ];
@@ -439,8 +442,8 @@ describe('loadInvariantSnapshot mapping', () => {
       {
         id: 't-2', workspaceId: 'ws-1', missionId: null, parentTaskId: null, title: 'Y',
         status: 'completed', mode: 'planning', taskClass: 'work', outputRequirement: 'auto',
-        context: {},
-        result: { structuredOutput: { plan: [{ ref: 'a' }] } },
+        contextBaseBranchSql: null, requiresPlanApprovalSql: false,
+        planSql: [{ ref: 'a' }],
         createdAt: NOW, updatedAt: NOW,
       },
     ];
@@ -454,8 +457,9 @@ describe('loadInvariantSnapshot mapping', () => {
 
   it('keeps only the newest reviewer verdict per PR', async () => {
     reviewRows = [
-      { workspaceId: 'ws-1', context: { prNumber: 77 }, result: { structuredOutput: { verdict: 'approve' } }, updatedAt: new Date(NOW.getTime() - HOUR) },
-      { workspaceId: 'ws-1', context: { prNumber: 77 }, result: { structuredOutput: { verdict: 'request-changes' } }, updatedAt: new Date(NOW.getTime() - 5 * HOUR) },
+      // Lifted in SQL from context.prNumber and result.structuredOutput.verdict.
+      { workspaceId: 'ws-1', prNumberSql: 77, verdictSql: 'approve', updatedAt: new Date(NOW.getTime() - HOUR) },
+      { workspaceId: 'ws-1', prNumberSql: 77, verdictSql: 'request-changes', updatedAt: new Date(NOW.getTime() - 5 * HOUR) },
     ];
 
     const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
@@ -466,7 +470,7 @@ describe('loadInvariantSnapshot mapping', () => {
 
   it('accepts a stringified prNumber in the reviewer task context', async () => {
     reviewRows = [
-      { workspaceId: 'ws-1', context: { prNumber: '88' }, result: { structuredOutput: { verdict: 'approve' } }, updatedAt: NOW },
+      { workspaceId: 'ws-1', prNumberSql: '88', verdictSql: 'approve', updatedAt: NOW },
     ];
 
     const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
@@ -492,7 +496,7 @@ describe('loadInvariantSnapshot mapping', () => {
       {
         id: 'p-1', workspaceId: 'ws-1', missionId: null, parentTaskId: null, title: 'Plan',
         status: 'completed', mode: 'planning', taskClass: 'work', outputRequirement: 'auto',
-        context: {}, result: { structuredOutput: { plan: [{ ref: 'a' }] } },
+        planSql: [{ ref: 'a' }],
         createdAt: NOW, updatedAt: NOW,
       },
     ];

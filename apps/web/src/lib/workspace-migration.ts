@@ -16,6 +16,7 @@ import {
 } from '@buildd/core/db/schema';
 import { eq, and, isNull, sql, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from './caller-cache';
 
 // ─── Dispositions ────────────────────────────────────────────────────────────
 
@@ -488,6 +489,13 @@ async function runPhaseWork(opts: ExecuteMigrationOpts, phase: MigrationPhase): 
         if (current?.teamId !== destinationTeamId) throw new Error('workspace_team_conflict');
         return { alreadyMoved: true };
       }
+      // Its team changed: callers cached against either team, or against the
+      // workspace's old team, re-read on their next call (lib/caller-cache.ts).
+      await clearCallerCache(
+        callerDep.workspace(workspaceId),
+        callerDep.teamOpenWorkspaces(sourceTeamId),
+        callerDep.teamOpenWorkspaces(destinationTeamId),
+      );
       return { moved: true };
     }
     case 'missions_team': {
@@ -509,6 +517,8 @@ async function runPhaseWork(opts: ExecuteMigrationOpts, phase: MigrationPhase): 
     case 'clear_account_workspaces': {
       const names = report.groups.find((g) => g.entity === 'Account Access')?.items?.map((i) => i.label) ?? [];
       await db.delete(accountWorkspaces).where(eq(accountWorkspaces.workspaceId, workspaceId));
+      // Every cached link list naming it rests on the workspace: they go now.
+      await clearCallerCache(callerDep.workspace(workspaceId));
       return { removedAccounts: names };
     }
     case 'clear_connector_workspaces': {

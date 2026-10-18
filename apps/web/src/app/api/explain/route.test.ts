@@ -119,6 +119,26 @@ describe('GET /api/explain — subject selection', () => {
     expect(mockResolveWorkerByPrNumber.mock.calls[0][2]).toBe(WS);
   });
 
+  it('a PR no worker row holds answers UNKNOWN - check GitHub, never nothing', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(async () => ({ status: 404, error: 'PR not found' }) as Row);
+    const res = await GET(req('prNumber=5157'));
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.state).toBe('UNKNOWN');
+    expect(body.error).toContain('PR #5157: UNKNOWN - check GitHub');
+    expect(mockExplainPr).not.toHaveBeenCalled();
+  });
+
+  it('an ambiguous PR number still names its candidates, not UNKNOWN', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(async () => ({ status: 409, error: 'PR #7 exists in multiple workspaces', candidates: [WS, 'b'] }) as Row);
+    const res = await GET(req('prNumber=7'));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.state).toBeUndefined();
+    expect(body.candidates).toEqual([WS, 'b']);
+    mockResolveWorkerByPrNumber.mockImplementation(async () => ({ status: 404, error: 'PR not found' }) as Row);
+  });
+
   it('requires authentication', async () => {
     mockAuthenticateApiKey.mockImplementation(async () => null);
     const res = await GET(req(`missionId=${MISSION}`));

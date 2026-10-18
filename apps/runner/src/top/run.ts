@@ -39,6 +39,10 @@ export const TASK_EVENT_MIN_MS = 10_000;
 export const IDLE_PAUSE_MS = 15 * 60_000;
 const IDLE_STATUS = 'Updates paused while idle. Press any key to catch up.';
 const RATE_LIMITED_PREFIX = 'The server is rate limiting reads;';
+/** A first load the runner did not answer is taken again after this, doubling to the max. */
+export const SNAPSHOT_RETRY_MIN_MS = 1_000;
+export const SNAPSHOT_RETRY_MAX_MS = 30_000;
+
 /** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
 export const QUEUE_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
@@ -216,7 +220,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // only (the runner answers from memory), so a finished run re-reads it: a
   // login that just failed shows as expired in the header.
   const configEvent = (body: any): TopEvent => ({
-    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems,
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems, loginMode: body.loginMode,
   });
   const refreshConfig = async () => {
     try {
@@ -258,9 +262,23 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (config?.body) dispatch(configEvent(config.body));
     if (streamTouched === touched) streamTouched = null;
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers, fresher: [...touched] });
+    // A busy runner can miss the first load while its event stream still
+    // connects, and nothing else asks again: take it again until it answers.
+    if (![runner, config, workers].every(r => r?.status === 200)) scheduleSnapshotRetry();
+    else snapshotRetryMs = SNAPSHOT_RETRY_MIN_MS;
     // The queue is not waited for: the first frame never holds for it.
     void refreshQueue();
     await Promise.all([refreshTasks(), refreshMissions()]);
+  };
+  let snapshotRetryMs = SNAPSHOT_RETRY_MIN_MS;
+  let snapshotRetry: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSnapshotRetry = () => {
+    if (snapshotRetry || abort.signal.aborted) return;
+    snapshotRetry = setTimeout(() => {
+      snapshotRetry = null;
+      if (!abort.signal.aborted) void loadSnapshot().catch(() => {});
+    }, snapshotRetryMs);
+    snapshotRetryMs = Math.min(snapshotRetryMs * 2, SNAPSHOT_RETRY_MAX_MS);
   };
 
   const stream = async () => {
@@ -316,6 +334,9 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         // A lower that left extras running keeps its own line: it offers p (R-45).
         if (result.status >= 200 && result.status < 300 && !effect.extras && state.slotOffer?.slots === effect.slots) { queueChanged(); return; }
         if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know slots yet (update it)' } };
+      } else if (effect.type === 'logins') {
+        result = await client.post('/api/logins', { mode: effect.mode });
+        if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know login modes yet (update it)' } };
       } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
@@ -429,6 +450,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (tasksTrailing) clearTimeout(tasksTrailing);
     if (tasksCatchUp) clearTimeout(tasksCatchUp);
     if (escTimer) clearTimeout(escTimer);
+    if (snapshotRetry) clearTimeout(snapshotRetry);
     term.stdin.off?.('data', onData);
     term.stdin.pause?.();
     term.stdout.off?.('resize', onResize);

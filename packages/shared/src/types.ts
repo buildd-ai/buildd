@@ -1361,6 +1361,12 @@ export interface WorkerEnvironment {
    */
   hold?: RunnerHold | null;
   /**
+   * How this runner's own logins share its slots (./runner-login-mode, spec
+   * 34a48877 R-14): balanced, claude-first or codex-first. Absent on runner
+   * builds that predate it, which behave as claude-first.
+   */
+  loginMode?: import('./runner-login-mode').LoginMode;
+  /**
    * The confinement this runner can apply, per backend and mode, from this
    * process's own probe (./runner-isolation). Absent on runner builds that
    * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
@@ -2683,6 +2689,8 @@ export function visualReviewRelation(agentVerdict: VisualQaVerdict, decision: Vi
 export const VISUAL_REVIEW_PHASES = [
   'off',
   'waiting_deps',
+  /** The latest audit never ran: build work it depends on failed (spec 072de598 I-14). `waitingOn` names it. */
+  'waiting_on_failed_work',
   'queued',
   'no_browser_runner',
   'capturing',
@@ -3005,6 +3013,8 @@ export interface VisualReviewModel {
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
   replacedAudits?: VisualReviewReplacedAudit[];
+  /** For `waiting_on_failed_work`: the failed build task the audit waits on; its recovery is there. */
+  waitingOn?: { taskId: string; title: string | null } | null;
   generatedAt: string;
 }
 

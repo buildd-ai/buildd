@@ -48,6 +48,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   request_ci_retry: false,
   record_supersession: false,
   abandon: false,
+  // A person clicked and got the 503: they click again.
+  dispose_finding: false,
   // The floor imports a PR it does not know (reconcile.ts), and re-drains effects on its own.
   open_delivery: false,
   drain: false,

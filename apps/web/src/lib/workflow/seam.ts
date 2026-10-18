@@ -39,7 +39,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
@@ -381,6 +381,21 @@ export async function kernelDeliveryOfPr(p: { workspaceId: string; prNumber: num
   return { deliveryId, state: d?.state ?? null, stateReason: d?.stateReason ?? null, version: d?.version ?? 0 };
 }
 
+/**
+ * Living Spec r7 AC-45: the id of a person's decision on an escalation: the action, the head
+ * and the delivery version they decided at. The same decision submitted again (a double tap, a
+ * retried request, a door re-sent after an unknown outcome) carries the same id, so the kernel
+ * answers it with the transition it already made.
+ */
+export function humanDecision(action: 'request_fix' | 'force_re_review', headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `${action}:${headSha}:v${version}`, headSha };
+}
+
+/** AC-45 for one finding: the same finding on the same head and version is one decision; a restated one is a new one. */
+export function findingDisposalDecision(findingId: string, headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `dispose_finding:${findingId}:${headSha}:v${version}`, headSha };
+}
+
 // ── T23: a person applies an escalation's recommendation ────────────────────
 
 export interface HumanApplyOutcome {
@@ -401,6 +416,12 @@ export interface HumanApplyOutcome {
  */
 export async function applyRecommendationThroughKernel(p: {
   workspaceId: string; prNumber: number; actor: string; expectedVersion?: number | null; instructions?: string | null;
+  /**
+   * Living Spec r7 AC-45: the head the person decided on (with `expectedVersion`, the version
+   * they saw). Given, the fix is one decision bound to that head: a second submission of it is
+   * answered by the first (`duplicate`), and a head that moved refuses it (`decision_head_stale`).
+   */
+  decisionHeadSha?: string | null;
 }, deps: SeamDeps = {}): Promise<HumanApplyOutcome | null> {
   const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
   if (!repo) return null;
@@ -421,7 +442,10 @@ export async function applyRecommendationThroughKernel(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:apply_recommendation`, repoFullName: repo.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined },
+    {
+      type: 'HumanResolve', actor: p.actor, choice: 'apply_recommendation', expectedVersion, instructions: p.instructions ?? undefined,
+      ...(p.decisionHeadSha ? { decision: humanDecision('request_fix', p.decisionHeadSha, expectedVersion) } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'applied') await drainDelivery(deliveryId, deps);
@@ -958,6 +982,12 @@ export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files
   return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
 }
 
+/** The relevance rule of §13.13 rule 4 for a review fix on a PR with no delivery: false only when the diff plainly misses every named path. */
+export function legacyDiffTouchesFindings(p: { named: string[]; changed: string[] | null; feedback: string | null }): boolean | null {
+  const view = { findings: p.named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  return diffTouchesFindings(view, p.changed, pathsNamedIn(p.feedback));
+}
+
 export async function fixCompletionGate(p: {
   task: AttemptTask; localHeadSha: string | null;
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
@@ -1104,6 +1134,12 @@ export async function recordReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /**
+   * The commit the reviewer's checkout was at (`null`: none reported). A verdict read
+   * at any other commit than `headSha` is inconclusive: the round fails (T27), never decided.
+   * Absent = not attested (a caller that predates it).
+   */
+  evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
@@ -1123,6 +1159,7 @@ export async function recordReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -1145,6 +1182,8 @@ export async function adoptReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** As `recordReviewVerdict`'s: a verdict read at another commit than `headSha` is never adopted. */
+  evidenceSha?: string | null;
   output?: unknown;
 }, deps: SeamDeps = {}): Promise<CommandResult | null> {
   const deliveryId = p.workspaceId
@@ -1159,6 +1198,7 @@ export async function adoptReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
@@ -1360,6 +1400,34 @@ export async function abandonDelivery(p: {
   return { handled: true, deliveryId, result };
 }
 
+// ── §5: a person waives or defers one finding ───────────────────────────────
+
+/**
+ * FindingDisposed from the dashboard door: a person closes exactly one finding, recorded with who
+ * and why (the reducer refuses a non-person actor, an empty reason and a deferral without a full
+ * task id). `handled: false` = the PR is not the kernel's.
+ */
+export async function disposeFinding(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; actor: string;
+  findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
+  /** The head and delivery version the person's screen showed (absent = not bound to a decision). */
+  decision?: { headSha: string; version: number };
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; findingStatus: string | null }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const result = await applyCommand(
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null,
+      ...(p.decision ? { decision: findingDisposalDecision(p.findingId, p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}) },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  // A duplicate is a success only if the finding is closed the way the person asked now.
+  const findingStatus = result.result === 'duplicate'
+    ? ((await loadView({ deliveryId }, deps.exec)).findings ?? []).find((f) => f.id === p.findingId)?.status ?? null
+    : null;
+  return { handled: true, result, findingStatus };
+}
+
 // ── T5: a person or agent asks for a review ─────────────────────────────────
 
 /**
@@ -1368,6 +1436,12 @@ export async function abandonDelivery(p: {
  */
 export async function requestReview(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; forced: boolean; actor: string;
+  /**
+   * Living Spec r7 AC-45: a person's forced review, decided on this head at this version. Given,
+   * the request is one decision bound to the head: replayed, it is answered by the first; with
+   * the head moved since, it is refused (`decision_head_stale`) and nothing is queued.
+   */
+  decision?: { headSha: string; version: number } | null;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; reviewTaskId: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
@@ -1381,7 +1455,11 @@ export async function requestReview(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.actor}:review_request`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const result = await applyCommand(
-    { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
+    {
+      type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
+      // AC-45: bound to the version the person saw too, as the fix door is.
+      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
+    },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
@@ -1620,33 +1698,54 @@ async function joinRepairingDeliveries(p: {
 
 export interface TrunkSweepSummary { checked: number; resolved: number; recovered: number; stillRed: number; errors: number }
 
+/** Pages of unresolved incidents one sweep reads at most (see `reconcileTrunkIncidents`). */
+export const TRUNK_SWEEP_PAGES = 4;
+
 /**
  * Re-read the base head of every unresolved trunk incident. Once the base no
- * longer fails the incident's checks (and every run on it completed), the
+ * longer fails the incident's checks (and they finished on it), the
  * incident resolves and each delivery blocked on it re-enters its resume state
  * (T26), with a mechanical refresh when its head predates the fix. A
  * delivery left blocked on an already-resolved incident (an interrupted pass)
  * is recovered too. Runs on the pr-reconcile floor tick.
+ *
+ * Least recently rechecked first, and every incident left unresolved goes to
+ * the back. An incident whose workspace has no repo costs no GitHub read, so
+ * the pass reads further pages (at most `TRUNK_SWEEP_PAGES`) until `limit`
+ * incidents had their base read: a pile of unreadable ones never keeps a
+ * newer incident on a green base from resolving.
  */
 export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): Promise<TrunkSweepSummary> {
   const exec = deps.exec ?? seamExec;
   const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
-  const incidents = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
-  for (const inc of incidents) {
-    s.checked++;
-    try {
-      const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
-      if (!repo) continue;
-      const reader = readerFor(deps, repo.installationId);
-      const head = reader.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
-      const runs = head && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, head) : null;
-      // Unknown or still running is never read as recovered.
-      if (!runs || !runs.complete || !trunkRecovered(inc.signature, runs.failing)) { s.stillRed++; continue; }
-      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
-      if (won) s.resolved++;
-    } catch (err) {
-      s.errors++;
-      console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+  const seen = new Set<string>();
+  let read = 0;
+  for (let page = 0; page < TRUNK_SWEEP_PAGES && read < limit; page++) {
+    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+    const incidents = rows.filter((r) => !seen.has(String(r.id)));
+    if (incidents.length === 0) break;
+    for (const inc of incidents) {
+      seen.add(String(inc.id));
+      s.checked++;
+      try {
+        const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+        const reader = repo ? readerFor(deps, repo.installationId) : null;
+        if (reader) read++;
+        const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+        const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
+        // Unknown, or the incident's checks still running, is never read as recovered.
+        if (trunkRecoveredOnRuns(inc.signature, runs)) {
+          const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+          if (won) s.resolved++;
+          continue;
+        }
+        s.stillRed++;
+      } catch (err) {
+        s.errors++;
+        console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+      }
+      // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
+      await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
     }
   }
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;

@@ -1,0 +1,1 @@
+CREATE INDEX "workflow_transitions_created_idx" ON "workflow_transitions" ("created_at");

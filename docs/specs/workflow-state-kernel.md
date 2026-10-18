@@ -512,7 +512,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T9 | `FixClaimed(a)` (claim route) | `CHANGES_REQUESTED` | `a` is the fix task of the current round; **claim-time revalidation** (§10.5): live read still shows the round's head current, PR open and not approved | `FIXING` bound to `(H, r, a)` | announce `fix_started` | `claim:{a}` | a claim for a fix of a superseded round, or one whose target was resolved meanwhile (merged, approved, head moved), is `rejected(fix_superseded)` / `rejected(fix_not_needed)`; the claim route cancels the task as `skipped` (not failed) and the ledger row becomes `skipped` |
 | T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED`; `ESCALATED` with a review or policy reason (`review_*`, `policy_human`: a person can't merge a red head, so the CI fix runs first; a spent budget there is `rejected(budget_exhausted)` and keeps the escalation's reason) | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}:{n}` (§13.1 deviation 17) | `H' != current` → recorded fact only; CI not red on `H'` in the live read → `rejected(ci_not_red)`; this is what stops an old-SHA failure overwriting a newer head |
 | T11 | `RepairDelivered` = T3 from `REPAIRING` | `REPAIRING`, `AWAITING_PUSH` | §9 proof | `AWAITING_REVIEW` (new round) or `APPROVED` if §8.3 carry-forward holds | as T5 / T13 | via T3 key | as T3 |
-| T12 | `ConflictObserved(H')` fact | as T10; from `ESCALATED(review_*/policy_human)` only for a conflict or a migration collision, never a behind-only refresh | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10; behind with the live base delta (S15 disjoint-delta rule, §13.7 item 10) on an `APPROVED` covered head that the rule tolerates → `rejected(behind_tolerated)`: no refresh, no escalation, a door lands it through T15; a spent treadmill the rule does not tolerate escalates with `evidence.cause` `refresh_unsafe` (shared files or risky paths, named in `evidence.files`) or `refresh_exhausted` (gap too big, unlistable, or the base requires up-to-date branches) |
+| T12 | `ConflictObserved(H')` fact | as T10; from `ESCALATED(review_*/policy_human/landing_needs_human)` only for a conflict or a migration collision, never a behind-only refresh | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10; behind with the live base delta (S15 disjoint-delta rule, §13.7 item 10) on an `APPROVED` covered head that the rule tolerates → `rejected(behind_tolerated)`: no refresh, no escalation, a door lands it through T15; a spent treadmill the rule does not tolerate escalates with `evidence.cause` `refresh_unsafe` (shared files or risky paths, named in `evidence.files`, told apart by `evidence.deltaBasis` `overlap` / `risky_path`; a base manifest whose gap diff only changes its `"version"` field, a release bump, is not risky) or `refresh_exhausted` (gap too big, unlistable, or the base requires up-to-date branches) |
 | T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | the previous head is covered by the delivery's own approval (`headCoverage`: `approved_heads` or `composition_heads`, any basis) **and** the PR diff is unchanged from it to `H'`; recorded as `own_refresh` when the previous head is the one a `refresh_branch` effect of this delivery was pinned to (payload `headSha`), else `content_equivalent`. From `REPAIRING`, a head attributed to the queued behind refresh carries as `own_refresh` without the caller's evidence **unless** the fact layer's compare read the PR diff as changed (`diffChanged`): attribution credits any descending push to a queued refresh, so it never proves the diff (edc02148). Never decided from a reviewer task row | `APPROVED`, `approved_heads += H'` (`composition_heads += H'` for a composition basis) | `equivalentHeadShas` projected onto the approving round's reviewer after the transition commits | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, a delta round only under §8.3a, else full) from `APPROVED` |
 | T14 | `HumanApproved(H')` (GitHub human review or dashboard approve on current head) | `ESCALATED`, `CHANGES_REQUESTED`, `AWAITING_REVIEW` | review `commit_id == current_head_sha`; actor holds merge permission | `APPROVED` with `approver=human` | notify; never enables unattended merge (§17.2) | `approve:{repo}#{pr}:{review}` | review on an older commit: recorded, `stale` |
 | T14b | `PolicyMergeApproved(H', reason)` (the escalation gate's `policy_merge` rule, lib/merge-policy-rule-executor.ts) | `ESCALATED` with `review_*` or `policy_human` | actor `rule:<name>` (never a model, never a person); `H' == current_head_sha`; no destructive `policy_evidence`; the caller already checked the workspace merge policy lets the platform land | `APPROVED` with `approval_basis = policy_rule` and `H'` in `approved_heads` (exact head: a later push is not covered) | none (the landing doors land it, every rail evaluated again); recorded as a bypass | `policymerge:{repo}#{pr}:{H'}` | another state: `stale`; a hand-off or spent-budget reason, a destructive migration, a non-rule actor: `rejected` |
@@ -636,7 +636,14 @@ author string**:
 
 ### 6.10 Trunk health and where policy checks run
 
-**Circuit breaker.** CI failures are classified by `signature` at ingestion. The kernel
+**Circuit breaker.** CI failures are classified by `signature` at ingestion. A
+signature is taken at test level where it can be: a failing Actions job's tests come
+from its log (`apps/web/src/lib/workflow/failing-tests.ts`), because a sharded job's
+normalised name is shared by unrelated failures. Two failures of one job match only
+on the same test, and a job whose tests could not be read never matches. The base
+explains a PR only when every failing entry of the PR also fails on the base. The
+recovery sweep reads the least recently rechecked incidents first, sends every one it
+leaves unresolved to the back, and pages past incidents it cannot read. The kernel
 opens a trunk incident (T25) when the same signature (a) is failing on the base
 branch's own head, or (b) is failing on at least a configured number of distinct
 deliveries inside a configured window. While an incident is open: no per-PR `ci`
@@ -1527,7 +1534,8 @@ type".
    finding nor any path the feedback names (the library's §5 "As built" says what "near"
    is and why it is wide). A no-op claim ends the attempt "no change" and owes a
    verification round; a fix that ends with the head unmoved is "no change" too.
-   *Today:* legacy review fixes (a PR with no delivery) have no completion gate, and a
+   *Today:* a legacy review fix (a PR with no delivery) is gated the same way
+   (`legacyReviewFixCompletionGate`: head moved, diff near the review's paths), and a
    refresh push credited to a running fix by §6.9 is not told apart from the fix's own.
 5. **A refresh push is not a fix.** A push whose only new content is a merge of the
    base, or the platform's own `refresh_branch`, starts a delta round scoped to what
@@ -1861,6 +1869,16 @@ it (556cd910 part 2, 7ab4916f part 3) or the spec slice with no task yet, with i
 assertions beside it. The matrix is accepted when no todo is left, and since Slice F none is
 (§13.10). S14 is the static guard in `packages/core/__tests__/workflow-write-sites.test.ts`,
 blocking with an empty allowlist.
+
+**The conformance matrix.** Every row above is covered by a scenario in
+`packages/workflow-kernel/src/conformance/` (`scenarios.ts` and `matrix-scenarios.ts`, joined
+by `all.ts`), which runs on the in-memory store and on Postgres (`bun run test:db`) with the same
+expectations. `matrix-coverage.ts` names the scenarios of each row, and a row the kernel does not
+decide (S14) carries a recorded exemption with its reason. `packages/core/__tests__/workflow-kernel-matrix-coverage.test.ts`
+fails when a row of this table has no scenario, when a named scenario does not exist, and when
+an exemption has no reason. A row that also has a part the kernel does not decide (a route's
+HTTP answer, a UI surface, a fact reader) names that part in `matrix-coverage.ts`; the host's
+own tests carry it.
 
 Slice A part 1 coverage of the live path: S1 (both arms), S2, S3, S4, S5, S7, S8, S25,
 the cutover and the kill switch run end to end on real Postgres in

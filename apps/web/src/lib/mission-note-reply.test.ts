@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { isReplyableQuestion } from './mission-note-reply';
-import { CRITERIA_ESCALATION_NOTE_TITLE } from './criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 
 describe('isReplyableQuestion', () => {
   it('is true for an ordinary open question note', () => {

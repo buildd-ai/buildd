@@ -260,3 +260,16 @@ describe('getWorkerDeliverableArtifactCount', () => {
     expect(count).toBe(0);
   });
 });
+
+describe('isDeliverableArtifact', () => {
+  // The task page counts a live worker's deliverables from rows it already
+  // loaded: the same rule getWorkerDeliverableArtifactCount applies in SQL.
+  it('counts review types and keyed byproducts, never telemetry or salvaged prose', async () => {
+    const { isDeliverableArtifact } = await import('./worker-deliverables');
+    expect(isDeliverableArtifact({ type: 'report', key: null, metadata: null })).toBe(true);
+    expect(isDeliverableArtifact({ type: 'screenshot', key: null, metadata: null })).toBe(false);
+    expect(isDeliverableArtifact({ type: 'data', key: 'results:run-1', metadata: null })).toBe(true);
+    expect(isDeliverableArtifact({ type: 'data', key: 'cloud-run-report:abc', metadata: null })).toBe(false);
+    expect(isDeliverableArtifact({ type: 'summary', key: null, metadata: { salvaged: true } })).toBe(false);
+  });
+});

@@ -110,6 +110,7 @@ const {
   DRAIN_BATCH,
 } = await import('./dispatch-authority');
 const { buildWebhookPayload } = await import('./task-dispatch-delivery');
+const { setWorkChangeListenersForTests, setWorkChangeVersionBumperForTests, settleWorkChangeVersions } = await import('./work-changed');
 const { routeForCause, webhookWants, TASK_WAKE_ADAPTERS, offerScheduledNotice } = await import('./dispatch-adapters');
 type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 
@@ -854,6 +855,24 @@ describe('wakeTask / wakeTasks / announceTaskCreated', () => {
     await flush();
     expect(mockExecute).not.toHaveBeenCalled();
     expect(mockClaimDue).not.toHaveBeenCalled();
+  });
+
+  // The one call nearly every task-creating path makes after its insert, so a
+  // new or woken task moves its workspace's list version (spec 3ef37387 R-20).
+  it('announceTaskCreated, wakeTask and wakeTasks note the task as changed work', async () => {
+    const bumped: string[] = [];
+    setWorkChangeListenersForTests([]);
+    setWorkChangeVersionBumperForTests(async (b) => { bumped.push(...b.taskIds); });
+    try {
+      await announceTaskCreated(TASK, { name: 'ws' });
+      await wakeTask('task-w2', 'task.created');
+      await wakeTasks(['task-w3', 'task-w4'], 'mission.released');
+      await settleWorkChangeVersions();
+      expect(bumped.sort()).toEqual([TASK.id, 'task-w2', 'task-w3', 'task-w4'].sort());
+    } finally {
+      setWorkChangeListenersForTests(null);
+      setWorkChangeVersionBumperForTests(null);
+    }
   });
 
   it('announceTaskCreated sends only the dashboard TASK_CREATED event', async () => {
