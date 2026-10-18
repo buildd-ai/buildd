@@ -656,7 +656,8 @@ export default async function MissionDetailPage({
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
   const waiverLoad = loadSurfaceAuditWaiver(id).catch(() => null);
-  const visualReviewLoad = getMissionVisualReviewState(id).catch((err) => {
+  // It reuses the page's own waiver and visual-review reads instead of repeating them.
+  const visualReviewLoad = getMissionVisualReviewState(id, { waiver: waiverLoad, model: visualModel }).catch((err) => {
     console.error('[mission-page] visual review state load failed', err);
     return null;
   });

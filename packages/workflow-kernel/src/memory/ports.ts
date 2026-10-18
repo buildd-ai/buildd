@@ -158,9 +158,9 @@ export class FakeGithub implements GithubFacts {
   setPr(repoFullName: string, prNumber: number, live: LivePr | null): void {
     if (live) this.prs.set(`${repoFullName}#${prNumber}`, live); else this.prs.delete(`${repoFullName}#${prNumber}`);
   }
-  async statusOf(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null> {
+  async statusOf(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string; targetUrl: string | null } | null> {
     const last = this.written.filter((w) => w.op === 'publishStatus' && w.repoFullName === repoFullName && w.sha === sha && w.context === context).at(-1);
-    return last ? { state: String(last.state), description: String(last.description) } : null;
+    return last ? { state: String(last.state), description: String(last.description), targetUrl: typeof last.targetUrl === 'string' ? last.targetUrl : null } : null;
   }
   async readPr(repoFullName: string, prNumber: number): Promise<LivePr | null> {
     const pr = this.prs.get(`${repoFullName}#${prNumber}`);

@@ -682,7 +682,15 @@ recorded as such, never as an approval.
   when the kernel would land that head (approved or landing, covered, no open
   verdict), `pending` while review of that head has not finished (so ongoing
   review never reads as failing CI), and `failure` while a required finding is
-  open, a verdict stands against the head, or a person has to decide. One effect per delivery version; only the newest
+  open, a verdict stands against the head, or a person has to decide. Its
+  description leads with one plain term (R-43): "Review in progress",
+  "Changes requested", "Unresolved review finding: <the finding>", "Ready to
+  merge" or "Merge blocked: <reason>", clipped to GitHub's 140 characters; it
+  never says "land" (internal names keep it). Its target URL is the host's
+  page for the delivery's review and findings (the optional `Links` port;
+  buildd links the owner task on the app's public name), so GitHub's Details
+  link is somewhere a person can act. `get_pr` prints the same description on
+  its own `Review approval:` line, apart from `CI:`. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
   never leaves a success standing. It is one GitHub App and one commit-status
@@ -720,8 +728,9 @@ recorded as such, never as an approval.
   A refusal is T16 `gate_refused`: a rail that clears by waiting (pending CI, a
   hold) leaves the approval standing (`APPROVED`); a lasting one (protected
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
-  notified, with the rail named on `buildd/landing`. The status is written only
-  when GitHub does not already show it, and re-checked after writing so the
+  notified, with the rail named on `Buildd / Review approval` ("Merge blocked:
+  <rail>"). The status is written only when GitHub does not already show it
+  (state, description and, when the reader reports it, the link), and re-checked after writing so the
   newest version wins across drains. The mission-PR hold is a rail too, and
   lasting when only a person or a new fact changes it: a refresh on a branch it
   was not filed for, or a task PR on a shipped delivery with no current one to
@@ -755,7 +764,8 @@ recorded as such, never as an approval.
 **Acceptance criteria**:
 - AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked
   to merge it THEN the merge is refused with the finding named, and the
-  `buildd/landing` status at that head is `failure`.
+  `Buildd / Review approval` status at that head is `failure` reading
+  "Unresolved review finding: <the finding>".
 - AC-14: GIVEN an approval at head A WHEN head B is pushed before the merge
   effect runs THEN the effect re-reads, sees B, and does not merge.
 - AC-15: GIVEN a person merges on GitHub over an open finding WHEN the webhook

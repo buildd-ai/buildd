@@ -115,6 +115,7 @@ export function classifyResource(resource: string | null, accountResourceUrl: st
  * the name it registered with, marked as unverified, next to where it returns.
  */
 const KNOWN_CLIENTS: Array<{ name: string; hosts: string[] }> = [
+  { name: 'buildd', hosts: ['buildd.dev'] },
   { name: 'ChatGPT', hosts: ['chatgpt.com'] },
   { name: 'Claude', hosts: ['claude.ai', 'claude.com'] },
 ];
@@ -408,7 +409,7 @@ export const CONSENT_CSS = `
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--surface-1); color: var(--text-primary); font-family: var(--font-sans); font-size: var(--type-body); line-height: 1.5; }
 .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
-h1 { font-family: var(--font-voice); font-weight: 500; font-size: var(--type-heading); line-height: 1.25; margin: 0 0 6px; }
+h1 { overflow-wrap: anywhere; font-family: var(--font-voice); font-weight: 500; font-size: var(--type-heading); line-height: 1.25; margin: 0 0 6px; }
 .lede { font-size: var(--type-lede); line-height: 1.45; color: var(--text-muted); margin: 0 0 24px; }
 fieldset { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
 legend, .eyebrow { font-size: var(--type-eyebrow); font-weight: 600; color: var(--text-muted); padding: 0; margin: 0 0 8px; }
@@ -511,11 +512,9 @@ function displayName(ws: ConsentWorkspace): string {
 
 /** The app's name, and the one line that says buildd could not vouch for it. */
 export function clientHeader(clientName: string, verified: boolean, redirectHost: string): string {
-  const safe = escapeHtml(clientName);
-  const note = verified
-    ? `<span class="verified" data-client-verified="true">Verified app</span>`
-    : `<p class="meta" data-client-verified="false">Name supplied by the app. It returns you to <span class="mono">${escapeHtml(redirectHost)}</span>.</p>`;
-  return `<div class="ident"><h1>Authorize ${safe}</h1>${verified ? note : ''}</div>${verified ? '' : note}`;
+  const badge = verified ? 'Verified app' : 'Unverified app';
+  const name = verified ? escapeHtml(clientName) : `Name supplied by the app: ${escapeHtml(clientName)}`;
+  return `<div class="ident"><h1>Authorize ${escapeHtml(redirectHost)}</h1><span class="verified" data-client-verified="${verified}">${badge}</span></div><p class="meta">${name}</p>`;
 }
 
 function hiddenInput(name: string, value: string): string {

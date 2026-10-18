@@ -958,7 +958,7 @@ describe('S9–S15', () => {
     expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'pending' });
     expect(statusWrites.some((w) => w.state === 'success')).toBe(false);
     await verdict(o, 'approve');
-    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'buildd would land H1: approved by review' });
+    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'Ready to merge: H1 approved by review' });
     const fx = (await effects(o.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
     expect(fx.every((e) => e.status === 'done')).toBe(true);
     expect(fx.filter((e) => e.outcome === 'skipped:older_version').length + fx.filter((e) => String(e.outcome).startsWith('ok:')).length).toBe(fx.length);

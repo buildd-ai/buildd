@@ -177,7 +177,7 @@ export interface GithubFactReader {
   /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
   readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
   /** The latest commit status of `context` on `sha` (state and description); null = none or unreadable. */
-  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null>;
+  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string; targetUrl?: string | null } | null>;
   /** Compare API: is `ancestorSha` contained in `headSha`? */
   contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
   /**
@@ -344,6 +344,18 @@ export interface Work {
   cancelPending(p: { deliveryId: string; role: string; reason: string; summary: string; keepTaskId?: string | null }): Promise<number>;
   /** Tell a filed task (and whoever runs it now) what it was not filed with. Idempotent per `marker`. */
   steer(taskId: string, p: { marker: string; note: string }): Promise<void>;
+}
+
+// ── Links ───────────────────────────────────────────────────────────────────
+
+/** Where in the host a person acts on a delivery. */
+export interface Links {
+  /**
+   * The page showing this delivery's review and its findings: the
+   * `Buildd / Review approval` status's target, so GitHub's Details link goes
+   * somewhere a person can act. Null publishes the status without one.
+   */
+  review(d: DeliverySnapshot): string | null;
 }
 
 // ── Notify ──────────────────────────────────────────────────────────────────
@@ -675,6 +687,8 @@ export interface KernelPorts {
   handOff?: HandOff;
   /** The merge rails the `merge_call` effect reads at merge time. Required to merge: without it the effect refuses (and retries). */
   rails?: Rails;
+  /** Where a person acts on a delivery; absent publishes the review status with no link. */
+  links?: Links;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */
