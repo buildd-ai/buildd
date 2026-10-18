@@ -12,6 +12,7 @@ import NowStrip, { PausedBar } from './NowStrip';
 import StatRow, { formatTokens } from './StatRow';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
+import { useRegionRefresher } from '@/components/LiveRegion';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
@@ -151,7 +152,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
   // Once, on the first render that shows the question: a later refresh never
   // pulls focus back from wherever the reader went.
   const focusedAnswerRef = useRef(false);
-  const nextRouter = useRouter();
+  const nextRouter = useRegionRefresher(useRouter());
   const router = useMemo(() => (refresh ? { refresh } : nextRouter), [refresh, nextRouter]);
   const [worker, setWorker] = useState<LiveWorker>(initialWorker);
   useEffect(() => {

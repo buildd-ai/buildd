@@ -1,5 +1,6 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import TaskTimeRow from '@/components/TaskTimeRow';
+import { LiveRegion } from '@/components/LiveRegion';
 import { isDeliverableArtifact } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
@@ -161,7 +162,25 @@ function missionExecutorOf(row: { executor?: string | null } | null | undefined)
   return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
 }
 
-export default async function TaskDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string }>;
+};
+
+/**
+ * Live events re-read this body through `loadRegion` (components/LiveRegion.tsx)
+ * instead of a full page refresh; the body is the same function either way.
+ */
+export default async function TaskDetailPage(props: PageProps) {
+  const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
+  async function loadRegion() {
+    'use server';
+    return TaskDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
+  }
+  return <LiveRegion load={loadRegion}>{await TaskDetailBody(props)}</LiveRegion>;
+}
+
+async function TaskDetailBody({
   params,
   searchParams,
 }: {
