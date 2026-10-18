@@ -495,7 +495,8 @@ export default async function MissionDetailPage({
     visualReviewLoad.then(visualReviewState => explainMission(id, {
       inputs: {
         mission: mission as unknown as Record<string, unknown>,
-        tasks: decisionTasks as unknown as Array<Record<string, unknown>>,
+        // Oldest first, as explain reads its own rows: where several PRs qualify, it names the same one.
+        tasks: [...decisionTasks].sort((x, y) => new Date(x.createdAt).getTime() - new Date(y.createdAt).getTime()) as unknown as Array<Record<string, unknown>>,
         deliveries: deliveryViews,
         missionDeliveries,
         foreignDeps,
