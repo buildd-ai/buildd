@@ -689,6 +689,33 @@ async function requeueWorkerTask(p: {
   return requeueOwnerAttempt({ task, workerId: p.workerId, reason: p.reason, principal: p.principal });
 }
 
+/**
+ * AC-1 slice 8: a refusal that ends a delivery owner's attempt for good (the silent-completion
+ * retry spent) is the attempt's failed end, and the kernel projects it (`t_attempt`). The end goes
+ * where the kernel is hosted; then the route projects it here too (`projectOwnerEnd`), so a control
+ * plane that is down or too old still leaves the task failed. Both carry the current-attempt guard.
+ * Answers whether the task is failed now.
+ */
+async function endOwnerAttemptFailed(p: {
+  task: RequeueTask; workerId: string; principal: KernelPrincipal | null;
+  worker: { lastCommitSha?: string | null; commitCount?: number | null };
+}): Promise<boolean> {
+  const { task } = p;
+  try {
+    await workflowAttemptEnded({
+      task, workerId: p.workerId, status: 'failed',
+      localHeadSha: p.worker.lastCommitSha ?? null, commitCount: p.worker.commitCount ?? 0, source: 'runner',
+    }, { principal: p.principal });
+  } catch (err) {
+    console.error(`[Worker ${p.workerId}] AttemptEnded(failed) for task ${task.id} did not reach the kernel; projecting it here:`, err);
+    void reportOps({ source: 'worker-completion:workflow-attempt-ended', severity: 'error', message: 'workflow-attempt-ended failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+  await projectOwnerEnd({ deliveryId: task.deliveryId!, taskId: task.id, workerId: p.workerId, status: 'failed' })
+    .catch((err) => console.error(`[Worker ${p.workerId}] owner end projection failed for task ${task.id}:`, err));
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { status: true } });
+  return row?.status === 'failed';
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -2471,17 +2498,34 @@ export async function PATCH(
         if (worker.taskId) {
           const previousContext = (terminalTaskRow[0]?.context ?? {}) as Record<string, unknown>;
           const next = silentCompletionRetryContext(previousContext);
-          const settled = await db.update(tasks).set({
-            status: next.retry ? 'pending' : 'failed', context: next.context,
-            claimedBy: null, claimedAt: null, startAt: null,
+          // AC-1 slice 8 (workflow-kernel-library.md §9): the owner task of a delivery is moved by
+          // the kernel, not here. Its retry is a requeue (AttemptRequeued) and its last refusal the
+          // attempt's failed end (AttemptEnded), so this statement writes its context and result,
+          // and only while this worker is still the open task's current attempt: a late report
+          // after the task was claimed again moves nothing.
+          const silentRow = terminalTaskRow[0]!;
+          const ownerAttempt = !!silentRow.deliveryId && silentRow.deliveryRole === 'owner';
+          const wrote = await db.update(tasks).set({
+            ...(ownerAttempt ? {} : { status: next.retry ? 'pending' as const : 'failed' as const, claimedBy: null, claimedAt: null }),
+            context: next.context,
+            startAt: null,
             result: { summarySource: 'fallback' },
             updatedAt: new Date(),
           }).where(and(
             eq(tasks.id, worker.taskId),
-            eq(tasks.status, terminalTaskRow[0]!.status),
+            eq(tasks.status, silentRow.status),
             sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
             notKernelMergedTaskSql(),
+            ...(ownerAttempt ? [requeueingAttemptIsCurrentSql(id, 'tasks')] : []),
           )).returning({ id: tasks.id });
+          let settled = wrote;
+          if (ownerAttempt && wrote.length) {
+            const ownerTask = { id: worker.taskId, workspaceId: worker.workspaceId, deliveryId: silentRow.deliveryId, deliveryRole: silentRow.deliveryRole ?? null, context: silentRow.context };
+            const moved = next.retry
+              ? await requeueOwnerAttempt({ task: ownerTask, workerId: id, reason: 'silent_completion', principal: kernelPrincipalOf({ account }) })
+              : await endOwnerAttemptFailed({ task: ownerTask, workerId: id, worker, principal: kernelPrincipalOf({ account }) });
+            if (!moved) settled = [];
+          }
           if (settled.length && !next.retry) {
             await db.insert(missionNotes).values({
               missionId: taskMissionId, taskId: worker.taskId,
@@ -3544,7 +3588,7 @@ export async function PATCH(
     try {
       const heldTask = await db.query.tasks.findFirst({
         where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { backend: true, workspaceId: true, context: true, status: true },
+        columns: { backend: true, workspaceId: true, context: true, status: true, deliveryId: true, deliveryRole: true },
         with: { workspace: { columns: { teamId: true } } },
       });
       if (heldTask && heldTask.status !== 'cancelled') {
@@ -3556,14 +3600,26 @@ export async function PATCH(
           workspaceId: heldTask.workspaceId ?? null,
           backend: heldTask.backend ?? null,
         });
+        // AC-1 slice 8: a delivery owner's hold is a requeue the kernel makes (AttemptRequeued).
+        const heldTaskId = worker.taskId;
+        const heldOwner = !!heldTask.deliveryId && heldTask.deliveryRole === 'owner';
         const hold = await holdTaskForCredential({
-          taskId: worker.taskId,
+          taskId: heldTaskId,
           context: (heldTask.context ?? {}) as Record<string, unknown>,
           credential,
           workerId: id,
           branch: worker.branch ?? null,
           lastCommitSha: worker.lastCommitSha ?? null,
           error: error ?? null,
+          ...(heldOwner ? {
+            ownerAttempt: {
+              guard: requeueingAttemptIsCurrentSql(id, 'tasks'),
+              requeue: () => requeueOwnerAttempt({
+                task: { id: heldTaskId, workspaceId: heldTask.workspaceId, deliveryId: heldTask.deliveryId, deliveryRole: heldTask.deliveryRole ?? null, context: heldTask.context },
+                workerId: id, reason: 'credential_hold', principal: kernelPrincipalOf({ account }),
+              }),
+            },
+          } : {}),
         });
         if (hold) {
           isCredentialHold = true;

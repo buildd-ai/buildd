@@ -119,10 +119,13 @@ mock.module('@/lib/workflow/authority', () => ({
 }));
 const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: true }));
 const mockProjectOwnerEnd = mock(async (_p: any) => 'failed' as const);
-mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockWorkflowAttemptEnded, projectOwnerEnd: mockProjectOwnerEnd }));
+const mockProjectRequeue = mock(async (_p: any) => true);
+mock.module('@/lib/workflow/seam', () => ({ attemptEnded: mockWorkflowAttemptEnded, projectOwnerEnd: mockProjectOwnerEnd, projectRequeue: mockProjectRequeue }));
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded }));
+// AC-1 slice 8: a kernel owner's requeue is AttemptRequeued, through the same client.
+const mockWorkflowAttemptRequeued = mock(async (_p: any, _c?: any) => ({ handled: true, requeued: true }));
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, attemptRequeued: mockWorkflowAttemptRequeued }));
 
 // Every requeue and continuation here wakes through the dispatch authority.
 // Full export surface: mock.module is process-global.
@@ -1448,9 +1451,15 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
             .mockResolvedValue([]);
           mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
         }
+        mockWorkflowAttemptRequeued.mockClear();
         await cleanupStaleWorkers('account-1');
-        expect(sets.some((v) => v.status === 'pending')).toBe(true);
+        // AC-1 slice 8: the guarded write carries the backoff and context, never the status: the
+        // kernel's requeue moves it, and only after the write still found the attempt current.
+        expect(sets.some((v) => v.startAt instanceof Date && v.context?.infraRetryCount === 1)).toBe(true);
+        expect(sets.some((v) => 'status' in v)).toBe(false);
         expect(returning).toHaveBeenCalledTimes(1);
+        expect(mockWorkflowAttemptRequeued.mock.calls.length).toBe(woken);
+        if (woken) expect(mockWorkflowAttemptRequeued.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', reason: 'infra_retry' });
         expect(mockWakeTask.mock.calls.filter((c: any[]) => c[1] === 'task.requeued').length).toBe(woken);
       }
     } finally {
