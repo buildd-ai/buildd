@@ -13,7 +13,7 @@
  * Measured: each page's own server load, signed in as the team's owner with
  * no filters, in a request whose layout already ran (page-render.ts).
  */
-import { describe, it, expect, beforeAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q } from './harness';
 import {
@@ -137,6 +137,20 @@ beforeAll(async () => {
   await seedFailureEdgeWorkers(team);
   await seedActiveRootCause(team);
 }, 900_000);
+
+/**
+ * The edge workers and the root cause sit on the shared seeded team, which
+ * later files measure too: the task page's chosen task can be one of the
+ * edge workers' tasks, and a stray worker there brings its artifacts and
+ * error traces into that page's bytes. Removed here, as the other budget
+ * files remove what they add.
+ */
+afterAll(async () => {
+  if (!team) return;
+  await q(sql`DELETE FROM workers
+    WHERE workspace_id = ANY(${`{${team.workspaceIds.join(',')}}`}::uuid[]) AND name LIKE 'budget-edge-%'`);
+  await q(sql`DELETE FROM root_causes WHERE team_id = ${team.teamId}::uuid AND key = 'budget:infrastructure_failure'`);
+}, 300_000);
 
 /** A request whose protected layout and Health layout already ran. */
 async function newHealthRequest(): Promise<void> {
