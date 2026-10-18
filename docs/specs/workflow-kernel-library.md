@@ -510,7 +510,9 @@ the control plane, authenticated as the caller).
   due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
   there. An unconfirmed heal is re-marked while the delivery is still owed,
   and the floor backs it. GitHub sends `synchronize` and a retarget once, so
-  an unanswered `observe_head` or `observe_base` is parked (AC-74); unanswered,
+  an unanswered `observe_head` or `observe_base` is parked (AC-74), and the
+  webhook route gives every door a short shared budget so its response beats
+  GitHub's timeout (AC-65); unanswered,
   refused or failed, ownership is read on the web host so legacy never acts
   beside the kernel. `recordLocalHead` is one provenance
   statement on an attempt row, not a command. `cancelSkippedTask` writes a
@@ -670,6 +672,31 @@ the web host.
   applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
   `command-outbox.test.ts`, `kernel-client.test.ts`).
   replaces: AC-35
+
+- AC-65 (failure): GIVEN `EXECUTION_MODE=own` and a control plane that is slow
+  or hangs WHEN GitHub delivers a webhook whose handler submits a door op
+  (`observe_ci_green`, `observe_pr_state`, `observe_head`, `observe_base`)
+  THEN the response is back well inside GitHub's ten seconds: each door waits
+  at most `WEBHOOK_DOOR_BUDGET_MS` (2.5 s), the request's doors together at most
+  `WEBHOOK_BUDGET_MS` (6 s), and a door left unanswered opens a process-level
+  breaker (`WEBHOOK_SKIP_MS`, 45 s) so the rest of the request and the
+  deliveries after it skip the wait. Nothing is lost: a green, a push and a
+  retarget are parked (AC-74), a close is recorded unapplied and healed
+  (AC-3), and a kernel-owned PR is never handed to legacy. A door's command key
+  derives from the delivery id, the op and the input, so GitHub's redelivery
+  of a request that did apply, slowly, is the same command: the ledger answers
+  with what was done, and the floor's replay of the parked row applies nothing
+  twice. The cap, the request budget and the breaker apply only to doors with a
+  durable fallback (`WEBHOOK_CAPPED_OPS`): the parked ops above, `observe_pr_state`,
+  and two that are not parked, `observe_ci_failure` and `observe_conflict`, which
+  the red-PR sweep and the conflict sweeps re-send. Every other door
+  (`open_delivery`, `land`, the rest) keeps its own budget and runs outside the
+  webhook's scope: a timed-out `open_delivery` would hand the PR to legacy review
+  while the control plane may still finish it, and a timed-out `land` would leave
+  a release PR to the held-release sweep. Such a door is never capped, never opens
+  the breaker and is never refused for a spent request budget
+  (`kernel-client.test.ts`, `route.test.ts` beside
+  `apps/web/src/app/api/github/webhook/route.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
