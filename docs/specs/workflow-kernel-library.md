@@ -1606,8 +1606,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   requeue and a new claim, or an expired claim taken over) moves nothing. It
   is a door op (`attempt_started`) with its own small budget
   (`ATTEMPT_START_BUDGET_MS`, 750 ms; `KERNEL_START_BUDGET_MS` overrides),
-  apart from the fix claims' budget. It is never parked and never run on the
-  web host in own mode, not even during release skew: an older control plane's
+  apart from the fix claims' budget (a retry's sleep is cut to what is left of
+  it, so a hang cannot overrun it). The door itself never parks it, and it is
+  never run on the web host in own mode, not even during release skew: an older control plane's
   refusal is one more door error. A start the control plane leaves unanswered
   opens a process-level breaker (`ATTEMPT_START_SKIP_MS`, 45 s): until it
   closes, starts skip the door. An interactive session's claim never asks the
@@ -1616,7 +1617,17 @@ column outside the kernel; S3 and S4 remove or route each one.
   refusing or too old never fails a claim: a runner's claim waits at most the
   start budget once per breaker window, and a person's own session not at all
   (`tests/db/claim-attempt-start.test.ts` measures a 503, a hang and refused
-  connections at the default budgets). A claim lost after its compare-and-set
+  connections at the default budgets). A start projected without a kernel
+  answer would leave no `AttemptStarted` in the log, so the route parks it once
+  in `workflow_command_outbox`, after the response and never on the claim's
+  critical path (`parkAttemptStart`), under one command key per claim
+  (`attemptStartKey`; the door submission of a runner's claim uses the same
+  key). The floor replays it on the control plane: the kernel records the
+  transition once (the `start:<taskId>:<claimedAt>` key makes a repeat a
+  duplicate), and the guarded projection moves nothing, because the task is
+  already assigned. A replay after the task moved on (requeued, claimed again)
+  is judged by the reducer and the guard and changes no task. A start the
+  kernel answered is not parked. A claim lost after its compare-and-set
   gives back only its own claim fields, with no status write. A request that
   dies between its compare-and-set and the start leaves the task `pending`
   with the claim set, and no one can claim it until the claim's `expires_at`
