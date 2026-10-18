@@ -41,12 +41,20 @@ export async function GET(req: NextRequest) {
   const since = parsed.state === 'merged' ? new Date(Date.now() - days * 864e5) : undefined;
   const limit = Number(sp.get('limit'));
 
-  const prs = await listPrsQuery({
-    workspaceIds,
-    state: parsed.state,
-    ...(since ? { since } : {}),
-    ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
-  });
+  let prs;
+  try {
+    prs = await listPrsQuery({
+      workspaceIds,
+      state: parsed.state,
+      ...(since ? { since } : {}),
+      ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
+    });
+  } catch (err) {
+    // An unhandled throw reaches the MCP client as `API error: 500 -`, an empty body.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[api/prs] list failed:', err);
+    return NextResponse.json({ error: `list_prs failed: ${message}`, state: parsed.state }, { status: 500 });
+  }
 
   return NextResponse.json({ state: parsed.state, workspaceCount: workspaceIds.length, ...(since ? { sinceDays: days } : {}), prs });
 }
