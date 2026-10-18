@@ -12,13 +12,22 @@ import type { DeploymentAuditInput, DeploymentDeps, DeploymentProvider } from '.
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
- * The reference a stored credential answers to: its label, lower-cased and
- * trimmed, or the provider's name when it has no label. A team's single
- * unlabelled Cloudflare token is therefore `cloudflare`.
+ * The label Settings → Runners → Cloudflare writes. It names the form, not a
+ * credential the person chose to name, so it answers as unlabelled.
+ */
+const SETTINGS_DEFAULT_LABEL: Record<DeploymentProvider, string> = { cloudflare: 'cloudflare api token' };
+
+/**
+ * The reference a stored credential answers to: its label, lower-cased, with
+ * anything but letters, digits, `_` and `-` turned into dashes (a reference
+ * is a slug), or the provider's name when it has no label or the Settings
+ * form's own. A team's single Cloudflare token from Settings is therefore
+ * `cloudflare`.
  */
 export function credentialRefOf(label: string | null | undefined, provider: DeploymentProvider): string {
-  const l = label?.trim().toLowerCase();
-  return l ? l : provider;
+  const l = label?.trim().toLowerCase().replace(/\s+/g, ' ') ?? '';
+  if (!l || l === SETTINGS_DEFAULT_LABEL[provider]) return provider;
+  return l.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || provider;
 }
 
 const PURPOSE: Record<DeploymentProvider, typeof CLOUDFLARE_PURPOSE> = { cloudflare: CLOUDFLARE_PURPOSE };

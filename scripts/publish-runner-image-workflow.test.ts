@@ -78,7 +78,7 @@ describe('publish-runner-image workflow', () => {
   beforeAll(() => {
     // A renamed job would make every assertion below vacuous.
     const jobs = parse(WORKFLOW).jobs;
-    expect(Object.keys(jobs).sort()).toEqual(['dry-run', 'plan', 'publish']);
+    expect(Object.keys(jobs).sort()).toEqual(['cloud-runner-bundle', 'dry-run', 'plan', 'publish']);
   });
 
   describe('plan', () => {
@@ -201,6 +201,36 @@ describe('publish-runner-image workflow', () => {
       expect(dispatch.env.VERSION).toBe('${{ steps.version.outputs.version }}');
       // Last, so a failed dispatch skips none of the release checks.
       expect(job.steps.at(-1)).toBe(dispatch);
+    });
+  });
+
+  describe('cloud runner bundle', () => {
+    test('the Docker Hub mirror is skipped, not failed, when it is not configured', () => {
+      const { code, outputs, log } = runScript(step('publish', 'Mirror to Docker Hub').run, mkdtempSync(join(tmpdir(), 'runner-image-hub-')), { TAG: 'v1.2.3', IMAGE: 'ghcr.io/x/y' });
+      expect(code).toBe(0);
+      expect(outputs.ref).toBeUndefined();
+      expect(log).toContain('::warning::');
+    });
+
+    test('the mirror runs after the GHCR push and hands its digest-pinned ref to the bundle job', () => {
+      const wf = parse(WORKFLOW);
+      const names = wf.jobs.publish.steps.map((s: any) => s.name);
+      expect(names.indexOf('Mirror to Docker Hub')).toBeGreaterThan(names.indexOf('Push'));
+      expect(wf.jobs.publish.outputs.dockerhub_ref).toBe('${{ steps.dockerhub.outputs.ref }}');
+      expect(step('publish', 'Mirror to Docker Hub').run).toContain('ref=docker.io/$DOCKERHUB_IMAGE@$DIGEST');
+    });
+
+    test('only the bundle job writes release assets, after publish, from the tag', () => {
+      const job = parse(WORKFLOW).jobs['cloud-runner-bundle'];
+      expect(job.needs).toEqual(['plan', 'publish']);
+      expect(job.permissions).toEqual({ contents: 'write' });
+      const checkout = job.steps.find((s: any) => String(s.uses).startsWith('actions/checkout'));
+      expect(checkout.with.ref).toBe('refs/tags/${{ needs.plan.outputs.tag }}');
+      const attach = step('cloud-runner-bundle', 'Build and attach the cloud runner bundle');
+      expect(attach.run).toContain('apps/cloud-runner/scripts/build-release-bundle.ts');
+      expect(attach.run).toContain('cloud-runner-$TAG.json');
+      expect(attach.run).toContain('gh release upload "$TAG"');
+      expect(attach.env.DOCKERHUB_REF).toBe('${{ needs.publish.outputs.dockerhub_ref }}');
     });
   });
 });
