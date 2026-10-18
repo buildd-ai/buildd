@@ -69,6 +69,7 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes('/proxy')) return new Response('{}', { status: 404 });
     const body = url.startsWith('/api/fleet/occupancy') ? occupancy : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
@@ -173,6 +174,24 @@ describe('Health › Runners at first glance', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { toggle.click(); });
     expect(q('runner-lanes-chart')).not.toBeNull();
+  });
+});
+
+describe('Health › Runner row detail (R-5)', () => {
+  it('is folded by default and expands on demand to slots, current work, connectivity and failures', async () => {
+    await mount(0);
+    const row = q('health-runner-row')!;
+    expect(row.querySelector('[data-testid="health-runner-detail"]')).toBeNull();
+    const btn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    const detail = row.querySelector('[data-testid="health-runner-detail"]')!;
+    expect(detail).not.toBeNull();
+    expect(detail.querySelectorAll('[data-testid="health-runner-slot"]').length).toBe(3);
+    expect(detail.textContent).toContain('Working · ');
+    expect(detail.textContent).toContain('Keep captions readable');
+    expect(detail.querySelector('[data-testid="health-runner-connectivity"]')!.textContent).toContain('Connected');
+    expect(detail.querySelector('[data-testid="health-runner-failures"]')).not.toBeNull();
   });
 });
 
