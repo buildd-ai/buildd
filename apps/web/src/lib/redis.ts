@@ -212,12 +212,6 @@ export async function getKey<T>(key: string): Promise<T | null | undefined> {
   return safe<T | null | undefined>('get key', r => r.get<T>(key), undefined);
 }
 
-/** MGET: one value per key, null for a missing one; `undefined` = could not ask. */
-export async function getKeys<T>(keys: readonly string[]): Promise<(T | null)[] | undefined> {
-  if (keys.length === 0) return [];
-  return safe<(T | null)[] | undefined>('mget', r => r.mget<(T | null)[]>(...keys), undefined);
-}
-
 export async function delKey(key: string): Promise<void> {
   await safe('del key', r => r.del(key), undefined);
 }
