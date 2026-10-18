@@ -8,6 +8,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, reapedOwnerAttemptIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 import { projectRequeueSql, requeueingAttemptIsCurrentSql, requeueTaskProjectionCtes } from './task-projection';
 import { ownerClaimOpenSql, projectAttemptStartSql, startTaskProjectionCtes } from './task-projection';
+import { escalatesCi, escalationTaskProjectionCtes, projectLoopExitSql } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -269,5 +270,36 @@ describe('AC-1 slice 7: the start projection', () => {
   test('ownerClaimOpenSql: a pending owner task is claimable unless another claim holds it, by the claim query\'s own rule', () => {
     const { sql: t } = render(ownerClaimOpenSql());
     expect(t).toBe('("tasks"."claimed_by" IS NULL OR "tasks"."expires_at" < now())');
+  });
+});
+
+describe('AC-1 slice 8: an exhausted CI repair and a loop exit', () => {
+  const ciEscalation = [{ kind: 'escalate_exhaustion', dedupeKey: 'k', payload: { family: 'ci', attempts: 3, max: 3 } }] as never;
+
+  test('escalationTaskProjectionCtes: a CI escalation fails the owner task, reading the delivery CTE', () => {
+    const [cte] = escalationTaskProjectionCtes({ command: 'CiFailedObserved', fromState: 'AWAITING_REVIEW', effects: ciEscalation }, 'd');
+    const { sql: t } = render(sql`WITH ${cte} SELECT 1`);
+    expect(t).toContain("t_escalate AS (\n  UPDATE tasks tk SET status = 'failed'");
+    expect(t).toContain('FROM d JOIN workflow_deliveries od ON od.id = d.id');
+    expect(t).toContain("tk.status NOT IN ('failed', 'cancelled')");
+    expect(t).toContain("kd.state IN");
+  });
+
+  test('escalationTaskProjectionCtes: nothing for another family, and an owner end that escalates is t_attempt\'s', () => {
+    expect(escalationTaskProjectionCtes({ command: 'CiFailedObserved', fromState: 'AWAITING_REVIEW', effects: [{ kind: 'escalate_exhaustion', dedupeKey: 'k', payload: { family: 'review_fix' } }] as never })).toEqual([]);
+    expect(escalationTaskProjectionCtes({ command: 'AttemptEnded', fromState: 'WORKING', effects: ciEscalation })).toEqual([]);
+    expect(escalatesCi({ effects: ciEscalation })).toBe(true);
+    // The same end projects failed, not the success it reported.
+    const [cte] = attemptEndTaskProjectionCtes({ command: 'AttemptEnded', fromState: 'WORKING', evidence: { outcome: 'success' }, idempotencyKey: 'end:w-1', effects: ciEscalation }, 'd');
+    expect(render(sql`WITH ${cte} SELECT 1`).params).toContain('failed');
+  });
+
+  test('projectLoopExitSql: only the parked owner task, loop satisfied, no live attempt', () => {
+    const { sql: t, params } = render(projectLoopExitSql({ deliveryId: 'd-1', taskId: 't-1' }));
+    expect(t).toContain("UPDATE tasks tk SET status = 'completed'");
+    expect(t).toContain("tk.status = 'pending' AND tk.loop_state = 'satisfied'");
+    expect(t).toContain('od.owner_task_id = tk.id');
+    expect(t).toMatch(/NOT EXISTS \(SELECT 1 FROM workers lw WHERE lw\.task_id = tk\.id AND .*lw\.status NOT IN/s);
+    expect(params).toEqual(expect.arrayContaining(['t-1', 'd-1', 'completed', 'failed']));
   });
 });

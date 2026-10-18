@@ -153,7 +153,7 @@ async function afterDetach(
   if (worker.taskId) {
     const taskId = worker.taskId;
     if (!isTerminalTaskStatus(worker.taskStatus)) {
-      steps.push(['task requeue', () => requeueOpenTask(taskId)]);
+      steps.push(['task requeue', () => requeueOpenTask(taskId, worker.id)]);
     }
     steps.push(['path-claim release', async () => releaseAndNotify(taskId, await resolveReleaseReasonForTask(taskId))]);
   }
@@ -191,8 +191,18 @@ export async function releaseConcurrencySeats(accountIds: ReadonlyArray<string |
   }
 }
 
-/** An open task whose only worker was released goes back to the queue. */
-async function requeueOpenTask(taskId: string): Promise<void> {
+/**
+ * An open task whose only worker was released goes back to the queue. AC-1 slice 8
+ * (workflow-kernel-library.md §9): the owner task of a delivery goes back through the kernel
+ * (AttemptRequeued), only while the released worker is its current attempt; the kernel moves it
+ * where it is hosted and the projection here covers a control plane that is down or too old.
+ */
+async function requeueOpenTask(taskId: string, workerId: string): Promise<void> {
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true } });
+  if (task?.deliveryId && task.deliveryRole === 'owner') {
+    if (await requeueOwnerThroughKernel({ ...task, deliveryId: task.deliveryId }, workerId)) await wakeTask(taskId, 'task.requeued');
+    return;
+  }
   const otherLive = db
     .select({ id: workers.id })
     .from(workers)
@@ -203,6 +213,21 @@ async function requeueOpenTask(taskId: string): Promise<void> {
     .where(and(eq(tasks.id, taskId), ne(tasks.status, 'pending'), notTerminalTask(), notExists(otherLive)))
     .returning({ id: tasks.id });
   if (requeued) await wakeTask(taskId, 'task.requeued');
+}
+
+async function requeueOwnerThroughKernel(task: { id: string; workspaceId: string; deliveryId: string; deliveryRole: string | null; context: unknown }, workerId: string): Promise<boolean> {
+  try {
+    const { attemptRequeued, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    const r = await attemptRequeued({ task, workerId, reason: 'interactive_release', source: 'interactive-detach' }, { principal: systemPrincipal('system:interactive-detach') });
+    if (r.requeued) return true;
+  } catch (err) {
+    console.error(`[interactive-detach] AttemptRequeued for task ${task.id} did not reach the kernel; projecting it here:`, err);
+  }
+  const { projectRequeue } = await import('@/lib/workflow/seam');
+  return projectRequeue({ deliveryId: task.deliveryId, taskId: task.id, workerId }).catch((err) => {
+    console.error(`[interactive-detach] requeue projection failed for task ${task.id}:`, err);
+    return false;
+  });
 }
 
 const notTerminalTask = (): SQL => sql`${tasks.status} NOT IN (${sql.join(TERMINAL_TASK_STATUSES.map(s => sql`${s}`), sql`, `)})`;
