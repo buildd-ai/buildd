@@ -324,9 +324,9 @@ describe('evaluateSurfaceAuditGate — Visual Review policy', () => {
 describe('loadSurfaceAuditWaiver', () => {
   it("returns the newest person-set waiver's reason, actor and time", async () => {
     waiverNotes = [
-      { authorType: 'agent', body: 'An agent tried', actorLabel: 'worker w1', createdAt: new Date('2026-10-03T00:00:00Z') },
-      { authorType: 'user', body: 'Copy-only change', actorLabel: 'owner@example.com', createdAt: new Date('2026-10-02T00:00:00Z') },
-      { authorType: 'mcp', body: 'Older call', actorLabel: 'account "k"', createdAt: new Date('2026-10-01T00:00:00Z') },
+      { missionId: 'm1', authorType: 'agent', body: 'An agent tried', actorLabel: 'worker w1', createdAt: new Date('2026-10-03T00:00:00Z') },
+      { missionId: 'm1', authorType: 'user', body: 'Copy-only change', actorLabel: 'owner@example.com', createdAt: new Date('2026-10-02T00:00:00Z') },
+      { missionId: 'm1', authorType: 'mcp', body: 'Older call', actorLabel: 'account "k"', createdAt: new Date('2026-10-01T00:00:00Z') },
     ];
     expect(await loadSurfaceAuditWaiver('m1')).toEqual({
       reason: 'Copy-only change', actorLabel: 'owner@example.com', at: '2026-10-02T00:00:00.000Z',
@@ -334,7 +334,7 @@ describe('loadSurfaceAuditWaiver', () => {
   });
 
   it('is null when no person waived it', async () => {
-    waiverNotes = [{ authorType: 'system', body: 'x', actorLabel: 'system', createdAt: new Date() }];
+    waiverNotes = [{ missionId: 'm1', authorType: 'system', body: 'x', actorLabel: 'system', createdAt: new Date() }];
     expect(await loadSurfaceAuditWaiver('m1')).toBeNull();
   });
 });
