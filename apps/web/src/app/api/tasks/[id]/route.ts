@@ -13,6 +13,7 @@ import { and, eq, inArray, desc } from 'drizzle-orm';
 import { requestingPerson } from '@/lib/request-person';
 import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { lazyRequester } from '@buildd/core/role-visibility';
@@ -759,6 +760,9 @@ export async function PATCH(
       .set(updateData)
       .where(eq(tasks.id, id))
       .returning();
+
+    // Its mission's stored summary, and the one it left (lib/work-changed.ts).
+    if (updated) noteWorkChanged({ missionIds: [updated.missionId, task.missionId] });
 
     // Status-change side effects. A PATCH that doesn't touch status (title,
     // priority, …) runs none of this.

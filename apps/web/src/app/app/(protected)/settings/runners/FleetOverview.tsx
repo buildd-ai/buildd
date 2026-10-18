@@ -9,7 +9,7 @@
  */
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
-import type { FleetRunner, FleetSnapshot } from '@buildd/shared';
+import { TERMS, type FleetRunner, type FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { fleetLabel, runnerBusyLine, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
@@ -31,7 +31,7 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const busy = fleet.runners.filter(r => r.online).reduce((n, r) => n + busyOn(r), 0);
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
   const heldCount = fleet.runners.filter(r => r.online && r.hold).length;
-  const held: HeadlinePart[] = heldCount > 0 ? [{ text: ` ${heldCount} on hold.` }] : [];
+  const held: HeadlinePart[] = heldCount > 0 ? [{ text: ` ${heldCount} paused.` }] : [];
   if (offline.length === fleet.runners.length) {
     if (stale === 0) return [{ text: 'All runners offline.' }];
     return [{ text: `All runners offline. ${agents(stale)} ${stale === 1 ? 'was' : 'were'} working at the last check-in.` }];
@@ -59,7 +59,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
           <span title={runner.name} className="min-w-0 truncate text-sm font-semibold text-text-primary">{runner.name}</span>
-          <StatusChip tone={hold ? 'idle' : runner.online ? 'ok' : 'warn'}>{hold ? 'On hold' : runner.online ? 'Online' : 'Offline'}</StatusChip>
+          <StatusChip tone={hold ? 'idle' : runner.online ? 'ok' : 'warn'}>{hold ? TERMS['runner.paused'].word : runner.online ? 'Online' : 'Offline'}</StatusChip>
         </div>
         <div className="mt-0.5 truncate text-xs text-text-muted">
           {runner.machine ?? 'Host runner'}
@@ -67,7 +67,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
         </div>
         {hold && (
           <div data-testid="fleet-runner-hold" className="mt-0.5 text-xs text-text-secondary">
-            Nothing new starts here; running agents finish. On hold since <ZonedTime value={hold.since} format="time" />
+            Nothing new starts here; running agents finish. Paused since <ZonedTime value={hold.since} format="time" />
             {hold.until ? <>, resumes at <ZonedTime value={hold.until} format="time" />.</> : <>, until someone runs buildd resume.</>}
           </div>
         )}

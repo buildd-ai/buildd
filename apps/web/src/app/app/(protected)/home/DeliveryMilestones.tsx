@@ -24,7 +24,7 @@ export function DeliveryMilestones({ missions, openMissions }: { missions: reado
       <ul className="border-b border-border-default">
         {missions.map(m => {
           const state = STATE_OF_KIND[m.kind] ?? undefined;
-          const stat = m.total > 0 ? `${m.landed} of ${m.total} landed` : undefined;
+          const stat = m.total > 0 ? `${m.landed} of ${m.total} done` : undefined;
           const kind = { ...DELIVERY_KIND[m.kind], label: deliveryKindLabel(m) };
           return (
             <li key={m.id} data-testid="home-delivery-row" data-kind={m.kind}>

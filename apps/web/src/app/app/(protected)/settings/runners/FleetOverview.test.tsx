@@ -140,18 +140,19 @@ describe('Settings → Runners page order', () => {
     expect(page).toContain("import { loadFleetSnapshot } from '@/lib/home-fleet'");
   });
 
-  it('a held runner says on hold, since when and when it resumes, instead of idle (R-35)', () => {
+  it('a held runner says Paused, since when and when it resumes, instead of idle (R-35)', () => {
     const held = { ...runner('a', 'runner-1', 1, 4), hold: { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' } };
     const html = renderToStaticMarkup(
       <DisplayTimezoneProvider teamTimezone="UTC"><FleetOverview fleet={fleet([held, runner('b', 'runner-2', 0, 4)])} /></DisplayTimezoneProvider>,
     );
     const t = text(html);
-    expect(t).toContain('runner-1 On hold');
+    expect(t).toContain('runner-1 Paused');
     expect(t).toContain('Nothing new starts here; running agents finish.');
-    expect(t).toContain('On hold since 9:12 AM');
+    expect(t).toContain('Paused since 9:12 AM');
     expect(t).toContain('resumes at 11:12 AM');
     expect(t).toContain('runner-2 Online');
-    expect(t).toContain('1 on hold.');
+    expect(t).toContain('1 paused.');
+    expect(t).not.toMatch(/on hold/i);
     expect(html).toContain('data-held="true"');
   });
 });

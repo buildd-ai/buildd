@@ -259,3 +259,10 @@ describe('route reply mapping', () => {
     expect(fromMergeRoute({ status: 403, json: { error: 'Forbidden' } })).toEqual({ ok: false, error: 'Forbidden' });
   });
 });
+
+describe('fromMergeRoute copy (terms catalog)', () => {
+  it('a landing answer with no message reads as the merge, never Landing', () => {
+    const r = fromMergeRoute({ status: 409, json: { ok: false, landing: { kind: 'waiting_ci' } } });
+    expect(r).toMatchObject({ ok: true, summary: 'The merge re-ran and is still waiting.', outcome: 'waiting_ci' });
+  });
+});

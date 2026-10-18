@@ -1858,7 +1858,7 @@ export async function POST(req: NextRequest) {
         // for every other one.
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'rule_start';
         let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
-          v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
+          v.kind === 'deterministic' ? { tier: 'hard', rationale: `Waiting for files: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         // A person's Force start already decided this overlap: no Jev read.
         if (v.kind === 'advisory' && !liftedByForce('soft_overlap')) {
           const holdCtx = holdStartContext(task, forced);

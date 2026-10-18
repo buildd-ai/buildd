@@ -15,6 +15,7 @@
  * nothing — the Delivery model already hides the step.
  */
 import Link from 'next/link';
+import { TERMS } from '@buildd/shared';
 import { DELIVERY_STATE_GLYPH, DELIVERY_STATE_TEXT, DELIVERY_STEP_LABEL, type DeliveryStep, type DeliveryStepState, type MissionReleaseStatus } from '@/lib/mission-delivery';
 
 
@@ -59,8 +60,8 @@ export interface MissionReleaseRow {
 
 const STATUS_ROW: Partial<Record<MissionReleaseStatus, Omit<MissionReleaseRow, 'linksRelease'>>> = {
   dispatched: { state: 'partial', text: 'Release dispatched', detail: 'A release was sent and has not deployed.' },
-  deploying: { state: 'partial', text: 'Deploying', detail: 'Released once production reports healthy.' },
-  failed: { state: 'blocked', text: 'Deploy failed', detail: 'Not delivered until a deploy is healthy.' },
+  deploying: { state: 'partial', text: TERMS['release.releasing'].word, detail: 'Released once production reports healthy.' },
+  failed: { state: 'blocked', text: 'Deploy failed', detail: 'Not released until a deploy is healthy.' },
   unknown: { state: 'partial', text: 'Health not reported', detail: 'Merged, but nothing reports whether the deploy is healthy.' },
 };
 

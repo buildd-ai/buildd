@@ -49,6 +49,17 @@ describe('Organizer runs timeline', () => {
     expect(html).not.toMatch(/Heartbeat/);
   });
 
+  it('a finished run with no summary reads Done, never Completed', () => {
+    const html = renderToStaticMarkup(
+      <HeartbeatTimeline
+        defaultExpanded
+        runs={[{ id: 't1', createdAt: new Date().toISOString(), status: 'completed', triggerSource: 'event', triggerLabel: 'after work finished', result: null }]}
+      />,
+    );
+    expect(html).toContain('>Done<');
+    expect(html).not.toContain('Completed');
+  });
+
   it('renders nothing with no runs', () => {
     expect(renderToStaticMarkup(<HeartbeatTimeline runs={[]} />)).toBe('');
   });

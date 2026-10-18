@@ -81,7 +81,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
       workerStatus={earlierRun.status}
       onResend={resend}
       resending={loading}
-      title="Not delivered · the previous run ended first"
+      title="Not received · the previous run ended first"
       testId="earlier-run-undelivered"
     />
   ) : null;

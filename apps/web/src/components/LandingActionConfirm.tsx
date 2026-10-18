@@ -91,10 +91,10 @@ export function LandingActionConfirm({
             className="min-h-12 bg-accent px-4 py-3 text-left font-mono text-sm font-bold text-white disabled:opacity-50"
             data-testid="landing-action-primary"
           >
-            {busy ? 'Working…' : headMoved ? 'Re-run landing' : primary.label}
+            {busy ? 'Working…' : headMoved ? 'Retry the merge' : primary.label}
           </button>
         )}
-        <p className="text-xs text-text-secondary">{headMoved ? 'Landing re-checks the current commit.' : primary.hint}</p>
+        <p className="text-xs text-text-secondary">{headMoved ? 'The merge re-checks the current commit.' : primary.hint}</p>
         {!headMoved &&
           rest.map((o) => (
             <div key={o.action} className="flex flex-col gap-1">

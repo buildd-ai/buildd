@@ -29,9 +29,9 @@ describe('Home live workers', () => {
     expect(home.match(/<HomeBody\b/g)).toHaveLength(1);
     expect(body).toContain('data-testid="home-waiting-on-you"');
     expect(body.indexOf('data-testid="home-waiting-on-you"')).toBeLessThan(body.indexOf('data-testid="home-body"'));
-    expect(body).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']");
-    expect(body).toContain("[grid-template-areas:'agents'_'moving'_'landed']");
-    expect(body).toContain("min-[900px]:[grid-template-areas:'agents_landed']");
+    expect(body).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_done']");
+    expect(body).toContain("[grid-template-areas:'agents'_'moving'_'done']");
+    expect(body).toContain("min-[900px]:[grid-template-areas:'agents_done']");
   });
 
   it('diagnostics are off Home', () => {
