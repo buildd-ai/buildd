@@ -171,6 +171,67 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
+    describe('Living Spec r7: a person\'s forced re-review from the escalation decision', () => {
+      it('AC-45: the decision is bound to the head and version the card showed', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+        mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+        mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 7, decision: {} } });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', headSha: 'h2', version: 6 });
+        expect((await POST(req, ctx)).status).toBe(200);
+        expect(mockRequestKernelReview).toHaveBeenCalledWith(expect.objectContaining({ forced: true, actor: 'human:u-1', decision: { headSha: 'h2', version: 6 } }));
+      });
+
+      it('AC-45: the same decision again is the first one: ok, nothing new queued, and the note is cleared', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+        mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+        mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'duplicate', transitionId: 't', reason: 'idempotency_key_seen', current } });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', headSha: 'h2', version: 6 });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, alreadyRequested: true, kernel: true });
+        expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      it('AC-45: a stale replay after the PR escalated again is not a success: the new note stays', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+        mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+        const escalated = { state: 'ESCALATED', version: 9, head: 'h2', round: 2 };
+        mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'duplicate', transitionId: 't', reason: 'idempotency_key_seen', current: escalated } });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', headSha: 'h2', version: 6 });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ code: 'decision_already_answered', stale: true, kernel: true, current: escalated });
+        expect(body.error).not.toMatch(/[a-z]+_[a-z_]+/);
+        expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+      });
+
+      it('AC-46: a decision on a head that moved is a 409 in plain words, and the escalation note stays', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+        mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+        mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'decision_head_stale', current } });
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', headSha: 'h0', version: 5 });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ code: 'decision_head_stale', stale: true, kernel: true, current });
+        expect(body.error).toContain('newer commit');
+        expect(body.error).not.toMatch(/[a-z]+_[a-z_]+/);
+        expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+      });
+
+      it('AC-46: any other refusal is explained too, never a bare code', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+        mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+        mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'force_requires_human', current } });
+        const [req, ctx] = makeRequest();
+        const body = await (await POST(req, ctx)).json();
+        expect(body.error).toContain('only a person');
+        expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+      });
+    });
+
     describe('cut over to the control plane (workflow-kernel-library §3)', () => {
       let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
       afterEach(() => { cp?.restore(); cp = null; });
