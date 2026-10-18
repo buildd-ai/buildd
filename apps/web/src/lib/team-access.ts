@@ -161,6 +161,24 @@ export type { TeamScopeCaller };
  * findFirst did, not a widening. And the return value is an unordered set, as
  * it always was: neither of the old findMany calls carried an ORDER BY either.
  */
+/**
+ * The session user's workspace scope as a WHERE predicate on `workspaces`:
+ * their personal team's workspaces plus every team they are a member of. A
+ * query that scopes to it reads only this user's rows (spec 3ef37387 R-23).
+ */
+export function userWorkspaceScope(userId: string) {
+  return or(
+    inArray(
+      workspaces.teamId,
+      qb.select({ id: teams.id }).from(teams).where(eq(teams.personalUserId, userId)),
+    ),
+    inArray(
+      workspaces.teamId,
+      qb.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, userId)),
+    ),
+  );
+}
+
 export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[]> => {
   const rows = await db
     .selectDistinct({ id: workspaces.id })
@@ -343,6 +361,21 @@ const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | 
       columns: { id: true, name: true, teamId: true },
     }),
   ]);
+  return chooseDefaultTeam(userId, teamIds, teamRows, rows);
+});
+
+/**
+ * The default-team rule, pure: the first team with workspaces, personal
+ * preferred, then personal, then the first team by id. pickDefaultTeam and the
+ * app shell's cached loader (lib/app-chrome.ts) both apply it, so the header
+ * and Home pick the same team from the same rows.
+ */
+export function chooseDefaultTeam(
+  userId: string,
+  teamIds: string[],
+  teamRows: { id: string; personalUserId: string | null; timezone: string | null }[],
+  rows: { id: string; name: string; teamId: string | null }[],
+): DefaultTeamPick {
   const personalId = teamRows.find((t) => isPersonalTeamOf(t, userId))?.id ?? null;
   const others = teamIds.filter((id) => id !== personalId).sort();
   const order = personalId && teamIds.includes(personalId) ? [personalId, ...others] : others;
@@ -353,7 +386,7 @@ const pickDefaultTeam = cache(async (userId: string): Promise<DefaultTeamPick | 
     workspaces: rows.filter((w) => w.teamId === teamId).map((w) => ({ id: w.id, name: w.name })),
     timezone: isValidTimezone(tz) ? tz : null,
   };
-});
+}
 
 export type ActiveTeamScope = {
   /** The resolved active team, or null when the user belongs to no team. */

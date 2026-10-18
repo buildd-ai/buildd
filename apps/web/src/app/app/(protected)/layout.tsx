@@ -12,10 +12,10 @@ import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvi
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { isBillingEnforced } from '@buildd/core/entitlements';
-import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
-import { getChatAvailability } from '@/lib/chat-availability';
+import { loadAppChrome } from '@/lib/app-chrome';
+import { peekChatAvailability } from '@/lib/chat-availability';
+import { chatEntryFromAvailability } from '@/lib/chat/entry-points';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
-import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
 import { KeyHintsProvider } from '@/components/KeyHints';
 import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
 
@@ -34,47 +34,31 @@ export default async function ProtectedLayout({
   let chatEntry: ChatEntryValue = { available: false, teamId: null, setupHref: null };
 
   if (user) {
-    // These three have no dependency on each other, and this layout re-runs on
-    // every navigation under /app (force-dynamic, inherited from
-    // app/app/layout.tsx). Run serially they were three separate neon-http
-    // round-trip chains before anything painted. Each keeps its own catch so a
-    // failure degrades exactly the surface it used to — Promise.all would
-    // otherwise reject the whole group on the first error.
-    const [userTeamsResult, workspaceIdsResult, scopeResult] = await Promise.all([
-      // Teams empty on failure, page still renders
-      getUserTeamsWithDetails(user.id).catch(() => [] as typeof userTeams),
-      // Workspace IDs empty on failure, notifications won't load
-      getUserWorkspaceIds(user.id).catch(() => [] as string[]),
-      // Active team + its workspaces + its timezone, from the same resolver
-      // Home uses so the header never names a team Home isn't showing. The
-      // zone comes back in the resolver's own parallel round, never chained
-      // after it (dashboard-waterfall.test.ts).
-      cookies()
-        .then((cookieStore) => resolveActiveTeamScope(user.id, cookieStore.get('buildd-team')?.value))
-        // No team on failure; WorkspaceSwitcher renders nothing, timestamps use the browser zone
-        .catch((): ActiveTeamScope => ({ teamId: null, workspaces: [], timezone: null }))
-        // Whether a chat turn can run (lib/chat-availability.ts): needs the team,
-        // so it rides the scope's own chain. It only steers the create buttons
-        // (chat vs the form); the Chat nav entry is always there. Both are React
-        // cache()d, so Home and /app/chat reuse the answer.
-        .then(async (scope) => {
-          if (!scope.teamId) return { scope, chatEntry };
-          const avail = await getChatAvailability(user.id, scope.teamId).catch(() => null);
-          const entry: ChatEntryValue = {
-            available: avail?.available === true,
-            teamId: scope.teamId,
-            // The missing key is an owner's or admin's to fix.
-            setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
-          };
-          return { scope, chatEntry: entry };
-        }),
-    ]);
-    userTeams = userTeamsResult;
-    workspaceIds = workspaceIdsResult;
-    currentTeamId = scopeResult.scope.teamId;
-    teamWorkspaces = scopeResult.scope.workspaces;
-    teamTimezone = scopeResult.scope.timezone;
-    chatEntry = scopeResult.chatEntry;
+    // What every page shares costs two statements in one round, scoped to the
+    // user in SQL and kept 30 s (lib/app-chrome.ts, spec 3ef37387 R-17). This
+    // layout re-runs on every navigation and every live refresh under /app
+    // (force-dynamic, inherited from app/app/layout.tsx), so a warm one reads
+    // nothing. On failure the shell still renders: no teams, no workspace
+    // scope, timestamps in the browser zone.
+    const chrome = await cookies()
+      .then((cookieStore) => loadAppChrome(user.id, cookieStore.get('buildd-team')?.value))
+      .catch(() => null);
+    if (chrome) {
+      userTeams = chrome.teams;
+      workspaceIds = chrome.workspaceIds;
+      currentTeamId = chrome.scope.teamId;
+      teamWorkspaces = chrome.scope.workspaces;
+      teamTimezone = chrome.scope.timezone;
+    }
+    // Whether a chat turn can run only steers the create buttons (chat vs the
+    // form); the Chat nav entry is always there. Resolving it can call the
+    // model-policy service, so the shell never waits: it takes the last answer
+    // and refreshes after the response. A cold cache paints the form buttons
+    // and ChatEntryProvider asks once, after paint.
+    if (currentTeamId) {
+      const avail = peekChatAvailability(user.id, currentTeamId);
+      chatEntry = { ...chatEntryFromAvailability(avail, currentTeamId), pending: avail === null };
+    }
   }
 
   const userInitial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U';
@@ -85,7 +69,6 @@ export default async function ProtectedLayout({
       <ChatEntryProvider value={chatEntry}>
       {/* The chat canvas, summonable over any page (knowledge-base: buildd/design/chat-canvas.md). */}
       <ChatCanvasProvider
-        available={chatEntry.available}
         teamId={chatEntry.teamId}
         workspaces={teamWorkspaces}
         viewerName={user?.name?.trim().split(/\s+/)[0] ?? user?.email?.split('@')[0] ?? null}

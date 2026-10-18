@@ -173,8 +173,6 @@ export const events = {
   CONVERSATION_UPDATED: CHAT_PUSHER_EVENTS.CONVERSATION_UPDATED,
   TASK_CREATED: 'task:created',
   TASK_CLAIMED: 'task:claimed',
-  TASK_COMPLETED: 'task:completed',
-  TASK_FAILED: 'task:failed',
   // Task assigned to specific runner
   TASK_ASSIGNED: 'task:assigned',
   WORKER_PROGRESS: 'worker:progress',

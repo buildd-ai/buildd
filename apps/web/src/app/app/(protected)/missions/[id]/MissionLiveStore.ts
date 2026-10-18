@@ -30,7 +30,7 @@ import { createContext, useContext, useMemo, useSyncExternalStore } from 'react'
 import { createThrottle, realClock, type Clock } from '@/lib/realtime-throttle';
 
 /** At most one full mission render per this window, per open tab. */
-export const MISSION_REFRESH_WINDOW_MS = 3_000;
+export const MISSION_REFRESH_WINDOW_MS = 5_000;
 
 // The subscribed event lists live with the subscriber (MissionAutoRefresh.tsx):
 // the Pusher coverage guards read event names from the files that bind them.

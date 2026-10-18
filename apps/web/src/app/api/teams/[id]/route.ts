@@ -15,6 +15,7 @@ import { DECISION_MODEL_PROBE, IS_PLATFORM_OPERATOR_CALLER, OPERATOR_ONLY_RESPON
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam, isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
+import { invalidateAppChrome } from '@/lib/app-chrome';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
 const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
@@ -348,6 +349,8 @@ export async function PATCH(
 
     await db.update(teams).set(updates).where(eq(teams.id, id));
 
+    // The acting user's shell shows this at once (lib/app-chrome.ts).
+    invalidateAppChrome(user.id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Update team error:', error);
