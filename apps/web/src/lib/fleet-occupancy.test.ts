@@ -366,7 +366,7 @@ describe('scopeMembers', () => {
   const w = (ownerId: string) => ({ runner: 'runner-a', ownerId, taskOwnerId: ownerId, startedAt: NOW - 3_600_000, completedAt: NOW - 1_800_000, status: 'completed' });
   it('drops named rows for non-members but keeps the totals and Others', () => {
     const series = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'me', workers: [w('me'), w('mate'), w('outsider')] as any });
-    expect(series.members!.map(m => m.id).sort()).toEqual(['me', 'mate', 'outsider']);
+    expect(series.members!.map(m => m.id).sort()).toEqual(['mate', 'me', 'outsider']);
     const scoped = scopeMembers(series, new Set(['me', 'mate']));
     expect(scoped.members!.map(m => m.id).sort()).toEqual(['mate', 'me']);
     expect(scoped.summary).toEqual(series.summary);
