@@ -188,7 +188,10 @@ async function resolveStaleTask(
   // the same way a reviewer task that completes with a dropped verdict does,
   // via the shared escalateReviewContractFailure (mission note + Pushover +
   // PR activity comment + gate event) rather than a bespoke mission note.
-  if (currentTask?.category === 'review') {
+  // A kernel owner attempt is never a reviewer round, whatever its category (a human or API task
+  // can be classified `review` and still own its PR's delivery): it takes the cap/requeue path
+  // below, with the current-attempt guard and the kernel's end.
+  if (currentTask?.category === 'review' && !ownerAttempt) {
     const ctx = (currentTask.context ?? {}) as Record<string, unknown>;
     const prNumber = ctx.prNumber as number | undefined;
     // A kernel round re-queues itself (T27) instead of escalating at the first loss.
@@ -379,7 +382,7 @@ async function resolveStaleTask(
         // attempt doesn't race immediately (helps when the infra issue needs settling time).
         const backoffMins = INFRA_BACKOFF_MINUTES[infraRetryCount] ?? 30;
         const startAt = new Date(Date.now() + backoffMins * 60_000);
-        await db
+        const requeue = db
           .update(tasks)
           .set({
             status: 'pending',
@@ -395,8 +398,11 @@ async function resolveStaleTask(
             updatedAt: new Date(),
           })
           .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), ...ownerAttemptGuard));
+        // A kernel owner's requeue is guarded: wake only when it still moved the task (a re-claim
+        // that raced the reap keeps it).
+        const requeued = ownerAttempt ? (await requeue.returning({ id: tasks.id })).length > 0 : (await requeue, true);
         // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
-        await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
+        if (requeued) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
     }
 

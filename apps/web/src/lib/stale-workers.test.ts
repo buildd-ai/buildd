@@ -1361,7 +1361,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
 
   // AC-1 slice 5 (workflow-kernel-library.md §9): the owner attempt's end is the kernel's to
   // project onto the task, so the reaper writes the result only.
-  function reapOwnerAtRetryCap() {
+  function reapOwnerAtRetryCap(category = 'feature') {
     mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
     mockWorkersFindMany
       .mockResolvedValueOnce([])
@@ -1369,7 +1369,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
       .mockResolvedValueOnce([])
       .mockResolvedValue([{ id: 'f1', exitCause: null }, { id: 'f2', exitCause: null }, { id: 'f3', exitCause: null }]);
     mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
-    mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category: 'feature', context: {}, deliveryId: 'delivery-1', deliveryRole: 'owner', parentTaskId: null });
+    mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category, context: {}, deliveryId: 'delivery-1', deliveryRole: 'owner', parentTaskId: null });
     mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: '' });
     const sets: any[] = [];
     const returning = mock(async () => [{ id: 'task-o' }]);
@@ -1394,6 +1394,65 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
       expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
       expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', status: 'lost' });
       expect(mockProjectOwnerEnd).toHaveBeenCalledWith({ deliveryId: 'delivery-1', taskId: 'task-o', workerId: 'w-o', status: 'lost' });
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  // Review of #5122: a task classified `review` can own its PR's delivery. Its reaped attempt is the
+  // owner's, not a reviewer round's, so the kernel still hears the end and no status is written here.
+  it('AC-1 slice 5: a category review owner attempt at the retry cap sends AttemptEnded(lost) and writes no status', async () => {
+    kernelOwned = 'delivery-1';
+    mockWorkflowAttemptEnded.mockClear();
+    mockProjectOwnerEnd.mockClear();
+    try {
+      const { sets } = reapOwnerAtRetryCap('review');
+      await cleanupStaleWorkers('account-1');
+      expect(sets.length).toBeGreaterThan(0);
+      expect(sets.some((v) => 'status' in v)).toBe(false);
+      expect(sets.some((v) => v.result?.error === 'agent review timed out')).toBe(false);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { id: 'task-o', deliveryRole: 'owner' }, workerId: 'w-o', status: 'lost' });
+      expect(mockProjectOwnerEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      kernelOwned = null;
+      mockTasksFindFirst.mockReset();
+      mockWorkersFindMany.mockReset();
+    }
+  });
+
+  it('AC-1 slice 5: a guarded owner requeue that matched no row (a re-claim raced the reap) wakes nothing', async () => {
+    kernelOwned = 'delivery-1';
+    mockWakeTask.mockClear();
+    try {
+      mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-o', taskId: 'task-o', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/o', error: null }])
+        .mockResolvedValue([]); // no other live workers, no prior failures: an infra requeue
+      mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
+      mockTasksFindFirst.mockResolvedValue({ status: 'assigned', category: 'feature', context: {}, deliveryId: 'delivery-1', deliveryRole: 'owner', parentTaskId: null });
+      mockCheckWorkerDeliverables.mockReturnValue({ hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: '' });
+      for (const [rows, woken] of [[[], 0], [[{ id: 'task-o' }], 1]] as const) {
+        mockWakeTask.mockClear();
+        const sets: any[] = [];
+        const returning = mock(async () => rows);
+        mockTasksUpdate.mockReturnValue({ set: mock((vals: any) => { sets.push(vals); return { where: mock(() => Object.assign(Promise.resolve(), { returning })) }; }) });
+        if (woken) {
+          mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
+          mockWorkersFindMany
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{ id: 'w-o', taskId: 'task-o', prUrl: null, prNumber: null, commitCount: 0, branch: 'buildd/o', error: null }])
+            .mockResolvedValue([]);
+          mockTasksFindMany.mockResolvedValueOnce([{ id: 'task-o', workspaceId: 'ws-1' }]);
+        }
+        await cleanupStaleWorkers('account-1');
+        expect(sets.some((v) => v.status === 'pending')).toBe(true);
+        expect(returning).toHaveBeenCalledTimes(1);
+        expect(mockWakeTask.mock.calls.filter((c: any[]) => c[1] === 'task.requeued').length).toBe(woken);
+      }
     } finally {
       kernelOwned = null;
       mockTasksFindFirst.mockReset();

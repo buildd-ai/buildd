@@ -60,6 +60,19 @@ describe('the reaper ends a lost owner attempt through the kernel', () => {
     expect(t.result).toMatchObject({ errorType: 'infra_stalled', infraRetryCount: 3 });
   });
 
+  test('an owner task classified `review` is still the owner: the kernel hears its lost end and the delivery moves on', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/reap-review-category', files: { 'src/a.ts': 'export const a = 33;\n' } });
+    await stalled(pr);
+    await q(sql`UPDATE tasks SET category = 'review' WHERE id = ${pr.ownerTaskId}::uuid`);
+    await reap(pr);
+    expect(await ends(pr)).toEqual([{ idempotency_key: `end:${pr.workerId}`, outcome: 'lost', actor: 'sweep:stale-workers' }]);
+    expect((await w.delivery(pr)).state).not.toBe('WORKING');
+    const t = await taskRow(pr);
+    expect(t.status).toBe('failed');
+    expect(t.result).toMatchObject({ errorType: 'infra_stalled' });
+  });
+
   test('a late reap after a re-claim does nothing: the new attempt keeps its task, and the kernel hears no end', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/reap-late', files: { 'src/a.ts': 'export const a = 31;\n' } });
