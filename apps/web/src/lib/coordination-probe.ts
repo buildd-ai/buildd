@@ -250,7 +250,7 @@ async function missionLocalReason(task: ProbeTask): Promise<WaitingReason | null
   if (!(await checkMissionLocal(missionId).catch(() => false))) return null;
   return makeWaitingReason('mission_local', {
     because: 'its mission runs in a person\'s own session, so runners do not pick up its tasks',
-    blocker: { type: 'mission', id: missionId, label: 'a local-session mission', href: `/app/missions/${missionId}` },
+    blocker: { type: 'mission', id: missionId, label: 'a mission run from your session', href: `/app/missions/${missionId}` },
     provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
   });
 }

@@ -10316,7 +10316,7 @@ describe('PATCH /api/workers/[id]', () => {
       const body = JSON.parse(commentCall[2].body).body as string;
       // Queued, not "applying": the fix task has no worker yet.
       expect(body).toContain('fix 1 of 3 queued');
-      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('waiting for an agent');
       expect(body).toContain('/app/tasks/');
       // The header names the actual follow-up task, not a generic anchor.
       expect(body).toContain('Waiting for fix task:');

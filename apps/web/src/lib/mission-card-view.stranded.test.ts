@@ -98,7 +98,7 @@ describe('stranded local mission: a reviewer nobody will claim', () => {
     expect(summary.state.chip.label).toBe('Stranded');
     expect(model.status.label).toBe('Stranded');
     expect(model.strand).toMatchObject({ taskId: 'rv', blockedReason: null });
-    expect(summary.state.situation.headline).toBe('Stranded: no local session for 2h. Continue on a runner?');
+    expect(summary.state.situation.headline).toBe('Stranded: no session for 2h. Continue on a runner?');
   });
 });
 

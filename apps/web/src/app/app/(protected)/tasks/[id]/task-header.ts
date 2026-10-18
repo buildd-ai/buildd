@@ -1,4 +1,5 @@
 import { taskDisplayLabel } from '@buildd/core/task-label';
+import { displayTitle } from '@buildd/shared';
 import { CONVENTIONAL_PREFIX_RE, displayTaskTitle } from '@/lib/task-title';
 import type { StateKey } from '@/components/ui/states';
 import type { DeliveryView } from '@/lib/workflow/projections';
@@ -9,13 +10,16 @@ const BRACKET_RE = /^\s*\[([^\]]*)\]\s*/;
  * The task page header: the conventional-commit type and scope (scope as
  * `taskDisplayLabel` reads it, so chips and the page agree) plus the role move
  * into the eyebrow. The heading is `displayTaskTitle` of the title with its
- * retry bracket peeled off, so it reads the same as every other surface; the
- * bracket ("[builder · after CI #1]") keeps only its qualifier, in the eyebrow.
+ * retry bracket peeled off, so it reads the same as every other surface; a
+ * retry key ("[builder · after CI #1]") reads as its attempt ("Fix 1 · CI
+ * failed", the terms catalog's `displayTitle`) in the eyebrow, and any other
+ * bracket keeps only its qualifier.
  */
 export function taskHeading(task: { title: string; label?: string | null }, roleName: string | null): { eyebrow: string[]; heading: string } {
-  let rest = task.title.trim();
-  let qualifier: string | null = null;
-  const bracket = BRACKET_RE.exec(rest);
+  const attempt = displayTitle(task.title);
+  let rest = attempt.title.trim();
+  let qualifier: string | null = attempt.attempt ?? null;
+  const bracket = attempt.attempt ? null : BRACKET_RE.exec(rest);
   if (bracket) {
     rest = rest.slice(bracket[0].length);
     const parts = bracket[1].split('·').map(s => s.trim()).filter(Boolean);

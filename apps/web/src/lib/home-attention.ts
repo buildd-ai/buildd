@@ -246,7 +246,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     if (!model.strand) continue;
     const key = `mission:${view.id}`;
     const hours = Math.floor(model.strand.quietMs / 3600000);
-    items.set(key, { key, kind: 'stranded', label: 'stranded', tone: 'warning', title: view.title, sentence: hours > 0 ? `No local session for ${hours} hour${hours === 1 ? '' : 's'}.` : 'The local session has stopped.', meta: 'local', href: view.href, actionType: 'stranded', owner: 'human', strand: model.strand });
+    items.set(key, { key, kind: 'stranded', label: 'stranded', tone: 'warning', title: view.title, sentence: hours > 0 ? `No session for ${hours} hour${hours === 1 ? '' : 's'}.` : 'The session has stopped.', meta: 'local', href: view.href, actionType: 'stranded', owner: 'human', strand: model.strand });
   }
   for (const m of held) {
     const key = `mission:${m.id}`;

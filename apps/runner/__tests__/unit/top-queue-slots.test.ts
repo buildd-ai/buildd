@@ -133,7 +133,7 @@ describe('a refused row says why, never "now" (AC-30)', () => {
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0002', outcome: { at: NOW - 5_000, reason: 'all_candidates_deferred', exclusion: 'mission_concurrent', detail: 'Its mission is at its concurrency cap (3/3 tasks in flight).' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0003', outcome: { at: NOW - 5_000, reason: 'refused', status: 429, refusal: 'max_concurrent_workers' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0006', outcome: { at: NOW - 5_000, reason: 'no_pending_tasks', exclusion: 'deps_blocked', detail: 'It waits on a dependency.' } });
-    expect(starts(s)).toEqual([[1, 'now'], [2, 'mission is at its task limit'], [3, 'account is at its worker limit'], [4, 'now'], [5, 'after its dependency'], [6, 'after its dependency']]);
+    expect(starts(s)).toEqual([[1, 'now'], [2, 'mission is at its task limit'], [3, 'account has no free slot'], [4, 'now'], [5, 'after its dependency'], [6, 'after its dependency']]);
   });
 
   test('a claim outcome that only says the task moved does not hold it', () => {
@@ -210,9 +210,9 @@ describe('what the claim loop did (task 9e12f377 part 3)', () => {
 
   test('a refused claim and an account limit, in words', () => {
     let s = reduce(stateWith(9, 1), { type: 'claim_outcome', outcome: { at, reason: 'refused', status: 429, refusal: 'max_concurrent_workers' } });
-    expect(claimLoopLine(s, NOW)).toBe("Looked for work 14:02 · nothing to start: the account's worker limit is reached");
+    expect(claimLoopLine(s, NOW)).toBe("Looked for work 14:02 · nothing to start: every slot the account may use is in use");
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'no_slots' } });
-    expect(claimLoopLine(s, NOW)).toContain("the account's worker limit is reached");
+    expect(claimLoopLine(s, NOW)).toContain("every slot the account may use is in use");
   });
 
   test('not while held, nor with every slot busy (the header says so)', () => {

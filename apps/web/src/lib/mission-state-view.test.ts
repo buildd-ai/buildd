@@ -823,7 +823,7 @@ describe('deriveMissionStateView — local executor', () => {
     expect(view.displayState).toBe('local');
     expect(view.chip.label).toBe('Run from your session');
     expect(view.waitingOn).toBeNull();
-    expect(view.situation.headline).toBe('2 tasks ready to start from a local session.');
+    expect(view.situation.headline).toBe('2 tasks ready to start from your session.');
     expect(view.situation.headline).not.toMatch(/no live worker/);
     expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     // The same input on runners is the genuine stall.
@@ -834,12 +834,12 @@ describe('deriveMissionStateView — local executor', () => {
   it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [{ id: 't1', status: 'in_progress' }, { id: 't2', status: 'pending' }] });
     expect(view.chip.label).toBe('Run from your session');
-    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
+    expect(view.situation.headline).toBe('1 task in progress in your session, 1 more to do.');
   });
 
-  it('a single queued task: waiting for a local session to claim it', () => {
+  it('a single queued task: waiting for your session to claim it', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [open[0]] });
-    expect(view.situation.headline).toBe('Ready to start from a local session.');
+    expect(view.situation.headline).toBe('Ready to start from your session.');
   });
 
   it('a task fact on a local mission advises claiming, not dispatching', () => {
@@ -853,7 +853,7 @@ describe('deriveMissionStateView — local executor', () => {
   it('the session\'s own claimed worker keeps the Run from your session chip', () => {
     const view = deriveMissionStateView({ ...local, activeAgents: 1, health: 'NOMINAL' });
     expect(view.chip.label).toBe('Run from your session');
-    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
+    expect(view.situation.headline).toBe('1 task in progress in your session, 1 more to do.');
   });
 
   it('held beats local', () => {
