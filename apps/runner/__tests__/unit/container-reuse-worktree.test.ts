@@ -146,8 +146,16 @@ beforeEach(() => {
   marker = join(dir, 'planted-hook-ran');
 
   // Read in-process by keptDirForClone, cloneRepo and the phase lines.
-  savedEnv = { HOME: process.env.HOME, BUILDD_EXECUTOR: process.env.BUILDD_EXECUTOR };
+  savedEnv = {
+    HOME: process.env.HOME, BUILDD_EXECUTOR: process.env.BUILDD_EXECUTOR,
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+  };
   process.env.HOME = home;
+  // No detached `git gc --auto` writing into the clone while the reset wipes it.
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = 'gc.auto';
+  process.env.GIT_CONFIG_VALUE_0 = '0';
   process.env.BUILDD_EXECUTOR = 'cloud';
   lines = [];
   savedLog = console.log;
