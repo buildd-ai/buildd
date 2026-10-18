@@ -34,6 +34,9 @@ const MAX_DESCRIPTION = 140;
 
 const short = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : 'unknown');
 
+/** A head as a status description names it: its first 7 characters. */
+export const shortHeadSha = short;
+
 export type GateBlocker =
   | 'no_delivery' | 'no_pr' | 'head_unknown' | 'head_moved' | 'not_approved' | 'review_missing' | 'open_verdict' | 'open_finding';
 
@@ -112,6 +115,8 @@ export interface LandingStatus {
  * reading GitHub's check list sees, never the kernel's own vocabulary.
  */
 export const REVIEW_STATUS_TERMS = {
+  /** An open PR no delivery owns and no review was asked for (open-pr-status.ts). */
+  notRequested: 'Review not requested',
   inProgress: 'Review in progress',
   changesRequested: 'Changes requested',
   finding: 'Unresolved review finding',
@@ -193,6 +198,7 @@ export function landingStatusUnknown(sha: string): LandingStatus {
   return { state: 'failure', sha, description: clip(`${T.blocked}: buildd could not confirm ${short(sha)} is ready to merge; ask for a review again or retry the merge`) };
 }
 
-function clip(s: string): string {
+/** A description clipped to GitHub's 140 characters. */
+export function clip(s: string): string {
   return s.length <= MAX_DESCRIPTION ? s : `${s.slice(0, MAX_DESCRIPTION - 1)}…`;
 }

@@ -222,6 +222,15 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
 }
 
 /**
+ * The open-PR status sweep's review reads (lib/workflow/open-pr-status.ts): whether a
+ * review was asked for on a PR no delivery owns, and a release candidate's gate at its SHA.
+ * The releases module's (lib/release/open-pr-review.ts); lazy, so the floor loads it only when it runs.
+ */
+export async function openPrReviewReads(): Promise<import('@/lib/release/open-pr-review').OpenPrReviewReads> {
+  return (await import('@/lib/release/open-pr-review')).openPrReviewReads();
+}
+
+/**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
  * blocker an agent tried to ask about is filed as a repair task instead.
  */

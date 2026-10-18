@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TaskChecks from './TaskChecks';
-import { deriveTaskChecks, type ChecksInput, type ReviewFindings } from '@/lib/task-checks';
+import { deriveTaskChecks, REVIEW_FINDINGS_ANCHOR, type ChecksInput, type ReviewFindings } from '@/lib/task-checks';
 import type { DeliveryView } from '@/lib/workflow/projections';
 
 type RoundSnapshot = DeliveryView['rounds'][number];
@@ -100,5 +100,26 @@ describe('TaskChecks — Code review detail', () => {
     const li = reviewItem(render(V({ approvalBasis: 'policy' })));
     expect(li).toContain('Not required by policy');
     expect(li).not.toContain('<details');
+  });
+});
+
+describe('TaskChecks — the review status link lands on the findings (R-43)', () => {
+  const ID = `id="${REVIEW_FINDINGS_ANCHOR}"`;
+  test('the anchor sits inside the Code review disclosure, so following the link opens it to the findings', () => {
+    const html = render(V({ state: 'CHANGES_REQUESTED', rounds: [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })] }), {
+      findings: { rev1: { prose: 'Rename the flag.', verdict: 'request_changes', status: 'completed' } },
+    });
+    const li = reviewItem(html);
+    expect(html.split(ID)).toHaveLength(2);
+    const details = li.indexOf('<details');
+    const anchor = li.indexOf(ID);
+    expect(details).toBeGreaterThanOrEqual(0);
+    expect(anchor).toBeGreaterThan(li.indexOf('</summary>'));
+    expect(anchor).toBeLessThan(li.indexOf('task-check-findings'));
+  });
+  test('a review row with nothing to open still carries the anchor, once', () => {
+    const html = render(V({ rounds: [] }));
+    expect(html.split(ID)).toHaveLength(2);
+    expect(reviewItem(html)).toContain(ID);
   });
 });
