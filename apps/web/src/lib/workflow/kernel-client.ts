@@ -570,7 +570,21 @@ export function webhookCommandKey(deliveryId: string, op: KernelOp, input: unkno
   return `webhook:${deliveryId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60)}:${op}:${hash}`;
 }
 
+/**
+ * The doors a webhook request caps (AC-65): the ones that have a durable fallback when the control
+ * plane does not answer. Parked ops (`PARK_ON_UNAVAILABLE`) are kept for the floor; `observe_pr_state`
+ * is recorded unapplied and healed; `observe_ci_failure` and `observe_conflict` are not parked but the
+ * red-PR and conflict sweeps re-send them. Every other door (`open_delivery`, whose failure hands a
+ * PR to legacy review while the control plane may still finish it; `land`; the rest) keeps its own
+ * budget and is outside the webhook's scope, as before.
+ */
+export const WEBHOOK_CAPPED_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>([
+  'observe_ci_green', 'observe_head', 'observe_base', 'observe_pr_state', 'observe_ci_failure', 'observe_conflict',
+]);
+
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
+  // A door without a durable fallback runs as it always did: no cap, no breaker, and no share of the webhook's budget.
+  if (budgetScope.getStore()?.webhook && !WEBHOOK_CAPPED_OPS.has(op)) return budgetScope.exit(() => door(op, input, c));
   const wh = budgetScope.getStore()?.webhook;
   const whNow = c.deps?.now ?? Date.now;
   // One key for the whole door call: every retry below asks the control plane the same question.

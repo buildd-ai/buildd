@@ -1719,6 +1719,33 @@ describe('a webhook request answers inside GitHub\'s timeout when the control pl
     expect(recorded[0][0]).toBe(DELIVERY);
   });
 
+  it('a door with no durable fallback (open_delivery, land) is not capped, never trips the breaker and is not refused by a spent request budget', async () => {
+    const { openKernelDelivery, landThroughKernel, observeCiGreen, withWebhookBudget, WEBHOOK_CAPPED_OPS } = await import('./kernel-client');
+    expect([...WEBHOOK_CAPPED_OPS].sort()).toEqual(['observe_base', 'observe_ci_failure', 'observe_ci_green', 'observe_conflict', 'observe_head', 'observe_pr_state']);
+    const sent: string[] = [];
+    // Answers after 400 ms: far past the 100 ms cap below, so a capped door would give up and legacy would take the PR.
+    const slow = ((_u: string, init: RequestInit) => {
+      const op = JSON.parse(String(init.body)).op as string;
+      sent.push(op);
+      return new Promise((res) => setTimeout(() => res(answer({ op, result: op === 'open_delivery' ? { owned: true } : { merged: true } })), 400));
+    }) as unknown as typeof fetch;
+    const env = { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '100', KERNEL_WEBHOOK_BUDGET_MS: '100' };
+    const deps = { ...local().deps, sleep: undefined, env, fetch: slow, park: parker().park };
+    const opened = { workspaceId: WS, ownerTaskId: 't-1', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:opened' };
+    const out = await withWebhookBudget('delivery-open', async () => {
+      const first = await openKernelDelivery(opened as never, { principal: webhook, deps });
+      const landed = await landThroughKernel(input as never, { principal: webhook, deps });
+      // The request's own budget is spent by now; the uncapped doors still ran, and the breaker is closed.
+      const green = await observeCiGreen(greenFor(7), { principal: webhook, deps }).catch((e) => e);
+      return { first, landed, green };
+    }, { env });
+    expect(out.first).toEqual({ owned: true });
+    expect(out.landed).toEqual({ merged: true });
+    expect(sent.slice(0, 2)).toEqual(['open_delivery', 'land']);
+    // The capped door is the one that gave up (and is parked); the uncapped ones did not open the breaker beforehand.
+    expect(out.green).toBeInstanceOf(ControlPlaneUnavailableError);
+  });
+
   it('outside a webhook the door keeps its own budget (no cap, no breaker)', async () => {
     const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
     const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
