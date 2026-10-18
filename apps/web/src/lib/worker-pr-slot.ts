@@ -69,7 +69,7 @@ export async function workerIdForNewPr(
 /**
  * A PR-only owner row on a task: no session ran on it, it only says which task
  * a PR belongs to, so every per-PR surface can find the PR. Also the row the
- * orphan-PR sweep (lib/orphan-pr-sweep.ts) adopts a PR onto when no worker or
+ * orphan-PR sweep (lib/pr-attention-orphan-sweep.ts) adopts a PR onto when no worker or
  * delivery row holds it.
  */
 export async function insertPrOwnerRow(row: {

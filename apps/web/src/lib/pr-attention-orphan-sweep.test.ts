@@ -8,7 +8,7 @@ import {
   type OrphanSweepDeps,
   type OrphanTask,
   type SweptWorkspace,
-} from './orphan-pr-sweep';
+} from './pr-attention-orphan-sweep';
 
 const NOW = new Date('2026-10-18T16:00:00Z');
 const OLD = '2026-10-18T13:00:00Z';
