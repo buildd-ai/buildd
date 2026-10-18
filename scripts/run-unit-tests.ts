@@ -427,7 +427,13 @@ export function isHostOversubscribed(load1: number, cpuCount: number): boolean {
   return load1 > cpuCount * 1.5;
 }
 
+/** Past 3x the CPUs, halving is not enough (load 12 on 4 CPUs still timed out fixtures): quarter it. */
+export function isHostSeverelyOversubscribed(load1: number, cpuCount: number): boolean {
+  return load1 > cpuCount * 3;
+}
+
 export function admissionLimit(concurrency: number, load1: number, cpuCount: number): number {
+  if (isHostSeverelyOversubscribed(load1, cpuCount)) return Math.max(1, Math.floor(concurrency / 4));
   return isHostOversubscribed(load1, cpuCount) ? Math.max(1, Math.floor(concurrency / 2)) : concurrency;
 }
 
@@ -994,6 +1000,12 @@ async function main(): Promise<void> {
     } else {
       failures.push(result);
       if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
+      // Failure output is usable before the suite ends: a run that is killed or
+      // still going on a loaded host leaves its failures in the log so far.
+      try {
+        const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+        writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (in progress: ${passed + failures.length}/${files.length} files done)\n\n${partial}`);
+      } catch {}
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
