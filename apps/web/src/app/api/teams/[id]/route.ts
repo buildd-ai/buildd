@@ -17,6 +17,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam, isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
 import { invalidateAppChrome } from '@/lib/app-chrome';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
+import { clearTeamCache } from '@/lib/team-cache';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
 const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
@@ -349,6 +350,8 @@ export async function PATCH(
     }
 
     await db.update(teams).set(updates).where(eq(teams.id, id));
+    // Its cached reads (name on the runner list, settings) go now (lib/team-cache.ts).
+    await clearTeamCache(id);
 
     // The acting user's shell shows this at once (lib/app-chrome.ts).
     invalidateAppChrome(user.id);
@@ -412,6 +415,7 @@ export async function DELETE(
       ...formerMembers.map((m) => callerDep.user(m.userId)),
       ...formerWorkspaces.map((w) => callerDep.workspace(w.id)),
     );
+    await clearTeamCache(id);
     // Its conversations went with it (cascade); their chat attachments do not
     // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
     await removeTeamChatAttachments(id);

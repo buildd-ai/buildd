@@ -43,6 +43,11 @@ mock.module('@/lib/caller-cache', () => ({
   },
 }));
 
+const teamClears: string[] = [];
+mock.module('@/lib/team-cache', () => ({
+  clearTeamCache: async (teamId: string) => { teamClears.push(teamId); return true; },
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
   and: (...args: any[]) => ({ type: 'and', args }),
@@ -132,6 +137,12 @@ describe('PATCH /api/teams/[id] — timezone', () => {
     const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(200);
     expect(capturedUpdates[0].timezone).toBe('America/New_York');
+  });
+
+  it('a change clears the team\'s cached reads (lib/team-cache.ts)', async () => {
+    teamClears.length = 0;
+    expect((await PATCH(patchReq({ timezone: 'Europe/Paris' }), ctx)).status).toBe(200);
+    expect(teamClears).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('accepts null to clear the zone back to UTC', async () => {
@@ -506,6 +517,7 @@ describe('DELETE /api/teams/[id]', () => {
     callerClears.length = 0;
     expect((await del()).status).toBe(200);
     expect(callerClears).toEqual([['team:11111111-1111-4111-8111-111111111111', 'user:user-1', 'workspace:ws-1']]);
+    expect(teamClears).toContain('11111111-1111-4111-8111-111111111111');
   });
 
   it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {

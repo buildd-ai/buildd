@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey, extractApiKeyPrefix, invalidateAccountCacheByHash } from '@/lib/api-auth';
+import { clearTeamCache } from '@/lib/team-cache';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
@@ -76,6 +77,10 @@ export async function POST(
         apiKeyPrefix: prefix,
       })
       .where(eq(accounts.id, id));
+    // Again after the write: a call between the first clear and the update
+    // could have cached the old key's account for another TTL.
+    await invalidateAccountCacheByHash(account.apiKey);
+    await clearTeamCache(account.teamId, 'runners');
 
     return NextResponse.json({
       apiKey: plaintextKey,

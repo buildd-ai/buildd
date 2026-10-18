@@ -7,6 +7,7 @@ import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
+import { clearTeamCache } from '@/lib/team-cache';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -95,6 +96,11 @@ export async function DELETE(
 
     // Delete the account (cascade will handle accountWorkspaces)
     await db.delete(accounts).where(eq(accounts.id, id));
+    // And after: a call between the clear and the delete may have cached the
+    // row again; this ends that entry and the team's runner list.
+    await invalidateAccountCacheByHash(account.apiKey);
+    await invalidateAccountWorkspaceCache(account.id);
+    await clearTeamCache(account.teamId, 'runners');
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -155,6 +161,7 @@ export async function PATCH(
       .returning();
 
     await invalidateAccountCacheByHash(account.apiKey);
+    await clearTeamCache(account.teamId, 'runners');
 
     return NextResponse.json({
       maxConcurrentWorkers: updated[0]?.maxConcurrentWorkers || maxConcurrentWorkers,

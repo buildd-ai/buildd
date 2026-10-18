@@ -4,6 +4,7 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
+import { clearTeamCache } from '@/lib/team-cache';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
@@ -59,6 +60,7 @@ export async function PUT(
   await db.update(accounts).set({ hostRunner: body.hostRunner }).where(eq(accounts.id, id));
   // The auth cache holds the account row, flag included.
   await invalidateAccountCacheByHash(account.apiKey);
+  await clearTeamCache(account.teamId, 'runners');
 
   return NextResponse.json({ id, hostRunner: body.hostRunner });
 }

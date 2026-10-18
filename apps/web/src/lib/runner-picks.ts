@@ -14,6 +14,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { accounts, accountWorkspaces, teamMembers, teams, users, workspaces } from '@buildd/core/db/schema';
 import { extractApiKeyPrefix, hashApiKey, invalidateAccountCacheByHash } from './api-auth';
 import { invalidateAccountWorkspaceCache } from './account-workspace-cache';
+import { clearTeamCache } from './team-cache';
 import { consentTeamsForUser } from './mcp-grant-admin';
 import { getUserDefaultTeamId } from './team-access';
 import type { ApiKeyLevel } from './key-level-policy';
@@ -115,6 +116,7 @@ export async function mintRunnerKey(args: {
     throw err;
   }
   await invalidateAccountWorkspaceCache(created.id);
+  await clearTeamCache(home.id, 'runners');
   return { ok: true, plaintextKey, accountId: created.id, level, teamId: home.id, workspaceIds: check.workspaceIds };
 }
 

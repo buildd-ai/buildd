@@ -139,6 +139,7 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearTeamCache } from '@/lib/team-cache';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -4949,6 +4950,12 @@ export async function PATCH(
 
   if (!updated) {
     return workerConflictResponse(id);
+  }
+
+  // A question asked, answered or dropped changes the team's questions
+  // waiting: the cached list (lib/team-cache.ts) goes now.
+  if ('waitingFor' in updates || (worker.status !== updated.status && (worker.status === 'waiting_input' || updated.status === 'waiting_input'))) {
+    await clearTeamCache(wsForSensitivity?.teamId, 'questions');
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the

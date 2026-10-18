@@ -33,6 +33,7 @@ import {
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearTeamCache } from '@/lib/team-cache';
 
 // POST /api/workers/[id]/respond - Answer a worker's question.
 //
@@ -52,9 +53,19 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 //  - COLD    — the pre-existing behaviour: supersede the worker and insert a
 //              `Continue:` task. Correct when the session is genuinely gone,
 //              and never silent — the reason is recorded and shown.
-export async function POST(
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const seen: { teamId?: string | null } = {};
+  const res = await respond(req, ctx, seen);
+  // An answer changes the team's questions waiting (lib/team-cache.ts): its
+  // cached list goes now, whichever path below took it.
+  if (res.ok) await clearTeamCache(seen.teamId, 'questions');
+  return res;
+}
+
+async function respond(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
+  seen: { teamId?: string | null },
 ) {
   const { id } = await params;
   // workers.id is a uuid column: a non-UUID can never name a worker, and
@@ -82,6 +93,7 @@ export async function POST(
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
+  seen.teamId = worker.workspace?.teamId ?? null;
 
   // Verify access: a bearer caller must be the principal that claimed the worker
   // (lib/worker-owner.ts), or an admin-level token of the worker's own team —
