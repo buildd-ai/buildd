@@ -96,7 +96,8 @@ describe('release composition', () => {
   test('a composition head that is no longer current claims nothing', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['OLD'] })) });
     expect(v.compositionVerified).toBe(false);
-    expect(v.headline).toBe('Approved · awaiting merge');
+    // Approval alone is not a merge promise: the required checks have not reported on this head.
+    expect(v.headline).toBe('Approved · checking');
   });
 });
 
@@ -111,8 +112,11 @@ describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', 
     expect(view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 77 })) }).headline).toBe('Merged in #77');
   });
 
-  test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
-    expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
+  test('an approved PR never reads Ready or Merging until checks pass and the merge fact', () => {
+    const approved = { state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] } as const;
+    expect(view({ view: V(D({ ...approved })) }).headline).toBe('Approved · checking');
+    expect(view({ view: V(D({ ...approved, ci: 'red', ciHeadSha: 'H1abcdef' })) }).headline).toBe('Approved · checks failing');
+    expect(view({ view: V(D({ ...approved, ci: 'green', ciHeadSha: 'H1abcdef' })) }).headline).toBe('Ready to merge');
     expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');
   });
 
