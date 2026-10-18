@@ -37,6 +37,8 @@ export interface QueueRow {
   missionId: string | null;
   roleSlug?: string | null;
   workspace: string;
+  /** Whose work it is (R-58): "you", a teammate's first name, or "-" when buildd cannot tell. */
+  by: string;
   /** The mission's title, or "-" for a task outside any mission. */
   mission: string;
   /** The estimate in words, "-" with none; null when the team has estimates off. */
@@ -78,6 +80,13 @@ const EXCLUSION_WORDS: Record<RunnerQueueExclusion, string> = {
   workspace_executor: 'its workspace runs work elsewhere',
   subject_dead: 'its PR is closed',
 };
+
+/** Whose work a row is, in the by column (R-58); an older server sends no owner and reads "-". */
+export function ownerWords(t: RunnerQueueTask): string {
+  if (t.owner === 'you') return 'you';
+  if (t.owner === 'teammate') return t.ownerName || 'teammate';
+  return '-';
+}
 
 function exclusionWords(t: RunnerQueueTask & { reason: RunnerQueueExclusion }): string {
   if (t.reason === 'role_missing' && t.roleSlug) return `needs ${roleLabel(t.roleSlug)}`;
@@ -303,6 +312,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
+        by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
         starts: starts[i],
@@ -319,6 +329,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
           missionId: t.missionId,
           roleSlug: t.roleSlug,
           workspace: t.workspaceName,
+          by: ownerWords(t),
           mission: t.missionTitle ?? '-',
           est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
           starts: w.starts,
@@ -333,6 +344,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
+        by: ownerWords(t),
         mission: t.missionTitle ?? '-',
         est: tm.estimatesOn ? '-' : null,
         starts: exclusionWords(t),

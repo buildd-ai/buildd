@@ -22,6 +22,8 @@ import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
 import { homeMissionSummaries } from '@/lib/mission-summary-home';
+import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
+import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { probeDecisionModel } from '@buildd/core/decision-probe';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
@@ -284,6 +286,15 @@ export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
  * summary write, and filing a visual review a mission PR owes.
  */
 export const HOME_MISSION_SUMMARIES = homeMissionSummaries;
+
+/**
+ * The missions module's slot for GET /api/tasks?include=missionStages
+ * (`buildd top`'s one combined read): each named mission's stage from its
+ * stored summary, scoped to the caller's workspaces, at most
+ * MAX_STAGE_MISSION_IDS missions, the same reader GET /api/missions/stages uses.
+ */
+export const TASK_LIST_MISSION_STAGES = (missionIds: string[], workspaceIds: string[]) =>
+  loadMissionStagesFromSummaries(missionIds.slice(0, MAX_STAGE_MISSION_IDS), workspaceIds);
 
 /**
  * The decisions module's slot for the team settings route

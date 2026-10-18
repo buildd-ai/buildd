@@ -9,7 +9,7 @@
  *  01 02    03   04 05 06   07    Waiting, then checks (spec f7f67f1a R-1)
  * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
  * │ Shared delivery projection  │
- * │ Build › Audit › Land        │   (once: no second stage grid)
+ * │ Build › Verify › Deliver        │   (once: no second stage grid)
  * └─────────────────────────────┘
  * ‹ ›                                           Goal · 1 of 4 criteria
  * ```

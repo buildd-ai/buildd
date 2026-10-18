@@ -2,12 +2,12 @@ import { db } from '@buildd/core/db';
 import { specRevisions, specs } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { reach } from './store';
+import { personReach, reach } from './store';
 import { specApprover } from './approval';
 import { verifySpecApprovalRequest } from './approval-request';
 import { diffSpecBodies, diffSpecHunks, diffSpecRevisions, type DiffHunk, type SectionChange } from './diff';
 import { getSpec } from './store';
-import { repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
+import { nativeSourceOn } from './repo-copy';
 import { attachmentSources, type AttachmentSource } from './attachments';
 
 /**
@@ -30,8 +30,12 @@ export type ApprovalRequestView =
     omittedLines: number;
     /** The whole revision being approved, Markdown (at most the 200k body cap). */
     body: string;
-    /** The repo checks on the would-be repo copy (living-specs.md §18, R-34); null when the workspace has not opted in. */
-    preflight?: RepoCopyPreflight | null;
+    /**
+     * The workspace writes repo copies, so the page shows the repo checks on
+     * the would-be copy (living-specs.md §18, R-34). They ask GitHub, so the
+     * page fetches them after it shows (spec 3ef37387 R-14), never here.
+     */
+    repoChecks?: boolean;
     /** What `attachment:<name>` resolves to on the revision being approved (§21). */
     attachments?: Record<string, AttachmentSource>;
   };
@@ -53,17 +57,17 @@ export async function approvalRequestView(userId: string, specId: string, token:
   if (spec.approvedRevision === req.revision && rev.approvedAt) return { state: 'approved', ...base };
   if (spec.version !== req.expectedVersion || spec.headRevision !== req.revision) return { state: 'stale', ...base };
 
-  const preflight = await repoCopyPreflight(spec, req.revision).then((p) => (p.state === 'off' ? null : p)).catch(() => null);
+  const repoChecks = nativeSourceOn({ livingSpecs: (await personReach(userId, spec.workspaceId))?.livingSpecs });
   const attachments = await attachmentSources(specId, req.revision).catch(() => ({}));
   if (spec.approvedRevision) {
     const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: req.revision, rows: true });
     if (!d.ok || d.diff.toBody === undefined) return { state: 'stale', ...base };
-    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, preflight, attachments };
+    return { state: 'ready', ...base, replaces: spec.approvedRevision, sections: d.diff.sections, hunks: d.diff.hunks ?? [], omittedLines: d.diff.omittedLines, body: d.diff.toBody, repoChecks, attachments };
   }
   // Nothing approved yet: the whole revision is what comes into force.
   const s = await getSpec(caller, specId, { revision: req.revision });
   if (!s.ok || typeof s.view.body !== 'string') return { state: 'stale', ...base };
   const d = diffSpecBodies('', s.view.body);
   const h = diffSpecHunks('', s.view.body);
-  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, preflight, attachments };
+  return { state: 'ready', ...base, replaces: null, sections: d.sections, hunks: h.hunks, omittedLines: h.omittedLines, body: s.view.body, repoChecks, attachments };
 }

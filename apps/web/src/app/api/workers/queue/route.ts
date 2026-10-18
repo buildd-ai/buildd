@@ -20,7 +20,7 @@ import { isRunnerExecutor, type RunnerQueueResponse } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { claimableWorkspaceIds } from '@/lib/claim-order';
 import { loadRunnerQueue } from '@/lib/claim-order-queue';
-import { cachedReach, listCallerKey, withChangeVersion } from '@/lib/change-version';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -45,14 +45,15 @@ export async function GET(req: NextRequest) {
   try {
     // The broad claim's reach: no workspace narrowing from the query.
     const caller = `claim:${listCallerKey({ account: account as any })}`;
-    const workspaceIds = await cachedReach(caller, () => claimableWorkspaceIds(account as any, null));
+    const workspaceIds = await claimableWorkspaceIds(account as any, null);
     if (workspaceIds.length === 0) return NextResponse.json({ teams: [], truncated: false } satisfies RunnerQueueResponse);
     // R-20/R-35: unchanged since this runner's last read → 304, or the cached body.
-    // The query (runner, skills, executor) is part of the key.
+    // The query (runner, skills, executor) is part of the key; the viewer is the account's own creator, fixed per account.
     return await withChangeVersion(req, { scopes: workspaceIds, caller }, async () => {
       const out = await loadRunnerQueue({
         workspaceIds,
         caller: { accountType: String((account as any).type ?? ''), runner, availableSkills, executor },
+        viewerUserId: (account as any).createdByUserId ?? null,
       });
       return NextResponse.json(out);
     });
