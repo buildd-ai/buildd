@@ -71,6 +71,18 @@ export interface VerdictInput {
    */
   deliveryActivity?: string | null;
   /**
+   * The delivery is parked on a review escalation (kernel `deriveEscalationBrief`): the
+   * cause label, what is left and what a person may choose. The verdict names it instead
+   * of saying only that something waits on a person.
+   */
+  escalation?: {
+    title: string;
+    summary: string;
+    open: number;
+    awaitingVerification: number;
+    resolved: number;
+  } | null;
+  /**
    * How long the merged PR took from claim to merge ("2h 14m"). The status
    * row is the one place a merged PR is stated, so it carries the time too.
    */
@@ -242,6 +254,20 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         cause: null,
         actions: [link(`View PR #${pr.number}`, pr.url)],
         causeKey: 'failed:pr_closed',
+      };
+    }
+    // A held review budget is a decision with a cause, not a generic wait: say which, and open the decision card.
+    if (input.escalation) {
+      const e = input.escalation;
+      return {
+        ...base,
+        state: 'needs_you',
+        label: e.title,
+        labelTone: 'warning',
+        headline: `PR #${pr.number} · ${e.open} open, ${e.awaitingVerification} awaiting verification, ${e.resolved} resolved`,
+        cause: e.summary,
+        actions: [link('Decide', '#task-decision', 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
+        causeKey: `needs_you:escalation:${e.title}`,
       };
     }
     const checks = input.checks ?? [];
