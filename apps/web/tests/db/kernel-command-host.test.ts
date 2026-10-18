@@ -482,7 +482,7 @@ describe('AC-12: the control plane unreachable', () => {
 
 /** Each test waits out real door budgets (the control plane down), more than once: slow CI runners need room. */
 
-describe('AC-35: a door command the control plane never answered lands once it recovers, exactly once', () => {
+describe('AC-74: a door command the control plane never answered lands once it recovers, exactly once', () => {
   /** A PR whose owner is still working, set up in shadow; then own mode for the act, with a short door budget. */
   async function working(branch: string) {
     process.env.EXECUTION_MODE = 'shadow';
