@@ -72,4 +72,12 @@ describe('axis', () => {
     expect(tickAnchor(300, 600)).toBe('middle');
     expect(tickAnchor(590, 600)).toBe('end');
   });
+
+  it('splits runner average by owner with a separate Other / unattributed line', () => {
+    const owned = (ownerId: string | null): OccupancyWorkerRow => ({ ...run('http://r', NOW - 3 * H, NOW - H), ownerId });
+    const series = buildOccupancySeries({ window: '24h', now: NOW, workers: [owned('me'), owned('you'), owned(null)], viewerId: 'me' });
+    const html = renderToStaticMarkup(<OccupancyPlot series={series} capacityNow={10} busyNow={0} />);
+    expect(html).toContain('data-testid="occupancy-owner-split"');
+    for (const label of ['Yours, average', 'Teammates, average', 'Other / unattributed, average']) expect(html).toContain(`>${label}<`);
+  });
 });
