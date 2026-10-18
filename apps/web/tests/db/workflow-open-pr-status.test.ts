@@ -1,6 +1,6 @@
 /**
  * Every open PR head carries `Buildd / Review approval` (docs/specs/workflow-kernel-library.md
- * §4, AC-37, AC-38): the open-PR status sweep on real Postgres against the stateful fake
+ * §4, AC-76, AC-77): the open-PR status sweep on real Postgres against the stateful fake
  * GitHub. Linked repos come from the real `workspaces` / `github_repos` / `github_installations`
  * join; ownership, the delivery and the republish effect from the kernel's own tables.
  */
@@ -70,7 +70,7 @@ describe('the open-PR status sweep', () => {
     expect((await q(sql`SELECT 1 FROM workflow_effects WHERE delivery_id = ${pr.deliveryId}::uuid AND dedupe_key LIKE '%:open-pr-sweep'`)).length).toBe(1);
   });
 
-  test('AC-38: approved at H1, H2 pushed and not yet imported: H2 is pending, never H1\'s success', async () => {
+  test('AC-77: approved at H1, H2 pushed and not yet imported: H2 is pending, never H1\'s success', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/push', files: { 'src/a.ts': 'export const a = 3;\n' } });
     await w.approve(pr);
@@ -82,7 +82,7 @@ describe('the open-PR status sweep', () => {
   });
 });
 
-describe('AC-39: an event publishes one head now', () => {
+describe('AC-78: an event publishes one head now', () => {
   test('a new PR is pending at once; a duplicate writes nothing; a push moves it; the older head\'s event is ignored', async () => {
     w = await world();
     w.gh.createBranch(w.repo, 'feat/hand', 'dev');

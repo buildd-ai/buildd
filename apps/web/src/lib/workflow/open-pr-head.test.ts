@@ -40,7 +40,7 @@ function harness(o: { sha: string; state?: string; candidate?: boolean; candidat
 const at = (n: number) => ({ installationId: 1, repoFullName: REPO, prNumber: 9, sha: H(n) });
 const stateOn = (h: ReturnType<typeof harness>, sha: string) => h.statuses.get(`${sha}|${CONTEXT}`)?.state;
 
-describe('an event publishes one open head now (AC-39)', () => {
+describe('an event publishes one open head now (AC-78)', () => {
   test('a newly opened PR gets pending at once, under both names', async () => {
     const h = harness({ sha: H(1) });
     expect(await publishOpenPrHead(at(1), h.deps)).toBe('published');
@@ -127,7 +127,7 @@ function ownedView(sha: string): KernelView {
   } as unknown as KernelView;
 }
 
-describe('a review asked for on a verified candidate (R-41, AC-39)', () => {
+describe('a review asked for on a verified candidate (R-41, AC-78)', () => {
   test('its success turns pending at once', async () => {
     let verdict: 'pass' | 'pending' = 'pass';
     const h = harness({ sha: H(3), candidate: true, verdict: () => verdict });
