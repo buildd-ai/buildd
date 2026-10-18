@@ -54,12 +54,38 @@ export function isRiskyLandingPath(path: string): boolean {
     || REPO_INVARIANT_TEST.test(path);
 }
 
+/** One changed line of a manifest diff that sets nothing but a `"version"` field. */
+const VERSION_LINE = /^[+-][ \t]*"version"[ \t]*:[ \t]*"[^"]*"[ \t]*,?[ \t]*$/;
+
+/**
+ * Manifests in a compare `files` list whose diff changes only a `"version"`
+ * field: a release bump (`chore: bump version to …`). Nothing resolves through
+ * a package's own version, so such a manifest is not a risky path. Fails
+ * closed: an added, removed or renamed manifest, a missing patch (GitHub omits
+ * it on large diffs) or any other changed line (a dependency, a script) keeps
+ * the manifest risky.
+ */
+export function versionBumpManifests(files: unknown): string[] {
+  if (!Array.isArray(files)) return [];
+  const out: string[] = [];
+  for (const f of files as Array<{ filename?: unknown; status?: unknown; patch?: unknown }>) {
+    if (typeof f?.filename !== 'string' || !PACKAGE_MANIFEST.test(f.filename)) continue;
+    if (f.status !== undefined && f.status !== 'modified') continue;
+    if (typeof f.patch !== 'string') continue;
+    const changed = f.patch.split('\n').filter((l) => (l.startsWith('+') || l.startsWith('-')) && !l.startsWith('+++') && !l.startsWith('---'));
+    if (changed.length && changed.every((l) => VERSION_LINE.test(l))) out.push(f.filename);
+  }
+  return out;
+}
+
 /**
  * What the base gained since the head's merge-base, read live by the door:
  *  - `baseCommits`: commits on the base the head does not contain (compare
  *    `head...base` `ahead_by`); null = unreadable.
  *  - `baseFiles`: the files those commits changed; null = unlistable.
  *  - `prFiles`: the files the PR changes; null = unlistable.
+ *  - `versionBumpFiles`: the base files whose gap diff changes only a
+ *    manifest's `"version"` field (`versionBumpManifests`); not risky.
  *  - `requiresUpToDate`: GitHub itself reports `mergeable_state: behind`, i.e.
  *    branch protection requires an up-to-date branch. A merge would be refused,
  *    so nothing tolerates it: the branch is refreshed.
@@ -68,6 +94,7 @@ export interface BaseDeltaFact {
   baseCommits: number | null;
   baseFiles: string[] | null;
   prFiles: string[] | null;
+  versionBumpFiles?: string[];
   requiresUpToDate?: boolean;
 }
 
@@ -79,8 +106,13 @@ export type BaseDeltaVerdict =
    * `refresh_unsafe`: the gap itself is the problem (a shared file, a risky
    * path; `files` names them), whatever its size. `refresh_exhausted`: the gap
    * is too big, unreadable, or the base requires an up-to-date branch.
+   * `basis` (refresh_unsafe only) says which: `risky_path` (either side
+   * touches a path where "unrelated" is unsafe) or `overlap` (the base changed
+   * the PR's own files).
    */
-  | { tolerated: false; cause: BaseDeltaCause; reason: string; files?: string[] };
+  | { tolerated: false; cause: BaseDeltaCause; reason: string; files?: string[]; basis?: BaseDeltaBasis };
+
+export type BaseDeltaBasis = 'risky_path' | 'overlap';
 
 /** The disjoint-delta rule over one base-delta fact and a commit bound. */
 export function judgeBaseDelta(fact: BaseDeltaFact, maxBaseCommits: number): BaseDeltaVerdict {
@@ -96,14 +128,15 @@ export function judgeBaseDelta(fact: BaseDeltaFact, maxBaseCommits: number): Bas
   if (!fact.baseFiles || !fact.prFiles) {
     return { tolerated: false, cause: 'refresh_exhausted', reason: 'could not list the files on one side of the gap' };
   }
-  const risky = [...new Set([...fact.baseFiles, ...fact.prFiles].filter(isRiskyLandingPath))].sort();
+  const bumps = new Set(fact.versionBumpFiles ?? []);
+  const risky = [...new Set([...fact.baseFiles.filter((f) => !bumps.has(f)), ...fact.prFiles].filter(isRiskyLandingPath))].sort();
   if (risky.length) {
-    return { tolerated: false, cause: 'refresh_unsafe', reason: `the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (${risky.join(', ')})`, files: risky };
+    return { tolerated: false, cause: 'refresh_unsafe', basis: 'risky_path', reason: `the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (${risky.join(', ')})`, files: risky };
   }
   const mine = new Set(fact.prFiles);
   const overlap = [...new Set(fact.baseFiles.filter((f) => mine.has(f)))].sort();
   if (overlap.length) {
-    return { tolerated: false, cause: 'refresh_unsafe', reason: `the base changed files this PR changes (${overlap.join(', ')})`, files: overlap };
+    return { tolerated: false, cause: 'refresh_unsafe', basis: 'overlap', reason: `the base changed files this PR changes (${overlap.join(', ')})`, files: overlap };
   }
   return { tolerated: true, baseCommits: fact.baseCommits, baseFileCount: fact.baseFiles.length };
 }
