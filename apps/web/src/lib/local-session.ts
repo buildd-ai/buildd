@@ -5,6 +5,7 @@ import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql, type SQL } from '
 import {
   INTERACTIVE_WORKER_RUNNER,
   LIVE_WORKER_STATUSES,
+  LOCAL_SESSION_ONLINE_MS,
   LOCAL_SESSION_TOUCH_THROTTLE_MS,
   type LocalSessionEvent,
   type LocalSessionEventResult,
@@ -14,6 +15,7 @@ import { priceSessionUsage } from '@buildd/core/model-prices';
 import type { LocalSessionCostBasis, LocalSessionUsage } from '@buildd/shared';
 import { costBasisWrite, type CostBasis } from '@buildd/core/cost-basis';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveness as defaultLiveness, type LivenessGate } from '@/lib/liveness';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -43,9 +45,13 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  *     (lib/interactive-detach.ts): a terminal task keeps its status and PR, an
  *     open task goes back to pending.
  *
- * Every write is coalesced to one a minute per session (and a hook touch and an
- * MCP touch of the same worker coalesce on the same `updated_at` guard), and
- * every event is idempotent, so replays are harmless.
+ * A `touch` is a beat in Redis (lib/liveness.ts): it reaches the database at
+ * most once per LIVENESS_DB_WRITE_INTERVAL_MS per session, plus every start,
+ * end and turn-state flip. Every window that reads `last_seen_at` or the held
+ * worker's `updated_at` is at least LOCAL_SESSION_ONLINE_MS, longer than that
+ * staleness. Without Redis each touch writes, coalesced to one a minute per
+ * session (and a hook touch and an MCP touch of the same worker coalesce on the
+ * same `updated_at` guard). Every event is idempotent, so replays are harmless.
  */
 
 export interface LocalSessionAccount {
@@ -255,6 +261,8 @@ export interface LocalSessionDeps {
   store?: LocalSessionStore;
   resolveWorkspace?: (principal: LocalSessionPrincipal, repo: string) => Promise<string | null>;
   detach?: (workerId: string, reason: string) => Promise<{ detached: boolean }>;
+  /** Redis beats; the default fails open to a database write when Redis is absent. */
+  liveness?: LivenessGate;
   now?: Date;
 }
 
@@ -295,6 +303,7 @@ export async function handleLocalSessionEvent(
   deps: LocalSessionDeps = {},
 ): Promise<LocalSessionEventResult> {
   const store = deps.store ?? drizzleLocalSessionStore;
+  const live = deps.liveness ?? defaultLiveness;
   const now = deps.now ?? new Date();
   const hash = hashClientSessionId(event.client, event.clientSessionId);
   const owner = ownerOf(principal);
@@ -305,7 +314,7 @@ export async function handleLocalSessionEvent(
       : event.repo
         ? await resolveWorkspaceForRepo(principal, event.repo)
         : null;
-    return store.upsertStart({
+    const presence = await store.upsertStart({
       owner,
       clientKind: event.client,
       clientSessionHash: hash,
@@ -315,6 +324,8 @@ export async function handleLocalSessionEvent(
       interactive: event.interactive ?? true,
       now,
     });
+    await live.started('session', presence.id, now, LOCAL_SESSION_ONLINE_MS);
+    return presence;
   };
 
   // Usage only ever reaches a worker this very presence holds: the hook names
@@ -390,9 +401,19 @@ export async function handleLocalSessionEvent(
       // A turn-state flip is written at once; it is what keeps a session that
       // went quiet inside one long command from reading as abandoned.
       const flipped = event.busy !== undefined && await store.setBusy(presence.id, event.busy, now);
-      const wrote = (await store.touchPresence(presence.id, now)) || flipped;
-      for (const workerId of presence.workerIds) {
-        await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
+      // Otherwise a beat: Redis always, the database once an interval.
+      const due = await live.beat('session', presence.id, now, LOCAL_SESSION_ONLINE_MS);
+      let wrote = flipped;
+      if (due) {
+        try {
+          wrote = (await store.touchPresence(presence.id, now)) || wrote;
+        } catch (err) {
+          await live.writeFailed('session', presence.id);
+          throw err;
+        }
+        for (const workerId of presence.workerIds) {
+          await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
+        }
       }
       // A person typed into the session: they are at the terminal, so an open
       // ask_human question of a held worker is answered there, not in buildd.
@@ -441,6 +462,7 @@ export async function handleLocalSessionEvent(
       // The last usage lands before the release, while the worker is still live.
       await recordHeldUsage(presence);
       const ended = await store.end(presence.id, event.reason ?? 'other', now);
+      await live.ended('session', presence.id);
       // Already ended: the release (if any) happened on the first end. Exactly once.
       if (!ended) return result('already_ended', presence);
       if (ended.workerIds.length === 0) return result('ended', ended);

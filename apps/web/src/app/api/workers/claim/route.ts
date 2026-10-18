@@ -177,6 +177,7 @@ import { loadIdleHolderIds, loadSoftOverlapHolders } from './soft-overlap-store'
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
 
@@ -519,13 +520,18 @@ export async function POST(req: NextRequest) {
   // The limit is the slots the account's live runners report, added up; the
   // account's own number only when none reports (accountWorkerSlotLimit). A
   // failed read keeps the account's number, which is what applied before.
+  // A stored beat can be one write interval old: candidates by the widened
+  // cutoff, then "live" by the newer of it and the Redis beat (lib/runner-beats.ts).
+  const slotsNow = Date.now();
   const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(and(
       eq(workerHeartbeats.accountId, account.id),
-      gte(workerHeartbeats.lastHeartbeatAt, new Date(Date.now() - RUNNER_LIVE_WINDOW_MS)),
+      gte(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(slotsNow, RUNNER_LIVE_WINDOW_MS)),
     )),
-    columns: { maxConcurrentWorkers: true },
-  }).then(rows => rows.map(r => r.maxConcurrentWorkers)).catch((err) => {
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, maxConcurrentWorkers: true },
+  }).then(rows => withLiveRunnerBeats(rows))
+    .then(rows => rows.filter(r => slotsNow - r.lastHeartbeatAt.getTime() <= RUNNER_LIVE_WINDOW_MS).map(r => r.maxConcurrentWorkers))
+    .catch((err) => {
     console.warn('[claim] could not read live runner slots, using the account limit:', err);
     return [] as number[];
   });

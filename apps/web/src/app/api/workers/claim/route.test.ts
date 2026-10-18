@@ -845,11 +845,26 @@ describe('POST /api/workers/claim', () => {
     expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
   });
 
+  const liveRunner = (name: string, slots: number, ageMs = 0) => ({
+    accountId: 'account-1', localUiUrl: `http://${name}:8766`, lastHeartbeatAt: new Date(Date.now() - ageMs), maxConcurrentWorkers: slots,
+  });
+
+  it('a runner whose last beat is past the live window (and has no newer Redis beat) adds no slots', async () => {
+    // The SQL cutoff is widened by the liveness write interval (lib/runner-beats.ts);
+    // the window itself is still applied, to the newer of the row and the Redis beat.
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 2), liveRunner('b', 9, 4 * 60_000)]);
+    mockWorkersFindMany.mockResolvedValueOnce(['w1', 'w2'].map(id => ({ id, status: 'running', runner: 'r' })));
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(429);
+    expect((await res.json()).limit).toBe(2);
+  });
+
   it('the account limit is the slots its live runners report, not the account default', async () => {
     // The account default is 3, but its two runners report 9 and 5 slots:
     // three busy workers leave room (the runner caps its own slots).
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
-    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 9 }, { maxConcurrentWorkers: 5 }]);
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 9), liveRunner('b', 5)]);
     mockWorkersFindMany.mockResolvedValueOnce([
       { id: 'w1', status: 'running', runner: 'r' },
       { id: 'w2', status: 'running', runner: 'r' },
@@ -862,7 +877,7 @@ describe('POST /api/workers/claim', () => {
 
   it('live runners reporting fewer slots than are busy still get the 429, naming their total', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
-    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 2 }, { maxConcurrentWorkers: 2 }]);
+    mockHeartbeatsFindMany.mockResolvedValue([liveRunner('a', 2), liveRunner('b', 2)]);
     mockWorkersFindMany.mockResolvedValueOnce(
       ['w1', 'w2', 'w3', 'w4'].map(id => ({ id, status: 'running', runner: 'r' })),
     );

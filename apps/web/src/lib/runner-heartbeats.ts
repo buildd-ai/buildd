@@ -13,6 +13,7 @@ import {
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { classifyRunnerOwnership } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
@@ -88,7 +89,8 @@ export async function getRunnerHeartbeats(
     },
   );
 
-  const kept = (hbs as any[]).filter((hb: any) => relevant.has(hb.accountId));
+  // A stored beat can be one write interval old; the Redis beat is "now" (lib/runner-beats.ts).
+  const kept = await withLiveRunnerBeats((hbs as any[]).filter((hb: any) => relevant.has(hb.accountId)));
   const membersByTeam = await teamMemberIds([
     teamId,
     ...kept.map((hb: any) => hb.account?.teamId as string | undefined).filter(Boolean) as string[],
@@ -99,7 +101,7 @@ export async function getRunnerHeartbeats(
       id: hb.id,
       accountId: hb.accountId,
       accountName: hb.account?.name ?? null,
-      lastHeartbeatAt: hb.lastHeartbeatAt.toISOString(),
+      lastHeartbeatAt: new Date(hb.lastHeartbeatAt).toISOString(),
       activeWorkerCount: hb.activeWorkerCount,
       maxConcurrentWorkers: hb.maxConcurrentWorkers,
       connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
@@ -184,8 +186,8 @@ export async function loadBrowserRunnerHeartbeats(
   now: number,
 ): Promise<BrowserRunnerHeartbeat[] | null> {
   try {
-    const cutoff = new Date(now - RUNNER_ONLINE_WINDOW_MS);
-    const hbs = await db
+    const cutoff = runnerLiveCandidateCutoff(now, RUNNER_ONLINE_WINDOW_MS);
+    const candidates = await db
       .select({
         accountId: workerHeartbeats.accountId,
         localUiUrl: workerHeartbeats.localUiUrl,
@@ -196,6 +198,8 @@ export async function loadBrowserRunnerHeartbeats(
       .from(workerHeartbeats)
       .innerJoin(accounts, eq(accounts.id, workerHeartbeats.accountId))
       .where(gt(workerHeartbeats.lastHeartbeatAt, cutoff));
+    const hbs = (await withLiveRunnerBeats(candidates))
+      .filter(h => now - h.lastHeartbeatAt.getTime() < RUNNER_ONLINE_WINDOW_MS);
     if (hbs.length === 0) return [];
     const accountIds = [...new Set(hbs.map(h => h.accountId))];
     const links = await db
