@@ -1033,12 +1033,15 @@ push, refresh, completion or owner change can make it disappear.
   repair's head and an own refresh never address anything (rule 5).
 - A person's `FindingDisposed` (waived, or deferred to a named task) closes
   one finding with who and why; an agent is refused.
-- Deviation: no door submits `FindingDisposed` yet (no command-API op, route
-  or dashboard action). The command and its rules are in the kernel; the door
-  is a person-only command-API op plus a route, left out of this slice because
-  the command API and its ledger are being changed by the control-plane
-  cutover work at the same time. Until then a person passes an open finding
-  through the landing override (rule 6).
+- The dashboard submits it: a person-only command-API op (`dispose_finding`)
+  and `POST /api/prs/[prNumber]/dispose-finding`, from the escalation card,
+  bound to the head and version the card showed (the same decision again is one
+  transition; a finding a later round restates is a new decision). A duplicate
+  reads as success only while the finding is closed the way asked.
+- Deviation: no MCP action submits `FindingDisposed` yet, and the route reads
+  only the cookie session. A finding on a changes-requested PR that is not
+  escalated cannot be waived from the dashboard; the reducer accepts it in any
+  state. Who may waive is workspace membership, as for a re-review.
 - The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
   `buildd/landing` read open required findings and name the first
   one. Only a person's verdict override or their own approval of the head

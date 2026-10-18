@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
  * Waive or defer one finding, from the task page. A reason is required, and a deferral names the
  * full id of the task that takes it. The route re-checks who is asking; the page refreshes after.
  */
-export default function FindingDisposeForm({ prNumber, workspaceId, findingId }: { prNumber: number; workspaceId: string; findingId: string }) {
+export default function FindingDisposeForm({ prNumber, workspaceId, findingId, decisionHead }: { prNumber: number; workspaceId: string; findingId: string; decisionHead: { headSha: string | null; version: number } }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [disposition, setDisposition] = useState<'waived' | 'deferred'>('waived');
@@ -22,13 +22,13 @@ export default function FindingDisposeForm({ prNumber, workspaceId, findingId }:
     try {
       const res = await fetch(`/api/prs/${prNumber}/dispose-finding`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, findingId, disposition, reason, ...(disposition === 'deferred' ? { deferredToTaskId: taskId } : {}) }),
+        body: JSON.stringify({ workspaceId, findingId, ...(decisionHead.headSha ? { headSha: decisionHead.headSha, version: decisionHead.version } : {}), disposition, reason, ...(disposition === 'deferred' ? { deferredToTaskId: taskId } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) setError(data.error || 'Could not close the finding.');
+      if (!res.ok) setError(data.error || 'Finding not closed. Retry.');
       else { setOpen(false); router.refresh(); }
     } catch {
-      setError('Could not close the finding.');
+      setError('Finding not closed. Retry.');
     } finally {
       setBusy(false);
     }
@@ -50,7 +50,7 @@ export default function FindingDisposeForm({ prNumber, workspaceId, findingId }:
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} className="min-h-11 border border-border-default bg-surface-1 px-2 font-mono text-body" />
         </label>
       )}
-      <label className="flex flex-col gap-1 text-meta">Why
+      <label className="flex flex-col gap-1 text-meta">Reason
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} className="border border-border-default bg-surface-1 px-2 py-1 text-body" />
       </label>
       {error && <p role="status" className="text-body text-status-error">{error}</p>}

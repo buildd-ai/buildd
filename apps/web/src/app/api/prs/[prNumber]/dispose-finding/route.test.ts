@@ -61,6 +61,23 @@ describe('POST /api/prs/[prNumber]/dispose-finding', () => {
     mockDispose.mockResolvedValueOnce({ handled: true, result: { result: 'rejected', reason: 'finding_closed' } });
     const res = await call({ findingId: 'r1:0', disposition: 'waived', reason: 'x' });
     expect(res.status).toBe(409);
-    expect((await res.json()).code).toBe('finding_closed');
+    const j = await res.json();
+    expect(j.code).toBe('finding_closed');
+    expect(j.error).toStartWith('Finding not closed: ');
+    expect(j.error).not.toContain('finding_closed');
+  });
+
+  it('the head and version the card showed are passed on as the decision', async () => {
+    await call({ findingId: 'r1:0', disposition: 'waived', reason: 'x', headSha: 'abc123', version: 4 });
+    expect(mockDispose.mock.calls[0][0].decision).toEqual({ headSha: 'abc123', version: 4 });
+  });
+
+  it('a duplicate is success only while the finding is closed the way asked; a restated one is refused', async () => {
+    mockDispose.mockResolvedValueOnce({ handled: true, result: { result: 'duplicate', reason: 'idempotency_key_seen' }, findingStatus: 'waived' });
+    expect((await call({ findingId: 'r1:0', disposition: 'waived', reason: 'x' })).status).toBe(200);
+    mockDispose.mockResolvedValueOnce({ handled: true, result: { result: 'duplicate', reason: 'idempotency_key_seen' }, findingStatus: 'open' });
+    const res = await call({ findingId: 'r1:0', disposition: 'waived', reason: 'x' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).stale).toBe(true);
   });
 });

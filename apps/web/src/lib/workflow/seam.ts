@@ -391,6 +391,11 @@ export function humanDecision(action: 'request_fix' | 'force_re_review', headSha
   return { id: `${action}:${headSha}:v${version}`, headSha };
 }
 
+/** AC-45 for one finding: the same finding on the same head and version is one decision; a restated one is a new one. */
+export function findingDisposalDecision(findingId: string, headSha: string, version: number): { id: string; headSha: string } {
+  return { id: `dispose_finding:${findingId}:${headSha}:v${version}`, headSha };
+}
+
 // ── T23: a person applies an escalation's recommendation ────────────────────
 
 export interface HumanApplyOutcome {
@@ -1389,15 +1394,22 @@ export async function abandonDelivery(p: {
 export async function disposeFinding(p: {
   workspaceId: string; repoFullName: string; prNumber: number; actor: string;
   findingId: string; disposition: 'waived' | 'deferred'; reason: string; deferredToTaskId?: string | null;
-}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult }> {
+  /** The head and delivery version the person's screen showed (absent = not bound to a decision). */
+  decision?: { headSha: string; version: number };
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; findingStatus: string | null }> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
   const result = await applyCommand(
-    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null },
+    { type: 'FindingDisposed', actor: p.actor, findingId: p.findingId, disposition: p.disposition, reason: p.reason, deferredToTaskId: p.deferredToTaskId ?? null,
+      ...(p.decision ? { decision: findingDisposalDecision(p.findingId, p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
-  await drainDelivery(deliveryId, deps);
-  return { handled: true, result };
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  // A duplicate is a success only if the finding is closed the way the person asked now.
+  const findingStatus = result.result === 'duplicate'
+    ? ((await loadView({ deliveryId }, deps.exec)).findings ?? []).find((f) => f.id === p.findingId)?.status ?? null
+    : null;
+  return { handled: true, result, findingStatus };
 }
 
 // ── T5: a person or agent asks for a review ─────────────────────────────────

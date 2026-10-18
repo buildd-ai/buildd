@@ -8,12 +8,13 @@
  * a sentence that names nothing internal.
  */
 
-export type DecisionAction = 'request_fix' | 'force_re_review' | 'approve_override';
+export type DecisionAction = 'request_fix' | 'force_re_review' | 'approve_override' | 'dispose_finding';
 
 const ACTION_WORDS: Record<DecisionAction, string> = {
   request_fix: 'Another fix was not requested',
   force_re_review: 'A forced re-review was not requested',
   approve_override: 'The approval was not recorded',
+  dispose_finding: 'Finding not closed',
 };
 
 const REASONS: Record<string, string> = {
@@ -43,6 +44,12 @@ const REASONS: Record<string, string> = {
   decision_id_required: 'the request did not name the decision. Reload and try again.',
   commit_id_required: 'the approval did not name the commit it approves. Reload and try again.',
   reason_required: 'this decision needs a reason.',
+  // A finding's disposal.
+  unknown_finding: 'this pull request has no such finding. Reload to see its current findings.',
+  finding_closed: 'the finding is already closed, so there is nothing left to waive or defer.',
+  finding_already_disposed: 'the finding is already closed this way.',
+  deferral_needs_task: 'a deferral needs the full id of the task that takes the finding.',
+  deferral_task_unresolved: 'that is not the full id of a task in this workspace.',
   // The kernel could not decide.
   live_read_failed: 'GitHub could not be read just now, so nothing was changed. Try again in a moment.',
   legacy_owns: 'this pull request is not run by the delivery kernel, so this decision does not apply to it.',

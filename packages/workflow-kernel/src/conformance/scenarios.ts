@@ -1846,6 +1846,29 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '§5: a finding deferred, restated by a later round, and deferred again ends deferred: the second disposal is a new decision, not a replay of the first',
+    async run(host) {
+      const s = await new Delivery(host, 91).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'x.ts', title: 'needs a test' }] });
+      const id = await s.findingId('x.ts');
+      const task = ['00000000', '0000', '4000', '8000', '0000000000aa'].join('-');
+      const defer = async (headSha: string) => s.submit({
+        type: 'FindingDisposed', actor: 'human:owner', findingId: id, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: task,
+        decision: { id: `dispose_finding:${id}:${headSha}:v${(await s.d()).version}`, headSha },
+      });
+      applied(await defer('H1'), 'CHANGES_REQUESTED', 'deferred');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'closed');
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['y.ts'] });
+      await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } });
+      await s.verdictWith('request_changes', { findings: [{ id, path: 'x.ts', title: 'needs a test' }] });
+      eq(await s.findingStates(), { 'x.ts': 'open' }, 'the later round restated it, so it is open again');
+      applied(await defer('H2'), 'CHANGES_REQUESTED', 'deferred again, at the head and version the person saw');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'ends deferred');
+    },
+  },
+  {
     name: '§5: an approval held while a repair runs, that left a finding unverified, re-enters as a verification round when the repair ends, never as APPROVED',
     async run(host) {
       const s = await new Delivery(host, 68).open();

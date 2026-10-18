@@ -283,6 +283,8 @@ export type Command =
       disposition: 'waived' | 'deferred';
       reason: string;
       deferredToTaskId?: string | null;
+      /** The decision this is, bound to the head and version the person saw: a restated finding is a new one. */
+      decision?: HumanDecision;
     })
   | (Base & { type: 'ReviewBudgetExhausted' })
   | (Base & {

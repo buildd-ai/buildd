@@ -339,7 +339,7 @@ export function humanDecisionKey(deliveryId: string, decisionId: string): string
 
 /** The decision a command carries, when it is one of the two a person decides on an escalation. */
 function decisionOf(cmd: Command): { id: string; headSha: string } | null {
-  return (cmd.type === 'ReviewRequested' || cmd.type === 'HumanResolve') && cmd.decision ? cmd.decision : null;
+  return (cmd.type === 'ReviewRequested' || cmd.type === 'HumanResolve' || cmd.type === 'FindingDisposed') && cmd.decision ? cmd.decision : null;
 }
 
 export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): string | null {
@@ -822,7 +822,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!f) return c.rejected('unknown_finding');
       if (f.status === cmd.disposition) return c.duplicate('finding_already_disposed');
       if (f.status !== 'open' && f.status !== 'addressed') return c.rejected('finding_closed');
-      return c.apply(`dispose:${f.id}:${cmd.disposition}`, dd.state, {
+      return c.apply(cmd.decision ? humanDecisionKey(dd.id, cmd.decision.id) : `dispose:${f.id}:${cmd.disposition}`, dd.state, {
         findings: [{
           op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'],
           set: { status: cmd.disposition, closedBy: cmd.actor, closedReason: cmd.reason.trim(), deferredToTaskId: cmd.deferredToTaskId ?? null },

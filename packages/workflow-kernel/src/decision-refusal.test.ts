@@ -24,3 +24,13 @@ describe('explainDecisionRefusal (AC-46)', () => {
     }
   });
 });
+
+describe('dispose_finding refusals', () => {
+  test('each reason the finding door meets reads as a sentence led by what was not done', () => {
+    for (const r of ['unknown_finding', 'finding_closed', 'finding_already_disposed', 'deferral_needs_task', 'deferral_task_unresolved', 'reason_required', 'human_required']) {
+      const s = explainDecisionRefusal('dispose_finding', r);
+      expect(s).toStartWith('Finding not closed: ');
+      expect(s).not.toMatch(/[a-z]+_[a-z_]+/);
+    }
+  });
+});
