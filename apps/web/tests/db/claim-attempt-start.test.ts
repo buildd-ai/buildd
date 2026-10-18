@@ -58,6 +58,34 @@ const starts = async (pr: OpenedPr) =>
 const liveWorkers = async (taskId: string) =>
   (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workers WHERE task_id = ${taskId}::uuid AND status IN ('idle', 'running', 'starting', 'waiting_input')`))[0].n;
 
+/** The start a claim parked after its response (detached in a test): polled until it is there. */
+async function parkedStarts(pr: OpenedPr): Promise<Array<{ key: string; status: string; claimed_by: string }>> {
+  const read = () => q<{ key: string; status: string; claimed_by: string }>(sql`SELECT idempotency_key AS key, status, command_input->>'claimedBy' AS claimed_by FROM workflow_command_outbox WHERE op = 'attempt_started' AND command_input->'task'->>'id' = ${pr.ownerTaskId}`);
+  for (let i = 0; i < 50; i++) {
+    const rows = await read();
+    if (rows.length > 0) return rows;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  return read();
+}
+/** The floor's pass on the control plane, scoped to these keys (the shared database holds other files' rows). */
+async function floorPass(keys: string[]) {
+  const { drainParkedCommands, postgresCommandOutbox } = await import('../../src/lib/workflow/command-outbox');
+  const outbox = postgresCommandOutbox();
+  // The control plane applies commands only in own mode.
+  process.env.EXECUTION_MODE = 'own';
+  process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
+  resetKernelModeCache();
+  setKernelHost('control-plane');
+  try {
+    return await drainParkedCommands({ host: () => 'control-plane', outbox: { ...outbox, claimDue: async (n) => (await outbox.claimDue(n)).filter((r) => keys.includes(r.key)) } });
+  } finally {
+    setKernelHost('web');
+  }
+}
+const outboxRow = async (key: string) =>
+  (await q<{ status: string; outcome: string | null }>(sql`SELECT status, outcome FROM workflow_command_outbox WHERE idempotency_key = ${key}`))[0];
+
 async function serviceKey(teamId: string): Promise<{ id: string; key: string }> {
   const key = `bld_${crypto.randomUUID().replace(/-/g, '')}`;
   const hashed = createHash('sha256').update(key).digest('hex');
@@ -180,7 +208,7 @@ describe('a claim of a kernel owner task is started by the kernel', () => {
   });
 });
 
-describe('the control plane down: the claim still starts, on the web host, and nothing parks', () => {
+describe('the control plane down: the claim still starts, on the web host, and parks the start for a replay', () => {
   const interactiveHeaders = (accountId: string) => ({ [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId, userId: null, sessionKey: 's-1' })! });
 
   /** One claim of a fresh requeued owner task under `how`, at the default budgets; its elapsed ms. */
@@ -192,8 +220,9 @@ describe('the control plane down: the claim still starts, on the web host, and n
     expect(await claimedCount(res)).toBe(1);
     const t = await taskRow(pr.ownerTaskId);
     expect({ status: t.status, claimedBy: t.claimed_by }).toEqual({ status: 'assigned', claimedBy: account.id });
-    // Projected, not recorded; and never parked for a later re-send.
+    // Projected, not recorded: the kernel's log gets it from the replay of the parked start.
     expect(await starts(pr)).toHaveLength(0);
+    expect(await parkedStarts(pr)).toHaveLength(1);
     return elapsed;
   }
 
@@ -222,9 +251,82 @@ describe('the control plane down: the claim still starts, on the web host, and n
       expect(runnerNext).toBeLessThan(1_250);
       expect(interactiveFirst).toBeLessThan(1_250);
       expect(interactiveNext).toBeLessThan(1_250);
-      expect((await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workflow_command_outbox WHERE op = 'attempt_started'`))[0].n).toBe(0);
     });
   }
+});
+
+describe('a start projected without a kernel answer is replayed into the kernel\'s log', () => {
+  const interactiveHeaders = (accountId: string) => ({ [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId, userId: null, sessionKey: 's-replay' })! });
+
+  async function claimAndPark(kind: 'interactive' | 'breaker-open') {
+    w = await world();
+    const account = await serviceKey(await teamOf());
+    process.env.AUTH_SECRET = 'db-test-interactive-secret';
+    const pr = await requeuedOwner(`feat/start-replay-${kind}`);
+    if (kind === 'breaker-open') {
+      const opening = await requeuedOwner('feat/start-replay-opening');
+      controlPlaneDown('refused');
+      expect(await claimedCount(await claim(account, opening.ownerTaskId))).toBe(1);
+    }
+    const res = kind === 'interactive'
+      ? await claim(account, pr.ownerTaskId, { runner: 'mcp', headers: interactiveHeaders(account.id) })
+      : await claim(account, pr.ownerTaskId);
+    expect(await claimedCount(res)).toBe(1);
+    const t = await taskRow(pr.ownerTaskId);
+    expect(t.status).toBe('assigned');
+    expect(await starts(pr)).toHaveLength(0);
+    const parked = await parkedStarts(pr);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ status: 'pending', claimed_by: account.id });
+    return { account, pr, key: parked[0].key, claimedAt: t.claimed_at! };
+  }
+
+  for (const kind of ['interactive', 'breaker-open'] as const) {
+    test(`${kind}: the start is parked once, and the replay records the transition once without moving the assigned task`, async () => {
+      const { pr, key, claimedAt } = await claimAndPark(kind);
+      restoreFetch?.(); restoreFetch = null;
+      const before = await taskRow(pr.ownerTaskId);
+      expect(await floorPass([key])).toMatchObject({ claimed: 1, done: 1 });
+      expect(await outboxRow(key)).toMatchObject({ status: 'done' });
+      const s = await starts(pr);
+      expect(s).toHaveLength(1);
+      expect(s[0].key).toBe(`start:${pr.ownerTaskId}:${claimedAt}`);
+      expect(await taskRow(pr.ownerTaskId)).toEqual(before);
+      expect(await liveWorkers(pr.ownerTaskId)).toBe(1);
+    });
+  }
+
+  test('a duplicate replay (the parked row put back) answers from the ledger and records nothing more', async () => {
+    const { pr, key } = await claimAndPark('interactive');
+    expect(await floorPass([key])).toMatchObject({ done: 1 });
+    await q(sql`UPDATE workflow_command_outbox SET status = 'pending', outcome = NULL, not_before = now(), lease_until = NULL, completed_at = NULL WHERE idempotency_key = ${key}`);
+    expect(await floorPass([key])).toMatchObject({ done: 1 });
+    expect((await outboxRow(key)).outcome).toStartWith('replayed:');
+    expect(await starts(pr)).toHaveLength(1);
+  });
+
+  test('a replay after the task moved on (requeued, claimed by someone else) records nothing harmful', async () => {
+    const { account, pr, key } = await claimAndPark('interactive');
+    const other = await serviceKey(await teamOf());
+    await q(sql`UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`UPDATE tasks SET claimed_by = ${other.id}::uuid, claimed_at = now() WHERE id = ${pr.ownerTaskId}::uuid`);
+    const before = await taskRow(pr.ownerTaskId);
+    expect(await floorPass([key])).toMatchObject({ claimed: 1 });
+    expect(await taskRow(pr.ownerTaskId)).toEqual(before);
+    expect(before.claimed_by).toBe(other.id);
+    expect(before.claimed_by).not.toBe(account.id);
+    expect(await q(sql`SELECT 1 FROM workflow_command_outbox WHERE idempotency_key = ${key} AND status = 'dead'`)).toEqual([]);
+  });
+
+  test('a start the kernel answered is not parked', async () => {
+    w = await world();
+    const account = await serviceKey(await teamOf());
+    const pr = await requeuedOwner('feat/start-answered');
+    expect(await claimedCount(await claim(account, pr.ownerTaskId))).toBe(1);
+    expect(await starts(pr)).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await q(sql`SELECT 1 FROM workflow_command_outbox WHERE op = 'attempt_started' AND command_input->'task'->>'id' = ${pr.ownerTaskId}`)).toEqual([]);
+  });
 });
 
 describe('a late or repeated start moves nothing', () => {
