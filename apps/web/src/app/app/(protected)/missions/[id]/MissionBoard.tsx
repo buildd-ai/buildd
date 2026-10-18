@@ -457,20 +457,33 @@ function Big({ n, small }: { n: number; small: string }) {
  * leads with the question, offers the same options and own-words field, and
  * answers through the same path; the refresh after an answer drops it.
  */
-export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
+export function AskBanner({ task, now, href }: { task: BoardTask; now: number; href?: string }) {
   const router = useRouter();
   const onAnswered = useCallback(() => router.refresh(), [router]);
   // Waiting on a person for something other than a question (a delivery's
   // move): there is nothing to answer, so it says what is waiting.
   if (!task.waitingFor) {
+    // Names what is waiting (the delivery's own label and PR), why (the kernel's
+    // sentence) and for how long. With an `href` the whole card is the one link
+    // to that task: a stretched anchor, so no second target competes with it.
+    const what = [task.delivery?.label, task.pr ? `PR #${task.pr.number}` : null].filter(Boolean).join(' · ');
+    const since = task.waitStartedAt != null ? `Waiting ${formatAge(now - task.waitStartedAt)}` : null;
     return (
-      <section data-testid="needs-you-band" data-task-id-ref={task.id} className="mt-4 border-2 border-accent bg-card px-4 py-3 shadow-[var(--card-shadow)]">
+      <section data-testid="needs-you-band" data-task-id-ref={task.id} className={`relative mt-4 border-2 border-accent bg-card px-4 py-3 shadow-[var(--card-shadow)] ${href ? 'hover:bg-card-hover focus-within:outline focus-within:outline-2 focus-within:outline-accent' : ''}`}>
         <div className="flex min-w-0 items-center gap-2 font-mono text-[12px] md:text-[11.5px] text-text-muted">
           <RoleGlyph task={task} />
           <ScopeChip scope={task.scope} />
-          {task.delivery?.label && <span className="truncate">{task.delivery.label}</span>}
+          {what && <span className="min-w-0 truncate">{what}</span>}
         </div>
-        <p className="mt-1 font-mono text-[14px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(task.title)}</p>
+        <p className="mt-1 font-mono text-[14px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
+          {href
+            ? <a href={href} data-testid="needs-you-link" className="after:absolute after:inset-0 focus:outline-none">{displayTaskTitle(task.title)}</a>
+            : displayTaskTitle(task.title)}
+        </p>
+        {task.kernelReason && <p data-testid="needs-you-why" className="mt-1 text-body text-text-secondary [overflow-wrap:anywhere]">{task.kernelReason}</p>}
+        {(since || href) && (
+          <p className="mt-1 font-mono text-[12px] text-text-muted">{[since, href ? 'Open ›' : null].filter(Boolean).join(' · ')}</p>
+        )}
       </section>
     );
   }
