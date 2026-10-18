@@ -27,6 +27,7 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
+import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
@@ -163,7 +164,7 @@ export interface StrandedBackendRow {
   label: string;
   strandedPending: number;
   enabledForTeam: boolean;
-  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null }>;
+  sampleTasks: Array<{ id: string; title: string; workspaceName: string | null; claim?: ClaimBlocker }>;
 }
 
 export interface CredentialHealthItem {

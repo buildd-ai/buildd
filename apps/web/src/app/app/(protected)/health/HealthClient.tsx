@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
+import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -639,6 +640,13 @@ export function HealthClient({
                           ? ` · +${b.strandedPending - b.sampleTasks.length} more`
                           : ''}
                       </p>
+                    )}
+                    {b.sampleTasks.some((t) => t.claim) && (
+                      <ul data-testid={`strand-claim-${b.backend}`} className="mt-1 space-y-0.5 text-xs text-text-muted">
+                        {b.sampleTasks.map((t) => (
+                          <li key={t.id} className="truncate">{t.title}: {claimBlockerLine(t.claim)}</li>
+                        ))}
+                      </ul>
                     )}
                   </div>
                   <a
@@ -2287,4 +2295,16 @@ function FailureAnalyticsSection({
       )}
     </div>
   );
+}
+
+
+/**
+ * One task's claim-scheduler decision as a line (spec 97b1bd0b R-10): blocked
+ * only while the recorded refusal is fresh; stale and unknown are said as such.
+ */
+export function claimBlockerLine(c: ClaimBlocker | undefined): string {
+  if (!c || c.state === 'unknown') return 'no recent scheduler decision (not known to be blocked)';
+  const at = c.evaluatedAt ? ` (last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+  const why = c.phrase ?? c.reason ?? 'held';
+  return c.state === 'blocked' ? `blocked: ${why}${at}` : `last held: ${why}, may no longer apply${at}`;
 }
