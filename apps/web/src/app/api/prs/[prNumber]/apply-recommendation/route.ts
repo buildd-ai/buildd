@@ -132,8 +132,16 @@ async function applyOnKernel(p: {
     }, { status: 409 });
   }
   if (r.result === 'duplicate') {
-    // AC-45: the same decision again was answered by the first: the fix it filed is the one. Its
-    // note clears now if the first submission's clearing never ran; the feed entry is the first's.
+    // AC-45: the same decision again was answered by the first: the fix it filed is the one. A
+    // stale tab replaying it after the PR escalated again ran nothing, so the new escalation's
+    // note stays and the person is told to decide again.
+    if (out.current.state === 'ESCALATED') {
+      const reason = 'decision_already_answered';
+      return NextResponse.json({
+        error: explainDecisionRefusal('request_fix', reason), reason, stale: true, kernel: true, current: out.current,
+      }, { status: 409 });
+    }
+    // Otherwise its note clears now if the first submission's clearing never ran; the feed entry is the first's.
     await supersedeAncestorEscalations(db, p.originalTask.id, p.prNumber);
     return NextResponse.json({ ok: true, dispatched: false, kernel: true, taskId: out.attempt?.taskId ?? null, current: out.current });
   }

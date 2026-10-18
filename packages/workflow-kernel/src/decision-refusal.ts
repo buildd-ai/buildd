@@ -29,6 +29,8 @@ const REASONS: Record<string, string> = {
   no_review_at_head: 'no review has read the current commit yet, so there is nothing for a fix to answer. Ask for a review of it first.',
   no_head: 'the pull request has no recorded commit yet.',
   // When.
+  // A replayed decision whose command already ran, on a PR that has since escalated again.
+  decision_already_answered: 'this decision was already carried out, and the pull request has come back to you since. Reload to see the new question and decide again.',
   version_moved: 'the pull request changed since this page was loaded. Reload to see where it stands now.',
   state_moved: 'the pull request is no longer waiting on this decision; it moved on since this page was loaded. Reload to see where it stands now.',
   state_not_allowed: 'the pull request is not in a state that takes this decision right now. Reload to see where it stands.',
@@ -60,5 +62,5 @@ export function explainDecisionRefusal(action: DecisionAction, reason: string | 
 
 /** The reasons that mean the person's screen is behind the pull request (a reload answers them). */
 export const STALE_DECISION_REASONS: ReadonlySet<string> = new Set([
-  'decision_head_stale', 'round_head_not_current', 'review_on_older_commit', 'version_moved', 'state_moved',
+  'decision_head_stale', 'decision_already_answered', 'round_head_not_current', 'review_on_older_commit', 'version_moved', 'state_moved',
 ]);

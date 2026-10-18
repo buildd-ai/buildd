@@ -1408,7 +1408,8 @@ export async function requestReview(p: {
   const result = await applyCommand(
     {
       type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced,
-      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version) } : {}),
+      // AC-45: bound to the version the person saw too, as the fix door is.
+      ...(p.decision ? { decision: humanDecision('force_re_review', p.decision.headSha, p.decision.version), expectedVersion: p.decision.version } : {}),
     },
     { ref: { deliveryId }, exec: deps.exec },
   );

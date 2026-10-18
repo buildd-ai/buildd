@@ -117,6 +117,16 @@ export async function POST(
         return NextResponse.json({ ok: true, dispatched: true, kernel: true });
       }
       if (r.result === 'duplicate') {
+        // A replayed decision is answered by its first transition before anything is read, so a
+        // stale tab replaying it after the PR escalated again must not clear the new escalation's
+        // note: nothing ran this time. Only a PR no longer waiting on a person is the first's success.
+        if (r.current.state === 'ESCALATED') {
+          const reason = 'decision_already_answered';
+          return NextResponse.json(
+            { error: explainDecisionRefusal('force_re_review', reason), code: reason, stale: true, current: r.current, kernel: true },
+            { status: 409 },
+          );
+        }
         await supersedeAncestorEscalations(db, originalTask.id, prNumber);
         return NextResponse.json({ ok: true, alreadyRequested: true, kernel: true });
       }

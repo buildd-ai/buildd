@@ -2874,6 +2874,10 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const b = await s.findingId('src/b.ts');
       applied(await s.verdictWith('request_changes', { resolvedFindings: [a], findings: [{ id: b, title: 'fix b', path: 'src/b.ts' }] }), 'ESCALATED', 'it asks for changes again');
       eq(await s.findingStates(), { 'src/a.ts': 'resolved', 'src/b.ts': 'open' }, 'verified only by the review, not by the push');
+      // A stale tab replays the first decision: answered by its transition, nothing runs, and the
+      // delivery is still the person's (the door reads that and leaves the new escalation's note).
+      notApplied(await force(v1), 'duplicate', 'idempotency_key_seen', 'the old decision replayed after it escalated again');
+      eq({ state: (await s.d()).state, reviewers: await s.count('dispatch_review') }, { state: 'ESCALATED', reviewers: 2 }, 'still escalated, no new reviewer');
 
       // A bounded fix: one more fix attempt, at the head, once.
       const v2 = (await s.d()).version;
