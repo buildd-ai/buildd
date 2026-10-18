@@ -92,6 +92,7 @@
  * plain-language line built from `kind` + the highest-ranked outstanding fact,
  * with the action that clears it. One derivation, two surfaces.
  */
+import { TERMS } from '@buildd/shared';
 import type { CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
@@ -1490,7 +1491,13 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       acc[t.status] = (acc[t.status] ?? 0) + 1;
       return acc;
     }, {});
-  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ')}`).join(', ');
+  // Two statuses can read one catalog word (assigned and in_progress are both working): merge them.
+  const byWord = new Map<string, number>();
+  for (const [s, n] of Object.entries(byStatus)) {
+    const word = OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ');
+    byWord.set(word, (byWord.get(word) ?? 0) + n);
+  }
+  const breakdown = [...byWord].map(([word, n]) => `${n} ${word}`).join(', ');
   const tasksWord = pendingCount === 1 ? '1 task' : `${pendingCount} tasks`;
 
   // Never cite a row that is only waiting on its dependency: it cannot be
@@ -1605,9 +1612,9 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
 }
 
 const OPEN_STATUS_LABEL: Record<string, string> = {
-  pending: 'queued',
-  assigned: 'picked up',
-  in_progress: 'running',
+  pending: TERMS['work.ready'].short,
+  assigned: TERMS['work.working'].short,
+  in_progress: TERMS['work.working'].short,
 };
 
 /**

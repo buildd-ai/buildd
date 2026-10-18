@@ -249,3 +249,78 @@ describe('runDeploymentAction: admin escape hatch', () => {
     expect(JSON.stringify(res.body)).not.toContain(TOKEN);
   });
 });
+
+describe('runDeploymentAction: cloud runner release state', () => {
+  const IMAGE = `docker.io/buildd/runner@sha256:${'b'.repeat(64)}`;
+  const BUNDLE = {
+    schema: 1, tag: 'v1.2.3', image: IMAGE, mainModule: 'index.js', modules: [{ name: 'index.js', content: 'export default {}' }],
+    config: {
+      name: 'buildd-cloud-runner', main: 'index.js', compatibility_date: '2026-01-01',
+      containers: [{ class_name: 'Runner', image: IMAGE, instance_type: 'standard-1', max_instances: 2 }],
+      durable_objects: { bindings: [{ name: 'RUNNER', class_name: 'Runner' }] },
+      migrations: [{ tag: 'v1', new_sqlite_classes: ['Runner'] }],
+      r2_buckets: [{ binding: 'SNAPSHOTS', bucket_name: 'buildd-cloud-runner-snapshots' }],
+    },
+  };
+  const LIFECYCLE = [{ id: 'warm-expiry', prefix: 'warm/', expireDays: 14 }];
+  const loadRelease = async () => ({ ok: true as const, bundle: BUNDLE as never });
+  const admin: DeploymentPrincipal = { kind: 'admin', teamId: 'team-1', accountId: 'acct-9', workspaceId: 'ws-1' };
+  const target = { ...TARGET, project: 'buildd-cloud-runner' };
+
+  function live(over: { release?: string | null; bucket?: boolean; maxAge?: number; image?: string } = {}) {
+    return cloudflare((url) => {
+      if (url.endsWith('/workers/scripts/buildd-cloud-runner/settings')) {
+        const bindings = over.release === null ? [] : [{ type: 'plain_text', name: 'CLOUD_RUNNER_RELEASE', text: over.release ?? 'v1.2.3' }];
+        return { body: { success: true, result: { bindings } } };
+      }
+      if (url.endsWith('/r2/buckets/buildd-cloud-runner-snapshots')) {
+        return over.bucket === false ? { status: 404, body: { success: false, errors: [{ code: 10006, message: 'not found' }] } } : { body: { success: true, result: {} } };
+      }
+      if (url.endsWith('/r2/buckets/buildd-cloud-runner-snapshots/lifecycle')) {
+        return { body: { success: true, result: { rules: [{ id: 'warm-expiry', enabled: true, conditions: { prefix: 'warm/' }, deleteObjectsTransition: { condition: { type: 'Age', maxAge: (over.maxAge ?? 14) * 86_400 } } }] } } };
+      }
+      if (url.includes('/durable_objects/namespaces')) {
+        return { body: { success: true, result: [{ id: 'ns-1', script: 'buildd-cloud-runner', class: 'Runner' }] } };
+      }
+      if (url.endsWith('/containers/applications')) {
+        return { body: { success: true, result: [{ id: 'app-1', name: 'buildd-cloud-runner-runner', durable_objects: { namespace_id: 'ns-1' }, configuration: { image: over.image ?? IMAGE, instance_type: 'standard-1' }, max_instances: 2 }] } };
+      }
+      return { body: { success: true, result: {} } };
+    });
+  }
+
+  it('reports a Worker, bucket and containers already at this release as current, and writes nothing', async () => {
+    const { d } = deps();
+    const cf = live();
+    const res = await runDeploymentAction(admin, { ...target, operation: 'release_state', params: { release: 'v1.2.3', lifecycle: LIFECYCLE } }, { ...d, fetchImpl: cf.fetchImpl, loadRelease });
+    expect(res.status).toBe(200);
+    expect((res.body as any).result).toMatchObject({ worker: { current: true }, bucket: { current: true }, containers: { current: true } });
+    expect(cf.calls.every((c) => (c.init?.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('reports each part that differs from the release as not current', async () => {
+    const { d } = deps();
+    const res = await runDeploymentAction(admin, { ...target, operation: 'release_state', params: { release: 'v1.2.3', lifecycle: LIFECYCLE } }, {
+      ...d, fetchImpl: live({ release: 'v1.2.2', bucket: false, image: `docker.io/buildd/runner@sha256:${'c'.repeat(64)}` }).fetchImpl, loadRelease,
+    });
+    expect((res.body as any).result).toMatchObject({ worker: { current: false, release: 'v1.2.2' }, bucket: { current: false }, containers: { current: false } });
+  });
+
+  it('a Worker uploaded from a terminal (no release var) and a changed lifecycle are not current', async () => {
+    const { d } = deps();
+    const res = await runDeploymentAction(admin, { ...target, operation: 'release_state', params: { release: 'v1.2.3', lifecycle: LIFECYCLE } }, {
+      ...d, fetchImpl: live({ release: null, maxAge: 7 }).fetchImpl, loadRelease,
+    });
+    expect((res.body as any).result).toMatchObject({ worker: { current: false, release: null }, bucket: { current: false } });
+  });
+
+  it('deploy_worker_script stamps the release on the Worker for release_state to read back', async () => {
+    const { d } = deps();
+    const cf = cloudflare(() => ({ body: { success: true, result: {} } }));
+    const res = await runDeploymentAction(admin, { ...target, operation: 'deploy_worker_script', params: { release: 'v1.2.3' } }, { ...d, fetchImpl: cf.fetchImpl, loadRelease });
+    expect(res.status).toBe(200);
+    const upload = cf.calls.find((c) => c.init?.method === 'PUT' && c.url.endsWith('/workers/scripts/buildd-cloud-runner'));
+    const metadata = JSON.parse(await ((upload!.init!.body as FormData).get('metadata') as Blob).text());
+    expect(metadata.bindings).toContainEqual({ type: 'plain_text', name: 'CLOUD_RUNNER_RELEASE', text: 'v1.2.3' });
+  });
+});

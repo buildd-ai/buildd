@@ -38,7 +38,7 @@ const HEALTH_TONE: Record<MissionHealth, StateTone> = {
 
 function RoleStatePill({ status }: { status: string }) {
   if (status === 'waiting_input') return <StatePill state="waiting" label="Has a question" />;
-  if (status === 'running' || status === 'starting') return <StatePill state="running" label="Running" />;
+  if (status === 'running' || status === 'starting') return <StatePill state="running" label="Working" />;
   return <TonePill tone="q">Idle</TonePill>;
 }
 

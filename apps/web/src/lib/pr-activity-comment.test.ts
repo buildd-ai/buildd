@@ -102,7 +102,7 @@ describe('status derivation — queued is never shown as working', () => {
   it('a push waits on checks, naming the short sha', () => {
     const header = headerOf(renderPrActivityComment([reviewing, queued, fixing, pushed]));
     expect(header).toContain('**Pushed `abc1234`**');
-    expect(header).toContain('waiting on checks');
+    expect(header).toContain('waiting for checks');
     expect(header).not.toContain(SPINNER_PATH);
   });
 
@@ -145,7 +145,7 @@ describe('status derivation — queued is never shown as working', () => {
     const ended = { kind: 'fix_ended' as const, iteration: 1, maxIterations: 3, taskUrl: TASK, at: at(20) };
     const afterEnd = renderPrActivityComment([reviewing, queued, fixing, pushed, ended]);
     expect(headerOf(afterEnd)).toContain('**Fix 1 of 3 finished**');
-    expect(headerOf(afterEnd)).toContain('waiting on checks');
+    expect(headerOf(afterEnd)).toContain('waiting for checks');
     expect(headerOf(afterEnd)).not.toContain('Fixing');
     expect(afterEnd).not.toContain(SPINNER_PATH);
 
@@ -163,7 +163,7 @@ describe('status derivation — queued is never shown as working', () => {
       queued, fixing, { kind: 'fix_ended', detail: 'failed', at: at(20) },
     ]));
     expect(header).toContain('**Fix 1 of 3 ended · failed**');
-    expect(header).not.toContain('waiting on checks');
+    expect(header).not.toContain('waiting for checks');
     expect(header).not.toContain(SPINNER_PATH);
   });
 

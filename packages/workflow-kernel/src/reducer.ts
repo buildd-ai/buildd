@@ -300,6 +300,11 @@ export function verifyCompositionAttestation(
     }
     if (ev.roundHeadSha !== c.reviewedHeadSha) reasons.push(`constituent_head_mismatch:${c.roundId}`);
     if (ev.roundStatus !== 'decided' || ev.effectiveVerdict !== 'approve') reasons.push(`constituent_not_approved:${c.roundId}`);
+    // §13.13 rule 1: an approve is the constituent's word only while it is its LATEST decided
+    // round at that head, its delivery is not blocked there, and no finding of it is open.
+    if (ev.latestDecidedVerdictAtHead != null && ev.latestDecidedVerdictAtHead !== 'approve') reasons.push(`constituent_approval_superseded:${c.roundId}`);
+    if ((ev.deliveryState === 'CHANGES_REQUESTED' || ev.deliveryState === 'ESCALATED') && ev.deliveryHeadSha === c.reviewedHeadSha) reasons.push(`constituent_delivery_blocked:${c.roundId}`);
+    if ((ev.openFindings ?? 0) > 0) reasons.push(`constituent_open_findings:${c.roundId}`);
     const unrecorded = c.equivalentHeadShas.filter((h) => !ev.deliveryApprovedHeads.includes(h));
     if (unrecorded.length > 0) reasons.push(`constituent_equivalence_unrecorded:${c.roundId}`);
     // GitHub merged the reviewed head or a head its delivery recorded as equivalent…
@@ -1657,6 +1662,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (att.repoFullName !== dd.repoFullName || att.prNumber !== dd.prNumber) return c.rejected('attestation_pr_mismatch');
       if (att.aggregateHeadSha !== dd.currentHeadSha) return c.stale('head_not_current');
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_not_allowed');
+      // §13.13 rule 2 / AC-24: an attestation covers a head, it never closes a finding. A whole-PR
+      // composition approval over one is refused; a delta round still runs and leaves it open.
+      const standing = att.novelDelta.result === 'none' ? openRequiredFindings(c.view) : [];
+      if (standing.length) return c.rejected('open_findings', { missing: standing.map(describeFinding) });
       if (att.novelDelta.result === 'unverifiable') return c.rejected('composition_unverifiable', { missing: [att.novelDelta.reason] });
       const v = verifyCompositionAttestation(att, cmd.constituents);
       if (!v.ok) return c.rejected('composition_not_verified', { missing: v.reasons });

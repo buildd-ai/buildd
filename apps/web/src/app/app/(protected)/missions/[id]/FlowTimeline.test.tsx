@@ -53,7 +53,7 @@ describe('FlowTimeline', () => {
   it('draws one row per task and says what sets the finish', () => {
     mount('small');
     expect(rows().map(r => r.dataset.tick)).toEqual(['01', '02', '03', '04', '05', '06', '07']);
-    expect(container.querySelector('[data-testid="flow-critical-path"]')?.textContent).toBe('Finish is set by 04 (building), then 06 → 07.');
+    expect(container.querySelector('[data-testid="flow-critical-path"]')?.textContent).toBe('Finish is set by 04 (working), then 06 → 07.');
   });
 
   it('opens on the task setting the finish, its downstream edges lit', () => {

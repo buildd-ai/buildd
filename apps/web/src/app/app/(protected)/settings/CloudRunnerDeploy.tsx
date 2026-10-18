@@ -104,6 +104,13 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
           {/* Step progress list */}
           <ol data-testid="cloud-deploy-steps" className="text-xs space-y-1">
             {DEPLOY_STEPS.map((s, i) => {
+              if (state.skipped.includes(s)) {
+                return (
+                  <li key={s} className="text-text-muted">
+                    ✓ {stepLabel(s)} (unchanged)
+                  </li>
+                );
+              }
               const isDone = i < stepIdx || (i === stepIdx && done);
               const isCurrent = i === stepIdx && running;
               const isFailed = i === stepIdx && failed;

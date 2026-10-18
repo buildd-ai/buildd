@@ -98,7 +98,7 @@ describe('TaskStrip lg', () => {
     expect(tags).toHaveLength(7);
     expect(tags[2]).toContain(`data-pattern="${STATES.review.pattern}"`);
     expect(tags[2]).toContain('aria-pressed="true"');
-    expect(tags[2]).toContain('aria-label="03 Auditing: Task 3"');
+    expect(tags[2]).toContain('aria-label="03 In review: Task 3"');
   });
 
   it('marks live on the tick row only; a marked cell renders exactly as unmarked (strip R-17)', () => {

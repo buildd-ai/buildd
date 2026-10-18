@@ -150,6 +150,14 @@ export function configForScript(cfg: WranglerConfig, script: string): WranglerCo
   };
 }
 
+/**
+ * The plain var a server-side Worker upload stamps with its release tag, so a
+ * later deploy can tell the Worker is already at that release and skip the
+ * upload. `wrangler deploy` replaces every var, so a Worker deployed from a
+ * terminal has none and is always re-uploaded.
+ */
+export const RELEASE_VAR = 'CLOUD_RUNNER_RELEASE';
+
 /** The snapshot bucket a config binds, for ensure_bucket. */
 export function snapshotBucketOf(cfg: WranglerConfig): string | null {
   return cfg.r2_buckets?.[0]?.bucket_name ?? null;
