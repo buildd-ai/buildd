@@ -317,3 +317,34 @@ describe('History paging', () => {
     expect(pageEpisodes(missions, 1).shown).toHaveLength(5);
   });
 });
+
+describe('tasks the delivery projection hides on purpose do not take Activity down', () => {
+  const audit = (over: Partial<ActivityTaskInput> = {}) => running({ title: '[surface audit] round 1: check the dashboard', ...over });
+
+  it('a standalone surface audit is skipped by Now and History, and valid tasks beside it still show', () => {
+    const rows = [audit(), running({ title: 'Real work' }), merged({ title: 'Shipped' })];
+    const n = now(rows);
+    expect(n.groups.flatMap(g => g.rows.map(r => r.title))).toEqual(['Real work']);
+    const h = buildActivityHistory({ tasks: rows, missions: [], rules });
+    expect(h.map(e => e.title)).toEqual(['Shipped']);
+  });
+
+  it('a mission surface audit, absent from the mission projection, is skipped too', () => {
+    const rows = [audit({ missionId: 'm', missionTitle: 'M' }), running({ missionId: 'm', missionTitle: 'M', title: 'Build' })];
+    const n = now(rows, [missionOf('m', 'M', rows)]);
+    expect(n.groups[0].rows.map(r => r.title)).toEqual(['Build']);
+    expect(buildActivityHistory({ tasks: rows, missions: [missionOf('m', 'M', rows)], rules })).toEqual([]);
+  });
+
+  it('a superseded integration refresh with no mission loaded is skipped, not thrown on', () => {
+    const old = task({ status: 'completed', isIntegrationRefresh: true, updatedAt: ago(50), createdAt: ago(60), workers: [{ status: 'completed', completedAt: ago(50), updatedAt: ago(50) }] } as Partial<ActivityTaskInput>);
+    const fresh = task({ status: 'completed', isIntegrationRefresh: true, updatedAt: ago(10), createdAt: ago(20), workers: [{ status: 'completed', prUrl: `${PR}9`, prNumber: 9, mergedAt: ago(10), completedAt: ago(10), updatedAt: ago(10) }] } as Partial<ActivityTaskInput>);
+    expect(() => now([old, fresh])).not.toThrow();
+    expect(() => buildActivityHistory({ tasks: [old, fresh], missions: [], rules })).not.toThrow();
+  });
+
+  it('a task with partial worker records (no delivery fields) still projects', () => {
+    const t = task({ status: 'completed', workers: [{ status: 'completed' }] });
+    expect(() => buildActivityHistory({ tasks: [t], missions: [], rules })).not.toThrow();
+  });
+});
