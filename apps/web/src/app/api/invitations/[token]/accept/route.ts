@@ -6,6 +6,7 @@ import { requireSessionUser } from '@/lib/auth-helpers';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateAppChrome } from '@/lib/app-chrome';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 function normaliseEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
@@ -79,6 +80,8 @@ export async function POST(
         role: invitation.role,
       })
       .onConflictDoNothing();
+    // Cached callers of this person re-read their memberships (lib/caller-cache.ts).
+    await clearCallerCache(callerDep.user(user.id));
 
     // Mark invitation as accepted
     await db.update(teamInvitations)

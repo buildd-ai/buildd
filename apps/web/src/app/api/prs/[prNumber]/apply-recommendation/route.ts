@@ -40,6 +40,7 @@ import { performLandingAction } from '@/lib/landing-action-run';
 import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, applyRecommendationThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { explainDecisionRefusal, STALE_DECISION_REASONS } from '@buildd/workflow-kernel/decision-refusal';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -96,6 +97,8 @@ async function applyOnKernel(p: {
   user: { id: string; email?: string | null };
   corrections: string | null;
   expectedVersion: number | undefined;
+  /** Living Spec r7 AC-45: the head the person decided on, from the decision card. */
+  decisionHeadSha?: string;
 }) {
   // The person's corrections are the authoritative instruction; without them the card's
   // own recommendation (or free-text defect) is. The kernel adds the reviewer's round
@@ -109,6 +112,7 @@ async function applyOnKernel(p: {
     actor: `human:${p.user.id}`,
     expectedVersion: p.expectedVersion,
     instructions,
+    ...(p.decisionHeadSha ? { decisionHeadSha: p.decisionHeadSha } : {}),
   }, { principal: { kind: 'user', id: p.user.id } }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
   if (isDoorError(out)) return doorErrorResponse(out) as NextResponse;
   if (!out) return NextResponse.json({ error: 'PR is no longer owned by the workflow kernel; retry' }, { status: 409 });
@@ -120,12 +124,25 @@ async function applyOnKernel(p: {
     }, { status: 409 });
   }
   if (r.result === 'rejected') {
+    // AC-46: refused in plain words; nothing was dispatched and the escalation note stays.
     return NextResponse.json({
-      error: `PR #${p.prNumber} cannot take a fix right now (${r.reason}; delivery ${out.current.state ?? 'unknown'})`,
+      error: explainDecisionRefusal('request_fix', r.reason),
       reason: r.reason, kernel: true, current: out.current,
+      ...(STALE_DECISION_REASONS.has(r.reason) ? { stale: true } : {}),
     }, { status: 409 });
   }
   if (r.result === 'duplicate') {
+    // AC-45: the same decision again was answered by the first: the fix it filed is the one. A
+    // stale tab replaying it after the PR escalated again ran nothing, so the new escalation's
+    // note stays and the person is told to decide again.
+    if (out.current.state === 'ESCALATED') {
+      const reason = 'decision_already_answered';
+      return NextResponse.json({
+        error: explainDecisionRefusal('request_fix', reason), reason, stale: true, kernel: true, current: out.current,
+      }, { status: 409 });
+    }
+    // Otherwise its note clears now if the first submission's clearing never ran; the feed entry is the first's.
+    await supersedeAncestorEscalations(db, p.originalTask.id, p.prNumber);
     return NextResponse.json({ ok: true, dispatched: false, kernel: true, taskId: out.attempt?.taskId ?? null, current: out.current });
   }
 
@@ -174,6 +191,7 @@ export async function POST(
   let landingToken: string | undefined;
   let landingAction: string | undefined;
   let expectedVersion: number | undefined;
+  let decisionHeadSha: string | undefined;
   try {
     const body = await req.json().catch(() => ({}));
     if (typeof body?.workspaceId === 'string') workspaceId = body.workspaceId;
@@ -182,6 +200,8 @@ export async function POST(
     // The kernel delivery version the card was rendered at (§7.2); absent = the version read now.
     const v = body?.version ?? body?.expectedVersion;
     if (typeof v === 'number' && Number.isInteger(v)) expectedVersion = v;
+    // Living Spec r7 AC-45: the head the decision card showed; the fix is bound to it.
+    if (typeof body?.headSha === 'string' && /^[0-9a-zA-Z]{1,64}$/.test(body.headSha)) decisionHeadSha = body.headSha;
     if (typeof body?.corrections === 'string' && body.corrections.trim().length > 0) {
       corrections = body.corrections.trim();
     }
@@ -249,7 +269,7 @@ export async function POST(
   // is resolved (§7): a stale one is a 409 with the current view.
   const kernel = await kernelDeliveryOfPr({ workspaceId: worker.workspaceId, prNumber });
   if (kernel) {
-    return applyOnKernel({ prNumber, workspaceId: worker.workspaceId, originalTask, user, corrections: corrections ?? null, expectedVersion });
+    return applyOnKernel({ prNumber, workspaceId: worker.workspaceId, originalTask, user, corrections: corrections ?? null, expectedVersion, decisionHeadSha });
   }
 
   const headSha = worker.lastCommitSha;

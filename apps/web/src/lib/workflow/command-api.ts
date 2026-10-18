@@ -78,6 +78,8 @@ export interface KernelOps {
   request_ci_retry: { input: Parameters<Seam['requestCiRetry']>[0]; result: Awaited<ReturnType<Seam['requestCiRetry']>> };
   record_supersession: { input: Parameters<Seam['recordSupersession']>[0]; result: Awaited<ReturnType<Seam['recordSupersession']>> };
   abandon: { input: Parameters<Seam['abandonDelivery']>[0]; result: Awaited<ReturnType<Seam['abandonDelivery']>> };
+  /** §5: a person waives or defers one finding. Person-only: see PERSON_OPS. */
+  dispose_finding: { input: Parameters<Seam['disposeFinding']>[0]; result: Awaited<ReturnType<Seam['disposeFinding']>> };
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
@@ -149,6 +151,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   request_ci_retry: (s, i) => s.requestCiRetry(i),
   record_supersession: (s, i) => s.recordSupersession(i),
   abandon: (s, i) => s.abandonDelivery(i),
+  dispose_finding: (s, i) => s.disposeFinding(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
@@ -206,6 +209,18 @@ export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
 
 /** `drain` and `heal`: buildd's own upkeep of one delivery, by id, with no workspace on the input and only a `system` principal. */
 const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drain' || op === 'heal';
+/**
+ * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
+ * session is refused here, before the reach check, whatever actor string its input names.
+ */
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding']);
+/** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
+export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
+  if (!PERSON_OPS.has(op)) return null;
+  if (principal?.kind !== 'user') return `${op} is for a signed-in person; an agent or API key cannot submit it.`;
+  if ((input as { actor?: unknown } | null)?.actor !== `human:${principal.id}`) return `${op}'s actor must be the signed-in person.`;
+  return null;
+}
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
 
 /** The ops whose input names a GitHub App installation (`installationId`). */
@@ -458,6 +473,8 @@ export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServ
   }
   const workspaceId = isSystemDeliveryOp(cmd.op) ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (isSystemDeliveryOp(cmd.op) && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', `${cmd.op} is a system operation`);
+  const notPerson = personOpRefusal(cmd.op, cmd.input, cmd.principal);
+  if (notPerson) return refuse(403, 'person_only', notPerson, { applied: false });
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
   // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
   // adds no round trip of its own.

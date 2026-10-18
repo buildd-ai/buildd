@@ -105,13 +105,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Live Sibling Conflict Probe](./live-sibling-conflict-probe.md) · @max — verified 2026-10-08
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
-- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-15
+- [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-18
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-14
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Failure Alerts](./runner-failure-alerts.md) · @max — verified 2026-10-15
   Systemic runner failures MUST alert operations only when enabled and MUST never block claiming work.
-- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-15
+- [Runner Heartbeat and Version](./runner-heartbeat.md) · @max — verified 2026-10-18
   A runner heartbeat MUST report current presence and version information without exposing its local UI token.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.

@@ -12,6 +12,7 @@
  * - Internal API calls use caller's Bearer token — no privilege escalation
  * - register_skill with filePath/repo: not supported (no filesystem access)
  */
+import { runLocalRead } from "@/lib/mcp-local-reads";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,7 +33,7 @@ import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, si
 import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
 import { claimingUserId } from "@/lib/worker-owner";
-import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
+import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerIdentity, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
@@ -60,12 +61,12 @@ import { builddServerInfo } from "@/lib/mcp-server-info";
 import { memberHasRepoAccess, memberRepoAccessMessage } from "@/lib/member-repo-access";
 import { looksLikeGrantToken, verifyAccessTokenAnyAudience, isGrantClaims } from "@/lib/oauth/tokens";
 import { getIssuer } from "@/lib/oauth/config";
-import { authenticateGrantSession, GRANT_WORKSPACE_HEADER } from "@/lib/api-auth";
+import { authenticateGrantSession, GRANT_WORKSPACE_HEADER, resolveCallerGrant } from "@/lib/api-auth";
+import { cachedCaller, callerDep } from "@/lib/caller-cache";
 import {
   describeGrantWorkspaces,
   grantTokenScopes,
   resolveGrantWorkspaceRef,
-  resolveTokenGrant,
   type GrantWorkspaceChoice,
   type GrantWorkspaceResolution,
 } from "@/lib/mcp-grants";
@@ -145,18 +146,19 @@ function extractBearerToken(req: Request): string | null {
 function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
 
   return async (endpoint, options = {}) => {
-    const response = await fetch(`${baseUrl}${endpoint}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
-        ...options.headers,
-        // An account-level grant session acts in exactly this workspace on
-        // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
-        ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
+      ...(options.headers as Record<string, string> | undefined),
+      // An account-level grant session acts in exactly this workspace on
+      // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
+      ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
+    };
+    // R-22: a read route in LOCAL_READS runs in this process, the same request a fetch would send.
+    const method = (options.method ?? "GET").toUpperCase();
+    const local = method === "GET" && !options.body ? await runLocalRead(`${baseUrl}${endpoint}`, headers) : null;
+    const response = local ?? await fetch(`${baseUrl}${endpoint}`, { ...options, headers });
 
     if (!response.ok) {
       const error = await response.text();
@@ -175,10 +177,7 @@ function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string |
  */
 async function resolveTeamId(workspaceId: string | null | undefined, fallbackTeamId?: string): Promise<string | null> {
   if (workspaceId) {
-    const ws = await db.query.workspaces.findFirst({
-      where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { teamId: true },
-    });
+    const ws = await cachedWorkspaceFacts(workspaceId);
     if (ws?.teamId) return ws.teamId;
   }
   return fallbackTeamId ?? null;
@@ -197,15 +196,24 @@ async function resolveProjectKey(workspaceId: string | null | undefined): Promis
 // getMemoryClientForTeam is imported from @/lib/memory-helper (canonical implementation).
 
 /**
+ * A workspace's team and data class, read on every tool call: cached for at
+ * most 60 s and cleared when the workspace changes (lib/caller-cache.ts). A
+ * missing workspace is not cached.
+ */
+function cachedWorkspaceFacts(workspaceId: string) {
+  return cachedCaller(`ws-facts:${workspaceId}`, () => db.query.workspaces.findFirst({
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
+    columns: { teamId: true, dataClass: true },
+  }), { known: [callerDep.workspace(workspaceId)] });
+}
+
+/**
  * Resolve workspace dataClass. Returns 'sensitive' on DB failure (fail-closed).
  */
 async function resolveWorkspaceDataClass(workspaceId: string | null | undefined): Promise<'standard' | 'sensitive'> {
   if (!workspaceId) return 'standard';
   try {
-    const ws = await db.query.workspaces.findFirst({
-      where: sqlWhere(eq(workspaces.id, workspaceId)),
-      columns: { dataClass: true },
-    });
+    const ws = await cachedWorkspaceFacts(workspaceId);
     return (ws?.dataClass as 'standard' | 'sensitive') ?? 'standard';
   } catch {
     return 'sensitive'; // fail-closed
@@ -1128,9 +1136,19 @@ function grantJsonError(status: number, body: Record<string, unknown>): Response
 async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Response> {
   const claims = await verifyAccessTokenAnyAudience(jwt);
   if (!claims || !isGrantClaims(claims)) return unauthorizedResponse("Invalid access token");
-  const grant = await resolveTokenGrant(claims);
+  // Cached with what it reaches (lib/caller-cache.ts), cleared when the grant,
+  // a membership or a granted workspace changes.
+  const grant = await resolveCallerGrant(claims);
   if (!grant || !grant.grantId || grant.workspaces.length === 0) return unauthorizedResponse("Invalid access token");
-  const choices = await describeGrantWorkspaces(grant);
+  const grantId = grant.grantId;
+  const choices = (await cachedCaller(
+    `grant-choices:${grantId}:${grant.userId}:${grant.workspaces.map((w) => `${w.workspaceId}=${w.role ?? ''}`).join(',')}`,
+    async () => {
+      const c = await describeGrantWorkspaces(grant);
+      return c.length ? c : null;
+    },
+    { known: [callerDep.grant(grantId), callerDep.user(grant.userId), ...grant.workspaces.map((w) => callerDep.workspace(w.workspaceId))] },
+  )) ?? [];
   if (choices.length === 0) return unauthorizedResponse("Invalid access token");
 
   const url = new URL(req.url);
@@ -1147,9 +1165,7 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   // A `?worker=` must be in a granted workspace; its workspace is the default.
   const workerParam = url.searchParams.get("worker");
   if (workerParam) {
-    const w = isUuidLike(workerParam)
-      ? await db.query.workers.findFirst({ where: sqlWhere(eq(workersTable.id, workerParam)), columns: { workspaceId: true } })
-      : null;
+    const w = isUuidLike(workerParam) ? await workerIdentity(workerParam) : null;
     const ws = w?.workspaceId ? choices.find((c) => c.workspaceId === w.workspaceId) : undefined;
     if (!ws || (connectionDefault && connectionDefault.workspaceId !== ws.workspaceId)) {
       return grantJsonError(403, { error: "Worker not found for this account" });

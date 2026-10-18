@@ -102,6 +102,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
   'apps/web/src/app/api/workspaces/[id]/artifacts/route.ts',
+  // The all-workspace lists (R-22): a task token is narrowed to its own workspace.
+  'apps/web/src/app/api/workspaces/across/[list]/route.ts',
   'apps/web/src/app/api/workspaces/[id]/config/route.ts',
   'apps/web/src/app/api/workspaces/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',

@@ -65,6 +65,7 @@ export function assembleMissionStages(rows: MissionStageRows): Map<string, Missi
       id: t.id, title: t.title ?? null, status: t.status, taskClass: t.taskClass ?? null, kind: t.kind ?? null,
       mode: t.mode ?? null, category: t.category ?? null, roleSlug: t.roleSlug ?? null, context: (t as { stageContext?: unknown }).stageContext ?? null,
       createdAt: (t as { createdAt?: string | Date | null }).createdAt ?? null,
+      dependencyFailed: (t as { stageDependencyFailed?: boolean | null }).stageDependencyFailed === true,
       prs: prsByTask.get(t.id) ?? [],
     });
     tasksByMission.set(t.missionId, list);

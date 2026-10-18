@@ -217,6 +217,12 @@ export async function delKey(key: string): Promise<void> {
   await safe('del key', r => r.del(key), undefined);
 }
 
+/** MGET: one value (or null) per key, in order. `undefined` = could not ask. */
+export async function getKeys<T>(keys: readonly string[]): Promise<Array<T | null> | undefined> {
+  if (keys.length === 0) return [];
+  return safe<Array<T | null> | undefined>('mget keys', r => r.mget<Array<T | null>>(...keys), undefined);
+}
+
 /** SET NX EX: true only for the first caller in the window; false when Redis is unavailable. */
 export async function setOnce(key: string, ttlSec: number): Promise<boolean> {
   return safe('set nx', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', false);

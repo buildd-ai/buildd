@@ -177,6 +177,7 @@ import { loadIdleHolderIds, loadSoftOverlapHolders } from './soft-overlap-store'
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
 import { settlesWorkChanges } from '@/lib/settle-work-changes';
@@ -520,13 +521,18 @@ async function postHandler(req: NextRequest) {
   // The limit is the slots the account's live runners report, added up; the
   // account's own number only when none reports (accountWorkerSlotLimit). A
   // failed read keeps the account's number, which is what applied before.
+  // A stored beat can be one write interval old: candidates by the widened
+  // cutoff, then "live" by the newer of it and the Redis beat (lib/runner-beats.ts).
+  const slotsNow = Date.now();
   const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(and(
       eq(workerHeartbeats.accountId, account.id),
-      gte(workerHeartbeats.lastHeartbeatAt, new Date(Date.now() - RUNNER_LIVE_WINDOW_MS)),
+      gte(workerHeartbeats.lastHeartbeatAt, runnerLiveCandidateCutoff(slotsNow, RUNNER_LIVE_WINDOW_MS)),
     )),
-    columns: { maxConcurrentWorkers: true },
-  }).then(rows => rows.map(r => r.maxConcurrentWorkers)).catch((err) => {
+    columns: { accountId: true, localUiUrl: true, lastHeartbeatAt: true, maxConcurrentWorkers: true },
+  }).then(rows => withLiveRunnerBeats(rows))
+    .then(rows => rows.filter(r => slotsNow - r.lastHeartbeatAt.getTime() <= RUNNER_LIVE_WINDOW_MS).map(r => r.maxConcurrentWorkers))
+    .catch((err) => {
     console.warn('[claim] could not read live runner slots, using the account limit:', err);
     return [] as number[];
   });
@@ -2121,6 +2127,13 @@ async function postHandler(req: NextRequest) {
           if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
             jevStartNotes.push(holdNote);
             console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
+          } else if (blockingPeer && forced && interactiveSession) {
+            // An admin force claim from a verified interactive session: a
+            // person is at the keyboard choosing this task, in its own
+            // worktree. Without this a busy mission blocked a session claim
+            // indefinitely (the manifest cannot be narrowed after creation).
+            // A headless admin force claim still keeps the serialization.
+            if (!forceBypassed.includes('advisory_manifest')) forceBypassed.push('advisory_manifest');
           } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
             // A person's dashboard Force start lifts this serialization for
             // this task (artifact §7.2: human force only). The admin MCP
