@@ -331,7 +331,7 @@ async function HomeAgents({ teamId, wsIds, timezone, now }: { teamId: string; ws
       return null;
     }),
     // The Agents live sparkline: the last day's busy slots, same scope as the fleet.
-    loadOccupancySeries(wsIds, '24h', now).catch(err => {
+    loadOccupancySeries(wsIds, '24h', now, 0, null, teamId).catch(err => {
       console.error('[home] occupancy load failed (non-fatal):', err);
       return null;
     }),

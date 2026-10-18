@@ -37,6 +37,11 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
         <h3 className="text-body font-semibold text-text-primary">{heading ?? runner.name}</h3>
         <span className="text-meta text-text-muted">{runner.online ? busy : 'Offline'}</span>
       </div>
+      {runner.interactive && running.length > 0 && (
+        <p data-testid="running-now-sessions-note" className="mt-0.5 text-meta text-text-muted">
+          Your own sessions. Sessions don't use runner slots.
+        </p>
+      )}
       {running.length > 0 && (
         <ul className="mt-1 divide-y divide-border-default">
           {shown.map(w => {

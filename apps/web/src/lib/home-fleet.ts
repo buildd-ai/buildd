@@ -331,15 +331,15 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
  * ones) and the stretches every slot sat idle while work waited. Lean on
  * purpose: no ticker, counts or questions, and only the runners page calls it.
  */
-export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
-  const { teamId, wsIds, now } = input;
+export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number; viewerId?: string | null }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
+  const { teamId, wsIds, now, viewerId } = input;
   if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
   const windowStart = now - FLEET_WINDOW_MS;
   const [heartbeatRows, workerRows, history] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }),
     db
       .select({
-        id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
         prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
@@ -364,7 +364,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
   const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
-    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    id: r.id, accountId: r.accountId, ownerId: r.ownerId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
@@ -374,7 +374,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     } : null,
   }));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], rows, {
-    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, viewerId,
   });
   const from = Math.max(fleet.window.from, windowStart);
   return { fleet, idle: idleWhileQueued({ ...history, from, to: now }) };

@@ -4187,6 +4187,8 @@ export interface FleetSlotWorker {
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
+  /** Whether the viewer owns this run: true/false, or null when its owner is unknown. Absent when no viewer was given. */
+  mine?: boolean | null;
 }
 
 export interface FleetSlot {
@@ -4197,7 +4199,7 @@ export interface FleetSlot {
    * is the task's own short label (null when it has none worth showing);
    * `scope` the one-word chip; `at` when it ended (epoch ms).
    */
-  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null; mine?: boolean | null } | null;
   lane: Lane;
 }
 
