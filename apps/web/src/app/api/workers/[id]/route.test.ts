@@ -759,8 +759,10 @@ const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false)
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
 const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null);
+const mockLegacyReviewFixGate = mock(async (_p: any, _d: any): Promise<any> => null);
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
+  legacyReviewFixCompletionGate: mockLegacyReviewFixGate,
 }));
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
@@ -779,6 +781,7 @@ mock.module('@/lib/workflow/seam', () => ({
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
+  legacyDiffTouchesFindings: () => null,
   recordReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s recordReviewVerdict, not the kernel client\'s'); }),
   adoptReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s adoptReviewVerdict, not the kernel client\'s'); }),
   noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
@@ -3937,6 +3940,43 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body).toMatchObject({ code: 'repair_still_conflicted', gate: 'output_requirement', boundHeadSha: 'h1' });
       expect(mockLegacyRepairGate.mock.calls[0][0]).toMatchObject({ task: { conflictRetryPrNumber: 42 } });
       expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('a legacy review fix with no relevant diff is refused repair_unrelated_diff, and nothing is written', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({ set: mock(() => { taskUpdateCalled = true; return { where: mock(() => Promise.resolve()) }; }) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'review-fix-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'review-fix-1', outputRequirement: 'auto', category: 'bug', deliveryId: null, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1',
+        context: { failureContext: { errorType: 'reviewer_request_changes', summary: 'fix it' } },
+      });
+      mockLegacyReviewFixGate.mockReset();
+      mockLegacyReviewFixGate.mockResolvedValue({
+        code: 'repair_unrelated_diff', error: 'changes nothing near the files', hint: 'fix it', boundHeadSha: 'h1', liveHeadSha: 'h2',
+      });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', structuredOutput: { fixedElsewhere: { files: ['a.ts'], reason: 'moved' } } } }), { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body).toMatchObject({ code: 'repair_unrelated_diff', gate: 'output_requirement', boundHeadSha: 'h1', liveHeadSha: 'h2' });
+      expect(mockLegacyReviewFixGate.mock.calls[0][0]).toMatchObject({ task: { reviewerRetryPrNumber: 42 }, fixedElsewhere: { files: ['a.ts'], reason: 'moved' } });
+      expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('the legacy review-fix gate is not reached by a kernel-delivery task or a task with no review round', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue({ ...fixTaskRow, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1' });
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockLegacyReviewFixGate.mockReset();
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'task-1' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      expect(mockLegacyReviewFixGate).not.toHaveBeenCalled();
     });
 
     it('the legacy repair gate is not consulted for a task that is not a conflict retry', async () => {

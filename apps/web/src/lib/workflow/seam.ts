@@ -958,6 +958,12 @@ export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files
   return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
 }
 
+/** The relevance rule of §13.13 rule 4 for a review fix on a PR with no delivery: false only when the diff plainly misses every named path. */
+export function legacyDiffTouchesFindings(p: { named: string[]; changed: string[] | null; feedback: string | null }): boolean | null {
+  const view = { findings: p.named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
+  return diffTouchesFindings(view, p.changed, pathsNamedIn(p.feedback));
+}
+
 export async function fixCompletionGate(p: {
   task: AttemptTask; localHeadSha: string | null;
   noopEvidence?: { findingIds: string[]; evidence: string } | null;
