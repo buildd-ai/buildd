@@ -6,6 +6,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -103,8 +104,8 @@ export default async function MissionsPage({
     })(),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
-    // "Plan ›" is behind the team's task-estimates switch, like the other estimate surfaces.
-    taskEstimatesEnabled(activeTeamId),
+    // Mission finish dates require a calibrated estimator as well as team availability.
+    (async () => taskEstimatesDefaultOn() && await taskEstimatesEnabled(activeTeamId))(),
   ]);
 
   const { maxSeats, activeSeats } = seats;

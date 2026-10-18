@@ -64,6 +64,9 @@ the platform owner sees version-specific calibration and model comparisons.
   sources or an estimator error never fail task creation or a claim.
 - Estimates are forecasts for people. The claim route, scheduler and mission
   planner never use forecasts or calibration as inputs to ordering or capacity.
+  The Missions Plan numeric readout and its link remain behind the running
+  version calibration gate as well as team availability; default-on collection
+  must not expose uncalibrated mission completion dates.
 
 **Quality gate** (`evaluateTaskEstimatesGate`, printed by
 `packages/core/scripts/estimate-backtest.ts --blend`). All checks must pass:
@@ -321,7 +324,7 @@ implementation tasks add.
 - AC-1: GIVEN the gate is no-go or unknown WHEN an eligible team files a task THEN a frozen forecast may be written, but shared display remains indicative or nonnumeric. Test: packages/core/__tests__/task-estimate-rollout.test.ts, task-estimate-display.test.ts.
 - AC-2: GIVEN the gate passes for the running version WHEN an eligible team files a task THEN one frozen estimate row is written without team opt-in. Test: task-estimate-rollout.test.ts, task-estimate-source.test.ts.
 - AC-3: GIVEN NULL settings WHEN eligibility resolves successfully THEN estimates default on; GIVEN explicit false THEN no new estimate is written. Test: task-estimate-rollout.test.ts.
-- AC-4: GIVEN any team member WHEN they open settings THEN no Features management item appears; its legacy URL redirects to Health › Estimates. Authorized PATCH taskEstimates remains an operational opt-out. Test: apps/web/src/app/api/teams/[id]/route.test.ts.
+- AC-4: GIVEN any team member WHEN they open settings THEN no Features management item appears; its legacy URL redirects to Health › Estimates. Authorized PATCH taskEstimates remains an operational opt-out. Test: apps/web/src/lib/settings-nav.test.ts, apps/web/src/app/app/(protected)/settings/features/page.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts.
 - AC-5: GIVEN any team member WHEN Health › Estimates renders THEN it offers no settings-management link or instruction to enable estimates. Test: EstimatesClient.test.tsx.
 - AC-6: GIVEN prior-only, sparse or uncalibrated evidence WHEN a task estimate renders THEN one shared formatter shows a broad outward-rounded indicative range, no minute-level point estimate and one uncertainty sentence. Headline and breakdown use identical range, units and estimator version. Test: packages/core/__tests__/task-estimate-display.test.ts, apps/web/src/lib/task-time-row.test.ts.
 - AC-7: GIVEN the estimator throws or a source is unavailable WHEN a task is created THEN creation succeeds and the write returns `failed` or uses the remaining sources. Test: task-estimate-source.test.ts.
@@ -451,3 +454,8 @@ without exclusion cannot promote the calibration pin.
 AC-26 (planned, calibration follow-up): GIVEN a fitted candidate THEN validation
 and final temporal test data are excluded from fitting. No candidate fitting or
 automatic promotion is claimed until this is implemented and evaluated.
+
+AC-27: GIVEN default-on availability and uncalibrated estimates WHEN opening
+Missions THEN its Plan link is hidden and the Plan route loads no numeric
+forecast. GIVEN calibrated estimates and an eligible team THEN Plan remains
+available. Test: apps/web/src/app/app/(protected)/missions/plan/page.test.tsx.
