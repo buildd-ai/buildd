@@ -5,12 +5,13 @@ mock.module('@/modules', () => ({ SUBSCRIBERS: [] }));
 
 const {
   flushWorkChanges, isEmptyWorkChange, noteWorkChanged, setWorkChangeListenersForTests,
+  setWorkChangeVersionBumperForTests, settleWorkChangeVersions, SETTLE_VERSION_CAP_MS,
   workChangeOfEvent, workChangeOfKernelInput,
 } = await import('./work-changed');
 const { emit } = await import('./core-emit');
 type Batch = Parameters<Parameters<typeof setWorkChangeListenersForTests>[0] extends readonly (infer L)[] | null ? L : never>[0];
 
-afterEach(() => { setWorkChangeListenersForTests(null); });
+afterEach(() => { setWorkChangeListenersForTests(null); setWorkChangeVersionBumperForTests(null); });
 
 function listen() {
   const batches: Batch[] = [];
@@ -53,6 +54,75 @@ describe('noteWorkChanged', () => {
     const batches = listen();
     await flushWorkChanges();
     expect(batches).toEqual([]);
+  });
+});
+
+describe('settleWorkChangeVersions (read-your-writes, spec 3ef37387 R-20)', () => {
+  function bumps() {
+    const seen: string[][] = [];
+    listen();
+    setWorkChangeVersionBumperForTests(async (b) => { seen.push([...b.taskIds].sort()); });
+    return seen;
+  }
+
+  it('bumps what is noted now, before the caller answers, without waiting for the coalesced flush', async () => {
+    const seen = bumps();
+    // Another request already scheduled the coalesced flush; it has not run.
+    noteWorkChanged({ taskIds: ['other'] });
+    noteWorkChanged({ taskIds: ['mine'] });
+    await settleWorkChangeVersions();
+    expect(seen.flat().sort()).toEqual(['mine', 'other']);
+  });
+
+  it('a later flush does not bump the same ids again', async () => {
+    const seen = bumps();
+    noteWorkChanged({ taskIds: ['t1'] });
+    await settleWorkChangeVersions();
+    await flushWorkChanges();
+    expect(seen).toEqual([['t1']]);
+  });
+
+  it('with nothing awaited, the flush still bumps (writes that never settle)', async () => {
+    const seen = bumps();
+    noteWorkChanged({ taskIds: ['t2'] });
+    await flushWorkChanges();
+    expect(seen).toEqual([['t2']]);
+  });
+
+  it('waits for a bump another caller already started (it may hold this caller\'s ids)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let done = false;
+    listen();
+    setWorkChangeVersionBumperForTests(async () => { await gate; done = true; });
+    noteWorkChanged({ taskIds: ['t3'] });
+    const first = settleWorkChangeVersions();
+    const second = settleWorkChangeVersions();
+    setTimeout(release, 5);
+    await second;
+    expect(done).toBe(true);
+    await first;
+  });
+
+  it('fails open: a bump that throws or hangs never reaches the caller and is capped', async () => {
+    listen();
+    setWorkChangeVersionBumperForTests(async () => { throw new Error('redis down'); });
+    noteWorkChanged({ taskIds: ['t4'] });
+    await expect(settleWorkChangeVersions()).resolves.toBeUndefined();
+
+    setWorkChangeVersionBumperForTests(() => new Promise<void>(() => {}));
+    noteWorkChanged({ taskIds: ['t5'] });
+    const t0 = Date.now();
+    await settleWorkChangeVersions();
+    expect(Date.now() - t0).toBeLessThan(SETTLE_VERSION_CAP_MS + 500);
+  });
+
+  it('in a test process with no listeners installed, bumps nothing', async () => {
+    const seen: unknown[] = [];
+    setWorkChangeVersionBumperForTests(async (b) => { seen.push(b); });
+    noteWorkChanged({ taskIds: ['t6'] });
+    await settleWorkChangeVersions();
+    expect(seen).toEqual([]);
   });
 });
 

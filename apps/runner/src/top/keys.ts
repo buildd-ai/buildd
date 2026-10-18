@@ -3,7 +3,7 @@
  * effects run.ts carries out (a socket action, opening a URL, quitting).
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
-import { TERMS } from '@buildd/shared';
+import { TERMS, nextLoginMode, type LoginMode } from '@buildd/shared';
 import {
   isLooseKey, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
@@ -164,6 +164,8 @@ export type Effect =
    * after a lower: pause the most recently started extras (R-45).
    */
   | { type: 'slots'; slots: number; extras?: 'pause' }
+  /** `b`: set how the runner's own logins share its slots (spec 34a48877 R-14). */
+  | { type: 'logins'; mode: LoginMode }
   /** Read the queue now: the Queue view just opened (R-26). */
   | { type: 'refreshQueue' }
   | { type: 'quit' };
@@ -351,6 +353,7 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   }
   // `+` / `-` (R-43): one more or one fewer slot, from any list or detail view.
   if (key.name === 'char' && (key.ch === '+' || key.ch === '=' || key.ch === '-')) return slotKey(state, key.ch === '-' ? -1 : 1);
+  if (key.name === 'char' && key.ch === 'b') return loginKey(state);
   // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
   if (key.name === 'char' && key.ch === 'h') {
     const on = !heldNow(state, now);
@@ -502,6 +505,11 @@ export function actionResultText(effect: Effect, result: { status: number; body:
     if (failed.length > 0) return { text: failed[0], tone: 'error' };
     return { text: typeof b?.line === 'string' ? b.line : `Slots now ${effect.slots}.`, tone: 'ok' };
   }
+  if (effect.type === 'logins') {
+    if (!ok) return { text: `Login mode refused: ${refusalReason(result)}`, tone: 'error' };
+    const line = (result.body as { line?: unknown } | null)?.line;
+    return { text: typeof line === 'string' ? line : `Login mode now ${effect.mode}.`, tone: 'ok' };
+  }
   if (effect.type === 'talk') return ok ? { text: 'Back from Claude.', tone: 'ok' } : { text: refusalReason(result), tone: 'error' };
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
@@ -523,6 +531,18 @@ export function refusalReason(result: { status: number; body: unknown }): string
   const reason = typeof b === 'string' ? b : b?.error ?? b?.message ?? b?.reason;
   if (typeof reason === 'string' && reason.trim()) return `${reason.trim()} (HTTP ${result.status})`;
   return `HTTP ${result.status}`;
+}
+
+/**
+ * `b`: the next login mode (balanced → claude-first → codex-first), shown at
+ * once; the runner saves it and its next claim follows it (AC-44, R-19).
+ */
+function loginKey(state: TopState): KeyResult {
+  const cur = state.runner.loginMode;
+  if (!cur) return { state: refuse(state, 'The runner running now does not know login modes yet (update it).'), effects: [] };
+  const mode = nextLoginMode(cur);
+  const next: TopState = { ...state, runner: { ...state.runner, loginMode: mode } };
+  return { state: info(next, `Login mode now ${mode}. Running agents keep their login; the next claim follows it.`), effects: [{ type: 'logins', mode }] };
 }
 
 /** Slots a person may set from top (runner-slots.ts bounds). */

@@ -62,13 +62,11 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
     const recent = recentRows[0];
     const records = recordRows.map(toRootCauseRecord);
     const taskIds = [...new Set(records.flatMap(r => r.affectedTaskIds))];
-    const [taskRows, liveRows] = taskIds.length === 0 ? [[], []] : await Promise.all([
-      db.select({ id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, status: tasks.status, createdByUserId: tasks.createdByUserId })
-        .from(tasks).where(inArray(tasks.id, taskIds)),
-      db.select({ taskId: workers.taskId }).from(workers)
-        .where(and(inArray(workers.taskId, taskIds), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
-    ]);
-    const live = new Set(liveRows.map(w => w.taskId));
+    // One read: whether a task has a live run is an EXISTS beside its columns.
+    const taskRows = taskIds.length === 0 ? [] : await db.select({
+      id: tasks.id, title: tasks.title, workspaceId: tasks.workspaceId, status: tasks.status, createdByUserId: tasks.createdByUserId,
+      hasLiveRun: sql<boolean>`exists (select 1 from ${workers} where ${workers.taskId} = ${tasks.id} and ${inArray(workers.status, [...LIVE_WORKER_STATUSES])})`,
+    }).from(tasks).where(inArray(tasks.id, taskIds));
     const claimed = new Set(claimRows.map(w => w.accountId));
     return {
       teamId,
@@ -78,7 +76,7 @@ export async function serviceStatusReads(teamId: string, now: number = Date.now(
         createdByUserId: r.createdByUserId, recentlyActive: claimed.has(r.id),
       })),
       members: memberRows,
-      tasks: taskRows.map(t => ({ ...t, hasLiveRun: live.has(t.id) })),
+      tasks: taskRows.map(t => ({ ...t, hasLiveRun: t.hasLiveRun === true })),
       teamHasProviderKey: keyRows.length > 0,
       teamHasSavedSignIn: savedRows.length > 0,
       recentTaskCount: recent?.n ?? 0,

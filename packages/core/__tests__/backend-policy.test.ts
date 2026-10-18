@@ -227,6 +227,16 @@ describe('describeBackendRouting', () => {
     })!.summary).toBe('routed to Claude by budget failover (Codex rate-limited)');
   });
 
+  it("names the runner's login mode when it picked the backend (spec 34a48877 R-18)", () => {
+    expect(describeBackendRouting({
+      [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'runner_login_mode', mode: 'balanced' },
+    })!.summary).toBe("routed to Codex by this runner's balanced mode");
+    // A stamp without a readable mode still says what moved it.
+    expect(describeBackendRouting({
+      [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'runner_login_mode' },
+    })!.summary).toBe("routed to Codex by this runner's login mode");
+  });
+
   it('falls back to a worker-report failover stamp', () => {
     const d = describeBackendRouting({ failedOverFrom: 'codex', failoverReason: 'budget_exhausted' }, 'claude');
     expect(d).toEqual({

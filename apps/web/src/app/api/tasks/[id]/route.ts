@@ -49,6 +49,8 @@ import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
+import { bumpChangeVersions, scopesOfDeletedTasks } from '@/lib/change-version';
 import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { isOwnScopeHold } from '@buildd/workflow-kernel/scope-hold';
@@ -289,6 +291,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns mock
@@ -897,6 +902,7 @@ export async function PATCH(
     console.error('Update task error:', error);
     return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
 
 // DELETE /api/tasks/[id] - Delete a task (only pending tasks)
@@ -904,6 +910,9 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   const { id } = await params;
 
   // Dev mode returns success
@@ -959,11 +968,15 @@ export async function DELETE(
     // delete orphans the worker rows (task_id → NULL), and a question parked
     // on one would otherwise stay live, holding a slot, with no task to end it.
     await applyTaskDeleteSideEffects(id);
+    // The row is gone after the delete, so resolve the scopes it versions on first.
+    const deletedScopes = await scopesOfDeletedTasks([id]);
     await db.delete(tasks).where(eq(tasks.id, id));
+    await bumpChangeVersions(deletedScopes);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Delete task error:', error);
     return NextResponse.json({ error: 'Failed to delete task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
