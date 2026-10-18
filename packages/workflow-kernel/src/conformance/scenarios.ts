@@ -1286,7 +1286,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes requested');
       f.github.setPr(s.repo, s.prNumber, s.live('H1'));
       await drainKernel(host, s, f.ports);
-      eq(f.github.written.filter((w) => w.op === 'postReview').map((w) => pick(w, ['commitId', 'event', 'body'])), [{ commitId: 'H1', event: 'REQUEST_CHANGES', body: 'Changes requested by buildd reviewer: check the caller' }], 'posted at the round head');
+      eq(f.github.written.filter((w) => w.op === 'postReview').map((w) => pick(w, ['commitId', 'event', 'body'])), [{ commitId: 'H1', event: 'REQUEST_CHANGES', body: 'Changes requested by buildd reviewer: check the caller\n\nbuildd verdict: request_changes · head H1 · round 1' }], 'posted at the round head');
       const attempt = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
       ok(attempt?.taskId, 'T8 allocated the row with its task id');
       eq(f.work.filed.filter((w) => w.role === 'fix').map((w) => ({ taskId: w.taskId, attemptId: w.lineage.attemptId, firstAtHead: w.detail?.firstAtHead })), [{ taskId: attempt.taskId, attemptId: attempt.id, firstAtHead: true }], 'the fix, under the row');

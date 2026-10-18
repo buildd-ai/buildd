@@ -1751,6 +1751,13 @@ function verdictDecided(
     kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
   });
   const unverified = cmd.effectiveVerdict === 'approve' && f.stillOpen.length > 0;
+  // A verdict that blocks contradicts a reviewer's approval standing at the same commit (a forced
+  // re-review that found what the first missed): that approval is withdrawn, not left covering the
+  // head beside the request for changes. A person's own approval (`human`) is theirs to withdraw.
+  const withdrawal: { patch: DeliveryPatch; evidence: Record<string, unknown> } =
+    cmd.effectiveVerdict !== 'approve' && dd.approvalBasis === 'verdict' && dd.approvedHeads.includes(round.headSha)
+      ? { patch: { approvedHeads: [], approvalBasis: null }, evidence: { withdrewApproval: { headSha: round.headSha, heads: dd.approvedHeads, byRoundId: round.id } } }
+      : { patch: {}, evidence: {} };
   if (o.held) {
     // The GitHub review is the reviewer's word on this commit; the kernel still gates landing.
     const ev = cmd.effectiveVerdict === 'approve' && !unverified ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
@@ -1797,7 +1804,8 @@ function verdictDecided(
   if (cmd.effectiveVerdict === 'escalate') {
     return c.apply(key, 'ESCALATED', {
       ...common,
-      patch: { stateReason: 'review_escalated' },
+      evidence: { ...common.evidence, ...withdrawal.evidence },
+      patch: { stateReason: 'review_escalated', ...withdrawal.patch },
       rounds: [decide],
       effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
     });
@@ -1807,14 +1815,16 @@ function verdictDecided(
     // A re-check after an approval is never at the limit: it gets its repair cycle (c1d66a6a).
     return c.apply(key, 'ESCALATED', {
       ...common,
-      patch: { stateReason: 'review_exhausted' },
+      evidence: { ...common.evidence, ...withdrawal.evidence },
+      patch: { stateReason: 'review_exhausted', ...withdrawal.patch },
       rounds: [decide],
       effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, findings: f.stillOpen.map((x) => x.id) } }],
     });
   }
   return c.apply(key, 'CHANGES_REQUESTED', {
     ...common,
-    patch: { stateReason: null },
+    evidence: { ...common.evidence, ...withdrawal.evidence },
+    patch: { stateReason: null, ...withdrawal.patch },
     rounds: [decide],
     effects: [postReview('REQUEST_CHANGES'), {
       kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
