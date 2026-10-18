@@ -1,6 +1,6 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import TaskTimeRow from '@/components/TaskTimeRow';
-import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { isDeliverableArtifact } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
 import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
@@ -369,7 +369,7 @@ export default async function TaskDetailPage({
     ? db.select({
         id: artifacts.id, workerId: artifacts.workerId, type: artifacts.type, title: artifacts.title,
         storageKey: artifacts.storageKey, shareToken: artifacts.shareToken, visibility: artifacts.visibility,
-        metadata: artifacts.metadata, createdAt: artifacts.createdAt,
+        metadata: artifacts.metadata, key: artifacts.key, createdAt: artifacts.createdAt,
         content: sql<string | null>`case when ${artifacts.type} = 'summary' and length(${artifacts.content}) <= ${SUMMARY_WHOLE_MAX_CHARS}
           then ${artifacts.content} else left(${artifacts.content}, ${ARTIFACT_PREVIEW_CHARS}) end`,
         contentLength: sql<number | null>`length(${artifacts.content})`.mapWith(Number),
@@ -424,14 +424,13 @@ export default async function TaskDetailPage({
   // below reads the same view when this task owns the PR, so it is read once.
   const deliveryContextPromise = loadTaskDeliveryContext(task.id);
   deliveryContextPromise.catch(() => {});
-  const [evidenceReview, evidenceArtifactCount, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
+  const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber
       ? RUN_PROGRESS_READERS.review({
           workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
           knownDelivery: { taskId: task.id, view: deliveryContextPromise.then((c) => c.view) },
         }).catch(() => null)
       : Promise.resolve(null),
-    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     round2,
     (async () => {
       // Ship state (§10.3) — whether this task is attributed to a healthy release.
@@ -483,6 +482,11 @@ export default async function TaskDetailPage({
     serviceStatusPromise,
   ]);
   const taskArtifacts = (reads2(artifactsQuery) ?? []) as Awaited<NonNullable<typeof artifactsQuery>>;
+  // The live worker's deliverables, counted from the rows above: no read of its own.
+  const liveWorkerId = taskWorkers.find(w => isLiveWorkerStatus(w.status))?.id;
+  const evidenceArtifactCount = liveWorkerId
+    ? taskArtifacts.filter(a => a.workerId === liveWorkerId && isDeliverableArtifact(a)).length
+    : 0;
   const errorTraces = reads2(errorTracesQuery) as Awaited<typeof errorTracesQuery>;
   const ciAttemptRows = (reads2(ciAttemptsQuery) ?? []) as Awaited<NonNullable<typeof ciAttemptsQuery>>;
   const dependentTasks = (reads2(dependentsQuery) ?? []) as Awaited<NonNullable<typeof dependentsQuery>>;
