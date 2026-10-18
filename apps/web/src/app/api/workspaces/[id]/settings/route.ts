@@ -9,6 +9,7 @@ import { resolveEarlyReleaseMode } from '@/lib/early-release-mode';
 import { roleHas } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearWorkspaceSettingsCache } from '@/lib/team-cache';
 
 async function resolveAuth(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -137,6 +138,7 @@ export async function PATCH(
     await db.update(workspaces)
       .set({ workTrackerConfig: null, updatedAt: new Date() })
       .where(eq(workspaces.id, id));
+    await clearWorkspaceSettingsCache(id);
     return NextResponse.json({ success: true, workTrackerConfig: null });
   }
 
@@ -204,6 +206,7 @@ export async function PATCH(
     await db.update(workspaces)
       .set({ workTrackerConfig: config, updatedAt: new Date() })
       .where(eq(workspaces.id, id));
+    await clearWorkspaceSettingsCache(id);
     return NextResponse.json({ success: true, workTrackerConfig: config });
   } catch (error) {
     console.error('PATCH workspace settings error:', error);
