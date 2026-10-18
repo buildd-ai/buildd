@@ -5737,6 +5737,8 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
   versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+  // The platform operator's kernel view reads the log by time (recent transitions, the count on host=web).
+  createdIdx: index('workflow_transitions_created_idx').on(t.createdAt),
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
