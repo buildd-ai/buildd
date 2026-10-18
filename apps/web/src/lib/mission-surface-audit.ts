@@ -24,6 +24,7 @@ import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, type SurfaceAuditG
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
+import { dependencyFailureOf } from '@buildd/core/dependency-failure';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -245,10 +246,15 @@ const finishedWithoutLooking = (status: string) => status === 'failed' || status
  * An audit that still answers for the mission: open or done, or failed but
  * blocked by an incident's repair (`context.incidentRecovery`,
  * failure-incident-recovery §16.4), which re-queues that same audit when its
- * capture works again. Only a failed audit nothing is recovering is replaced.
+ * capture works again, or failed only because build work it depends on failed
+ * (`dependencyFailureOf`): it never ran, and goes back to the queue when that
+ * work completes (`reopenChecksFailedBy`, spec 072de598 I-14). A replacement
+ * would skip the failed work and check a branch without it. Only a failed
+ * audit nothing is recovering is replaced.
  */
-export function isLiveAudit(a: { status: string; context?: unknown }): boolean {
-  return !finishedWithoutLooking(a.status) || (a.status === 'failed' && readIncidentRecoveryRef(a.context) !== null);
+export function isLiveAudit(a: { status: string; context?: unknown; result?: unknown }): boolean {
+  if (!finishedWithoutLooking(a.status)) return true;
+  return a.status === 'failed' && (readIncidentRecoveryRef(a.context) !== null || dependencyFailureOf(a.result) !== null);
 }
 
 type PlanMission = { id: string; title: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; executor: string | null };
@@ -287,7 +293,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
 
   const audits = await db.query.tasks.findMany({
     where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
-    columns: { id: true, status: true, context: true },
+    columns: { id: true, status: true, context: true, result: true },
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   // A finished audit is the answer only for the commit it looked at. Asked for a

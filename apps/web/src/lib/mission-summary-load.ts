@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers } from '@buildd/core/db/schema';
 import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
 import { and, inArray, sql } from 'drizzle-orm';
-import { stageContextSql, stageWorkersPredicate } from './mission-stage-sql';
+import { stageContextSql, stageDependencyFailedSql, stageWorkersPredicate } from './mission-stage-sql';
 import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { loadDependencyRows } from './dependency-rows';
 import { foreignDependencyIds } from './mission-helpers';
@@ -68,7 +68,7 @@ export async function loadMissionSummaryInputs(
         loopConfig: true, loopState: true,
       },
       // Never the whole context: the stage's projected keys, and the card's digest as `context`.
-      extras: { ...sqlExtras({ stageContext: stageContextSql }), ...MISSION_CARD_TASK_EXTRAS },
+      extras: { ...sqlExtras({ stageContext: stageContextSql, stageDependencyFailed: stageDependencyFailedSql }), ...MISSION_CARD_TASK_EXTRAS },
     }),
   ]);
   if (missionRows.length === 0) return out;
