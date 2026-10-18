@@ -20,6 +20,7 @@
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
 import { openRequiredFindings } from './findings';
+import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
 import { attemptOrdinal, attemptView } from './reducer';
 import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
@@ -153,6 +154,12 @@ export interface DeliveryView {
   openFindings?: number;
   /** Of those, how many a push already touched (`addressed`): a fix waiting for a re-review (AC-17). */
   addressedFindings?: number;
+  /**
+   * R-43: what the `Buildd / Review approval` status says on the current head, in the
+   * same plain terms it publishes, so a surface can show it apart from CI. Null
+   * when nothing is published (no PR head, or the delivery is over).
+   */
+  reviewApproval?: { state: 'success' | 'failure' | 'pending'; description: string } | null;
 }
 
 /**
@@ -231,7 +238,7 @@ const ESCALATION_COPY: Record<string, string> = {
   ci_exhausted: 'CI fix budget spent',
   conflict_exhausted: 'Conflict fix budget spent',
   push_undeliverable: 'The fix never reached GitHub',
-  landing_needs_human: 'Merge refused; a person has to land it',
+  landing_needs_human: 'Merge blocked: a person has to merge it',
   effect_dead: 'An automatic step kept failing; a person has to take it from here',
   policy_human: 'Workspace policy requires a person',
   unsafe_to_merge: 'Unsafe to merge',
@@ -270,7 +277,7 @@ function addressedNote(findings: FindingSnapshot[]): string | null {
 
 /**
  * `landing_needs_human` says which kind of refusal it was (S15 / T16 / §6.7), so a
- * person reading "a person has to land it" knows whether the base kept moving
+ * person reading "a person has to merge it" knows whether the base kept moving
  * faster than CI, the base keeps changing what the PR changes (and which files),
  * GitHub itself refused the merge, or the branch could not be updated. A policy
  * refusal (deny path, human tier, migration) is its own escalation reason.
@@ -282,20 +289,20 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
     const files = Array.isArray(ev.files) ? (ev.files as unknown[]).filter((f): f is string => typeof f === 'string') : [];
     if (ev.cause === 'refresh_unsafe') {
       return {
-        headline: 'Landing held: the base keeps changing what this PR changes',
+        headline: 'Merge held: the base keeps changing what this PR changes',
         detail: files.length ? `the base changed ${files.join(', ')}` : str('deltaReason'),
       };
     }
     const refreshes = typeof ev.refreshes === 'number' ? ev.refreshes : null;
     const behindBy = typeof ev.behindBy === 'number' ? ev.behindBy : null;
     return {
-      headline: 'Landing held: the base kept moving faster than CI',
+      headline: 'Merge held: the base kept moving faster than CI',
       detail: [refreshes != null ? `refreshed ${refreshes} times` : null, behindBy != null ? `${behindBy} commits behind` : null].filter(Boolean).join(', ') || null,
     };
   }
-  if (t?.command === 'MergeCallResult' && ev?.outcome === 'gate_refused') return { headline: 'The landing check refused the merge when it ran; a person has to look', detail: str('detail') };
-  if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to land it', detail: str('detail') };
-  if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to land it', detail: str('reason') };
+  if (t?.command === 'MergeCallResult' && ev?.outcome === 'gate_refused') return { headline: 'The review approval check refused the merge when it ran; a person has to look', detail: str('detail') };
+  if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to merge it', detail: str('detail') };
+  if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to merge it', detail: str('reason') };
   return { headline: ESCALATION_COPY.landing_needs_human!, detail: evidenceDetail(t) };
 }
 
@@ -362,7 +369,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       if (repairKind === 'behind' && input.laneWait) {
         const base = d.baseRef ?? 'its base';
         headline = 'Waiting to update branch';
-        detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is landing on ${base} first` : `another PR is landing on ${base} first`;
+        detail = input.laneWait.behindPr != null ? `PR #${input.laneWait.behindPr} is merging into ${base} first` : `another PR is merging into ${base} first`;
       } else {
         headline = repairKind === 'ci' ? 'Fixing CI' : repairKind === 'behind' ? 'Updating branch' : 'Repairing';
       }
@@ -381,7 +388,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
           : 'every change in it was reviewed at its own head; nothing new was added';
       } else {
         // Approved is not merged: the header says what it waits on until the merge fact.
-        headline = d.approvalBasis === 'policy' ? 'Ready to land' : 'Approved · awaiting merge';
+        headline = d.approvalBasis === 'policy' ? 'Ready to merge' : 'Approved · awaiting merge';
       }
       break;
     case 'LANDING': headline = 'Merging'; break;
@@ -459,7 +466,13 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     findings: input.view.findings ?? [],
     openFindings: openRequiredFindings(input.view).length,
     addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
+    reviewApproval: reviewApprovalOf(input.view),
   };
+}
+
+function reviewApprovalOf(view: KernelView): DeliveryView['reviewApproval'] {
+  const s = landingStatusOf(view);
+  return s ? { state: s.state, description: s.description } : null;
 }
 
 const FAMILY_LABEL: Record<AttemptFamily, string> = { ci: 'CI', review_fix: 'review', conflict: 'conflict', migration: 'migration', trunk: 'trunk' };
