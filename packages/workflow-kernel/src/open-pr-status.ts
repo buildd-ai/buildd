@@ -19,10 +19,12 @@ import { LANDING_STATUS_CONTEXT, REVIEW_STATUS_TERMS as T, clip, landingStatusOf
 import type { KernelView } from './types';
 
 /** Whether anyone asked buildd to review a PR no delivery owns. */
-export type UnownedReview = 'not_requested' | 'in_progress';
+export type UnownedReview = 'not_requested' | 'in_progress' | 'changes_requested';
 
 /** The status on an open PR head no delivery owns: pending until a delivery exists, never success. */
 export function unownedPrStatus(sha: string, review: UnownedReview): LandingStatus {
+  // A finished review that asked for changes is a verdict, not a review still running.
+  if (review === 'changes_requested') return { state: 'failure', sha, description: clip(`${T.changesRequested}: a review asked for changes to ${short(sha)}`) };
   const description = review === 'in_progress'
     ? `${T.inProgress}: ${short(sha)} is waiting for its review`
     : `${T.notRequested}: no buildd review covers ${short(sha)} yet`;
@@ -93,7 +95,7 @@ export function openHeadStatus(p: {
   const kernel = p.view ? landingStatusOf(p.view) : null;
   if (kernel && kernel.sha === p.sha) return { by: 'kernel', status: kernel };
   if (p.candidate) return { by: 'release_candidate', status: releaseCandidateStatus({ sha: p.sha, ...p.candidate }) };
-  return { by: 'host', status: unownedPrStatus(p.sha, kernel ? 'in_progress' : p.review ?? 'not_requested') };
+  return { by: 'host', status: unownedPrStatus(p.sha, p.review === 'changes_requested' ? p.review : kernel ? 'in_progress' : p.review ?? 'not_requested') };
 }
 
 export interface OpenHead {
