@@ -22,6 +22,7 @@ import {
   isUnitTestFile,
   runTestFile,
   runWithConcurrency,
+  admissionLimit,
   snapshotStore,
   storeDiffIsFatal,
   DURATION_HINT_MIN_MS,
@@ -822,5 +823,26 @@ describe('duration hints file', () => {
     const busy = formatHeartbeat({ ...base, load1: 9.5, remainingHintMs: null });
     expect(busy).toContain('oversubscribed');
     expect(busy).not.toContain('hinted work');
+  });
+});
+
+describe('host-aware admission', () => {
+  it('keeps full concurrency on a calm host and halves it when oversubscribed', () => {
+    expect(admissionLimit(4, 2, 4)).toBe(4);
+    expect(admissionLimit(4, 6, 4)).toBe(4);
+    expect(admissionLimit(4, 6.5, 4)).toBe(2);
+    expect(admissionLimit(1, 100, 4)).toBe(1);
+  });
+
+  it('never runs more files than the live limit, but always makes progress', async () => {
+    let active = 0;
+    let peak = 0;
+    await runWithConcurrency([1, 2, 3, 4, 5], 4, async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise(r => setTimeout(r, 5));
+      active--;
+    }, { limit: () => 0, pollMs: 1 });
+    expect(peak).toBe(1);
   });
 });
