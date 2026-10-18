@@ -364,8 +364,8 @@ export async function POST(req: NextRequest) {
   // gates a person may override (deps, held mission, dead subject, startAt,
   // mission concurrency/pacing, path overlap, workspace cap) and never the ones
   // that protect correctness, cost or capacity (live worker, a person's hold on
-  // the task, the mission budget, scope-undeclared serialization, role/runner
-  // routing, provider walls, account limits). Granted below, once the task's
+  // the task, the mission budget, role/runner routing, provider walls,
+  // account limits). Undeclared scope is not a gate, so there is nothing to lift. Granted below, once the task's
   // team is known.
   const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req, 'admin');
   let forceClaim = false;
@@ -1475,8 +1475,7 @@ export async function POST(req: NextRequest) {
   // derive the base. Without them the prompt could only see the workspace's
   // trunk, which is exactly how a worker came to be told "PR to <trunk>" by a
   // server that then refused trunk for that task.
-  // Mission rows, in-flight counts (reviews excluded) and each mission's
-  // scope-undeclared in-flight set: see ./coordination-snapshot.
+  // Mission rows and in-flight counts (reviews excluded): see ./coordination-snapshot.
   const filteredMissionIds = [...new Set(
     filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
   )];
@@ -2049,8 +2048,11 @@ export async function POST(req: NextRequest) {
         //    the model's START that was meant to relax it never applied
         //    (docs/specs/claim-overlap-scheduling.md, "Undeclared scope").
         //    What still holds an undeclared task: a declared dependency, an
-        //    explicit hold, the mission cap above, and, once it edits, the
-        //    exclusive lease on any unmergeable path it touches.
+        //    explicit hold, the caps. Nothing is leased for it up front (it
+        //    declares no path), so two undeclared tasks can both edit an
+        //    unmergeable surface, a migration included, under advisory leases
+        //    (the default): the merge step and CI catch that. Under
+        //    pathClaimEnforcement 'enforce' the second edit is denied.
       }
     }
 

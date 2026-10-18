@@ -70,7 +70,7 @@ smaller-first ordering.
 **Invariants**:
 - `planClaimBatch` is pure: the same input in any row order returns the same plan.
 - The plan never picks more than the capacity it is given.
-- No two picks share a hard edge (concrete path overlap, lease overlap, open-PR pinned files, a shared serialized surface, or an unresolved dependency), and no pick has a hard edge to in-flight work. A node with no usable scope has no hard edge for that alone (`claim-overlap-scheduling` I-40).
+- No two picks share a hard edge (concrete path overlap, lease overlap, open-PR pinned files, a shared serialized surface, or an unresolved dependency), and no pick has a hard edge to in-flight work. A node with no usable scope has no hard edge for that alone (`claim-overlap-scheduling` I-47).
 - Soft edges only delay a task; they never become hard.
 - With null thresholds, predicted scope is ignored entirely.
 - `CLAIM_PLANNER_CALIBRATION.thresholds` is non-null only together with a `readoutRef`, a `measuredOn` identity and verdict `eligible_for_gated`.

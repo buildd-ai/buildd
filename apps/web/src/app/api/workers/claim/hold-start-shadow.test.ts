@@ -6,7 +6,6 @@ import {
   openPrStartVerdict,
   acquireGatedStartPaths,
   gatedStartApplies,
-  gatedStartReachable,
   releaseGatedStartPaths,
   resetClaimHoldMemos,
   runClaimHoldShadow,
@@ -483,7 +482,6 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
     const h = harness();
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ mode: 'gated', applied: true, effective: 'START', experimentArm: 'apply', applyingFraction: 1 });
-    expect(gatedStartReachable()).toBe(true);
   });
 
   it('a Jev START below the threshold is recorded, never applied: the task holds', async () => {
@@ -520,7 +518,6 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
     const h = harness({ decision: GATED, applyingFraction: 0 });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0, experimentArm: 'observe' });
-    expect(gatedStartReachable({ decision: GATED, applyingFraction: 0 })).toBe(false);
   });
 
   it('a state-read failure falls back to the rule and is recorded as retrieval_error', async () => {
@@ -657,7 +654,6 @@ describe('gated START', () => {
   it('a shadow definition stays unreachable whatever the fraction: no ledger lookup', async () => {
     let lookups = 0;
     const deps: ClaimHoldDeps = { decision: SHADOW, applyingFraction: 1, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } };
-    expect(gatedStartReachable(deps)).toBe(false);
     expect(await gatedStartApplies(note(), deps)).toBe(false);
     expect(lookups).toBe(0);
   });

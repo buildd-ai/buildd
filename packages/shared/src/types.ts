@@ -1617,8 +1617,7 @@ export interface ClaimTasksInput {
    * dependencies, a held mission, a dead subject, a future startAt, mission
    * concurrency and pacing, path overlap and the workspace cap. Never skips a
    * live worker, a person's hold on the task, the mission budget,
-   * scope-undeclared serialization, role/runner routing, provider walls or
-   * account limits. Ignored otherwise. Audited on the task and the gate ledger.
+   * role/runner routing, provider walls or account limits. Ignored otherwise. Audited on the task and the gate ledger.
    */
   forceOverride?: boolean;
   /**
@@ -1809,7 +1808,7 @@ export interface ClaimDiagnostics {
     connector_mismatch?: number;
     subject_dead?: number;
     path_overlap?: number;
-    /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
+    /** Retired: undeclared scope no longer holds a task. Always 0; kept for older readers. */
     advisory_manifest?: number;
     /**
      * Declared scope overlaps an in-flight task's only softly (directory

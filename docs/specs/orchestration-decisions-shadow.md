@@ -158,7 +158,7 @@ current manifests.
   (`docs/specs/team-permissions.md` "Platform operator").
 - At claim, only advisory overlap deferrals are asked about: `open_pr_overlap`
   (every overlapping PR's worker ended) and `soft_overlap`. Undeclared scope is
-  not a deferral and is never asked about (`claim-overlap-scheduling` I-42).
+  not a deferral and is never asked about (`claim-overlap-scheduling` I-49).
   `classifyClaimHoldEligibility` refuses a forced claim, an unresolved lease
   read, a live lease, a serialized surface, a migration path and (open-PR
   overlap) a live PR holder before any model sees the task. Declared

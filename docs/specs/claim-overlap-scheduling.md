@@ -236,21 +236,28 @@ claim loop, the planner or the Start probe.
 
 **Invariants**
 
-- I-39 The claim loop has no scope-undeclared serialization. A scope-undeclared
+- I-46 The claim loop has no scope-undeclared serialization. A scope-undeclared
   candidate is never deferred because another scope-undeclared task of its
   mission is in flight or was claimed earlier in the same poll. The
   `advisory_manifest` deferral (shown as `scope_undeclared_mutex`) is retired:
   nothing writes it, and its diagnostics counter stays at 0 for older readers.
-- I-40 The planner adds no edge for a node with no usable scope. A
+- I-47 The planner adds no edge for a node with no usable scope. A
   scope-undeclared in-flight worker is not a planner node, and no prediction,
   confident or weak, orders undeclared work behind undeclared work.
-- I-41 What still holds undeclared work is what holds any work: a declared
+- I-48 What still holds undeclared work is what holds any work: a declared
   dependency, an explicit hold (held mission, future `startAt`, a person's
   hold), the mission and workspace caps, runner, auth and budget limits, and
   one open fix attempt per PR (`sibling_retry_open`, the same-branch rule).
-  Once it edits, the exclusive lease on any unmergeable path it touches holds
-  the next task on that path (I-4, I-28).
-- I-42 The model is not asked about undeclared scope: there is no
+  Nothing is leased for it up front: it declares no path, so I-4 has nothing
+  to acquire. Paths it is seen editing are leased after its first sync, and a
+  later candidate that declares one of them holds on that lease if it is
+  unmergeable (I-28). Two undeclared tasks can therefore both edit an
+  unmergeable surface, a migration included, where the workspace leases are
+  advisory (the default): the edit is reported, not denied. The merge step
+  (runner pre-merge, the migration layout and commute checks) and CI catch
+  that collision. A workspace that sets `pathClaimEnforcement: 'enforce'`
+  denies the second edit instead (I-29).
+- I-49 The model is not asked about undeclared scope: there is no
   hold/start note for it and no applied-START lookup. A decision row whose
   answering model has no stored measurement is recorded as `suggested` with
   reason `non_jev` and the rule's answer in effect; only an `applied` row

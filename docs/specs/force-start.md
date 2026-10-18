@@ -88,7 +88,7 @@ claim's own per-edge SQL predicate (`dependencySatisfied`).
   (including the migration anchor) still applies, so migration numbering stays serialized.
 - The admin MCP `claim_task {force: true}` keeps its own gate set.
 - Declaring no files is not a waiting reason, so there is nothing to force for it
-  (`claim-overlap-scheduling` I-39). The retired `scope_undeclared_mutex` kind stays in
+  (`claim-overlap-scheduling` I-46). The retired `scope_undeclared_mutex` kind stays in
   the model only so older recorded reasons still render.
 - Declared dependencies and coordination-only holds are counted apart in every headline:
   incidental overlap ordering reads "Waiting on migration slot · N tasks also editing {area}",

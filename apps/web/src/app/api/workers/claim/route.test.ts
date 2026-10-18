@@ -519,7 +519,6 @@ mock.module('./hold-start-shadow', () => ({
     ...holdStartTest.deps,
     schedule: (fn: () => Promise<void>) => { holdStartTest.scheduled.push(fn()); },
   }),
-  gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
   openPrStartVerdict: (n: any, g: boolean) => realHoldStart.openPrStartVerdict(n, g, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),

@@ -15,9 +15,10 @@
  *     they run once the response is sent. Never awaited by the route; a model
  *     call can never hold a claim response.
  *  3. `gatedStartApplies` / `acquireGatedStartPaths`: the gated START path.
- *     Live (gated definition, full applying fraction): an applied Jev START
- *     recorded for the same claim-time state lets the NEXT claim past the one
- *     named advisory gate. START relaxes only that gate;
+ *     Reached only when a verdict is asked with `gated: true`; the claim route
+ *     asks with `gated: false`, so the overlap policy decides. When reached,
+ *     an applied Jev START recorded for the same claim-time state lets the
+ *     NEXT claim past the one named advisory gate. START relaxes only that gate;
  *     declared paths are still acquired through the exclusive primitive
  *     before the claim, and every later gate still runs. A START that then
  *     loses the atomic claim gives back the leases it took
@@ -603,8 +604,6 @@ export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: Cla
 
 // ── 3. Gated START ───────────────────────────────────────────────────────────
 
-const GATES: readonly ClaimHoldCandidate['gate'][] = ['open_pr_overlap', 'soft_overlap'];
-
 /**
  * Cheap reachability ceiling, clamped to [0, 1]; the persisted cell is checked
  * asynchronously before any START applies.
@@ -615,13 +614,13 @@ export function grantedFraction(deps: ClaimHoldDeps, _gate: ClaimHoldCandidate['
   return typeof f === 'number' && Number.isFinite(f) && f > 0 ? Math.min(1, f) : 0;
 }
 
-/** Is the gated START path live at all? Cheap, synchronous; false once rolled back. */
-export function gatedStartReachable(deps: ClaimHoldDeps = {}): boolean {
-  const decision = deps.decision ?? CLAIM_HOLD_DECISION;
-  return GATES.some(g => isGatedStartReachable(decision, grantedFraction(deps, g)));
-}
-
 /**
+ * Kept, not dead: `openPrStartVerdict` and `softOverlapStartVerdict` call it
+ * when asked with `gated: true`, the seam a measured model would decide
+ * elevated-risk overlaps through (orchestration-decisions-shadow). The claim
+ * route asks with `gated: false` today, so nothing in production reaches it
+ * and the overlap policy decides (claim-overlap-scheduling I-30).
+ *
  * Does an applied START (Jev, gated, in cohort; the adapter only writes
  * `applied` under all three) exist for this exact claim-time state? Returns
  * false without any I/O while unreachable, and on any error.

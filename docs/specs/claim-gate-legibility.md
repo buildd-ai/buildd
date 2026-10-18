@@ -129,7 +129,7 @@ Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
 self-clear: `path_overlap`, `mission_concurrent`, `mission_paced`,
 `budget_paused`, `provider_unavailable`. (`advisory_manifest`, the old
 one-scope-undeclared-task-per-mission deferral, is retired: undeclared scope
-starts by default, `claim-overlap-scheduling` I-39. Its counter stays at 0.) They are not
+starts by default, `claim-overlap-scheduling` I-46. Its counter stays at 0.) They are not
 `gateReason` values — `/start` does not reject on them, because by the time an
 operator reads the response the deferral has usually already cleared.
 
@@ -220,7 +220,7 @@ hold:
   and that merge is the action the card offers.
 - **LX-10**: retired with the per-mission scope-undeclared serialization it
   exempted: no claimant, local or runner, is deferred for declaring no files
-  (`claim-overlap-scheduling` I-39).
+  (`claim-overlap-scheduling` I-46).
 - **LX-11**: an open question is the person's move (any executor). A worker
   parked on a question (`waiting_input`: a runner agent's AskUserQuestion or a
   local session's `ask_human`) still counts as live, so `missionOpenQuestions`
