@@ -53,6 +53,13 @@ describe('RunningNow', () => {
     expect(html).toContain('Open PR outpaced by base: PR #4191');
     expect(html).not.toContain('open_pr_outp');
   });
+  it('a session working with no runner slot occupied is labelled claimed, not slot occupancy', () => {
+    const f = { ...fleet, runners: [{ ...fleet.runners[0], slots: [] }] } as unknown as FleetSnapshot;
+    const h = renderToStaticMarkup(<RunningNow fleet={f} now={NOW} />);
+    expect(h).toContain('1 claimed');
+    expect(h).toContain('not an occupied runner slot');
+    expect(renderToStaticMarkup(<RunningNow fleet={{ ...f, sessions: null } as unknown as FleetSnapshot} now={NOW} />)).not.toContain('not an occupied runner slot');
+  });
   it('a row labelled only with a PR number reads as its title', () => {
     const f = { ...fleet, sessions: null, runners: [{ ...fleet.runners[0], slots: [{ index: 0, worker: w('d', { label: 'ci', rest: '#4066', title: '[builder · after CI #1] fix(sentinel): page once per incident' }), last: null, lane: { id: '0', bars: [] } }] }] } as unknown as FleetSnapshot;
     const h = renderToStaticMarkup(<RunningNow fleet={f} now={NOW} />);
