@@ -17,6 +17,11 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
+// arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
+const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -398,6 +403,97 @@ describe('landPr — a lasting delivery-target hold (#4909, task 0427d13b)', () 
     expect(out).toMatchObject({ kind: 'waiting_ci', reason: 'two task PRs still open on the integration branch' });
     expect(calls).toHaveLength(0);
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+// AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted before landPr decides
+// who owns it, then the kernel's gate decides; a refused adoption merges nothing.
+describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
+  const awaiting = { deliveryId: 'd-new', current: { state: 'AWAITING_REVIEW', version: 3, head: 'head1', round: 1 }, stateReason: null, treadmill: null };
+
+  it('adopts it with the owner task under the door\'s principal, then waits on the kernel\'s review; nothing merges', async () => {
+    const adopted: any[] = [];
+    const landed: any[] = [];
+    let owned = false;
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async (i: any, c: any) => { adopted.push([i, c]); owned = true; return { kind: 'kernel', deliveryId: 'd-new', adopted: true }; }) as never,
+      kernelLandingView: (async () => (owned ? awaiting : null)) as never,
+      landThroughKernel: async (i: any) => { landed.push(i); return null; },
+    };
+    const out = await land({}, d);
+    expect(adopted).toEqual([[expect.objectContaining({ workspaceId: 'ws-1', repoFullName: 'buildd-ai/buildd', prNumber: 42, taskId: 'task-1', door: 'land_pr:check_suite' }), { principal: { kind: 'system', id: 'system:check_suite' } }]]);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect((out as { reason: string }).reason).toContain('AWAITING_REVIEW');
+    expect(landed).toHaveLength(0);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a refused adoption asks a person and merges nothing; the kernel is not asked', async () => {
+    const landed: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'refused', reason: 'adoption_failed:review_task', message: 'PR #42 has no review record in buildd and its only task is a review, so nothing was merged. Request a review of it first.' })) as never,
+      landThroughKernel: async (i: any) => { landed.push(i); return null; },
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'unsafe_other' });
+    expect(landed).toHaveLength(0);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('an unreachable control plane is a wait, never the legacy merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'refused', reason: 'adoption_failed:adoption_unavailable', message: 'not reachable; nothing was merged' })) as never,
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('adopted, but the kernel did not take the merge: a wait, never the legacy merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'kernel', deliveryId: 'd-new', adopted: true })) as never,
+      landThroughKernel: async () => null,
+    };
+    const out = await land({}, d);
+    expect(out.kind).not.toBe('merged');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the unpinned merge', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    const out = await land({}, d);
+    expect(out.kind).toBe('merged');
+    expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', door: 'land_pr:check_suite' })]);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate the release gate holds (a required check) is a wait, never a failed merge', async () => {
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async () => ({ merged: false, message: 'GitHub is holding PR #42 until required check "build" passes', hold: true })) as never,
+    };
+    const out = await land({}, d);
+    expect(out).toMatchObject({ kind: 'waiting_ci' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('shadow (observe only) opens nothing', async () => {
+    const adopted: any[] = [];
+    const d: LandPrDeps = { ...deps(), adoptBeforeMerge: (async (i: any) => { adopted.push(i); return { kind: 'legacy', reason: 'kernel_off' }; }) as never };
+    await land({ mode: 'shadow' }, d);
+    expect(adopted).toHaveLength(0);
   });
 });
 

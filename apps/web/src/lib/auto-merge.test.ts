@@ -29,6 +29,11 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
+// arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
+const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // The visual review half of the mission-PR gate (ready-to-merge.ts) is proven in
 // ready-to-merge.test.ts and mission-pr.test.ts; here the review has passed.
 mock.module('@/lib/workflow/visual-review-state-load', () => ({
@@ -2037,6 +2042,69 @@ describe('tryAutoMergeWorkerPr — return value', () => {
     expect(result.merged).toBe(false);
     expect(result.reason).toContain('no workspace');
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  // AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted before D4 merges it.
+  describe('D4: a PR with no delivery (AC-13)', () => {
+    const green = () => mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    const run = (adopt: (...a: any[]) => Promise<any>, land: (...a: any[]) => Promise<any>) => tryAutoMergeWorkerPr({
+      installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+      adoptBeforeMerge: adopt as never, landThroughKernel: land as never,
+    });
+
+    it('adopts it with the worker\'s task, then the kernel decides; the legacy merge is never called', async () => {
+      green();
+      const adopted: any[] = [];
+      const landed: any[] = [];
+      const result = await run(
+        async (i, c) => { adopted.push([i, c]); return { kind: 'kernel', deliveryId: 'd-new', adopted: true }; },
+        async (i) => { landed.push(i); return { merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved yet', mergeCommitSha: null, current: { state: 'AWAITING_REVIEW', version: 3, head: 'head-sha', round: 1 }, result: null }; },
+      );
+      expect(adopted).toEqual([[expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, taskId: 'task-1', door: 'auto_merge' }), { principal: { kind: 'system', id: 'system:auto_merge' } }]]);
+      expect(landed).toHaveLength(1);
+      expect(result).toEqual({ merged: false, reason: 'not approved yet' });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a refused adoption merges nothing and the kernel is not asked', async () => {
+      green();
+      const landed: any[] = [];
+      const result = await run(
+        async () => ({ kind: 'refused', reason: 'adoption_failed:attempt_task', message: 'nothing was merged' }),
+        async (i) => { landed.push(i); return null; },
+      );
+      expect(result).toEqual({ merged: false, reason: 'nothing was merged' });
+      expect(landed).toHaveLength(0);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the unpinned merge', async () => {
+      green();
+      const outside: any[] = [];
+      const result = await tryAutoMergeWorkerPr({
+        installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha',
+        worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+        policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+        adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+        landThroughKernel: (async () => null) as never,
+        mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+      });
+      expect(result).toEqual({ merged: true });
+      expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha', door: 'auto_merge' })]);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('adopted, but the kernel did not take the merge: nothing merges', async () => {
+      green();
+      const result = await run(async () => ({ kind: 'kernel', deliveryId: 'd-new', adopted: true }), async () => null);
+      expect(result.merged).toBe(false);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
   });
 
   describe('integration-refresh PR (dev merged into a mission branch)', () => {

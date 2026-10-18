@@ -8,6 +8,7 @@
  */
 
 import { parseReviewBlockers, type ReviewBlocker } from './attention-line';
+import type { DeliveryView } from './workflow/projections';
 
 /** Bound on a single callback delivery. A hanging endpoint must not stall a verdict. */
 export const REVIEW_CALLBACK_TIMEOUT_MS = 5_000;
@@ -64,7 +65,12 @@ export interface PrReviewStatus {
    * recorded error (an old pre-migration row, for instance).
    */
   failureReason: string | null;
-  /** Request-changes retry position, from the reviewer task context. */
+  /**
+   * Required findings still open on the delivery. Null for a PR the workflow
+   * kernel does not own, which has no finding ledger.
+   */
+  openFindings: number | null;
+  /** Request-changes retry position: the kernel's round, or the reviewer task context. */
   iteration: number | null;
   maxIterations: number | null;
   /**
@@ -85,7 +91,19 @@ export interface PrReviewStatus {
   mergeBlocked: 'awaiting_human' | null;
 }
 
+/** The slice of a kernel delivery view the review status reads (§7). */
+export type DeliveryReviewInput = Pick<
+  DeliveryView,
+  'state' | 'stateReason' | 'headSha' | 'rounds' | 'attempts' | 'approvedCurrentHead' | 'openFindings' | 'prNumber'
+>;
+
 interface DeriveInput {
+  /**
+   * The PR's kernel delivery. When present it owns state, verdict, round and
+   * open findings; `reviewTask` then only supplies the reviewer's prose
+   * (confidence, summary, feedback). Absent: the legacy reviewer-task path.
+   */
+  delivery?: DeliveryReviewInput | null;
   reviewTask?: {
     id: string;
     status: string;
@@ -119,6 +137,41 @@ const EXIT_CAUSE_LABEL: Record<string, string> = {
   task_cancelled: 'the review task was cancelled before a verdict was produced',
 };
 
+const DELIVERY_VERDICT: Record<string, PrReviewVerdict> = {
+  approve: 'approve',
+  request_changes: 'request-changes',
+  escalate: 'escalate',
+};
+
+/** State, verdict and round position from the delivery's own record, never the reviewer tasks. */
+function readDelivery(d: DeliveryReviewInput): {
+  state: PrReviewState;
+  verdict: PrReviewVerdict | null;
+  round: number | null;
+  maxRounds: number | null;
+  headSha: string | null;
+  reviewerTaskId: string | null;
+} {
+  const live = d.rounds.filter((r) => r.status !== 'superseded');
+  const round = live[live.length - 1] ?? null;
+  const maxRounds = d.attempts.review_fix?.m ?? null;
+  const base = { round: round?.round ?? null, maxRounds, headSha: round?.headSha ?? d.headSha, reviewerTaskId: round?.reviewerTaskId ?? null };
+  const decided = round?.status === 'decided'
+    ? DELIVERY_VERDICT[round.effectiveVerdict ?? round.verdict ?? ''] ?? null
+    : null;
+
+  // A delivery held for a person is escalated whatever the last round said.
+  if (d.state === 'ESCALATED') return { ...base, state: 'escalated', verdict: decided ?? 'escalate' };
+  if (!round) {
+    return { ...base, state: d.state === 'AWAITING_REVIEW' ? 'queued' : d.approvedCurrentHead ? 'approved' : 'not_requested', verdict: d.approvedCurrentHead ? 'approve' : null };
+  }
+  if (round.status === 'queued') return { ...base, state: 'queued', verdict: null };
+  if (round.status === 'reviewing') return { ...base, state: 'reviewing', verdict: null };
+  if (round.status === 'failed') return { ...base, state: 'review_failed', verdict: null };
+  if (decided) return { ...base, state: VERDICT_STATE[decided], verdict: decided };
+  return { ...base, state: 'review_failed', verdict: null };
+}
+
 const VERDICT_STATE: Record<PrReviewVerdict, PrReviewState> = {
   approve: 'approved',
   'request-changes': 'changes_requested',
@@ -144,15 +197,18 @@ function stringOrNull(value: unknown): string | null {
  * mapping serves the read action, the long-poll loop, and the callback payload.
  */
 export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
-  const { reviewTask, worker, reviewerWorker, autoMergeExpected = true, waitFor = 'verdict' } = input;
+  const { reviewTask, worker, reviewerWorker, delivery, autoMergeExpected = true, waitFor = 'verdict' } = input;
 
-  const lifecycle = worker?.prLifecycleStatus ?? null;
-  const merged = lifecycle === 'merged' || Boolean(worker?.mergedAt);
+  // A kernel-owned PR's lifecycle is the delivery's, not the worker columns'.
+  const lifecycle = delivery
+    ? delivery.state === 'MERGED' ? 'merged' : ['SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED'].includes(delivery.state) ? 'closed' : null
+    : worker?.prLifecycleStatus ?? null;
+  const merged = lifecycle === 'merged' || (!delivery && Boolean(worker?.mergedAt));
   const prState: PrReviewStatus['prState'] = merged
     ? 'merged'
     : lifecycle === 'closed'
       ? 'closed'
-      : worker
+      : worker || delivery
         ? 'open'
         : 'unknown';
 
@@ -167,10 +223,14 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
   // server-escalated PR reads as `approved` to the self-merge check and to the
   // review-verdict gate, which is the one state neither may get wrong.
   const rawVerdict = stringOrNull(result.effectiveVerdict) ?? stringOrNull(output.verdict);
-  const verdict = rawVerdict && rawVerdict in VERDICT_STATE ? (rawVerdict as PrReviewVerdict) : null;
+  const legacyVerdict = rawVerdict && rawVerdict in VERDICT_STATE ? (rawVerdict as PrReviewVerdict) : null;
+  const fromDelivery = delivery ? readDelivery(delivery) : null;
+  const verdict = fromDelivery ? fromDelivery.verdict : legacyVerdict;
 
   let state: PrReviewState;
-  if (!reviewTask) {
+  if (fromDelivery) {
+    state = fromDelivery.state;
+  } else if (!reviewTask) {
     state = 'not_requested';
   } else if (reviewTask.status === 'pending') {
     state = 'queued';
@@ -213,7 +273,7 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
   return {
     state,
     terminal,
-    reviewTaskId: reviewTask?.id ?? null,
+    reviewTaskId: reviewTask?.id ?? fromDelivery?.reviewerTaskId ?? null,
     adoptedTaskId: worker?.taskId ?? stringOrNull(ctx.originalTaskId),
     verdict,
     confidence: numberOrNull(output.confidence),
@@ -224,9 +284,10 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     recommendation: stringOrNull(output.recommendation),
     blockers: parseReviewBlockers(output.blockers),
     failureReason,
-    iteration: numberOrNull(ctx.iteration),
-    maxIterations: numberOrNull(ctx.maxIterations),
-    reviewHeadSha: stringOrNull(ctx.headSha),
+    openFindings: delivery ? delivery.openFindings ?? 0 : null,
+    iteration: fromDelivery ? fromDelivery.round : numberOrNull(ctx.iteration),
+    maxIterations: fromDelivery ? fromDelivery.maxRounds : numberOrNull(ctx.maxIterations),
+    reviewHeadSha: fromDelivery ? fromDelivery.headSha : stringOrNull(ctx.headSha),
     reviewEquivalentHeadShas: Array.isArray(ctx.equivalentHeadShas)
       ? ctx.equivalentHeadShas.filter((s): s is string => typeof s === 'string')
       : [],
