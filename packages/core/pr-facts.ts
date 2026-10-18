@@ -183,10 +183,26 @@ export async function recordPrFact(
   if (!q) return [];
   const res = await (opts.exec ?? dbExec)(q);
   const rows = (Array.isArray(res) ? res : (res as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
+  const recorded = rows.map((r) => ({
     id: String(r.id),
     taskId: r.task_id == null ? null : String(r.task_id),
     workspaceId: r.workspace_id == null ? null : String(r.workspace_id),
     previousStatus: r.previous_status == null ? null : String(r.previous_status),
   }));
+  if (recorded.length > 0 && recordedHook) {
+    try { recordedHook(recorded); } catch { /* a listener never fails the write */ }
+  }
+  return recorded;
+}
+
+let recordedHook: ((rows: RecordedPrFactRow[]) => void) | null = null;
+
+/**
+ * Told the worker rows each `recordPrFact` wrote, after the write. The web app
+ * sets it (apps/web/src/lib/work-changed.ts) so state derived from a PR's
+ * lifecycle, the stored mission summary, is refreshed; it must not throw or
+ * wait. One hook: setting it again replaces it.
+ */
+export function setPrFactsRecordedHook(hook: ((rows: RecordedPrFactRow[]) => void) | null): void {
+  recordedHook = hook;
 }

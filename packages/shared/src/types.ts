@@ -3303,6 +3303,52 @@ export interface MissionProgressCell {
 }
 
 /**
+ * Bumped whenever `computeMissionSummary` (apps/web/src/lib/mission-summary.ts)
+ * changes what it derives. A stored summary of another version is read as
+ * missing: readers derive live, and the reconcile job rewrites it first.
+ */
+export const MISSION_SUMMARY_VERSION = 1;
+
+/** The mission's current delivery: its mission PR, else the newest deliverable task PR. */
+export interface MissionSummaryDelivery {
+  source: 'mission_pr' | 'task_pr';
+  prNumber: number | null;
+  prUrl: string | null;
+  state: 'not_opened' | 'open' | 'merged' | 'closed';
+}
+
+/**
+ * A mission's state as every list surface shows it, stored when its work
+ * changes (`mission_summaries`, spec 3ef37387 R-13, R-24) rather than worked
+ * out from its tasks and workers on every read. One derivation writes it:
+ * `computeMissionSummary`. Time-dependent readings (a schedule gone stale, an
+ * auto-merge grace) are as of `computedAt`; the reconcile job refreshes them.
+ */
+export interface MissionSummary {
+  v: number;
+  /** The Build / Verify / Deliver rail's step and progress cells (`missionStage`, `taskRowsProgress`). */
+  stage: MissionStage;
+  /** Build deliverables landed of those counted: the card's `n/N` (`missionCardProgress`). */
+  progress: { done: number; total: number; percent: number };
+  /** `deriveMissionHealth`: active, on-schedule, stalled, shipped, paused, idle, budget-exhausted, held, escalated. */
+  health: string;
+  /** `deriveTaskHealthSignal`: NOMINAL, BLOCKED, FAILING, STALLED. */
+  healthSignal: string;
+  /** The card's state kind (`deriveMissionStateView`) and whether its next step is the owner's. */
+  stateKind: string;
+  needsYou: boolean;
+  /** The list section (`missionCardGroup`): running, attention, review, scheduled, paused, completed. */
+  group: string;
+  liveWorkers: number;
+  hasPendingDeliverableWork: boolean;
+  /** Every task of the mission by `tasks.status`, attempts and bookkeeping included. */
+  taskCounts: Record<string, number>;
+  delivery: MissionSummaryDelivery | null;
+  /** The latest task start or task update, else the mission's own update. ISO. */
+  lastActivityAt: string | null;
+}
+
+/**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
  * reachable workspaces. All open missions are included; only recent deliveries

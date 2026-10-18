@@ -37,31 +37,70 @@ export interface DeployState {
   error: string | null;
   /** Notes from the deploy (e.g. about the runner key). */
   notes: string[];
+<<<<<<< HEAD
   /** Steps `check` found already current, so they were not run. */
   skipped: DeployStep[];
 }
 
 const INITIAL: DeployState = { phase: 'idle', currentStep: null, label: '', progress: 0, workerUrl: null, error: null, notes: [], skipped: [] };
+=======
+  /** The workspace the last deploy ran for. */
+  workspaceId: string | null;
+  /** The step that failed, so Retry resumes there instead of redoing finished steps. */
+  failedStep: DeployStep | null;
+}
+
+const INITIAL: DeployState = {
+  phase: 'idle', currentStep: null, label: '', progress: 0, workerUrl: null, error: null, notes: [],
+  workspaceId: null, failedStep: null,
+};
+>>>>>>> origin/dev
 
 export function useCloudRunnerDeploy() {
   const [state, setState] = useState<DeployState>(INITIAL);
   const abortRef = useRef<AbortController | null>(null);
+  // Notes the finished steps returned, per workspace, so a resumed deploy keeps them.
+  const notesRef = useRef<{ workspaceId: string | null; notes: string[] }>({ workspaceId: null, notes: [] });
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
     setState(INITIAL);
   }, []);
 
-  const deploy = useCallback(async (workspaceId: string) => {
+  /**
+   * Run the deploy from `from` (default: the first step). Each step is its own
+   * request and the route keeps what finished steps produced, so a retry passes
+   * the failed step and the earlier ones are not requested again.
+   */
+  const deploy = useCallback(async (workspaceId: string, from: DeployStep = DEPLOY_STEPS[0]) => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+<<<<<<< HEAD
     setState({ ...INITIAL, phase: 'running', currentStep: 'check', label: LABELS.check });
     const allNotes: string[] = [];
     let steps: DeployStep[] = [...DEPLOY_STEPS];
     let workerUrl: string | null = null;
 
     for (let i = 0; i < steps.length; i++) {
+=======
+    const start = Math.max(0, DEPLOY_STEPS.indexOf(from));
+    const startStep = DEPLOY_STEPS[start];
+    // Resuming the same workspace keeps the notes the finished steps returned.
+    const allNotes = start > 0 && notesRef.current.workspaceId === workspaceId ? [...notesRef.current.notes] : [];
+    notesRef.current = { workspaceId, notes: allNotes };
+    setState({
+      ...INITIAL,
+      phase: 'running',
+      currentStep: startStep,
+      label: LABELS[startStep],
+      progress: start / DEPLOY_STEPS.length,
+      notes: allNotes,
+      workspaceId,
+    });
+
+    for (let i = start; i < DEPLOY_STEPS.length; i++) {
+>>>>>>> origin/dev
       if (ac.signal.aborted) return;
       const step = steps[i];
       setState((s) => ({
@@ -83,10 +122,16 @@ export function useCloudRunnerDeploy() {
             ...s,
             phase: 'error',
             error: body.error ?? `Step "${step}" failed (HTTP ${res.status}).`,
+<<<<<<< HEAD
             progress: i / steps.length,
+=======
+            failedStep: step,
+            progress: i / DEPLOY_STEPS.length,
+>>>>>>> origin/dev
           }));
           return;
         }
+        // allNotes is notesRef's array, so a later resume sees these too.
         if (Array.isArray(body.detail?.notes)) allNotes.push(...body.detail.notes);
         workerUrl = body.detail?.dispatchUrl ?? body.detail?.workerUrl ?? workerUrl;
         if (step === 'check') {
@@ -105,7 +150,12 @@ export function useCloudRunnerDeploy() {
             workerUrl,
             error: null,
             notes: allNotes,
+<<<<<<< HEAD
             skipped: DEPLOY_STEPS.filter((s) => !steps.includes(s)),
+=======
+            workspaceId,
+            failedStep: null,
+>>>>>>> origin/dev
           });
           return;
         }
@@ -115,7 +165,12 @@ export function useCloudRunnerDeploy() {
           ...s,
           phase: 'error',
           error: err instanceof Error ? err.message : 'Deploy failed.',
+<<<<<<< HEAD
           progress: i / steps.length,
+=======
+          failedStep: step,
+          progress: i / DEPLOY_STEPS.length,
+>>>>>>> origin/dev
         }));
         return;
       }

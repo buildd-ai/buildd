@@ -16,6 +16,14 @@ const baseParams = {
 };
 
 describe('buildCIRetryTask', () => {
+  it('log commands use no gh flag that older installed gh versions reject', () => {
+    for (const ciFailedJobId of [67890, undefined]) {
+      const t = buildCIRetryTask({ ...baseParams, ciRunId: 12345, ciFailedJobId });
+      expect(t!.description).toContain('gh api /repos/org/repo/actions/jobs/');
+      expect(t!.description).not.toContain('--allow-escape-sequences');
+    }
+  });
+
   it('builds the first retry (iteration 0 → 1) with branch + mission continuity', () => {
     const t = buildCIRetryTask(baseParams);
     expect(t).not.toBeNull();
@@ -98,6 +106,7 @@ describe('buildCIRetryTask', () => {
     });
     expect(t!.description).not.toContain('--log-failed');
     expect(t!.description).toContain('/repos/org/repo/actions/jobs/67890/logs');
+    expect(t!.description).not.toContain('--allow-escape-sequences');
     expect(t!.context.ciRunId).toBe(12345);
   });
 

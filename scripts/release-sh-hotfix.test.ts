@@ -5,8 +5,9 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
 // Real git subprocesses per test; the unmodified 5000ms bun default flakes
-// under full-suite concurrent load even though each test is fast in isolation.
-setDefaultTimeout(15_000);
+// under full-suite concurrent load even though each test is fast in isolation;
+// 15s still flaked on an oversubscribed host (load ~6x cpus), so allow 60s.
+setDefaultTimeout(60_000);
 
 /**
  * `release:hotfix` used to compute the next patch version and use it only in

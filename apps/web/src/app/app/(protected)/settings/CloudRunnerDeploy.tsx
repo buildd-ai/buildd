@@ -46,6 +46,12 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
     deploy(selectedWs);
   }, [selectedWs, deploy]);
 
+  // Resume at the step that failed: the finished ones are not requested again.
+  const retryDeploy = useCallback(() => {
+    if (!state.workspaceId) return;
+    deploy(state.workspaceId, state.failedStep ?? undefined);
+  }, [state.workspaceId, state.failedStep, deploy]);
+
   const missingPerms = missingDeployPermissions(capabilities);
   const running = state.phase === 'running';
   const done = state.phase === 'done';
@@ -153,7 +159,7 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
 
           <div className="flex gap-2">
             {failed && (
-              <button onClick={startDeploy} data-testid="cloud-deploy-retry" className="btn btn-primary">
+              <button onClick={retryDeploy} data-testid="cloud-deploy-retry" className="btn btn-primary">
                 Retry
               </button>
             )}
