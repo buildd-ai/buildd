@@ -195,7 +195,8 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     // Task tokens of this schedule's tasks read its delegation through the
     // caller cache (lib/task-token-auth.ts).
     if ('delegation' in updates) {
-      await clearCallerCache(callerDep.workspaceSchedules(existing.workspaceId), ...(updated?.workspaceId ? [callerDep.workspaceSchedules(updated.workspaceId)] : []));
+      const scheduleWorkspaces = [existing.workspaceId, updated?.workspaceId, id].filter((w): w is string => !!w);
+      await clearCallerCache(...scheduleWorkspaces.map(callerDep.workspaceSchedules));
     }
 
     return NextResponse.json({ schedule: updated });

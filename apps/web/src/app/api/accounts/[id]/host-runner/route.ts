@@ -58,7 +58,7 @@ export async function PUT(
 
   await db.update(accounts).set({ hostRunner: body.hostRunner }).where(eq(accounts.id, id));
   // The auth cache holds the account row, flag included.
-  invalidateAccountCacheByHash(account.apiKey);
+  await invalidateAccountCacheByHash(account.apiKey);
 
   return NextResponse.json({ id, hostRunner: body.hostRunner });
 }

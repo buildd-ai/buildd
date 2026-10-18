@@ -528,7 +528,7 @@ export async function PATCH(
     // (lib/caller-cache.ts): an access-mode or data-class change, and a restricted
     // workspace dropping same-team keys without a link, apply on the next call.
     if ('accessMode' in updates || 'dataClass' in updates) {
-      invalidateWorkspacePermissionsCache(id);
+      await invalidateWorkspacePermissionsCache(id);
       await clearCallerCache(callerDep.workspace(id));
     }
 
@@ -574,7 +574,7 @@ export async function DELETE(
 
     // Delete the workspace (cascade will handle tasks, workers, etc.)
     await db.delete(workspaces).where(eq(workspaces.id, id));
-    invalidateWorkspacePermissionsCache(id);
+    await invalidateWorkspacePermissionsCache(id);
     await clearCallerCache(callerDep.workspace(id));
 
     return NextResponse.json({ success: true });

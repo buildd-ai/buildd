@@ -90,8 +90,8 @@ export async function DELETE(
     }
 
     // Invalidate caches before deleting
-    invalidateAccountCacheByHash(account.apiKey);
-    invalidateAccountWorkspaceCache(account.id);
+    await invalidateAccountCacheByHash(account.apiKey);
+    await invalidateAccountWorkspaceCache(account.id);
 
     // Delete the account (cascade will handle accountWorkspaces)
     await db.delete(accounts).where(eq(accounts.id, id));
@@ -154,7 +154,7 @@ export async function PATCH(
       .where(eq(accounts.id, id))
       .returning();
 
-    invalidateAccountCacheByHash(account.apiKey);
+    await invalidateAccountCacheByHash(account.apiKey);
 
     return NextResponse.json({
       maxConcurrentWorkers: updated[0]?.maxConcurrentWorkers || maxConcurrentWorkers,

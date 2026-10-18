@@ -114,7 +114,7 @@ export async function mintRunnerKey(args: {
     await db.delete(accounts).where(eq(accounts.id, created.id)).catch(() => {});
     throw err;
   }
-  invalidateAccountWorkspaceCache(created.id);
+  await invalidateAccountWorkspaceCache(created.id);
   return { ok: true, plaintextKey, accountId: created.id, level, teamId: home.id, workspaceIds: check.workspaceIds };
 }
 
@@ -181,8 +181,8 @@ export async function replaceRunnerPicks(args: {
     .set({ workspaceIds: [...new Set([...check.workspaceIds, ...unmarked])] })
     .where(eq(accounts.id, account.id));
 
-  invalidateAccountCacheByHash(account.apiKey);
-  invalidateAccountWorkspaceCache(account.id);
+  await invalidateAccountCacheByHash(account.apiKey);
+  await invalidateAccountWorkspaceCache(account.id);
   return { ok: true, workspaceIds: check.workspaceIds };
 }
 

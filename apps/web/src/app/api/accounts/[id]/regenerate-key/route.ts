@@ -66,7 +66,7 @@ export async function POST(
     const prefix = extractApiKeyPrefix(plaintextKey);
 
     // Invalidate cache for the old key before updating
-    invalidateAccountCacheByHash(account.apiKey);
+    await invalidateAccountCacheByHash(account.apiKey);
 
     // Update the account with the new key
     await db
