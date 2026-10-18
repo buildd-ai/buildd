@@ -6,7 +6,7 @@
  * writers stay `ensureMissionSurfaceAudit` / `requestMissionSurfaceAudit`.
  */
 import 'server-only';
-import { and, desc, eq, like, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { sqlWhere, sqlOrderBy } from '@buildd/core/db/relational-sql';
 import { isTerminalTaskStatus } from '@buildd/shared';
@@ -31,20 +31,49 @@ import {
 
 /** The mission's audit tasks, newest first, in the shape the scheduler and the evidence check read. */
 export async function loadMissionAuditLedger(missionId: string): Promise<ScheduleAudit[]> {
-  const rows = await db.query.tasks.findMany({
-    where: sqlWhere(and(eq(tasksTable.missionId, missionId), or(like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`), eq(tasksTable.roleSlug, VISUAL_AUDITOR_ROLE_SLUG)))),
-    columns: { id: true, title: true, roleSlug: true, status: true, context: true, result: true, updatedAt: true, createdAt: true },
-    orderBy: sqlOrderBy(desc(tasksTable.createdAt)),
-  });
-  return rows.map(r => ({
-    id: r.id,
-    status: r.status,
-    round: surfaceAuditRound(r),
-    headSha: readAuditedSha(r.context),
-    updatedAt: new Date(r.updatedAt ?? r.createdAt).getTime(),
-    captureConfigError: r.status === 'failed' ? captureConfigErrorFrom(r.result) : null,
-  }));
+  return (await loadMissionAuditLedgers([missionId])).get(missionId) ?? [];
 }
+
+/**
+ * `loadMissionAuditLedger` for several missions in one query. Only what the
+ * ledger reads: the round and stamped head out of `context`, and `result` as
+ * text for a failed audit only (`captureConfigErrorFrom` looks for a code in it).
+ */
+export async function loadMissionAuditLedgers(missionIds: readonly string[]): Promise<Map<string, ScheduleAudit[]>> {
+  const out = new Map<string, ScheduleAudit[]>();
+  if (missionIds.length === 0) return out;
+  const rows = await db
+    .select({
+      id: tasksTable.id,
+      missionId: tasksTable.missionId,
+      title: tasksTable.title,
+      status: tasksTable.status,
+      context: sql<Record<string, unknown> | null>`jsonb_build_object('surfaceAuditRound', ${tasksTable.context} -> 'surfaceAuditRound', 'visualReview', jsonb_build_object('headSha', ${tasksTable.context} -> 'visualReview' -> 'headSha'))`.as('ledger_context'),
+      failure: sql<string | null>`case when ${tasksTable.status} = 'failed' then ${tasksTable.result}::text end`.as('failure_text'),
+      updatedAt: tasksTable.updatedAt,
+      createdAt: tasksTable.createdAt,
+    })
+    .from(tasksTable)
+    .where(and(inArray(tasksTable.missionId, [...missionIds]), or(like(tasksTable.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`), eq(tasksTable.roleSlug, VISUAL_AUDITOR_ROLE_SLUG))))
+    .orderBy(desc(tasksTable.createdAt));
+  for (const r of rows) {
+    if (!r.missionId) continue;
+    const list = out.get(r.missionId) ?? [];
+    list.push({
+      id: r.id,
+      status: r.status,
+      round: surfaceAuditRound(r),
+      headSha: readAuditedSha(r.context),
+      updatedAt: new Date(r.updatedAt ?? r.createdAt).getTime(),
+      captureConfigError: r.status === 'failed' ? captureConfigErrorFrom(r.failure) : null,
+    });
+    out.set(r.missionId, list);
+  }
+  return out;
+}
+
+/** The integration PR's delivery fields the state reads. */
+export interface MissionDeliveryFacts { state: string; currentHeadSha: string | null; baseRef: string | null }
 
 export async function getMissionVisualReviewState(
   missionId: string,
@@ -66,6 +95,12 @@ export async function getMissionVisualReviewState(
     gitConfig?: unknown;
     tasks?: SurfaceAuditGateTask[];
     ledger?: ScheduleAudit[];
+    /** The integration PR's delivery when the caller already read it (null: none); absent reads it. */
+    delivery?: MissionDeliveryFacts | null;
+    /** The claim loop's holds the caller already read, by audit task id; absent reads the latest audit's. */
+    holdReasons?: ReadonlyMap<string, string>;
+    /** The gate's repo-link memo, shared across a sweep. */
+    gateRepos?: Map<string, Promise<{ installationId: number; fullName: string } | null>>;
   } = {},
 ): Promise<MissionVisualReviewState | null> {
   const mission = opts.mission ?? await db.query.missions.findFirst({
@@ -89,14 +124,17 @@ export async function getMissionVisualReviewState(
   });
 
   // Independent reads, side by side. The gate is a render read: no fillMergedEvidence.
+  // A caller that names the UI change already (the scheduler, from the classifier)
+  // gets no gate read: its only use here is the UI change.
   const [model, gate] = await Promise.all([
     opts.model ?? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId }),
-    evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks, {
+    opts.uiChange ? null : evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks, {
       render: opts.render,
       // As before: the gate is asked without the workspace (its policy is applied
       // below), so it reads no policy; the waiver was read above (same person-only rule).
       workspacePolicy: null,
       waived: waiver != null,
+      ...(opts.gateRepos ? { repos: opts.gateRepos } : {}),
     }).catch(() => null),
   ]);
   const gateUiChange: VisualReviewStateInput['uiChange'] =
@@ -109,7 +147,7 @@ export async function getMissionVisualReviewState(
   let headSha: string | null = null;
   let base: string | null = gitConfig?.defaultBranch ?? null;
   if (mission.primaryPrNumber && mission.workspaceId) {
-    const [d] = await db
+    const [d] = opts.delivery !== undefined ? (opts.delivery ? [opts.delivery] : []) : await db
       .select({ state: workflowDeliveries.state, currentHeadSha: workflowDeliveries.currentHeadSha, baseRef: workflowDeliveries.baseRef })
       .from(workflowDeliveries)
       .where(and(eq(workflowDeliveries.workspaceId, mission.workspaceId), eq(workflowDeliveries.prNumber, mission.primaryPrNumber)))
@@ -129,7 +167,7 @@ export async function getMissionVisualReviewState(
 
   // R-33: a queued audit names the claim loop's hold on it.
   const holdReason = latestAudit?.status === 'pending'
-    ? (await loadClaimHoldReasons([latestAudit.id])).get(latestAudit.id) ?? null
+    ? (opts.holdReasons ?? await loadClaimHoldReasons([latestAudit.id])).get(latestAudit.id) ?? null
     : null;
 
   const state = deriveMissionVisualReview({

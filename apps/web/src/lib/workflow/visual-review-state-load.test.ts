@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { capturedWhere } from '@buildd/core/db/relational-sql';
 import { isMissionAuditTask } from '@buildd/core/surface-audit';
 
 /** The mission page already holds the waiver and the visual-review model: the state load reuses them. */
-let captured: any = null;
-let rows: any[] = [];
 mock.module('server-only', () => ({}));
 const reads: string[] = [];
-mock.module('@buildd/core/db', () => ({ db: { query: {
+// The audit ledger's select: the chain resolves to no audits.
+let ledgerWhere: any = null;
+const selectChain: any = { from: () => selectChain, where: (w: any) => { ledgerWhere = w; return selectChain; }, orderBy: () => selectChain, limit: () => selectChain, then: (res: (v: unknown) => unknown) => { reads.push('ledger'); return Promise.resolve([]).then(res); } };
+mock.module('@buildd/core/db', () => ({ db: { select: () => selectChain, query: {
   missions: { findFirst: async () => { reads.push('missions'); return { id: 'm1', status: 'active', workspaceId: 'ws', autoSurfaceAudit: true, workingBranch: null, primaryPrNumber: null }; } },
   workspaces: { findFirst: async () => { reads.push('workspaces'); return { gitConfig: null, githubRepoId: null }; } },
-  tasks: { findMany: async (cfg: any) => { reads.push('tasks'); captured = cfg; return rows; } },
+  tasks: { findMany: async () => { reads.push('tasks'); return []; } },
 } } }));
 const loadSurfaceAuditWaiver = mock(async () => null);
 const evaluateSurfaceAuditGate = mock(async (..._a: any[]) => ({ required: false, why: 'no_ui_change' }));
@@ -66,14 +66,13 @@ it('a page passes what it holds: no mission, workspace, task or ledger read, and
  * through PgDialect, since a mocked db would hide it.
  */
 describe('loadMissionAuditLedger identity', () => {
-  it('selects role-only and title-only audits, and reads roleSlug', async () => {
+  it('selects role-only and title-only audits', async () => {
     await loadMissionAuditLedger('m1');
-    const { sql, params } = new PgDialect().sqlToQuery(capturedWhere(captured.where));
+    const { sql, params } = new PgDialect().sqlToQuery(ledgerWhere);
     expect(sql).toMatch(/"role_slug" = \$\d+/);
     expect(sql).toMatch(/"title" like \$\d+/);
     expect(params).toContain('visual-auditor');
     expect(params).toContain('[surface audit] %');
-    expect(captured.columns.roleSlug).toBe(true);
   });
 
   it('every shape isMissionAuditTask accepts is one the ledger predicate admits', () => {
@@ -83,4 +82,19 @@ describe('loadMissionAuditLedger identity', () => {
     ];
     expect(shapes.every(isMissionAuditTask)).toBe(true);
   });
+});
+
+it('a caller that names the UI change (the scheduler, from the classifier) gets no gate read', async () => {
+  await getMissionVisualReviewState('m1', { uiChange: { state: 'yes', source: 'diff', uiFiles: 1 }, waiver: Promise.resolve(null), model: { audit: null } as any });
+  expect(evaluateSurfaceAuditGate).not.toHaveBeenCalled();
+});
+
+it('a caller holding the delivery, ledger and claim holds reads none of them', async () => {
+  const state = await getMissionVisualReviewState('m1', {
+    mission: { id: 'm1', status: 'active', workspaceId: 'ws', autoSurfaceAudit: true, workingBranch: null, primaryPrNumber: 7 },
+    gitConfig: null, tasks: [], ledger: [], waiver: Promise.resolve(null), model: { audit: null } as any,
+    delivery: { state: 'OPEN', currentHeadSha: 'abc1234', baseRef: 'dev' }, holdReasons: new Map(),
+  });
+  expect(reads).toEqual([]);
+  expect(state?.branch.headSha).toBe('abc1234');
 });
