@@ -161,9 +161,15 @@ const TABLE: Row[] = [
     input: V({ state: 'REPAIRING', stateReason: 'conflict' }, { remediation: { taskId: 'cf-1', family: 'conflict', taskStatus: 'in_progress', stalled: false } }),
   },
   { name: 'CI fix in flight', input: V({ state: 'REPAIRING', stateReason: 'ci', ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Fixing CI', tone: 'live' },
-  { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
-  { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
-  { name: 'approved, the landing path merges (approve-and-merge, auto-threshold)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · merging', tone: 'live' },
+  { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
+  // Approval is not a merge: the words follow the checks on this head, and only
+  // LANDING (the merge operation) reads Merging.
+  { name: 'approved, checks green, the landing path merges next', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }), label: 'Ready to merge', tone: 'live' },
+  { name: 'approved, checks still running', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · checking', tone: 'live' },
+  { name: 'approved, a green run on an older head does not count', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H0older' }), label: 'Approved · checking', tone: 'live' },
+  { name: 'approved, checks failed', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Approved · checks failing', tone: 'stalled' },
+  { name: 'approved, a person merges, checks still running', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Approved · checking', tone: 'needs' },
   // A review escalation names its cause (escalation-brief); a non-review one keeps the generic words.
   { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Review required', tone: 'needs' },
   { name: 'escalated, not a review', input: V({ state: 'ESCALATED', stateReason: 'landing_needs_human' }), label: 'Waiting on you', tone: 'needs' },
@@ -254,7 +260,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       // landing path is still merging.
       const headerHtml = renderToStaticMarkup(HeaderStatusPill({
         status: 'running', merged: false,
-        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle },
+        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle, prState: d.prState },
       }));
       expect(headerHtml.replace(/<[^>]+>/g, '')).toBe(r.label);
       const pillClasses = new Set(headerHtml.match(/class="([^"]*)"/)![1].split(/\s+/));
@@ -266,7 +272,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
   }
 
   test('the fixture deliveries: Home and the mission agree on who needs you and on nothing failed', () => {
-    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, the landing path merges (approve-and-merge, auto-threshold)', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
+    const rows = TABLE.filter(t => ['awaiting push', 'stalled conflict fix', 'composition verified, a person merges', 'approved, checks green, the landing path merges next', 'escalated', 'CI fix in flight', 'merged'].includes(t.name));
     const displays = rows.map(t => toDeliveryDisplay(deriveDeliveryView(t.input)!));
     const model = buildMissionBoard({ now: 10_000, missionCreatedAt: 0, missionStatus: 'active', tasks: displays.map(boardInput) });
     expect(model.needsYou.length).toBe(2);
@@ -356,7 +362,7 @@ describe('deliveryReading speaks the terms catalog', () => {
     expect(label({ state: 'CHANGES_REQUESTED' })).toBe(TERMS['pr.changes_requested'].word);
     expect(label({ state: 'FIXING' })).toBe(TERMS['pr.fixing'].word);
     expect(label({ state: 'BLOCKED_ON_TRUNK' })).toBe(TERMS['pr.blocked_on_base'].word);
-    expect(label({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true })).toBe(TERMS['pr.ready_to_merge'].word);
+    expect(label({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H1abcdef' }, { approvedNeedsPerson: true })).toBe(TERMS['pr.ready_to_merge'].word);
     expect(label({ state: 'LANDING' })).toBe(TERMS['pr.merging'].word);
     expect(label({ state: 'ESCALATED', stateReason: 'landing_needs_human' })).toBe(TERMS['decision.waiting_on_you'].word);
     expect(label({ state: 'MERGED' })).toBe(TERMS['pr.merged'].word);

@@ -247,6 +247,47 @@ describe('loadRunnerQueue', () => {
     expect(out.teams[0].queue[0].alongside).toBeUndefined();
   });
 
+  it('one scope-undeclared task per mission starts; the rest wait on it by name, as the claim defers them (advisory_manifest)', async () => {
+    const m = (id: string, over: Record<string, unknown> = {}) => row({ id, missionId: 'm-1', missionTitle: 'Fast', pathManifest: null, category: 'feature', outputRequirement: 'pr_required', ...over });
+    let reads = 0;
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [
+        m('t-first'), m('t-second'), m('t-review', { category: 'review' }), m('t-declared', { pathManifest: ['a.ts'] }),
+        m('t-research', { outputRequirement: 'artifact_required' }), m('t-later', { g_startAt: false, startAt: '2026-03-11T00:00:00Z' }),
+        row({ id: 't-other-mission', missionId: 'm-2', pathManifest: null }),
+        row({ id: 't-busy-mission', missionId: 'm-3', pathManifest: null }),
+      ],
+      estimates: async () => null,
+      workspaceConfigs: async () => [{ id: 'ws-a', gitConfig: null }],
+      overlaps: async () => ({ openPrs: new Map(), leases: new Map() }),
+      missionInFlight: async (ids) => { reads++; expect(ids.sort()).toEqual(['m-1', 'm-2', 'm-3']); return new Map([['m-3', new Set(['running-task'])]]); },
+    });
+    expect(reads).toBe(1);
+    const by = new Map(out.teams[0].queue.map(t => [t.id, t]));
+    // The first starts and so occupies the mission's one slot for undeclared work.
+    expect(by.get('t-first')!.holds).toEqual([]);
+    expect(by.get('t-second')!.holds).toEqual(['advisory_manifest']);
+    expect(by.get('t-second')!.holderTaskId).toBe('t-first');
+    // Reviews, declared scope and non-code deliverables never take part.
+    for (const id of ['t-review', 't-declared', 't-research']) expect(by.get(id)!.holds).toEqual([]);
+    // A task held on its own never starts, so it occupies nothing and is not marked.
+    expect(by.get('t-later')!.holds).toEqual(['deferred']);
+    expect(by.get('t-other-mission')!.holds).toEqual([]);
+    // A live worker already holds that mission's slot.
+    expect(by.get('t-busy-mission')!.holds).toEqual(['advisory_manifest']);
+    expect(by.get('t-busy-mission')!.holderTaskId).toBe('running-task');
+    for (const t of out.teams[0].queue) { expect(t).not.toHaveProperty('category'); expect(t).not.toHaveProperty('outputRequirement'); }
+  });
+
+  it('a failed in-flight read marks nothing', async () => {
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [row({ id: 'a', missionId: 'm-1', pathManifest: null }), row({ id: 'b', missionId: 'm-1', pathManifest: null })],
+      estimates: async () => null, workspaceConfigs: async () => [], overlaps: async () => ({ openPrs: new Map(), leases: new Map() }),
+      missionInFlight: async () => { throw new Error('down'); },
+    });
+    expect(out.teams[0].queue.map(t => t.holds)).toEqual([[], []]);
+  });
+
   it('says when the read hit its row limit', async () => {
     const many = Array.from({ length: RUNNER_QUEUE_LIMIT + 1 }, (_, i) => row({ id: `t-${i}` }));
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => many, estimates: async () => null });

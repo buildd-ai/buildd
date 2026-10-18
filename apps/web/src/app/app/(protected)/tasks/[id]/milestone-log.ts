@@ -76,6 +76,28 @@ export interface LogEntry {
   durationLabel: string | null;
 }
 
+/**
+ * "Ran commands" with the commands the run recorded: `Ran bun run test`, or
+ * `Ran a and b` / `Ran a, b and 2 more`. Only the generic phrase is replaced, and
+ * only from `cmd` the runner stored (it keeps notable commands, not every call),
+ * so a phase with no recorded command keeps the generic label rather than a guess.
+ */
+export function nameRanCommands(label: string, tools: LogEntry['tools']): string {
+  if (!/\bran commands\b/i.test(label)) return label;
+  const cmds: string[] = [];
+  for (const t of tools) {
+    const c = classifyAction(t);
+    const cmd = c?.kind === 'run' ? c.cmd?.split('\n')[0].trim() : '';
+    if (cmd && !cmds.includes(cmd)) cmds.push(cmd);
+  }
+  if (cmds.length === 0) return label;
+  const short = (c: string) => (c.length > 40 ? `${c.slice(0, 39)}…` : c);
+  const shown = cmds.slice(0, 2).map(short);
+  const rest = cmds.length - shown.length;
+  const named = rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(' and ');
+  return label.replace(/\b(r)an commands\b/i, (_m, r: string) => `${r}an ${named}`);
+}
+
 export function isToolMilestone(m: Milestone): m is Extract<Milestone, { type: 'action' }> {
   return m.type === 'action';
 }
@@ -134,7 +156,7 @@ export function buildMilestoneLog(milestones: Milestone[], opts: { nowMs: number
     const actionCount = e.tools.reduce((s, t) => s + (classifyAction(t)?.count ?? 1), 0);
     return {
       milestone: e.milestone,
-      ...(e.actionLabel && { actionLabel: e.actionLabel, preambles: e.preambles }),
+      ...(e.actionLabel && { actionLabel: nameRanCommands(e.actionLabel, e.tools), preambles: e.preambles }),
       tools: e.tools,
       toolCount: Math.max(e.phaseTools, actionCount),
       startMs: e.startMs,
