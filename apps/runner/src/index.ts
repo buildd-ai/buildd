@@ -39,6 +39,7 @@ import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
+import { jsonUnlessUnchanged } from './local-etag';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
 
@@ -1987,7 +1988,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       try {
         // mission.stage comes from the missions module's own endpoint (R-18), best effort.
         const tasks = await withMissionStages(await buildd!.listTasks(), ids => buildd!.listMissionStages(ids));
-        return Response.json({ tasks }, { headers: corsHeaders });
+        return jsonUnlessUnchanged(req, { tasks }, corsHeaders);
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup
         if (err.message?.includes('401')) {
@@ -2046,7 +2047,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
         const missions = await buildd!.listRecentMissions();
-        return Response.json({ missions }, { headers: corsHeaders });
+        return jsonUnlessUnchanged(req, { missions }, corsHeaders);
       } catch (err: any) {
         const wait = rateLimitedRetryAfterSec(err);
         if (wait !== null) {
@@ -2061,7 +2062,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/queue' && req.method === 'GET') {
       try {
         const queue = await buildd!.listQueue(workerManager!.getClaimIdentity());
-        return Response.json(queue, { headers: corsHeaders });
+        return jsonUnlessUnchanged(req, queue, corsHeaders);
       } catch (err: any) {
         console.error('Failed to read the queue:', err.message);
         return Response.json({ error: err.message || 'Failed to read the queue', teams: [] }, { status: 502, headers: corsHeaders });

@@ -16,13 +16,28 @@ async function readBody(res: Response): Promise<unknown> {
   try { return JSON.parse(text); } catch { return text; }
 }
 
+/** Reads the runner tags (local-etag.ts): top sends the tag it holds, and a 304 is the body it has. */
+const TAGGED_READS = new Set(['/api/tasks', '/api/missions/recent', '/api/queue']);
+
 export function socketClient(socketPath: string, opts: { timeoutMs?: number } = {}): SocketClient {
   const timeout = opts.timeoutMs ?? 15_000;
   const init = (extra: RequestInit = {}): RequestInit => ({ unix: socketPath, ...extra } as RequestInit);
+  const held = new Map<string, { etag: string; body: unknown }>();
   return {
     async get(path) {
-      const res = await fetch(`http://localhost${path}`, init({ signal: AbortSignal.timeout(timeout) }));
-      return { status: res.status, body: (await readBody(res)) as any };
+      const mine = TAGGED_READS.has(path) ? held.get(path) : undefined;
+      const res = await fetch(`http://localhost${path}`, init({
+        signal: AbortSignal.timeout(timeout),
+        ...(mine ? { headers: { 'If-None-Match': mine.etag } } : {}),
+      }));
+      if (res.status === 304 && mine) return { status: 200, body: structuredClone(mine.body) as any };
+      const body = await readBody(res);
+      const etag = res.headers.get('etag');
+      if (TAGGED_READS.has(path)) {
+        if (res.status === 200 && etag) held.set(path, { etag, body: structuredClone(body) });
+        else held.delete(path);
+      }
+      return { status: res.status, body: body as any };
     },
     async post(path, body) {
       const res = await fetch(`http://localhost${path}`, init({

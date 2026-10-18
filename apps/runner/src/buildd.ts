@@ -65,8 +65,20 @@ export type PathClaimResponse =
     }
   | { kind: 'unavailable'; reason: 'timeout' | 'error' };
 
+/**
+ * List and polling reads the server versions per workspace (spec 3ef37387
+ * R-20): the client sends the ETag it holds and a 304 answers with the body it
+ * already has, so an unchanged poll costs the server no list read.
+ */
+const CONDITIONAL_READS = ['/api/tasks', '/api/missions/stages?', '/api/missions/recent', '/api/workers/queue?'];
+const isConditionalRead = (endpoint: string) => CONDITIONAL_READS.some(p => (p.endsWith('?') ? endpoint.startsWith(p) : endpoint === p));
+/** Bodies kept for a 304: one per endpoint, query included (stage reads vary by ids). */
+const CONDITIONAL_CACHE_MAX = 32;
+
 export class BuilddClient {
   private config: LocalUIConfig;
+  /** The last tagged answer per conditional read endpoint. */
+  private tagged = new Map<string, { etag: string; body: unknown }>();
   private outbox: Outbox | null = null;
   private transport: BuilddTransport;
   /** Endpoints the server's read rate limit told us to leave alone until Retry-After (read-backoff.ts). */
@@ -95,11 +107,15 @@ export class BuilddClient {
       if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method, endpoint });
     }
 
+    const conditional = method === 'GET' && isConditionalRead(endpoint);
+    const held = conditional ? this.tagged.get(endpoint) : undefined;
     try {
       const res = await this.transport.request(endpoint, {
         method,
         body: options.body as string | undefined,
-        headers: options.headers as Record<string, string> | undefined,
+        headers: held
+          ? { ...(options.headers as Record<string, string> | undefined), 'If-None-Match': held.etag }
+          : options.headers as Record<string, string> | undefined,
         // Abort hung requests (half-open keep-alive sockets) so the poll loop
         // can't wedge. Caller-supplied signals (if any) take precedence.
         signal: options.signal as AbortSignal | undefined,
@@ -109,6 +125,7 @@ export class BuilddClient {
       lastServerContactAt = Date.now();
 
       if (res.status === 429 && isRead) this.readBackoff.note(endpoint, res.headers?.get?.('retry-after'));
+      if (res.status === 304 && held) return structuredClone(held.body);
 
       if (!res.ok && !allowedErrors.includes(res.status)) {
         // Queue server errors (5xx) via outbox before throwing
@@ -120,6 +137,16 @@ export class BuilddClient {
         throw ServerRefusalError.from({ status: res.status, raw, method, endpoint });
       }
 
+      if (conditional) {
+        const body = await res.json();
+        const etag = res.headers?.get?.('etag');
+        this.tagged.delete(endpoint);
+        if (etag) {
+          this.tagged.set(endpoint, { etag, body: structuredClone(body) });
+          if (this.tagged.size > CONDITIONAL_CACHE_MAX) this.tagged.delete(this.tagged.keys().next().value!);
+        }
+        return body;
+      }
       return res.json();
     } catch (err: any) {
       // A refusal is the server's DECISION, not a transport fault — and it is
