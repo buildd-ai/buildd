@@ -1,5 +1,5 @@
 import type { ActionQueueItem } from './action-queue';
-import { CRITERIA_ESCALATION_NOTE_TITLE } from './criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { StrandCta } from './mission-list-card';

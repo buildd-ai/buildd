@@ -4,7 +4,7 @@ import { isActionableChip } from './action-queue';
 import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
 import type { ActionQueueItem } from './action-queue';
-import { CRITERIA_ESCALATION_NOTE_TITLE } from './criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 const pr = (key: string, workspaceId = 'workspace-a', chip: ActionQueueItem['chip'] = 'MERGE'): ActionQueueItem => ({ subjectKey: key, chip, workspaceId, prNumber: 42, taskTitle: 'Improve navigation', prUrl: 'https://example.test/o/r/pull/42', taskId: 'task-a' });
 const one = (q: Partial<ActionQueueItem>) => deriveHomeAttention({ queue: [{ subjectKey: 's', chip: 'MERGE', taskTitle: 'Improve navigation', taskId: 'task-a', ...q } as ActionQueueItem], missions: [], questions: [], held: [] });
 const FORBIDDEN = ['Work needs a decision', 'Open decision', 'The checks are clear. Nothing else is blocking it.', '/app/health'];
