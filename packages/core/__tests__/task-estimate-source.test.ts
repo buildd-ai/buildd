@@ -348,6 +348,16 @@ describe('frozen evidence availability', () => {
     expect(seen.sort()).toEqual([older.toISOString(), newer.toISOString()]);
   });
 
+  it('threads held-out training exclusion through the replay input loader', async () => {
+    const start = fake.priorQueries.length;
+    await src.loadEstimateInputs(taskRow(), {
+      excludedPriorWorkspaceId: WS,
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    const queries = fake.priorQueries.slice(start).map(query => new PgDialect().sqlToQuery(query));
+    expect(queries.some(query => query.sql.includes('t.workspace_id <>') && query.params.includes(WS))).toBe(true);
+  });
+
   it('reports the older cutoff of a reused model separately from the task cutoff', async () => {
     const older = new Date('2026-09-30T23:59:00Z');
     await src.loadPriorTable(older);
