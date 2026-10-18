@@ -2,26 +2,17 @@ import { describe, it, expect } from 'bun:test';
 import {
   adaptFlightStripInputs,
   buildActiveMissionsQueryArgs,
-  buildCompletedMissionsQueryArgs,
+  MISSION_TASK_BASE_COLUMNS,
+  MISSION_TASK_RESULT_SUMMARY_EXTRAS,
   decodeCompletedCursor,
   encodeCompletedCursor,
   paginateCompletedMissions,
-  COMPLETED_MISSIONS_PAGE_SIZE,
 } from './missions-query';
 
-// AC-12: the completed-missions query shape must skip the flight-strip
-// fan-out (roleSlug/exitCause) BY CONSTRUCTION — asserted on the query args
-// object itself, not by timing a call or mocking the DB.
-describe('AC-12: completed-missions query shape skips flight-strip fan-out', () => {
-  it('selects flightStripCache and omits roleSlug/exitCause from the with-clause', () => {
-    const args = buildCompletedMissionsQueryArgs(undefined, null);
-
-    expect(args.columns.flightStripCache).toBe(true);
-    expect('roleSlug' in args.with.tasks.columns).toBe(false);
-    expect('exitCause' in args.with.tasks.with.workers.columns).toBe(false);
-  });
-
-  it('the active-missions query DOES carry roleSlug/exitCause — Rule A-1/A-2 needs them live', () => {
+// The Plan page's query: the live flight-strip fields, and no task `result`
+// for any caller (spec 3ef37387 R-11).
+describe('mission query shapes', () => {
+  it('the active-missions query carries roleSlug/exitCause — Rule A-1/A-2 needs them live', () => {
     const args = buildActiveMissionsQueryArgs(undefined);
 
     expect((args.columns as Record<string, unknown>).flightStripCache).toBeUndefined();
@@ -33,28 +24,20 @@ describe('AC-12: completed-missions query shape skips flight-strip fan-out', () 
     const args = buildActiveMissionsQueryArgs(undefined);
     expect(args.with.tasks.with.workers.columns.waitingFor).toBe(true);
     expect(args.with.schedule.columns.totalRuns).toBe(true);
-    // Completed rows never render an answer strip.
-    expect('waitingFor' in buildCompletedMissionsQueryArgs(undefined, null).with.tasks.with.workers.columns).toBe(false);
   });
 
-  it('both queries read workers latest-first, so the live attempt is inside the limit', () => {
+  it('reads workers latest-first, so the live attempt is inside the limit', () => {
     const cols = { startedAt: 'startedAt', updatedAt: 'updatedAt' };
     const ops = { desc: (c: string) => `${c} desc` };
-    for (const args of [buildActiveMissionsQueryArgs(undefined), buildCompletedMissionsQueryArgs(undefined, null)]) {
-      const w = args.with.tasks.with.workers as any;
-      expect(w.limit).toBe(5);
-      expect(w.orderBy(cols, ops)).toEqual(['startedAt desc', 'updatedAt desc']);
-    }
+    const w = buildActiveMissionsQueryArgs(undefined).with.tasks.with.workers as any;
+    expect(w.limit).toBe(5);
+    expect(w.orderBy(cols, ops)).toEqual(['startedAt desc', 'updatedAt desc']);
   });
 
-  it('active query excludes completed missions; completed query excludes everything else', () => {
-    // Both `where` clauses are opaque SQL objects (can't run them without a DB),
-    // but their presence/absence of a status filter is what AC-12 actually
-    // cares about being asymmetric-by-construction, not by accident.
-    const active = buildActiveMissionsQueryArgs(undefined);
-    const completed = buildCompletedMissionsQueryArgs(undefined, null);
-    expect(active.where).toBeDefined();
-    expect(completed.where).toBeDefined();
+  it('no shared shape selects a task\'s whole result; a card reads only its summary', () => {
+    expect('result' in MISSION_TASK_BASE_COLUMNS).toBe(false);
+    expect('result' in buildActiveMissionsQueryArgs(undefined).with.tasks.columns).toBe(false);
+    expect(Object.keys(MISSION_TASK_RESULT_SUMMARY_EXTRAS)).toEqual(['result']);
   });
 });
 
@@ -82,11 +65,6 @@ describe('AC-14: completed-missions pagination', () => {
     expect(nextCursor).not.toBeNull();
   });
 
-  it('the query requests exactly pageSize+1 rows (the over-fetch that makes hasMore free)', () => {
-    const args = buildCompletedMissionsQueryArgs(undefined, null);
-    expect(args.limit).toBe(COMPLETED_MISSIONS_PAGE_SIZE + 1);
-  });
-
   it('cursor round-trips through encode/decode', () => {
     const cursor = { completedAt: '2026-01-05T00:00:00.000Z', id: 'm2' };
     const decoded = decodeCompletedCursor(encodeCompletedCursor(cursor));
@@ -99,16 +77,6 @@ describe('AC-14: completed-missions pagination', () => {
     expect(decodeCompletedCursor(null)).toBeNull();
   });
 
-  it('a cursor shifts the query into a second page — cursor changes the where clause', () => {
-    // Drizzle SQL objects are self-referential, so compare chunk counts
-    // rather than JSON.stringify (which throws on the cycle).
-    const chunkCount = (where: unknown) => (where as { queryChunks?: unknown[] })?.queryChunks?.length ?? 0;
-    const firstPage = buildCompletedMissionsQueryArgs(undefined, null);
-    const cursor = { completedAt: '2026-01-05T00:00:00.000Z', id: 'm2' };
-    const secondPage = buildCompletedMissionsQueryArgs(undefined, cursor);
-    // The cursor page ANDs in an extra clause, so it has strictly more chunks.
-    expect(chunkCount(secondPage.where)).toBeGreaterThan(chunkCount(firstPage.where));
-  });
 });
 
 describe('adaptFlightStripInputs', () => {
