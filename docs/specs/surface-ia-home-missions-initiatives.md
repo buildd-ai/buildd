@@ -394,9 +394,9 @@ detail get the same component, not two implementations to keep in sync.
   `computeInitiativeProgress`, `computeInitiativeSegments`, `crossedMilestone`.
 - `apps/web/src/components/MissionReleaseFooter.tsx` — retained, unmounted list footer;
   it is historical context, not the portfolio rendering contract.
-- `apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx` and
-  `apps/web/src/lib/release-readiness.ts` — retained, unmounted Home exception
-  widget and its readiness helper (§8.2).
+- `apps/web/src/lib/release-readiness.ts` — the readiness helper of the
+  Home exception widget (§8.2). The unmounted widget itself was deleted
+  (spec 3ef37387 R-18: nothing loaded or kept that is not shown).
 - `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx`
   — loses the `Release now` button (§10.2, AC-47); keeps strategy/branch/
   trigger-policy/token-status fields.

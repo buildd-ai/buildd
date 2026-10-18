@@ -4,7 +4,7 @@
  */
 import { db } from './db';
 import { decisionRecords } from './db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { ESCALATION_GATE_CAPABILITY, verdictFromCode, type EscalationVerdict } from './escalation-gate';
 
 /**
@@ -44,11 +44,10 @@ export async function loadMissionVerdicts(
         eq(decisionRecords.capability, ESCALATION_GATE_CAPABILITY),
         eq(decisionRecords.subjectType, 'pr'),
         inArray(decisionRecords.subjectId, keys),
-      ));
+      ))
+      .orderBy(desc(decisionRecords.createdAt));
 
-    // Map each key to its most recent verdict. We rely on the database ordering
-    // to give us the newest first (the query above doesn't ORDER but in practice
-    // the newest rows come first per the index).
+    // Newest first, so the first row seen per key is its most recent verdict.
     for (const r of rows) {
       if (r.subjectId && !out.has(r.subjectId)) {
         const verdict = verdictFromCode(r.appliedAnswer);
