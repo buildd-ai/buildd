@@ -1522,7 +1522,7 @@ describe('POST /api/github/webhook', () => {
       expect(body).toContain('<!-- buildd-activity -->');
       // Queued, not "fixing": the retry task has no worker until the claim.
       expect(body).toContain('CI fix 1 of 3 queued');
-      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('waiting for an agent');
       expect(body).toContain('/app/tasks/');
     });
 

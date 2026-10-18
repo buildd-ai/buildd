@@ -110,6 +110,18 @@ history before the squash (`git show v0.284.0:packages/core/drizzle/<file>.sql`)
 pre-squash tree from the `v0.284.0` tag and proves both trees build the same
 schema. Locally it needs the tag (`git fetch origin tag v0.284.0`).
 
+**Page-load budgets run in the same suite.** `apps/web/tests/db/budget-harness.ts`
+seeds a synthetic team (500 missions, 20,000 tasks, 40,000 workers by default)
+and measures a loader's Neon round trips and response bytes with
+`recordNeonQueries` (`packages/core/db/query-label.ts`, the same hook that puts
+`buildd.db.loader` on production query spans). A test compares that with the
+page's budget from the "Fast at any size" spec. A page still over budget is
+marked `knownOver`: its test records the numbers and passes, then fails once the
+page fits, so the change that fixes the page also turns the budget on. For a
+quick local look, `BUDGET_SEED_SCALE=0.05 bun run test:db apps/web/tests/db/home-budget.test.ts`
+seeds a small team. The verdict counts only at the default scale. A seeded team is
+reused on later runs against the same database.
+
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 

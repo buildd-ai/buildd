@@ -25,7 +25,7 @@ describe('claimEntryWords', () => {
 
   test('a local-session mission', () => {
     const w = claimEntryWords({ ...base, event: 'claim_empty', diagnosticReason: 'no_pending_tasks', taskExclusion: 'mission_local' }, NOW);
-    expect(w).toMatch(/^waiting: local[- ]session/);
+    expect(w).toMatch(/^waiting: your session/);
   });
 
   test('a refusal says the status and the server reason, not claim_rejected', () => {

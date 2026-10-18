@@ -83,7 +83,7 @@ mock.module('./escalation-notify', () => ({
 
 const { notifyTeamOf } = await import('./notify');
 
-const sent: Array<{ token: string; user: string; title: string; priority: number }> = [];
+const sent: Array<{ token: string; user: string; title: string; message?: string; priority: number }> = [];
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
@@ -133,6 +133,12 @@ describe('notifyTeamOf', () => {
     await notifyTeamOf({ workspaceId: 'ws-missing' }, 'needsAttention', { title: 't', message: 'm' });
     await notifyTeamOf({}, 'needsAttention', { title: 't', message: 'm' });
     expect(sent).toEqual([]);
+  });
+
+  it('a retry key in the title or message reads as its attempt (terms catalog)', async () => {
+    await notifyTeamOf({ workspaceId: 'ws-a' }, 'needsAttention', { title: 'PR #9: [builder · after CI #1] Ship it', message: '[builder · after CI #1] Ship it\nIt still fails.' });
+    expect(sent[0].title).toBe('PR #9: Ship it · Fix 1 · CI failed');
+    expect(sent[0].message).toBe('Ship it · Fix 1 · CI failed\nIt still fails.');
   });
 
   it('keeps the payload priority', async () => {

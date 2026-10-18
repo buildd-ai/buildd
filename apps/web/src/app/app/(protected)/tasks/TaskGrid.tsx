@@ -18,6 +18,7 @@ import { TERMS, type LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
 import { displayTaskTitle } from '@/lib/task-title';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export interface GridTask {
   id: string;
@@ -917,7 +918,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
                     </span>
                   </div>
                   <div className="text-[13px] text-text-primary line-clamp-2 leading-snug" title={task.title}>
-                    {displayTaskTitle(task.title)}
+                    <TaskTitle short title={task.title} />
                   </div>
                 </Link>
               ))}

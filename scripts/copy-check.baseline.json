@@ -58,7 +58,7 @@
     "packages/core/mcp-tools.ts": 35
   },
   "catalog-word": {
-    "packages/core/mcp-tools.ts": 16
+    "packages/core/mcp-tools.ts": 15
   },
   "duplicate-explanation": {
     "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 1,
