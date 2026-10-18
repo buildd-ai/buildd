@@ -36,6 +36,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-polic
 import { latestRunPerName, listAllCheckRuns, type CheckRunState } from '@/lib/ci-verdict';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
+import { adoptBeforeMerge } from '@/lib/workflow/merge-adoption';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -280,6 +281,15 @@ export async function POST(
   // A kernel-owned PR (workflow-state-kernel §14 Slice C): the kernel merges it
   // and owns the post-merge work; this route keeps its rails. A person acting
   // on a stale view is told so, with the current one, before any rail acts.
+  // AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted first, so it lands
+  // through the kernel's gate; one nothing can adopt is refused, never merged on the legacy arm.
+  const adoption = await adoptBeforeMerge(
+    { workspaceId: worker.workspaceId, installationId, repoFullName, prNumber, taskId: worker.taskId ?? null, door: 'dashboard' },
+    { principal: { kind: 'user', id: user.id } },
+  );
+  if (adoption.kind === 'refused') {
+    return NextResponse.json({ error: adoption.message, reason: adoption.reason }, { status: 409 });
+  }
   const kernelView = await kernelLandingView(worker.workspaceId, repoFullName, prNumber);
   if (kernelView && expectedVersion !== undefined && kernelView.current.version !== expectedVersion) {
     return NextResponse.json({
@@ -289,7 +299,7 @@ export async function POST(
       current: kernelView.current,
     }, { status: 409 });
   }
-  const kernelOwned = !!kernelView;
+  const kernelOwned = !!kernelView || adoption.kind === 'kernel';
 
   // Mission-PR branch-lifecycle gate (P3) — same rule the other merge paths
   // enforce: refuse to merge the mission PR while a sibling task PR based on
@@ -647,7 +657,10 @@ export async function POST(
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         }, { principal: { kind: 'user', id: user.id }, idempotencyKey })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
+    if (kernel) return { kernel };
+    // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption.kind !== 'legacy') return { notLanded: true as const };
+    return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
   }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
   if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
   if ('refused' in slotted) {
@@ -656,6 +669,9 @@ export async function POST(
   if (slotted.result.kernel) {
     const k = slotted.result.kernel;
     return k.merged ? finalizeSuccessfulMerge() : kernelLandingRefusal(k);
+  }
+  if (!slotted.result.legacy) {
+    return NextResponse.json({ error: `PR #${prNumber} is the workflow's, and it did not take the merge; nothing was merged. Retry in a moment.`, reason: 'kernel_not_landed' }, { status: 409 });
   }
   const result = slotted.result.legacy;
 

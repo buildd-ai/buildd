@@ -1797,6 +1797,24 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'AC-13: a PR adopted when a door is asked to merge it (no delivery until then) lands only once a review of its head approves; until then every unattended door is refused and nothing merges',
+    async run(host) {
+      // The door's open_delivery: DeliveryOpened, PrBound and the head GitHub holds, owner still running.
+      const s = await new Delivery(host, 69).open();
+      applied(await s.push('H1'), 'WORKING', 'the live head is recorded');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'adopted while the owner runs: not landable');
+      // The owner's end is forwarded (a late open): review of the live head is owed, never assumed.
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the adopted delivery owes a review');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status']), { round: 1, headSha: 'H1', status: 'queued' }, 'round 1 at the adopted head');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'every unattended door is refused before the review');
+      eq(await s.count('merge_call'), 0, 'no merge owed');
+      eq(pick(landingStatusOf(await s.view()), ['state', 'sha']), { state: 'pending', sha: 'H1' }, 'Buildd / Review approval is pending at H1, never success');
+      applied(await s.verdict('approve'), 'APPROVED', 'the kernel review approves H1');
+      applied(await s.land('H1'), 'LANDING', 'then it lands through the gate');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.payload.headSha), ['H1'], 'pinned to the approved head');
+    },
+  },
+  {
     name: 'AC-13: a person waives a finding (recorded with who and why), a deferral names its task, an agent cannot waive, and an optional finding never blocks',
     async run(host) {
       const s = await new Delivery(host, 63).open();
