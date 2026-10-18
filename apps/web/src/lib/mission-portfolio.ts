@@ -11,9 +11,17 @@ import type { StateKey } from '@/components/ui/states';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
 import { sectionOf, type MissionSectionKey } from './mission-sections';
 
+/**
+ * What a portfolio row reads of the delivery projection, and all the list
+ * loads of it (lib/mission-list-load.ts): no per-task rows, focus, milestones
+ * or visual-audit detail.
+ */
+export type PortfolioDelivery = Pick<MissionDelivery,
+  'id' | 'title' | 'href' | 'kind' | 'startState' | 'open' | 'landed' | 'total' | 'evidence' | 'next' | 'remaining' | 'reconciling' | 'repairRounds'>;
+
 /** One portfolio row: the projection plus the list's own sort and filter facts. */
 export interface PortfolioRow {
-  delivery: MissionDelivery;
+  delivery: PortfolioDelivery;
   /** `missions.status`. */
   status: string;
   workspaceId: string | null;
