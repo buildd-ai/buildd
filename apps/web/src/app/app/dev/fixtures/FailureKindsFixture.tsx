@@ -1,9 +1,10 @@
 'use client';
 
 /**
- * `?state=failure-kinds`: the two failures a task can show, side by side. A
+ * `?state=failure-kinds`: the three failures a task can show, side by side. A
  * worker that died offers retry and a backend switch; work that landed whose
- * audit failed says so and offers neither.
+ * audit failed says so and offers neither; an audit that never ran because
+ * its prerequisite failed names that task and offers no retry (spec 072de598 I-14).
  */
 import TaskActionZone from '../../(protected)/missions/[id]/TaskActionZone';
 
@@ -19,6 +20,10 @@ export default function FailureKindsFixture() {
       <section data-testid="failure-kind" data-kind="verification" className="space-y-2">
         <h2 className="font-mono text-meta text-text-muted">Implementation landed, audit failed</h2>
         <TaskActionZone {...COMMON} taskId="fx-verify" failureKind="verification" lastError={null} />
+      </section>
+      <section data-testid="failure-kind" data-kind="dependency" className="space-y-2">
+        <h2 className="font-mono text-meta text-text-muted">Audit never ran, prerequisite failed</h2>
+        <TaskActionZone {...COMMON} taskId="fx-dependency" failureKind="dependency" taskTitle="[surface audit] Fixture mission" waitingOn={{ taskId: 'fx-exec', title: 'Make PR review decisions commit-scoped and truthful' }} lastError={null} />
       </section>
     </main>
   );

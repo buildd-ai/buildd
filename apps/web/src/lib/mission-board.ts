@@ -35,7 +35,7 @@ import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-p
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
 import type { DepReleaseArm } from './dep-gate-contract';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
-import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
+import { classifyTaskFailure, failedDependencyOf, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
@@ -87,6 +87,8 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   backend?: string | null;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
+  /** The task's `result` digest (`errorType`, `error`): a dependency failure is read from it. */
+  result?: unknown;
 }
 
 export interface BoardRoleInput {
@@ -281,6 +283,8 @@ export interface BoardTask {
   backend: 'claude' | 'codex' | null;
   /** `classifyTaskFailure` over the mission's rows; null unless the task failed. */
   failureKind: TaskFailureKind | null;
+  /** For a `dependency` failure: the failed task it waits on (`failedDependencyOf`). */
+  failedDependency?: { taskId: string; title: string | null } | null;
 }
 
 export interface BoardPhase {
@@ -541,6 +545,8 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    // The page's digest under its own key: a caller that loads no result (Home's cards) never touches `result`.
+    result: t.resultDigest ?? null,
     delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
     worker: w0
       ? {
@@ -816,6 +822,7 @@ export function buildBoardCells(
       workerStatus: own?.status ?? null,
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
       failureKind: classifyTaskFailure(t, input.tasks),
+      failedDependency: failedDependencyOf(t, input.tasks),
     };
   }
 
