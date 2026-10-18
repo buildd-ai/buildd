@@ -72,4 +72,31 @@ describe('axis', () => {
     expect(tickAnchor(300, 600)).toBe('middle');
     expect(tickAnchor(590, 600)).toBe('end');
   });
+
+  it('splits runner average by owner with a separate Other / unattributed line', () => {
+    const owned = (ownerId: string | null): OccupancyWorkerRow => ({ ...run('http://r', NOW - 3 * H, NOW - H), ownerId });
+    const series = buildOccupancySeries({ window: '24h', now: NOW, workers: [owned('me'), owned('you'), owned(null)], viewerId: 'me' });
+    const html = renderToStaticMarkup(<OccupancyPlot series={series} capacityNow={10} busyNow={0} />);
+    expect(html).toContain('data-testid="occupancy-owner-split"');
+    for (const label of ['Yours, average', 'Teammates, average', 'Other / unattributed, average']) expect(html).toContain(`>${label}<`);
+  });
+
+  it('states how many runner jobs lack an owner, and stays quiet when none do', () => {
+    const job = (ownerId: string | null): OccupancyWorkerRow => ({ ...run('http://r', NOW - 3 * H, NOW - H), ownerId, runnerClass: 'personal' });
+    const gappy = buildOccupancySeries({ window: '24h', now: NOW, workers: [job('me'), job(null)], viewerId: 'me' });
+    expect(renderToStaticMarkup(<OccupancyPlot series={gappy} capacityNow={10} busyNow={0} />)).toContain('1 of 2 have no recorded owner');
+    const whole = buildOccupancySeries({ window: '24h', now: NOW, workers: [job('me')], viewerId: 'me' });
+    expect(renderToStaticMarkup(<OccupancyPlot series={whole} capacityNow={10} busyNow={0} />)).not.toContain('occupancy-coverage-note');
+  });
+});
+
+describe('OccupancyPlot views', () => {
+  it('defaults to Total, offering Mine and By member in one chart', () => {
+    const html = render([run('http://r', NOW - 2 * H, NOW - H)], '24h');
+    expect(html).toContain('data-testid="occupancy-view-picker"');
+    for (const l of ['Total', 'Mine', 'By member']) expect(html).toContain(`>${l}<`);
+    expect(html.match(/<svg/g)).toHaveLength(1);
+    expect(html).toContain('data-testid="occupancy-owner-split"');
+    expect(html).not.toContain('data-testid="occupancy-members"');
+  });
 });

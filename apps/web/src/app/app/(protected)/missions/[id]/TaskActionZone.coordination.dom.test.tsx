@@ -50,7 +50,7 @@ const migrationEdge = (id: string) => makeWaitingReason('dep_inferred', {
 });
 const localHold = makeWaitingReason('mission_local', {
   because: "its mission runs in a person's own session, so runners do not pick up its tasks",
-  blocker: { type: 'mission', id: 'm1', label: 'a local-session mission', href: '/app/missions/m1' },
+  blocker: { type: 'mission', id: 'm1', label: 'a mission run from your session', href: '/app/missions/m1' },
   provenance: { source: 'probe', derivedFrom: "missions.executor='local'" },
 });
 
@@ -176,7 +176,7 @@ describe('TaskActionZone: coordination holds', () => {
   });
 
   // Regression (owner report): the overview card read "Next: Ready to start.
-  // Claim it from a local session." and under it "Held · Waiting on a
+  // Claim it from your session." and under it "Held · Waiting on a
   // local-session mission because its mission runs in a person's own
   // session, so runners do not pick up its tasks · starts when a local
   // session claims it". Same fact twice; one short line is enough.
@@ -184,14 +184,14 @@ describe('TaskActionZone: coordination holds', () => {
     hold = [localHold];
     await render({ missionExecutor: 'local' });
     expect(q('[data-testid="task-waiting-line"]')).toBeNull();
-    expect(q('[data-testid="task-run-now"]')?.textContent).toContain('Ready to start. Claim it from a local session.');
+    expect(q('[data-testid="task-run-now"]')?.textContent).toContain('Ready to start. Claim it from your session.');
   });
 
   it('…and says nothing when its host already said it', async () => {
     hold = [localHold];
     await render({ missionExecutor: 'local', hideQueuedNote: true });
     expect(q('[data-testid="task-waiting-line"]')).toBeNull();
-    expect(container.textContent).not.toMatch(/local-session mission|Claim it from a local session/);
+    expect(container.textContent).not.toMatch(/mission run from your session|Claim it from your session/);
     expect(q('[data-action="run_now"]')).not.toBeNull();
   });
 

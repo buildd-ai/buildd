@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Select } from '@/components/ui/Select';
-import { useCloudRunnerDeploy, DEPLOY_STEPS, type DeployStep } from './_lib/use-cloud-runner-deploy';
+import { useCloudRunnerDeploy, DEPLOY_STEPS, stepLabel } from './_lib/use-cloud-runner-deploy';
 import { missingDeployPermissions, type CloudflareCapabilities } from '@/lib/cloudflare-credential-shared';
 
 interface Props {
@@ -45,6 +45,12 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
     if (!selectedWs) return;
     deploy(selectedWs);
   }, [selectedWs, deploy]);
+
+  // Resume at the step that failed: the finished ones are not requested again.
+  const retryDeploy = useCallback(() => {
+    if (!state.workspaceId) return;
+    deploy(state.workspaceId, state.failedStep ?? undefined);
+  }, [state.workspaceId, state.failedStep, deploy]);
 
   const missingPerms = missingDeployPermissions(capabilities);
   const running = state.phase === 'running';
@@ -98,6 +104,13 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
           {/* Step progress list */}
           <ol data-testid="cloud-deploy-steps" className="text-xs space-y-1">
             {DEPLOY_STEPS.map((s, i) => {
+              if (state.skipped.includes(s)) {
+                return (
+                  <li key={s} className="text-text-muted">
+                    ✓ {stepLabel(s)} (unchanged)
+                  </li>
+                );
+              }
               const isDone = i < stepIdx || (i === stepIdx && done);
               const isCurrent = i === stepIdx && running;
               const isFailed = i === stepIdx && failed;
@@ -146,7 +159,7 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
 
           <div className="flex gap-2">
             {failed && (
-              <button onClick={startDeploy} data-testid="cloud-deploy-retry" className="btn btn-primary">
+              <button onClick={retryDeploy} data-testid="cloud-deploy-retry" className="btn btn-primary">
                 Retry
               </button>
             )}
@@ -160,14 +173,4 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
       )}
     </div>
   );
-}
-
-function stepLabel(s: DeployStep): string {
-  switch (s) {
-    case 'check': return 'Pre-flight check';
-    case 'bucket': return 'Snapshot bucket';
-    case 'worker': return 'Worker upload';
-    case 'containers': return 'Container applications';
-    case 'connect': return 'Connect workspace';
-  }
 }

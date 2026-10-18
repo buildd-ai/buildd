@@ -13,24 +13,54 @@
  *   - last activity: the missions list's `recent` order
  *     (`missionListOrderBy`).
  *
- * What the list readings cannot know they leave out here too: no visual
- * review state, no deploy baseline, no escalation-gate verdict. The store
+ *   - Home's reading (`home`): the delivery projection (`projectMissionDelivery`
+ *     with `missionDeliveryFacts`), its quiet cause, and the list card's kind,
+ *     held, done and strand facts (`buildMissionListCard`), as Home built them;
+ *   - the missions list's reading (`list`): the row's strip
+ *     (`taskRowsStripProjection`, as the mission page draws it), its last
+ *     advance and a recurring mission's next run;
+ *   - the visual review state, when the loader read it (an open audit or fix,
+ *     or an open mission PR), for the card's delivery line and the mission PR
+ *     gate, so no page reads it (or GitHub) while it renders.
+ *
+ * What the list readings cannot know they leave out here too: no deploy
+ * baseline, no escalation-gate verdict. The store
  * (lib/mission-summary-store.ts) writes the output; the loader
  * (lib/mission-summary-load.ts) reads the input.
  */
-import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelivery } from '@buildd/shared';
+import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelivery, type MissionSummaryHome, type MissionSummaryList } from '@buildd/shared';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { assembleMissionStages, type MissionStageRows } from './mission-stage-assemble';
-import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
+import { buildMissionCardView, summarizeMissionForCard, type MissionCardRow, type MissionCardSummary } from './mission-card-view';
+import { buildMissionListCard, type ListMissionRow, type StrandCta } from './mission-list-card';
+import { projectMissionDelivery, quietCauseOf, toDeliveryRow, type MissionDeliveryRow } from './delivery-projection';
+import { missionDeliveryFacts } from './mission-delivery-facts';
+import { summarizeVisualReview } from './mission-open-checks';
+import type { MissionVisualReviewState } from './workflow/visual-review-state';
+import { missionWorkHolder, missionWorkStateFromRows } from './mission-work-state';
 import { missionNeedsYou } from './mission-state-view';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { overlayDeliveryLifecycle } from './delivery-overlay';
+import { taskRowsStripProjection } from './mission-strip-order';
 
 /** One mission's rows, as `loadMissionSummaryInputs` reads them. */
 export interface MissionSummaryInput extends MissionStageRows {
   /** Workers in `LIVE_WORKER_STATUSES` on the mission's tasks: an exact count, not the loaded rows. */
   liveWorkers: number;
+  /** The visual review state, when the loader read it (`summaryReadsVisualReview`); absent or null otherwise. */
+  visualReview?: MissionVisualReviewState | null;
+  /** The escalation gate's stored verdict on the mission's own PR, when one exists. */
+  escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
 }
+
+/** Home's reading with its precise types (the stored JSON is `MissionSummaryHome`). */
+export interface MissionHomeReading extends MissionSummaryHome {
+  delivery: MissionDeliveryRow;
+  card: MissionSummaryHome['card'] & { strand: StrandCta | null };
+}
+
+export const homeReadingOf = (s: Pick<MissionSummary, 'home'>): MissionHomeReading => s.home as MissionHomeReading;
 
 type Row = Record<string, any>;
 
@@ -122,6 +152,17 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
     now, liveWorkers: input.liveWorkers, deliveryViews,
   });
 
+  const visualReview = input.visualReview ?? null;
+  const visualRead = input.visualReview !== undefined;
+  // Home's card reads the visual review and the mission PR's stored verdict too; the list fields above do not.
+  const verdict = input.escalationGateVerdict ?? null;
+  const homeCard = visualRead || verdict
+    ? summarizeMissionForCard({ ...mission, escalationGateVerdict: verdict, tasks: cardTasks } as MissionCardRow, {
+        now, liveWorkers: input.liveWorkers, deliveryViews, visualReview: visualRead ? summarizeVisualReview(visualReview) : null,
+      })
+    : card;
+  const home = homeReading(mission, cardTasks, homeCard, deliveryViews, visualReview, visualRead, now);
+
   const taskCounts: Record<string, number> = {};
   for (const t of taskRows) taskCounts[t.status] = (taskCounts[t.status] ?? 0) + 1;
 
@@ -139,6 +180,69 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
     taskCounts: sortedKeys(taskCounts),
     delivery: currentDelivery(mission, cardTasks),
     lastActivityAt: lastActivity(mission, taskRows),
+    home,
+    list: listReading(mission, cardTasks, card, input.deliveries as ReadonlyMap<string, unknown>),
+    visualReview: visualReview as unknown as Record<string, unknown> | null,
+    missionPrWorkHolder: mission.integrationBranchEnabled === true && mission.status !== 'completed' && mission.status !== 'archived'
+      ? missionWorkHolder(missionWorkStateFromRows(mission, taskRows as never, input.workerRows as never))
+      : null,
+  };
+}
+
+/** Recurring, live or held: the missions Home lists (lib/mission-list-card.ts kinds, Home's rule). */
+const LIVE_GROUPS: ReadonlySet<string> = new Set(['running', 'attention', 'review']);
+
+/**
+ * Home's reading of one mission, from the card's overlaid rows: the same
+ * builders Home ran on its own loaded rows (`projectMissionDelivery`,
+ * `buildMissionCardView`, `buildMissionListCard`).
+ */
+function homeReading(
+  mission: Row, cardTasks: Row[], card: MissionCardSummary, deliveryViews: Map<string, any>,
+  visualReview: MissionVisualReviewState | null, visualRead: boolean, now: number,
+): MissionHomeReading {
+  const row = { ...mission, tasks: cardTasks } as unknown as ListMissionRow;
+  const delivery = projectMissionDelivery({
+    id: mission.id, title: mission.title, status: mission.status, href: `/app/missions/${mission.id}`,
+    isHeld: mission.isHeld, armedAt: mission.armedAt, integrationBranch: mission.integrationBranchEnabled === true,
+    tasks: cardTasks as never,
+    // The same facts the missions list reads, so both cards agree.
+    ...missionDeliveryFacts(row as never, visualRead ? summarizeVisualReview(visualReview) : undefined, now),
+  }, missionHelpers);
+  const view = buildMissionCardView(row, { from: 'home', now, summary: card, deliveryViews });
+  const model = buildMissionListCard(row, view, card, { now });
+  const live = card.liveWorkers > 0 || LIVE_GROUPS.has(card.group);
+  return {
+    delivery: toDeliveryRow(delivery),
+    quietCause: quietCauseOf(delivery),
+    card: {
+      kind: model.kind,
+      listed: model.kind === 'recurring' || live || !!mission.isHeld,
+      done: model.counts.done,
+      total: model.counts.total,
+      donePrs: model.done?.prs ?? null,
+      held: model.held,
+      strand: model.strand,
+    },
+  };
+}
+
+/**
+ * The missions list's reading of one mission: the strip's cells in the
+ * mission page's dependency-first order (each task with its kernel delivery
+ * display, as the page passes it), the latest task movement, and when a
+ * recurring mission runs next (a check-in schedule is not recurring work).
+ */
+function listReading(mission: Row, cardTasks: Row[], card: MissionCardSummary, deliveries: ReadonlyMap<string, unknown>): MissionSummaryList {
+  const projection = taskRowsStripProjection(cardTasks.map(t => ({ ...t, delivery: deliveries.get(t.id) ?? null })) as never);
+  let advanced = ms(mission.lastTaskStartedAt) || 0;
+  for (const t of cardTasks) advanced = Math.max(advanced, ms(t.updatedAt) || 0);
+  const schedule = mission.schedule as { cronExpression?: string | null; taskTemplate?: { context?: { heartbeat?: unknown } } | null } | null;
+  const recurring = !!schedule?.cronExpression && schedule.taskTemplate?.context?.heartbeat !== true && mission.status !== 'completed';
+  return {
+    strip: projection.order.flatMap(id => projection.states.get(id) ?? []),
+    lastAdvancedAt: advanced > 0 ? new Date(advanced).toISOString() : null,
+    nextRunAt: recurring ? card.nextRunAt : null,
   };
 }
 

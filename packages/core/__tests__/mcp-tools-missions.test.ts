@@ -759,14 +759,14 @@ describe('manage_missions — executor', () => {
     const res = await run({ action: 'update', missionId: MISSION_ID, executor: 'local' });
     const patch = mockApi.mock.calls.find((c: any[]) => c[1]?.method === 'PATCH');
     expect(JSON.parse(patch![1].body)).toMatchObject({ executor: 'local' });
-    expect(res.content[0].text).toContain('[LOCAL');
+    expect(res.content[0].text).toContain('[Run from your session · executor=local]');
     expect(res.content[0].text).not.toContain('HELD');
   });
 
   it('get: shows the executor', async () => {
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'Local', status: 'active', progress: 0, completedTasks: 0, totalTasks: 1, executor: 'local', isHeld: false, tasks: [] });
     const out = (await run({ action: 'get', missionId: MISSION_ID })).content[0].text;
-    expect(out).toContain('[LOCAL]');
+    expect(out).toContain('[Run from your session · executor=local]');
     expect(out).toContain('Executor: local');
     mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'R', status: 'active', progress: 0, completedTasks: 0, totalTasks: 0, isHeld: false, tasks: [] });
     expect((await run({ action: 'get', missionId: MISSION_ID })).content[0].text).toContain('Executor: runner');
@@ -774,7 +774,7 @@ describe('manage_missions — executor', () => {
 
   it('list: marks local missions', async () => {
     mockApi.mockResolvedValueOnce({ missions: [{ id: MISSION_ID, title: 'Local', status: 'active', progress: 0, completedTasks: 0, totalTasks: 1, executor: 'local' }], total: 1 });
-    expect((await run({ action: 'list' })).content[0].text).toContain('**Local** [active] [LOCAL]');
+    expect((await run({ action: 'list' })).content[0].text).toContain('**Local** [active] [Run from your session · executor=local]');
   });
 });
 

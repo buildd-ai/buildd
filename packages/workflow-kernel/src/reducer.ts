@@ -300,6 +300,11 @@ export function verifyCompositionAttestation(
     }
     if (ev.roundHeadSha !== c.reviewedHeadSha) reasons.push(`constituent_head_mismatch:${c.roundId}`);
     if (ev.roundStatus !== 'decided' || ev.effectiveVerdict !== 'approve') reasons.push(`constituent_not_approved:${c.roundId}`);
+    // §13.13 rule 1: an approve is the constituent's word only while it is its LATEST decided
+    // round at that head, its delivery is not blocked there, and no finding of it is open.
+    if (ev.latestDecidedVerdictAtHead != null && ev.latestDecidedVerdictAtHead !== 'approve') reasons.push(`constituent_approval_superseded:${c.roundId}`);
+    if ((ev.deliveryState === 'CHANGES_REQUESTED' || ev.deliveryState === 'ESCALATED') && ev.deliveryHeadSha === c.reviewedHeadSha) reasons.push(`constituent_delivery_blocked:${c.roundId}`);
+    if ((ev.openFindings ?? 0) > 0) reasons.push(`constituent_open_findings:${c.roundId}`);
     const unrecorded = c.equivalentHeadShas.filter((h) => !ev.deliveryApprovedHeads.includes(h));
     if (unrecorded.length > 0) reasons.push(`constituent_equivalence_unrecorded:${c.roundId}`);
     // GitHub merged the reviewed head or a head its delivery recorded as equivalent…
@@ -333,7 +338,9 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'DeliveryOpened': return `open:${cmd.ownerTaskId}`;
     case 'PrBound': return `bind:${cmd.repoFullName}#${cmd.prNumber}`;
     case 'HeadObserved': return pr && d ? headObservationKey(pr, d.currentHeadSha, cmd.live.headSha, d.version) : null;
+    case 'AttemptStarted': return `start:${cmd.taskId}:${cmd.claimedAt}`;
     case 'AttemptEnded': return `end:${cmd.workerId}`;
+    case 'AttemptRequeued': return `requeue:${cmd.workerId}`;
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
@@ -677,8 +684,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     // T3 / T11 / T13 — §6.4
     case 'HeadObserved': return headObserved(c, cmd);
 
+    // AC-1 slice 7 (workflow-kernel-library.md §9)
+    case 'AttemptStarted': return attemptStarted(c, cmd);
+
     // T4 — §6.5
     case 'AttemptEnded': return attemptEnded(c, cmd);
+
+    // AC-1 slice 6 (workflow-kernel-library.md §9)
+    case 'AttemptRequeued': return attemptRequeued(c, cmd);
 
     // T5
     case 'ReviewRequested': {
@@ -1657,6 +1670,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (att.repoFullName !== dd.repoFullName || att.prNumber !== dd.prNumber) return c.rejected('attestation_pr_mismatch');
       if (att.aggregateHeadSha !== dd.currentHeadSha) return c.stale('head_not_current');
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_not_allowed');
+      // §13.13 rule 2 / AC-24: an attestation covers a head, it never closes a finding. A whole-PR
+      // composition approval over one is refused; a delta round still runs and leaves it open.
+      const standing = att.novelDelta.result === 'none' ? openRequiredFindings(c.view) : [];
+      if (standing.length) return c.rejected('open_findings', { missing: standing.map(describeFinding) });
       if (att.novelDelta.result === 'unverifiable') return c.rejected('composition_unverifiable', { missing: [att.novelDelta.reason] });
       const v = verifyCompositionAttestation(att, cmd.constituents);
       if (!v.ok) return c.rejected('composition_not_verified', { missing: v.reasons });
@@ -2069,6 +2086,52 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       // CLOSED_UNMERGED: record the head; T19 re-evaluates.
       return record();
   }
+}
+
+// ── AC-1 slice 6: an attempt's task goes back to the queue ──────────────────
+
+/**
+ * AttemptRequeued: the attempt the delivery is bound to is retried on the same task (a retry, a
+ * loop hold, a budget or credential wall, a stalled repair recovered). The delivery keeps its
+ * state; the transition records the requeue (`requeue:<workerId>`, so a re-sent requeue is a
+ * duplicate) and its statement moves the task back to `pending` (the host's projection, guarded
+ * on the task's current attempt). An owner requeue binds while the delivery is `WORKING` on that
+ * owner task; a repair requeue while `FIXING` / `REPAIRING` is bound to that open attempt.
+ * Anything else is `attempt_not_bound`: the delivery has nothing to record, and the host's own
+ * guarded projection decides whether the task still moves.
+ */
+function attemptRequeued(c: Ctx, cmd: Extract<Command, { type: 'AttemptRequeued' }>): Decision {
+  const d = c.d!;
+  const key = `requeue:${cmd.workerId}`;
+  const evidence = { requeue: true, reason: cmd.reason, workerId: cmd.workerId, ...(cmd.attemptId ? { attemptId: cmd.attemptId } : { taskId: cmd.taskId }) };
+  if (!cmd.taskId && !cmd.attemptId) return c.rejected('attempt_not_named');
+  if (cmd.attemptId) {
+    const a = c.attempt(cmd.attemptId);
+    if ((d.state !== 'FIXING' && d.state !== 'REPAIRING') || !a || a.id !== d.boundAttemptId || !OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_bound');
+    return c.apply(key, d.state, { evidence });
+  }
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(key, 'WORKING', { evidence });
+}
+
+// ── AC-1 slice 7: a claim starts the owner attempt ──────────────────────────
+
+/**
+ * AttemptStarted: a claim of the owner task starts its next attempt. The claim route's
+ * compare-and-set decided the race before this command exists, so the kernel never picks a winner:
+ * it records the start (`start:<taskId>:<claimedAt>`, so a re-send is a duplicate and the next
+ * claim is a new key) and its statement moves the task to `assigned`, guarded on that exact claim.
+ * It binds while the delivery is `WORKING` on that owner task (a retry the kernel kept in WORKING).
+ * Anything else is `attempt_not_bound`: the delivery has nothing to record, and the host's guarded
+ * projection still starts the claim it decided.
+ */
+function attemptStarted(c: Ctx, cmd: Extract<Command, { type: 'AttemptStarted' }>): Decision {
+  const d = c.d!;
+  if (!cmd.claimedBy || !cmd.claimedAt) return c.rejected('claim_not_named');
+  if (d.state !== 'WORKING' || cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
+  return c.apply(`start:${cmd.taskId}:${cmd.claimedAt}`, 'WORKING', {
+    evidence: { start: true, taskId: cmd.taskId, claimedBy: cmd.claimedBy, claimedAt: cmd.claimedAt },
+  });
 }
 
 // ── T4 ──────────────────────────────────────────────────────────────────────

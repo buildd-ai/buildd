@@ -13,7 +13,7 @@ import { isTerminalTaskStatus } from '@buildd/shared';
 import { missions, tasks as tasksTable, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
 import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surface-audit';
 import { visualReviewPolicyOf } from '@buildd/shared';
-import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import type { VisualReviewModel } from '@buildd/shared';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
@@ -54,19 +54,32 @@ export async function getMissionVisualReviewState(
     waiver?: Promise<VisualReviewStateInput['waiver']>;
     /** The caller's own `loadVisualReview` result; null/absent loads it here. */
     model?: VisualReviewModel | null;
+    /**
+     * A page is rendering (spec 3ef37387 R-12): the surface-audit gate reads
+     * stored evidence only, never GitHub. A page passes what it already holds
+     * too (the mission row, its workspace's gitConfig, the gate's task rows,
+     * and an empty audit ledger when the mission has no audit), so this reads
+     * only what the page does not.
+     */
+    render?: boolean;
+    mission?: { id: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; primaryPrNumber: number | null };
+    gitConfig?: unknown;
+    tasks?: SurfaceAuditGateTask[];
+    ledger?: ScheduleAudit[];
   } = {},
 ): Promise<MissionVisualReviewState | null> {
-  const mission = await db.query.missions.findFirst({
+  const mission = opts.mission ?? await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, status: true, workspaceId: true, autoSurfaceAudit: true, workingBranch: true, primaryPrNumber: true },
   });
   if (!mission) return null;
 
   const [ws, tasks, waiver] = await Promise.all([
-    mission.workspaceId
-      ? db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)), columns: { gitConfig: true, githubRepoId: true } })
+    opts.gitConfig !== undefined ? { gitConfig: opts.gitConfig }
+    : mission.workspaceId
+      ? db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)), columns: { gitConfig: true } })
       : Promise.resolve(undefined),
-    loadSurfaceAuditGateTasks(missionId),
+    opts.tasks ?? loadSurfaceAuditGateTasks(missionId),
     opts.waiver ?? loadSurfaceAuditWaiver(missionId),
   ]);
   const gitConfig = (ws?.gitConfig ?? null) as { defaultBranch?: string } | null;
@@ -78,7 +91,13 @@ export async function getMissionVisualReviewState(
   // Independent reads, side by side. The gate is a render read: no fillMergedEvidence.
   const [model, gate] = await Promise.all([
     opts.model ?? loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId }),
-    evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks).catch(() => null),
+    evaluateSurfaceAuditGate({ id: mission.id, autoSurfaceAudit: true }, tasks, {
+      render: opts.render,
+      // As before: the gate is asked without the workspace (its policy is applied
+      // below), so it reads no policy; the waiver was read above (same person-only rule).
+      workspacePolicy: null,
+      waived: waiver != null,
+    }).catch(() => null),
   ]);
   const gateUiChange: VisualReviewStateInput['uiChange'] =
     gate && gate.required ? { state: 'yes', source: gate.source, uiFiles: gate.uiPaths.length }
@@ -103,7 +122,7 @@ export async function getMissionVisualReviewState(
   }
 
   const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
-  const ledger = await loadMissionAuditLedger(missionId);
+  const ledger = opts.ledger ?? await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
   const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
   const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType, status: model.audit.status } : null;

@@ -45,11 +45,14 @@ describe('AC-18: mission page query shape', () => {
   });
 
   it('worker columns carry what the Board and Lanes draw', () => {
-    // runner → lanes and fleet slots; milestones → tile notches;
-    // lines → the landed rows and the completion record.
-    for (const k of ['runner', 'milestones', 'linesAdded', 'linesRemoved', 'waitingFor', 'startedAt', 'completedAt'] as const) {
+    // runner → lanes and fleet slots; lines → the landed rows and the
+    // completion record. Milestones (tile notches) arrive projected: the
+    // board's tail, never the whole log (spec 3ef37387 R-11).
+    for (const k of ['runner', 'linesAdded', 'linesRemoved', 'waitingFor', 'startedAt', 'completedAt'] as const) {
       expect(MISSION_WORKER_COLUMNS[k]).toBe(true);
     }
+    expect(Object.keys(MISSION_WORKER_COLUMNS)).not.toContain('milestones');
+    expect(Object.keys(MISSION_TASKS_WITH.with.workers.extras)).toEqual(['milestones', 'error']);
     expect(MISSION_TASK_COLUMNS.outputRequirement).toBe(true);
     expect(MISSION_TASK_COLUMNS.label).toBe(true);
   });

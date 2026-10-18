@@ -7,8 +7,8 @@ summary: A deploy MUST run server-side with a credential named by reference, aut
 domain: auth
 surfaces: [apps/web/src/lib/deployments/action.ts, apps/web/src/lib/deployments/cloudflare.ts, apps/web/src/app/api/workers/[id]/deployments/route.ts, apps/web/src/app/api/deployments/route.ts, apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts, apps/web/src/lib/deployments/cloud-runner-deploy.ts]
 related: [agent-capabilities]
-keywords: [deploy action, platform operator, credential ref, deployment audit, deployment_audit_events, secrets:reveal, cloudflare deploy, model-policy deploy, upload_worker, put_secret, deploy_worker_script, deploy_containers, cloud runner deploy, settings deploy button]
-verified_by: [apps/web/src/lib/deployments/action.test.ts, apps/web/src/app/api/workers/[id]/deployments/route.test.ts, apps/web/src/app/api/deployments/route.test.ts, apps/web/src/app/api/cloudflare/credential/reveal/route.test.ts, apps/model-policy/scripts/deploy-request.test.ts, apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.test.ts]
+keywords: [release_state, redeploy, deploy action, platform operator, credential ref, deployment audit, deployment_audit_events, secrets:reveal, cloudflare deploy, model-policy deploy, upload_worker, put_secret, deploy_worker_script, deploy_containers, cloud runner deploy, settings deploy button]
+verified_by: [apps/web/src/lib/deployments/action.test.ts, apps/web/src/lib/deployments/cloud-runner-deploy.test.ts, apps/web/src/app/api/workers/[id]/deployments/route.test.ts, apps/web/src/app/api/deployments/route.test.ts, apps/web/src/app/api/cloudflare/credential/reveal/route.test.ts, apps/model-policy/scripts/deploy-request.test.ts, apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.test.ts]
 supersedes: []
 assertions:
   - id: run-deployment-action
@@ -77,7 +77,7 @@ credential and call the provider itself, returning only a redacted result.
 
 **Invariants**:
 - Operations and the capabilities each needs (`DEPLOYMENT_OPERATIONS`):
-  `status` needs `deployments:read`; `put_secret`, `upload_worker`,
+  `status` and `release_state` need `deployments:read`; `put_secret`, `upload_worker`,
   `ensure_bucket`, `deploy_worker_script`, `deploy_containers` need
   `deployments:write`. Every operation also needs
   `deployment_secrets:use`, because every one uses the credential. None
@@ -122,6 +122,15 @@ owner/admin (the Settings Deploy button), and nothing else.
   `operator` and `admin`. The server mints the runner key and the
   DISPATCH_TOKEN and puts them on the Worker — neither appears in
   any response or audit row.
+- A re-run of the Settings deploy runs only the steps whose inputs changed.
+  `check` reads `release_state` (read-only) and reports the steps already
+  current in `detail.current`: the Worker carrying this release's
+  `CLOUD_RUNNER_RELEASE` var (stamped by `deploy_worker_script`), the
+  snapshot bucket present with its lifecycle rules, every container
+  application on this release's image and size, and `connect` when the
+  Worker holds its secrets, the workspace dispatches to it on every event
+  and the runner key reaches the workspace. The client skips those steps.
+  A first deploy, or a `release_state` that cannot be read, skips nothing.
 - Creating, rotating and deleting a credential stay on the existing admin
   paths (`POST`/`DELETE /api/secrets`, owner/admin only). No deployment
   operation can change a stored credential.

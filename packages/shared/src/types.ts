@@ -3307,7 +3307,7 @@ export interface MissionProgressCell {
  * changes what it derives. A stored summary of another version is read as
  * missing: readers derive live, and the reconcile job rewrites it first.
  */
-export const MISSION_SUMMARY_VERSION = 1;
+export const MISSION_SUMMARY_VERSION = 3;
 
 /** The mission's current delivery: its mission PR, else the newest deliverable task PR. */
 export interface MissionSummaryDelivery {
@@ -3346,6 +3346,59 @@ export interface MissionSummary {
   delivery: MissionSummaryDelivery | null;
   /** The latest task start or task update, else the mission's own update. ISO. */
   lastActivityAt: string | null;
+  /** What Home shows of the mission: its delivery row, quiet cause and card facts. */
+  home: MissionSummaryHome;
+  /** What the missions list shows beside Home's reading: the row's strip, last advance and next run. */
+  list: MissionSummaryList;
+  /**
+   * The visual review state (`getMissionVisualReviewState`), read only while
+   * the review can still say something: an open audit or fix, or an open
+   * mission with an integration branch. Null otherwise.
+   */
+  visualReview: Record<string, unknown> | null;
+  /**
+   * An open mission with an integration branch: why its mission PR may not
+   * merge yet because of its work (`missionWorkHolder`), else null.
+   */
+  missionPrWorkHolder: string | null;
+}
+
+/**
+ * The missions list's reading of one mission, beside Home's (spec 3ef37387
+ * R-13): the row's delivery is `home.delivery`, the same card Home shows.
+ */
+export interface MissionSummaryList {
+  /** One display state per task in strip order (`taskRowsStripProjection`, a `StateKey` each). */
+  strip: string[];
+  /** The latest task update or task start; null when the mission has neither. ISO. */
+  lastAdvancedAt: string | null;
+  /** A recurring open mission (a schedule that is not the check-in): its next run, ISO. Null otherwise. */
+  nextRunAt: string | null;
+}
+
+/**
+ * Home's reading of one mission (spec 3ef37387 R-13). The precise shapes live
+ * with their derivations in apps/web (`MissionDeliveryRow` in
+ * lib/delivery-projection.ts, the list card in lib/mission-list-card.ts).
+ */
+export interface MissionSummaryHome {
+  /** The delivery projection without its per-task rows, plus each task's kind for the strip. */
+  delivery: { kind: string; open: boolean; [key: string]: unknown };
+  /** Open and not moving (waiting, held, planning): what it waits on. Null otherwise. */
+  quietCause: string | null;
+  card: {
+    /** The list card's kind: active, recurring, held, scheduled, paused, done. */
+    kind: string;
+    /** Recurring, live or held: Home lists it (a mission done in the last 12h is listed too). */
+    listed: boolean;
+    done: number;
+    total: number;
+    /** Merged PRs of a done mission, else null. */
+    donePrs: number | null;
+    held: { ready: number; roles: string[]; since: string | null; startState: string } | null;
+    /** A stranded local mission's call to action; `quietMs` as of `computedAt`. */
+    strand: { missionId: string; quietMs: number; taskId: string | null; claimable: number; blockedReason: string | null; order: string } | null;
+  };
 }
 
 /**
@@ -4134,6 +4187,8 @@ export interface FleetSlotWorker {
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
+  /** Whether the viewer owns this run: true/false, or null when its owner is unknown. Absent when no viewer was given. */
+  mine?: boolean | null;
 }
 
 export interface FleetSlot {
@@ -4144,7 +4199,7 @@ export interface FleetSlot {
    * is the task's own short label (null when it has none worth showing);
    * `scope` the one-word chip; `at` when it ended (epoch ms).
    */
-  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null; mine?: boolean | null } | null;
   lane: Lane;
 }
 

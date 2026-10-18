@@ -326,7 +326,7 @@ export async function runCancelTask(
 ): Promise<'declined' | 'failed' | 'cancelled' | 'cancelled-undoable'> {
   const { taskId, taskTitle, patch, setDismissed, notify, registerUndo } = deps;
   const undoStatus = cancelUndoStatus(deps.taskStatus);
-  if (!undoStatus && !(await deps.confirm(`Cancel "${taskTitle}"? This stops its worker and cannot be undone.`))) {
+  if (!undoStatus && !(await deps.confirm(`Cancel "${taskTitle}"? This stops its agent and cannot be undone.`))) {
     return 'declined';
   }
   setDismissed(true);

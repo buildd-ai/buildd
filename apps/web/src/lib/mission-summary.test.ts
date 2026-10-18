@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { MISSION_SUMMARY_VERSION } from '@buildd/shared';
-import { canonicalSummaryJson, computeMissionSummary, summariesEqual } from './mission-summary';
+import * as missionHelpers from '@buildd/core/mission-helpers';
+import { canonicalSummaryJson, computeMissionSummary, homeReadingOf, summariesEqual } from './mission-summary';
+import { projectMissionDelivery, toDeliveryRow } from './delivery-projection';
+import { buildMissionCardView } from './mission-card-view';
+import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
+import { missionDeliveryFacts } from './mission-delivery-facts';
+import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { assembleMissionStages } from './mission-stage-assemble';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 import { inputsFromWorld, makeWorld, NOW } from './mission-summary.fixtures';
+import { taskRowsStripProjection } from './mission-strip-order';
 
 const summaryOf = (id: string, world = makeWorld(), now = NOW) => computeMissionSummary(inputsFromWorld(world, [id]).get(id)!, now);
 
@@ -90,6 +97,114 @@ describe('computeMissionSummary: one answer, from the derivations the surfaces a
   it('is deterministic for the same rows and clock', () => {
     const world = makeWorld();
     for (const m of world.missions) expect(canonicalSummaryJson(summaryOf(m.id, world))).toBe(canonicalSummaryJson(summaryOf(m.id, world)));
+  });
+});
+
+describe('computeMissionSummary: Home\'s reading (3ef37387 R-13)', () => {
+  const rowsOf = (id: string) => {
+    const input = inputsFromWorld(makeWorld(), [id]).get(id)!;
+    const tasks = input.taskRows.map(t => ({ ...t, workers: input.workerRows.filter(w => w.taskId === t.id) }));
+    return { input, row: { ...input.missionRows[0], tasks } as unknown as ListMissionRow };
+  };
+
+  it('the delivery row is the projection Home built from the same rows, its tasks kept as the strip', () => {
+    for (const id of ['m-build', 'm-branch', 'm-held', 'm-plan']) {
+      const { row } = rowsOf(id);
+      const m = row as unknown as Record<string, any>;
+      const live = projectMissionDelivery({
+        id, title: m.title, status: m.status, href: `/app/missions/${id}`, isHeld: m.isHeld, armedAt: m.armedAt,
+        integrationBranch: m.integrationBranchEnabled === true, tasks: row.tasks as never,
+        ...missionDeliveryFacts(row as never, undefined, NOW),
+      }, missionHelpers);
+      expect(homeReadingOf(summaryOf(id)).delivery).toEqual(toDeliveryRow(live));
+    }
+  });
+
+  it('the card facts are the list card Home built: kind, counts, held and done', () => {
+    for (const id of ['m-build', 'm-held', 'm-done', 'm-cron']) {
+      const { input, row } = rowsOf(id);
+      const card = summarizeMissionForCard(row as unknown as MissionCardRow, { now: NOW, liveWorkers: input.liveWorkers });
+      const model = buildMissionListCard(row, buildMissionCardView(row, { from: 'home', now: NOW, summary: card }), card, { now: NOW });
+      const home = homeReadingOf(summaryOf(id)).card;
+      expect(home).toMatchObject({ kind: model.kind, done: model.counts.done, total: model.counts.total, held: model.held, strand: model.strand, donePrs: model.done?.prs ?? null });
+    }
+    expect(homeReadingOf(summaryOf('m-held')).card).toMatchObject({ kind: 'held', listed: true, held: { ready: 1 } });
+    expect(homeReadingOf(summaryOf('m-done')).card).toMatchObject({ kind: 'done', donePrs: 1 });
+    expect(homeReadingOf(summaryOf('m-build')).card.listed).toBe(true);
+  });
+
+  it('a quiet mission names its cause; a moving or closed one has none', () => {
+    expect(homeReadingOf(summaryOf('m-held')).quietCause).toBe('not started');
+    expect(homeReadingOf(summaryOf('m-plan')).quietCause).toBe('being planned');
+    expect(homeReadingOf(summaryOf('m-build')).quietCause).toBeNull();
+    expect(homeReadingOf(summaryOf('m-done')).quietCause).toBeNull();
+  });
+
+  it('the visual review read by the loader reaches the delivery line and is stored for the merge gate', () => {
+    const world = makeWorld();
+    const input = inputsFromWorld(world, ['m-branch']).get('m-branch')!;
+    expect(computeMissionSummary(input, NOW).visualReview).toBeNull();
+    const review = { status: 'queued', holdReason: 'waiting for a browser runner', blocked: undefined } as unknown as MissionVisualReviewState;
+    const s = computeMissionSummary({ ...input, visualReview: review }, NOW);
+    expect(s.visualReview).toEqual(review as never);
+    expect(homeReadingOf(s).delivery.visualOpen).toMatchObject({ text: 'Visual review queued' });
+  });
+});
+
+describe('computeMissionSummary: the missions list\'s reading (3ef37387 R-2, R-13)', () => {
+  it('the strip is the mission page\'s strip over the same rows, in its order', () => {
+    for (const id of ['m-build', 'm-branch', 'm-held', 'm-plan']) {
+      const input = inputsFromWorld(makeWorld(), [id]).get(id)!;
+      const tasks = input.taskRows.map(t => ({ ...t, workers: input.workerRows.filter(w => w.taskId === t.id) }));
+      const projection = taskRowsStripProjection(tasks as never);
+      expect(summaryOf(id).list.strip).toEqual(projection.order.flatMap(t => projection.states.get(t) ?? []));
+    }
+    expect(summaryOf('m-build').list.strip.length).toBe(4);
+  });
+
+  it('last advanced is the latest task update or task start, and null with neither', () => {
+    // t-b3 moved 40 minutes ago, after the mission's last start an hour ago.
+    expect(summaryOf('m-build').list.lastAdvancedAt).toBe(new Date(NOW - 40 * 60_000).toISOString());
+    const world = makeWorld();
+    world.tasks = world.tasks.filter(t => t.missionId !== 'm-held');
+    expect(summaryOf('m-held', world).list.lastAdvancedAt).toBeNull();
+  });
+
+  it('only a recurring open mission has a next run; a check-in schedule is not recurring work', () => {
+    expect(summaryOf('m-cron').list.nextRunAt).toBe(new Date(NOW + 30 * 60_000).toISOString());
+    expect(summaryOf('m-build').list.nextRunAt).toBeNull();
+    const world = makeWorld();
+    const cron = world.missions.find(m => m.id === 'm-cron')! as { schedule: { taskTemplate: unknown } };
+    cron.schedule.taskTemplate = { context: { heartbeat: true } };
+    expect(summaryOf('m-cron', world).list.nextRunAt).toBeNull();
+  });
+});
+
+describe('computeMissionSummary: the mission PR\'s stored verdict', () => {
+  it('Home\'s card reads the verdict, as the card builders read it with one', () => {
+    const input = inputsFromWorld(makeWorld(), ['m-branch']).get('m-branch')!;
+    const verdict = { owner: 'machine' as const, reason: 'Checking whether another PR carries it' };
+    const tasks = input.taskRows.map(t => ({ ...t, workers: input.workerRows.filter(w => w.taskId === t.id) }));
+    const withVerdict = summarizeMissionForCard({ ...input.missionRows[0], escalationGateVerdict: verdict, tasks } as unknown as MissionCardRow, { now: NOW, liveWorkers: input.liveWorkers });
+    expect(withVerdict.state.escalationGateVerdict).toEqual(verdict);
+    const s = computeMissionSummary({ ...input, escalationGateVerdict: verdict }, NOW);
+    expect(homeReadingOf(s).card.listed).toBe(withVerdict.liveWorkers > 0 || ['running', 'attention', 'review'].includes(withVerdict.group));
+    // The list fields stay the list's reading, without the verdict.
+    expect(s.group).toBe('review');
+    expect(s.needsYou).toBe(true);
+  });
+});
+
+describe('computeMissionSummary: the mission PR\'s work holder', () => {
+  it('is null once every deliverable landed, and names an open task PR while one is not', () => {
+    expect(summaryOf('m-branch').missionPrWorkHolder).toBeNull();
+    const world = makeWorld();
+    Object.assign(world.workers.find(w => w.id === 'w-r2')!, { mergedAt: null, prLifecycleStatus: 'pr_open' });
+    expect(summaryOf('m-branch', world).missionPrWorkHolder).toContain('1 task PR(s) still open on the integration branch: PR #22');
+  });
+
+  it('is null for a mission without an integration branch', () => {
+    expect(summaryOf('m-build').missionPrWorkHolder).toBeNull();
   });
 });
 

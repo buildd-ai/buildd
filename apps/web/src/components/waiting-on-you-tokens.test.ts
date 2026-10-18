@@ -20,7 +20,6 @@ const FILES = [
   '../app/app/(protected)/home/page.tsx',
   '../app/app/(protected)/home/HomeMissions.tsx',
   '../app/app/(protected)/home/ActionQueueCard.tsx',
-  '../app/app/(protected)/home/NeedsYouStack.tsx',
   '../app/app/(protected)/home/NeedsYouCards.tsx',
 ];
 

@@ -30,6 +30,7 @@ import type {
   Work, WorkFiled, WorkRequest,
 } from '@buildd/workflow-kernel/ports';
 import { appBaseUrl } from '@/lib/app-url';
+import { REVIEW_FINDINGS_ANCHOR } from '@/lib/task-checks';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { githubApi, mergePullRequest, postPrReview, type MergePullRequestResult } from '@/lib/github';
@@ -270,8 +271,8 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
     handOff: hooks.handOff,
     decide: hooks.decide,
     rails: opts.rails ?? hooks.rails,
-    // R-43: GitHub's Details link on the review status opens the owner task, where its review and findings are.
-    links: { review: (d) => `${appBaseUrl()}/app/tasks/${encodeURIComponent(d.ownerTaskId)}` },
+    // R-43: GitHub's Details link on the review status opens the owner task at its review findings.
+    links: { review: (d) => `${appBaseUrl()}/app/tasks/${encodeURIComponent(d.ownerTaskId)}#${REVIEW_FINDINGS_ANCHOR}` },
   };
 }
 

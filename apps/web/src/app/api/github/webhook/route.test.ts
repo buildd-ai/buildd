@@ -642,18 +642,19 @@ mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUncha
 // apps/web/tests/db/workflow-seam.test.ts). Defaults: no kernel delivery, so
 // every legacy case below runs unchanged.
 const mockOpenKernelDelivery = mock(async (_p: any): Promise<any> => ({ owned: false }));
-const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
-const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
-const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
+const mockObserveHead = mock(async (_p: any, _c?: any): Promise<boolean> => false);
+const mockObservePrState = mock(async (_p: any, _c?: any): Promise<boolean> => false);
+const mockObserveBase = mock(async (_p: any, _c?: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
 const mockObserveCiGreen = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({
   // The seam's own is never the webhook's door (AC-9): it would apply the green on this host.
   observeCiGreen: mock(async () => { throw new Error('the webhook called the seam\'s observeCiGreen, not the kernel client\'s'); }),
   openKernelDelivery: mockOpenKernelDelivery,
-  observeHead: mockObserveHead,
-  observePrState: mockObservePrState,
-  observeBase: mockObserveBase,
+  // Nor are T3, T17 to T19 and T29: the kernel client's are (AC-9).
+  observeHead: mock(async () => { throw new Error('called the seam\'s observeHead, not the kernel client\'s'); }),
+  observePrState: mock(async () => { throw new Error('the webhook called the seam\'s observePrState, not the kernel client\'s'); }),
+  observeBase: mock(async () => { throw new Error('the webhook called the seam\'s observeBase, not the kernel client\'s'); }),
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
@@ -671,7 +672,10 @@ mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClo
 import * as realKernelClient from '@/lib/workflow/kernel-client';
 const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
 // CiGreenObserved / CiObserved go through the client too (AC-9): the control plane applies them in own mode.
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand, observeCiGreen: mockObserveCiGreen }));
+mock.module('@/lib/workflow/kernel-client', () => ({
+  ...realKernelClient, landThroughKernel: mockKernelClientLand, observeCiGreen: mockObserveCiGreen,
+  observeHead: mockObserveHead, observePrState: mockObservePrState, observeBase: mockObserveBase,
+}));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 const mockKernelDeliveriesLandingAt = mock(async (..._a: any[]): Promise<Array<{ deliveryId: string; workspaceId: string; prNumber: number }>> => []);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr, kernelDeliveriesLandingAt: mockKernelDeliveriesLandingAt }));
@@ -968,6 +972,19 @@ function resetAll() {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+/**
+ * A task update that fails the task: `status: 'failed'`, or the CI escalation's SQL, which fails
+ * every task but the owner of a kernel delivery bound to the PR (AC-1 slice 8, `escalateCiRedHead`).
+ */
+function failsTask(v: unknown): boolean {
+  const st = (v as { status?: unknown } | null)?.status;
+  if (st === 'failed') return true;
+  // This file's `sql` mock keeps the template's literal parts as `strings`.
+  const strings = (st as { strings?: readonly string[] } | null)?.strings;
+  return !!strings && /ELSE 'failed' END/.test(strings.join(''));
+}
+
 describe('POST /api/github/webhook', () => {
   beforeEach(resetAll);
 
@@ -1522,7 +1539,7 @@ describe('POST /api/github/webhook', () => {
       expect(body).toContain('<!-- buildd-activity -->');
       // Queued, not "fixing": the retry task has no worker until the claim.
       expect(body).toContain('CI fix 1 of 3 queued');
-      expect(body).toContain('waiting for a worker');
+      expect(body).toContain('waiting for an agent');
       expect(body).toContain('/app/tasks/');
     });
 
@@ -1587,7 +1604,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
     });
 
@@ -1603,7 +1620,7 @@ describe('POST /api/github/webhook', () => {
 
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
-      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      const failUpdate = updateCalls.find(c => failsTask(c.setValues));
       expect(failUpdate).toBeDefined();
       const result = (failUpdate!.setValues as any).result;
       expect(result.nextSuggestion).toBe('Backfill migration 0071 by hand, then re-run CI.');
@@ -1632,7 +1649,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
       // exhausted/disabled path marks the task failed
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     });
 
     // ── Commit author never decides the budget (allocation is consumption) ──
@@ -1674,7 +1691,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     });
 
     it('the disabled-retries message names the workspace switch, not who pushed', async () => {
@@ -1683,7 +1700,7 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      const failUpdate = updateCalls.find(c => failsTask(c.setValues));
       expect(failUpdate).toBeDefined();
       const summary = (failUpdate!.setValues as any).result?.summary ?? '';
       expect(summary).toContain('CI retries are disabled');
@@ -1748,7 +1765,7 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).maxIterations).toBe(3);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
       expect(mockWakeTask).toHaveBeenCalledTimes(1);
-      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
     });
 
     it('counts the budget from the CI retries already filed, not the completed owner\'s context', async () => {
@@ -1788,7 +1805,7 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
       expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
-      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(true);
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(true);
     });
 
     for (const live of ['pending', 'in_progress'] as const) {
@@ -1806,7 +1823,7 @@ describe('POST /api/github/webhook', () => {
         expect(insertCalls.length).toBe(0);
         expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
         expect(mockWakeTask).not.toHaveBeenCalled();
-        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
       });
     }
 
@@ -1835,7 +1852,7 @@ describe('POST /api/github/webhook', () => {
         expect(insertCalls.length).toBe(0);
         expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
         expect(mockWakeTask).not.toHaveBeenCalled();
-        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && failsTask(c.setValues))).toBe(false);
       });
     }
 
@@ -2939,7 +2956,7 @@ describe('POST /api/github/webhook', () => {
       }));
 
       expect(res.status).toBe(200);
-      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }));
+      expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 7, source: 'webhook:closed' }), { principal: { kind: 'system', id: 'system:webhook:closed' } });
       expect(updateCalls.slice(before).some((c) => (c.setValues as any).status === 'completed')).toBe(false);
       expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
     });
@@ -4756,7 +4773,7 @@ describe('POST /api/github/webhook', () => {
 
       expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({
         workspaceId: 'ws1', repoFullName: 'test-org/test-repo', prNumber: 42, installationId: 5000, hintedHeadSha: NEW_SHA,
-      }));
+      }), { principal: { kind: 'system', id: 'system:webhook:synchronize' } });
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
       expect(mockCarryForwardApproval).not.toHaveBeenCalled();
     });
@@ -4769,7 +4786,7 @@ describe('POST /api/github/webhook', () => {
 
       await POST(createWebhookRequest('pull_request', makeSynchronizePayload({ pull_request: { draft: true } })));
 
-      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }));
+      expect(mockObserveHead).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 42, hintedHeadSha: NEW_SHA }), expect.anything());
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
 
       // A legacy (not kernel-owned) draft keeps its old behaviour: no re-dispatch.
@@ -5800,6 +5817,8 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(mockObserveBase.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws-9', repoFullName: 'test-org/test-repo', prNumber: 9, installationId: 12345, hintedFromBase: 'dev', source: 'webhook:edited',
     });
+    // Through the kernel client, as buildd's own (AC-9): the control plane applies it in own mode.
+    expect(mockObserveBase.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:edited' } });
   });
 
   it('does not hand a title/body edit to the kernel', async () => {
@@ -6700,7 +6719,7 @@ describe('held release: the release PR\'s CI emits the task\'s terminal event', 
   it('resolved red: task.failed naming the release CI; no done push, no chat post', async () => {
     await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
     await new Promise(r => setTimeout(r, 0));
-    expect(updateCalls.some(c => c.setValues.status === 'failed')).toBe(true);
+    expect(updateCalls.some(c => failsTask(c.setValues))).toBe(true);
     expect(ledger()).toEqual([{
       type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
       reason: 'Release CI failed: CI failed on PR #42',

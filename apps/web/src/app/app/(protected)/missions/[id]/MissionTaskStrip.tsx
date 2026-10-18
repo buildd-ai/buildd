@@ -37,7 +37,6 @@
  *   inside their task's drawer, never cells or cards of their own.
  */
 import { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
-import { displayTaskTitle } from '@/lib/task-title';
 import { TERMS } from '@buildd/shared';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
@@ -61,6 +60,7 @@ import { DeliveryEvidence } from '@/components/delivery/DeliveryParts';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle from '@/components/ui/Lifecycle';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 /** The situation block's task, handed to the drawer (its reason is the accessor's sentence). */
 export interface StripFocus {
@@ -82,8 +82,8 @@ export interface LandedStripProps {
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: TERMS['pr.merged'].word, review: 'In review', running: 'Running', waiting: 'Has a question',
-  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
+  landed: TERMS['pr.merged'].word, review: 'In review', running: TERMS['work.working'].word, waiting: 'Has a question',
+  ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: TERMS['work.blocked'].word,
 };
 
 /**
@@ -250,7 +250,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'failed': return 'The last attempt failed.';
     case 'ready':
       return executor === 'local'
-        ? 'Ready to start. Claim it from a local session.'
+        ? 'Ready to start. Claim it from your session.'
         : 'Next in line for a runner.';
   }
 }
@@ -293,7 +293,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}>{displayTaskTitle(t.title)}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}><TaskTitle short title={t.title} /></p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
@@ -479,7 +479,7 @@ const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, lin
       />
       <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{stripTick(index)}</span>
       <p className="font-mono text-lede font-semibold text-text-primary">
-        {`${k} ${slot.state === 'landed' ? 'landed' : 'queued'} tasks`}
+        {`${k} ${slot.state === 'landed' ? 'merged' : 'queued'} tasks`}
       </p>
       <a
         href={`/app/missions/${link.missionId}?view=timeline`}

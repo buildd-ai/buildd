@@ -5,8 +5,11 @@ import {
   occupancyWindowMs,
   isOccupancyWindow,
   MAX_UNENDED_RUN_MS,
+  occupancyDiscrepancies,
+  scopeMembers,
   type OccupancyWorkerRow,
 } from './fleet-occupancy';
+import { classifyRunnerOwnership, RUNNER_CLASSES } from './runner-ownership';
 import { MAX_UNENDED_RUN_MS as INSIGHTS_UNENDED_CAP } from './insights-flow';
 
 const MIN = 60_000;
@@ -87,7 +90,8 @@ describe('empty window', () => {
   it('every bucket is zero and the summary says so', () => {
     const s = series([]);
     expect(s.buckets.every(b => b.runner.avg === 0 && b.runner.peak === 0 && b.sessions.avg === 0 && b.sessions.peak === 0)).toBe(true);
-    expect(s.summary).toEqual({ runner: { peak: 0, avg: 0 }, sessions: { peak: 0, avg: 0 } });
+    expect(s.summary.runner).toEqual({ peak: 0, avg: 0 });
+    expect(s.summary.sessions).toEqual({ peak: 0, avg: 0 });
   });
 });
 
@@ -221,5 +225,207 @@ describe('when a worker stops holding its slot', () => {
   it('a worker that never started occupies nothing', () => {
     const s = series([row({ status: 'running', startedAt: null })]);
     expect(s.summary.runner.peak).toBe(0);
+  });
+});
+
+describe('owner attribution reconciles to the total', async () => {
+  const { occupancyDiscrepancies } = await import('./fleet-occupancy');
+  const rows = (): OccupancyWorkerRow[] => [
+    row({ ownerId: 'me', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+    row({ ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - 30 * MIN }),
+    row({ ownerId: null, startedAt: NOW - 90 * MIN, completedAt: NOW - 20 * MIN }),
+    row({ runner: 'mcp', ownerId: 'me', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+    row({ runner: 'mcp', ownerId: 'you', startedAt: NOW - 90 * MIN, completedAt: NOW - H }),
+  ];
+
+  for (const w of ['24h', '7d', '30d'] as const) {
+    it(`${w}: mine + others + unattributed = total, runner and sessions apart`, () => {
+      const s = buildOccupancySeries({ window: w, now: NOW, workers: rows(), viewerId: 'me' });
+      expect(occupancyDiscrepancies(s)).toEqual([]);
+      expect(s.summary.runner.avg).toBeGreaterThan(0);
+      expect(s.summary.runnerBy.mine.avg).toBeGreaterThan(0);
+      expect(s.summary.runnerBy.unattributed.avg).toBeGreaterThan(0);
+    });
+  }
+
+  it('unknown owner is unattributed, never mine; no viewer means nothing is mine', () => {
+    const a = buildOccupancySeries({ window: '24h', now: NOW, workers: rows(), viewerId: 'me' });
+    const none = buildOccupancySeries({ window: '24h', now: NOW, workers: rows() });
+    expect(a.summary.runnerBy.unattributed.peak).toBe(1);
+    expect(none.summary.runnerBy.mine.avg).toBe(0);
+    expect(none.summary.runner.avg).toBeCloseTo(a.summary.runner.avg, 9);
+  });
+
+  it('sessions are not folded into runner slots in any part', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, workers: [row({ runner: 'mcp', ownerId: 'me', startedAt: NOW - H, completedAt: NOW })], viewerId: 'me' });
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('empty input reconciles at zero', () => {
+    expect(occupancyDiscrepancies(buildOccupancySeries({ window: '7d', now: NOW, workers: [], viewerId: 'me' }))).toEqual([]);
+  });
+});
+
+describe('task owner and runner ownership (AC-2)', () => {
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  it('a task on a managed runner is its task owner\'s, and the slot is the managed runner\'s', () => {
+    // Claimed by a bld_ key (no claimer), so the old claimer-only rule said unattributed.
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: null, taskOwnerId: 'me', runnerClass: 'managed' })],
+    });
+    expect(s.summary.runnerBy.mine.avg).toBeGreaterThan(0);
+    expect(s.summary.runnerBy.unattributed.avg).toBe(0);
+    expect(s.summary.runnerByClass.managed.peak).toBe(1);
+    expect(s.summary.runnerByClass.personal.peak).toBe(0);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('another member\'s task on my personal runner is theirs, not mine, and the slot stays personal', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: 'you', runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerBy.others.peak).toBe(1);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+    expect(s.summary.runnerByClass.personal.peak).toBe(1);
+  });
+
+  it('a service-owned task is unattributed even when a person\'s runner claimed it', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: null, runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerBy.unattributed.peak).toBe(1);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+  });
+
+  it('a session belongs to its claimer whatever the task owner, and uses no runner class', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, runner: 'mcp', ownerId: 'me', taskOwnerId: 'you' })],
+    });
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(RUNNER_CLASSES.every(c => s.summary.runnerByClass[c].peak === 0)).toBe(true);
+  });
+
+  it('a runner with no recorded class reads unknown; classes reconcile to the total', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW,
+      workers: [row({ ...span }), row({ ...span, runnerClass: 'team' })],
+    });
+    expect(s.summary.runnerByClass.unknown.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('counts runner work missing an owner or a runner identity instead of guessing', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, taskOwnerId: 'me', runnerClass: 'personal' }),
+        row({ ...span, taskOwnerId: null, runnerClass: 'managed' }),
+        row({ ...span, taskOwnerId: 'you' }),
+        row({ ...span, runner: 'mcp', ownerId: null }),
+      ],
+    });
+    expect(s.summary.coverage).toEqual({ total: 3, ownerMissing: 1, runnerMissing: 1 });
+  });
+});
+
+describe('classifyRunnerOwnership', () => {
+  it('classifies by account, personal stays personal regardless of team', () => {
+    expect(classifyRunnerOwnership({ managedRunner: true, createdByUserId: 'u' })).toBe('managed');
+    expect(classifyRunnerOwnership({ hostRunner: true, createdByUserId: 'u' })).toBe('team');
+    expect(classifyRunnerOwnership({ createdByUserId: 'u' })).toBe('personal');
+    expect(classifyRunnerOwnership({})).toBe('unknown');
+    expect(classifyRunnerOwnership(null)).toBe('unknown');
+  });
+});
+
+describe('per-member runner usage', () => {
+  it('splits runner slots by owner, leaves sessions and unowned work out, marks the viewer', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ownerId: 'me', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+        row({ ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        row({ ownerId: null, startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        row({ runner: 'mcp', ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+      ],
+    });
+    expect(s.members?.map(m => [m.id, m.isMe])).toEqual([['me', true], ['you', false]]);
+    expect(s.members![0].avg).toBeGreaterThan(s.members![1].avg);
+  });
+});
+
+describe('scopeMembers', () => {
+  const NOW = Date.UTC(2026, 9, 18, 12);
+  const w = (ownerId: string) => ({ runner: 'runner-a', ownerId, taskOwnerId: ownerId, startedAt: NOW - 3_600_000, completedAt: NOW - 1_800_000, status: 'completed' });
+  it('drops named rows for non-members but keeps the totals and Others', () => {
+    const series = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'me', workers: [w('me'), w('mate'), w('outsider')] as any });
+    expect(series.members!.map(m => m.id).sort()).toEqual(['mate', 'me', 'outsider']);
+    const scoped = scopeMembers(series, new Set(['me', 'mate']));
+    expect(scoped.members!.map(m => m.id).sort()).toEqual(['mate', 'me']);
+    expect(scoped.summary).toEqual(series.summary);
+    expect(occupancyDiscrepancies(scoped)).toEqual([]);
+  });
+});
+
+describe('AC-5 edge cases', () => {
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  it('a personal runner working another team\'s task stays in the personal class', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: 'other-team-member', runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerByClass.personal.peak).toBe(1);
+    expect(s.summary.runnerByClass.managed.peak).toBe(0);
+    expect(s.summary.runnerByClass.team.peak).toBe(0);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('overlapping sessions peak at their count and never raise the runner line', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, runner: 'mcp', ownerId: 'me' }),
+        row({ ...span, runner: 'mcp', ownerId: 'you' }),
+        row({ ...span, runner: 'mcp', ownerId: null }),
+      ],
+    });
+    expect(s.summary.sessions.peak).toBe(3);
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.runner.avg).toBe(0);
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(s.summary.sessionsBy.others.peak).toBe(1);
+    expect(s.summary.sessionsBy.unattributed.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('a session working while no runner slot is occupied reads zero runner occupancy', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ runner: 'mcp', status: 'running', ownerId: 'me', startedAt: NOW - 10 * MIN })],
+    });
+    expect(s.summary.sessions.peak).toBe(1);
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.runnerByClass.unknown.peak).toBe(0);
+  });
+
+  it('a session beside a runner worker is counted once each, not summed', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, runner: 'mcp', ownerId: 'me' }),
+        row({ ...span, ownerId: 'me', taskOwnerId: 'me', runnerClass: 'personal' }),
+      ],
+    });
+    expect(s.summary.runner.peak).toBe(1);
+    expect(s.summary.sessions.peak).toBe(1);
   });
 });

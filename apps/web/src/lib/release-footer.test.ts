@@ -81,9 +81,8 @@ describe('loadReleaseFooterData', () => {
 
   it('gated, unseeded baseline, 4 unshipped merges → queue depth 4 with prod_head source', async () => {
     mockDetectArchetype.mockReturnValue('gated');
-    mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'prod_head', asOf: '2026-08-01T00:00:00.000Z' });
+    mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'prod_head', asOf: '2026-08-01T00:00:00.000Z', latestReleaseId: 'rel-latest' });
     selectResults = [
-      [{ id: 'rel-latest' }], // latest release row lookup
       [{ queueDepth: 4, oldestMergedAt: '2026-08-10T00:00:00.000Z' }], // queue count
     ];
     const data = await loadReleaseFooterData(ws);
@@ -100,9 +99,10 @@ describe('loadReleaseFooterData', () => {
 
   it('gated, no baseline resolvable at all → queueDepth unavailable (no_baseline)', async () => {
     mockDetectArchetype.mockReturnValue('gated');
-    mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'none', asOf: null });
-    selectResults = [[]]; // latest release row lookup only — no queue query issued
+    mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'none', asOf: null, latestReleaseId: null });
     const data = await loadReleaseFooterData(ws);
+    // The baseline read names the latest release: no query of its own, and no queue query.
+    expect(mockSelect).not.toHaveBeenCalled();
     expect(data).toMatchObject({
       archetype: 'gated',
       queueDepth: { kind: 'unavailable', reason: 'no_baseline' },
@@ -114,7 +114,6 @@ describe('loadReleaseFooterData', () => {
     mockDetectArchetype.mockReturnValue('gated');
     mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'healthy', asOf: '2026-08-20T00:00:00.000Z' });
     selectResults = [
-      [{ id: 'rel-latest' }],
       [{ queueDepth: 0, oldestMergedAt: null }],
     ];
     const data = await loadReleaseFooterData(ws);
@@ -134,7 +133,6 @@ describe('loadReleaseFooterData', () => {
     mockDetectArchetype.mockReturnValue('gated');
     mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'healthy', asOf: '2026-08-20T00:00:00.000Z' });
     selectResults = [
-      [{ id: 'rel-latest' }],
       [{ queueDepth: 1, oldestMergedAt: null }],
     ];
     await loadReleaseFooterData(ws);

@@ -9,7 +9,7 @@
  */
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import type { ReactNode } from 'react';
-import { TERMS, type FleetRunner, type FleetSnapshot } from '@buildd/shared';
+import { TERMS, slotsInUse, type FleetRunner, type FleetSnapshot } from '@buildd/shared';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { fleetLabel, runnerBusyLine, type HeadlinePart } from '@/lib/fleet-view';
 import SettingsSection from '../SettingsSection';
@@ -39,7 +39,7 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const tail: HeadlinePart[] = offline.length === 0 ? []
     : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
   if (busy > fleet.capacity) return [{ text: `${agents(busy)} running, over the ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} online.` }, ...held, ...tail];
-  if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...held, ...tail];
+  if (busy > 0) return [{ text: `${slotsInUse(busy, fleet.capacity)}.` }, ...held, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...held, ...tail];
 }
 

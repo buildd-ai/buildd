@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, TERMS, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -727,11 +727,12 @@ export function missionMeta(row: Pick<MissionRow, 'deliveredAt'>): string | null
   return null;
 }
 
-/** The sidebar's stage words: `building`, or `building locally` for a mission managed from a local session. */
+/** The sidebar's stage words: `building`, or `building in your session` for a mission run from your session. */
 export function missionRowStage(row: Pick<MissionRow, 'stage' | 'local'>): string | null {
   const word = missionStageWord(row);
-  if (!word) return row.local ? 'local' : null;
-  return row.local ? `${word} locally` : word;
+  const session = TERMS['mission.your_session'].short;
+  if (!word) return row.local ? session : null;
+  return row.local ? `${word} in ${session}` : word;
 }
 
 /**
@@ -798,7 +799,7 @@ export function missionStatusLine(row: MissionRow): string | null {
     parts.push(TERMS['mission.paused'].word);
   }
   if (!word && row.total > 0) parts.push(`${row.done} of ${row.total} tasks done`);
-  if (row.local) parts.push('Managed from a local session');
+  if (row.local) parts.push(TERMS['mission.your_session'].word);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
@@ -1252,10 +1253,10 @@ export function providerHoldLine(h: ProviderHold, now: number): string {
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
 export const EXCLUSION_WORDS: Record<string, string> = {
-  mission_local: 'local session',
+  mission_local: TERMS['mission.your_session'].short,
   mission_held: `mission is ${TERMS['mission.paused'].short}`,
   task_held: `${TERMS['work.paused'].short} by a person`,
-  task_reserved: 'reserved by a local session',
+  task_reserved: 'taken by your session',
   already_claimed: 'another runner has it',
   active_worker: 'another runner has it',
   workspace_cap: 'workspace is at its task limit',
@@ -1275,7 +1276,7 @@ export const EXCLUSION_WORDS: Record<string, string> = {
   connector_mismatch: 'needs a connector this runner lacks',
   provider_unavailable: 'its model provider is off',
   routing_paused: 'routing is paused',
-  account_cap: 'account is at its worker limit',
+  account_cap: 'account has no free slot',
   rate_limited: 'claimed too recently, retry soon',
   delegation_unmet: 'needs access a person has not granted',
 };
@@ -1295,7 +1296,7 @@ function dependencyWords(task: TopTask, state: TopState): string | null {
     .filter((t): t is TopTask => !!t && !TERMINAL.has(t.status));
   if (deps.length === 0) return null;
   const more = deps.length > 1 ? ` and ${deps.length - 1} more` : '';
-  return `waits on: ${deps[0].title}${more}`;
+  return `waits on: ${titleWithAttempt(deps[0].title)}${more}`;
 }
 
 /** A plan or rate limit on this task's provider, short when the header says it already. */
@@ -1350,7 +1351,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
   budget_paused: TERMS['wait.usage_limit'].short,
   oauth_parallelism: 'the plan allows only a few sessions at once',
-  duplicate_worker: 'a worker already has it',
+  duplicate_worker: 'an agent already has it',
   sibling_retry_open: 'a retry of it is already open',
   fix_not_needed: 'its fix is no longer needed',
   kernel_unavailable: 'the workflow control plane did not answer',
@@ -1413,7 +1414,7 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     if (!Number.isNaN(at) && at > now) return `starts in ${untilWords(at - now)}`;
   }
   const busy = busySlots(state);
-  if (busy >= state.runner.maxConcurrent) return `runner is full (${busy} of ${state.runner.maxConcurrent} busy)`;
+  if (busy >= state.runner.maxConcurrent) return `runner is full (${slotsInUse(busy, state.runner.maxConcurrent)})`;
   if (broad && broadSawIt && broad.reason !== 'claimed') {
     if (broad.reason === 'all_candidates_deferred') {
       const words = broadDeferralWords(broad);
@@ -1460,7 +1461,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     if (!missionHit && !matchesFilter(t.title, state.filter)) continue;
     const w = workers.get(t.id);
     const role = roleLabel(t.roleSlug);
-    const base = { taskId: t.id, title: t.title || w?.taskTitle || t.id.slice(0, 8), role };
+    const base = { taskId: t.id, title: titleWithAttempt(t.title || w?.taskTitle) || t.id.slice(0, 8), role };
 
     if (w && (BUSY.includes(w.status) || w.status === 'waiting' || w.status === 'idle')) {
       const elapsedMs = now - (w.startedAt || now);
@@ -1502,12 +1503,12 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     // Running somewhere else: listed as running, so the mission shows all its live work.
     const local = t.mission?.executor === 'local';
     if (!w && (t.status === 'assigned' || t.status === 'in_progress' || t.status === 'waiting_input')) {
-      const where = local ? 'in a local session' : 'on another runner';
+      const where = local ? 'in your session' : 'on another runner';
       running.push({ ...base, group: 'running', kind: 'running', elsewhere: local ? 'local' : 'runner', action: t.status === 'waiting_input' ? `asks a question ${where}, o opens it` : `running ${where}` });
       continue;
     }
     if (local && !w) {
-      waiting.push({ ...base, group: 'waiting', kind: 'waiting', elsewhere: 'local', reason: 'for the local session to pick up' });
+      waiting.push({ ...base, group: 'waiting', kind: 'waiting', elsewhere: 'local', reason: 'for your session to pick up' });
       continue;
     }
     waiting.push({ ...base, group: 'waiting', kind: 'waiting', reason: waitingReason(t, state, now, holds) });
@@ -1522,7 +1523,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     listed.add(q.taskId);
     const role = roleLabel(q.roleSlug);
     const base = { taskId: q.taskId, title: q.title, ...(role ? { role } : {}), group: 'waiting' as const, kind: 'waiting' as const };
-    if (q.exclusion === 'local_session') waiting.push({ ...base, elsewhere: 'local', reason: 'for the local session to pick up' });
+    if (q.exclusion === 'local_session') waiting.push({ ...base, elsewhere: 'local', reason: 'for your session to pick up' });
     else waiting.push({ ...base, reason: queueRowReason(q) });
   }
 
@@ -1630,7 +1631,7 @@ function clockAt(ms: number, now: number): string {
 
 const BROAD_REASON_WORDS: Record<string, string> = {
   no_pending_tasks: 'nothing is waiting for this runner',
-  no_slots: "the account's worker limit is reached",
+  no_slots: "every slot the account may use is in use",
   budget_exhausted: 'a plan or rate limit holds the work',
   context_paused: 'claims are paused after repeated failures',
   race_lost: 'another runner took the work first',
@@ -1641,7 +1642,7 @@ const BROAD_REASON_WORDS: Record<string, string> = {
 export function broadNothingWords(o: ClaimOutcome): string {
   if (o.reason === 'refused') {
     const why = (o.refusal ?? '').replace(/\s+/g, ' ').trim();
-    return o.status === 429 ? "the account's worker limit is reached" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
+    return o.status === 429 ? "every slot the account may use is in use" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
   }
   if (o.reason === 'budget_exhausted' && o.summary) return o.summary.replace(/\.$/, '');
   if (o.reason === 'all_candidates_deferred' || o.reason === 'budget_exhausted_partial') {

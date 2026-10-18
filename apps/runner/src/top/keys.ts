@@ -224,7 +224,7 @@ function moveRow(state: TopState, delta: number, now: number): TopState {
 }
 
 /** `c` on a task of a mission managed from a local session: no runner takes it, and where that changes. */
-export const LOCAL_CLAIM_WORDS = 'Its mission is managed from a local session, so no runner takes it. o opens it on buildd, where the mission can go to runners.';
+export const LOCAL_CLAIM_WORDS = 'Its mission runs from your session, so no runner takes it. o opens it on buildd, where the mission can go to runners.';
 
 /** The mission a key opens when no task is picked; null for loose tasks and the fold row. */
 function openableMission(state: TopState, now: number): string | null {
@@ -242,7 +242,7 @@ function actOnRow(state: TopState, ch: string, now: number): KeyResult {
     return none;
   }
   if (row.elsewhere && 'ampx'.includes(ch)) {
-    const where = row.elsewhere === 'local' ? 'in a local session' : 'on another runner';
+    const where = row.elsewhere === 'local' ? 'in your session' : 'on another runner';
     return { state: refuse(state, `"${row.title}" runs ${where}; top acts only on this runner's agents. o opens it on buildd.`), effects: [] };
   }
 

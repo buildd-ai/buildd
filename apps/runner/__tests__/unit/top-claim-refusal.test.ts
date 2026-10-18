@@ -30,8 +30,8 @@ describe('top says why, short', () => {
   });
 
   test('the account limit names the number', () => {
-    expect(said({ error: 'Max concurrent workers limit reached', serverStatus: 429, code: 'max_concurrent_workers', limit: 3, current: 3 })).toBe('Not claimed: your account allows 3 at once and all 3 are busy.');
-    expect(said({ error: 'x', serverStatus: 429 })).toBe("Not claimed: the account's worker limit is reached.");
+    expect(said({ error: 'Max concurrent workers limit reached', serverStatus: 429, code: 'max_concurrent_workers', limit: 3, current: 3 })).toBe('Not claimed: your account allows 3 at once and all 3 are in use.');
+    expect(said({ error: 'x', serverStatus: 429 })).toBe("Not claimed: every slot the account may use is in use.");
   });
 
   test('a paused runner reads paused', () => {
@@ -40,7 +40,7 @@ describe('top says why, short', () => {
 
   test('a gate in its words; a local session\'s mission says so', () => {
     expect(said({ error: 'x', claimReason: 'all_candidates_deferred', exclusion: 'soft_overlap' })).toBe('Not claimed: waits for work on the same files.');
-    expect(said({ error: 'x', exclusion: 'mission_local' })).toBe('Not claimed: its mission is managed from a local session.');
+    expect(said({ error: 'x', exclusion: 'mission_local' })).toBe('Not claimed: its mission runs from your session.');
   });
 
   test('an older runner\'s prose loses the title and the raw code', () => {

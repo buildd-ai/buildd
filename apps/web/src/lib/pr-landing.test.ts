@@ -1166,7 +1166,7 @@ describe('landPr — safety rails', () => {
     gh.prFiles = ['packages/core/drizzle/20261012120000_x/migration.sql'];
     mockInspectMigrations.mockImplementation(async () => ({
       safe: false, operationClass: 'CONTRACT', kind: 'stale_parent',
-      reason: 'migration snapshot parent is no longer a leaf of the base: a migration landed since CI ran, so the earlier green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch',
+      reason: 'migration snapshot parent is no longer a leaf of the base: a migration merged since CI ran, so the earlier green never tested the two together. CI must run again on a fresh base, needs rebase onto base branch',
     }));
     mockDispatchConflictRetry.mockImplementation(async () => {
       gh.head = 'head2';

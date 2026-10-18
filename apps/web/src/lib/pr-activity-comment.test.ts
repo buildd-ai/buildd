@@ -79,7 +79,7 @@ describe('status derivation — queued is never shown as working', () => {
     const body = renderPrActivityComment([reviewing, queued]);
     const header = headerOf(body);
     expect(header).toContain('**Fix 1 of 3 queued**');
-    expect(header).toContain('waiting for a worker');
+    expect(header).toContain('waiting for an agent');
     expect(header).toContain(`[Open in Buildd](${TASK})`);
     expect(header).toContain(GLYPH.waiting);
     // The bug: "buildd is pushing fixes" while the fix task had no worker.
@@ -102,7 +102,7 @@ describe('status derivation — queued is never shown as working', () => {
   it('a push waits on checks, naming the short sha', () => {
     const header = headerOf(renderPrActivityComment([reviewing, queued, fixing, pushed]));
     expect(header).toContain('**Pushed `abc1234`**');
-    expect(header).toContain('waiting on checks');
+    expect(header).toContain('waiting for checks');
     expect(header).not.toContain(SPINNER_PATH);
   });
 
@@ -145,7 +145,7 @@ describe('status derivation — queued is never shown as working', () => {
     const ended = { kind: 'fix_ended' as const, iteration: 1, maxIterations: 3, taskUrl: TASK, at: at(20) };
     const afterEnd = renderPrActivityComment([reviewing, queued, fixing, pushed, ended]);
     expect(headerOf(afterEnd)).toContain('**Fix 1 of 3 finished**');
-    expect(headerOf(afterEnd)).toContain('waiting on checks');
+    expect(headerOf(afterEnd)).toContain('waiting for checks');
     expect(headerOf(afterEnd)).not.toContain('Fixing');
     expect(afterEnd).not.toContain(SPINNER_PATH);
 
@@ -163,7 +163,7 @@ describe('status derivation — queued is never shown as working', () => {
       queued, fixing, { kind: 'fix_ended', detail: 'failed', at: at(20) },
     ]));
     expect(header).toContain('**Fix 1 of 3 ended · failed**');
-    expect(header).not.toContain('waiting on checks');
+    expect(header).not.toContain('waiting for checks');
     expect(header).not.toContain(SPINNER_PATH);
   });
 
@@ -207,6 +207,13 @@ describe('status derivation — queued is never shown as working', () => {
     expect(closed).not.toContain(SPINNER_PATH);
   });
 
+  it('names a retry fix task by its title: the row already says which fix it is', () => {
+    const named = { ...queued, taskTitle: '[builder · after review #1] fix(dates): flaky date parsing' };
+    const header = headerOf(renderPrActivityComment([reviewing, named]));
+    expect(header).toContain('**Waiting for fix task: fix(dates): flaky date parsing**');
+    expect(header).not.toContain('[builder');
+  });
+
   it('names the actual fix task in the header when its title is known', () => {
     const named = {
       ...queued,
@@ -214,7 +221,7 @@ describe('status derivation — queued is never shown as working', () => {
     };
     const header = headerOf(renderPrActivityComment([reviewing, named]));
     expect(header).toContain('**Waiting for fix task: [reviewer retry #1] Fix flaky date parsing**');
-    expect(header).toContain('waiting for a worker');
+    expect(header).toContain('waiting for an agent');
     expect(header).toContain(`[Open in Buildd](${TASK})`);
     // The row stays within its own length budget — the title names the task
     // in the header only, not in every row.
@@ -241,11 +248,11 @@ describe('review queued → reviewing', () => {
   const reviewQueued = { kind: 'review_queued' as const, at: at(0) };
   const reviewClaimed = { kind: 'reviewing' as const, taskUrl: 'https://buildd.dev/app/tasks/rev-1', at: at(2) };
 
-  it('a filed reviewer reads as queued, waiting for a worker, with no spinner', () => {
+  it('a filed reviewer reads as queued, waiting for an agent, with no spinner', () => {
     const body = renderPrActivityComment([reviewQueued]);
     const header = headerOf(body);
     expect(header).toContain(`${GLYPH.waiting} **Review queued**`);
-    expect(header).toContain('waiting for a worker');
+    expect(header).toContain('waiting for an agent');
     expect(body).not.toContain(SPINNER_PATH);
     expect(body).not.toContain('Reviewing');
     expect(body).toContain('- `0m` Review queued');

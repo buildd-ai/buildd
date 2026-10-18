@@ -15,7 +15,7 @@ export const TIME_LABEL: Record<TimeCategory, string> = {
   ci: 'Waiting for CI',
   review: 'In review',
   runner: 'Waiting for a runner',
-  running: 'Running',
+  running: 'Working',
   retry: 'Retries after failure',
   release: 'Waiting for a release',
 };

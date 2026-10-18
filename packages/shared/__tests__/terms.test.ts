@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  BANNED_WORDS, MISSION_STAGE_STEPS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, termFor,
+  BANNED_WORDS, MISSION_STAGE_STEPS, NOUNS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, slotsInUse, termFor,
+  titleWithAttempt,
   type InternalKind, type TermKey,
 } from '../src/terms';
 import { TaskStatus, WorkerStatus } from '../src/types';
@@ -97,6 +98,72 @@ describe('terms catalog: landing reads GitHub’s words (§2.2)', () => {
   });
 });
 
+describe('terms catalog: waiting, blocked, ready (§2.3)', () => {
+  it.each([
+    ['task.status', 'pending', 'Ready'],
+    ['worker.status', 'idle', 'Ready'],
+    ['strip', 'ready', 'Ready'],
+    ['strip', 'queued', 'Blocked'],
+    ['strip', 'blocked', 'Blocked'],
+    ['waiting', 'dep_declared', 'Blocked'],
+    ['worker.status', 'waiting_input', 'Has a question'],
+    ['strip', 'waiting', 'Has a question'],
+    ['strip', 'needs_you', 'Waiting on you'],
+    ['kernel', 'AWAITING_PUSH', 'Waiting for push'],
+    ['kernel', 'BLOCKED_ON_TRUNK', 'Blocked on base'],
+  ] as const)('%s %s reads %s', (kind, value, word) => {
+    expect(termFor({ kind, value }).word).toBe(word);
+  });
+
+  it('Waiting is always followed by its reason', () => {
+    for (const t of Object.values(TERMS)) expect(t.word).not.toMatch(/^Waiting$/);
+    expect(TERMS['wait.agent'].word).toBe('Waiting for an agent');
+    expect(TERMS['wait.checks'].word).toBe('Waiting for checks');
+    expect(TERMS['wait.review'].word).toBe('Waiting for review');
+  });
+});
+
+describe('terms catalog: building, verifying, working (§2.4)', () => {
+  it.each([
+    ['task.status', 'assigned', 'Working'],
+    ['task.status', 'in_progress', 'Working'],
+    ['worker.status', 'starting', 'Working'],
+    ['worker.status', 'running', 'Working'],
+    ['strip', 'running', 'Working'],
+    ['kernel', 'WORKING', 'Working'],
+    ['strip', 'review', 'In review'],
+    ['kernel', 'AWAITING_REVIEW', 'In review'],
+    ['strip', 'fixing', 'Fixing'],
+    ['kernel', 'REPAIRING', 'Fixing'],
+    ['mission.stage', 'building', 'Building'],
+    ['mission.stage', 'verifying', 'Verifying'],
+  ] as const)('%s %s reads %s', (kind, value, word) => {
+    expect(termFor({ kind, value }).word).toBe(word);
+  });
+
+  it('checks running on a revision read Checking', () => {
+    expect(TERMS['pr.checking'].word).toBe('Checking');
+  });
+
+  it('capacity reads "N of M slots in use"', () => {
+    expect(slotsInUse(2, 3)).toBe('2 of 3 slots in use');
+    expect(slotsInUse(1, 1)).toBe('1 of 1 slot in use');
+    expect(slotsInUse(0, 4, 'short')).toBe('0/4 in use');
+  });
+});
+
+describe('BANNED_WORDS (slice 2)', () => {
+  it.each([
+    'Auditing', 'In audit', 'Repairing', 'Pending', 'Queued', 'Never started', 'Assigned', 'Starting', 'Running now',
+    'waiting for a worker', '3 of 6 busy', 'every slot is busy',
+  ])('bans "%s"', (s) => {
+    expect(bannedWordsIn(s).length).toBeGreaterThan(0);
+  });
+
+  it.each(['Working', 'Ready', 'Blocked', 'Checking', 'Fixing', '2 of 3 slots in use', 'Waiting for an agent', 'a fix is queued behind CI'])(
+    'allows "%s"', (s) => { expect(bannedWordsIn(s)).toEqual([]); });
+});
+
 describe('BANNED_WORDS', () => {
   it.each([
     'held by a usage limit', 'mission is on hold', '[HELD]', 'Start mode: HELD', 'Landed this week', 'Landing',
@@ -127,5 +194,76 @@ describe('displayTitle', () => {
   it('leaves other titles alone', () => {
     expect(displayTitle('[reviewer] PR #12: x')).toEqual({ title: '[reviewer] PR #12: x' });
     expect(displayTitle('feat: plain')).toEqual({ title: 'feat: plain' });
+  });
+
+  it('accepts a missing title', () => {
+    expect(displayTitle(null)).toEqual({ title: '' });
+    expect(displayTitle(undefined)).toEqual({ title: '' });
+  });
+});
+
+describe('titleWithAttempt (§2.10): the plain-text form terminal, MCP, PR comment and notification surfaces print', () => {
+  it('puts the attempt after the title, never the machine key', () => {
+    expect(titleWithAttempt('[builder · after CI #1] fix(top): words')).toBe('fix(top): words · Fix 1 · CI failed');
+    expect(titleWithAttempt('[builder · after review #2] x')).toBe('x · Fix 2 · review asked for changes');
+  });
+
+  it('returns a plain title unchanged', () => {
+    expect(titleWithAttempt('feat: plain')).toBe('feat: plain');
+    expect(titleWithAttempt(null)).toBe('');
+  });
+});
+
+describe('terms catalog: local and session read as your session (§2.6)', () => {
+  it('a mission set to run locally reads Run from your session', () => {
+    expect(termFor({ kind: 'mission.executor', value: 'local' }).word).toBe('Run from your session');
+    expect(termFor({ kind: 'waiting', value: 'mission_local' }).word).toBe('Run from your session');
+  });
+
+  it('a task claimed from an interactive session reads Running in your session', () => {
+    expect(termFor({ kind: 'worker.runner', value: 'mcp' }).word).toBe('Running in your session');
+    expect(TERMS['work.your_session'].short).toBe('your session');
+  });
+
+  it.each(['local session', 'a local-session mission', '[LOCAL]', 'LOCAL', 'building locally', 'Claim it from a local session.'])('bans "%s"', (s) => {
+    expect(bannedWordsIn(s).length).toBeGreaterThan(0);
+  });
+
+  it.each(['Run from your session', 'Running in your session', 'local time', 'your local checkout'])('allows "%s"', (s) => {
+    expect(bannedWordsIn(s)).toEqual([]);
+  });
+});
+
+describe('terms catalog: runner, slot, agent (§2.7)', () => {
+  it('names each noun once with what it means', () => {
+    expect(NOUNS.runner.word).toBe('runner');
+    expect(NOUNS.slot.word).toBe('slot');
+    expect(NOUNS.agent.word).toBe('agent');
+    expect(NOUNS.session.word).toBe('your session');
+    for (const n of Object.values(NOUNS)) {
+      expect(n.means).toMatch(/^[A-Z].*\.$/);
+      expect(bannedWordsIn(n.word)).toEqual([]);
+    }
+  });
+
+  it.each([
+    "the account's worker limit is reached", 'Workers', 'Concurrent workers', 'Worker failed', 'a worker already has it',
+    'SEATS FULL', 'Seat parallelism', 'on a subscription seat',
+  ])('bans "%s"', (s) => {
+    expect(bannedWordsIn(s).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    'Clef runs on Workers AI', 'Create one with Workers Scripts edit access', 'Uploading Worker…',
+    'GET /api/workers', 'workers.prUrl + workers.mergedAt', '2 of 3 slots in use',
+  ])('allows "%s" (a Cloudflare product name, a path or a column)', (s) => {
+    expect(bannedWordsIn(s)).toEqual([]);
+  });
+
+  it('an agent reading an MCP reply may see worker, never seat or LOCAL', () => {
+    expect(bannedWordsIn('Use the worker ID to report progress.', { reader: 'agent' })).toEqual([]);
+    expect(bannedWordsIn('Use the worker ID to report progress.').length).toBeGreaterThan(0);
+    expect(bannedWordsIn('[LOCAL]', { reader: 'agent' }).length).toBeGreaterThan(0);
+    expect(bannedWordsIn('on a subscription seat', { reader: 'agent' }).length).toBeGreaterThan(0);
   });
 });

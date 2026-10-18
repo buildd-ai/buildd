@@ -44,9 +44,10 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
+import { KernelObservationFailed } from './kernel-observation';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
@@ -461,6 +462,63 @@ export async function policyMergeThroughKernel(p: {
   return result;
 }
 
+// ── AC-1 slice 7: a claim starts the owner attempt ─────────────────────────
+
+/**
+ * The claim's compare-and-set guard for a kernel owner task, beside `status = 'pending'`: no other
+ * claim in flight on it (task-projection.ts). Not a command: the claim route's own race.
+ */
+export { ownerClaimOpenSql };
+
+/**
+ * Project a start onto its task outside a transition (task-projection.ts `projectAttemptStartSql`),
+ * then answer whether the task is now `assigned` under exactly this claim: moved here, or already
+ * by `t_start`. False means the claim was lost after its compare-and-set (a cancel, a requeue, a
+ * stale takeover), and the caller gives the claim back.
+ */
+export async function projectAttemptStart(
+  p: { deliveryId: string; taskId: string; claimedBy: string; claimedAt: string },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  if (((await exec(projectAttemptStartSql(p))).rows ?? []).length > 0) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk
+    WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'assigned'
+      AND tk.claimed_by::text = ${p.claimedBy}::text AND tk.claimed_at = ${p.claimedAt}::timestamptz`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptStarted from the claim route: the claim's compare-and-set won a kernel owner task (it
+ * stamped claimed_by / claimed_at and left the status `pending`), and the kernel moves the task to
+ * `assigned` in the transition's own statement (`t_start`). A start the reducer does not bind (the
+ * delivery moved on, as a loop task's next iteration does, a duplicate, a released delivery) is
+ * still projected under the same guard, so the task starts exactly when it still carries this
+ * claim. No inline drain: the start's effects are the floor's, never the claim's hot path.
+ * `handled` false: the task has no delivery to start through (the caller writes it itself).
+ */
+export async function attemptStarted(p: {
+  task: AttemptTask;
+  claimedBy: string;
+  /** tasks.claimed_at as Postgres renders it (`::text`, microseconds kept). */
+  claimedAt: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; started: boolean; result?: CommandResult }> {
+  if (!p.task.deliveryId || p.task.deliveryRole !== 'owner') return { handled: false, started: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec, p.task.workspaceId);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptStarted', actor: p.source, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptStarted for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }, deps.exec);
+  return { handled: true, started, ...(result ? { result } : {}) };
+}
+
 // ── T4: an attempt ended ────────────────────────────────────────────────────
 
 export interface AttemptTask {
@@ -660,6 +718,75 @@ export async function attemptEnded(p: {
 async function markLandingDue(member: string): Promise<void> {
   const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/landing-due-queue')]);
   await markDue(PR_LANDING_DUE_QUEUE, member, Date.now());
+}
+
+// ── AC-1 slice 6: an attempt's task goes back to the queue ─────────────────
+
+/**
+ * The guard a requeue's own write of its other fields (context, backend, start floor) carries,
+ * so it lands only where the requeue itself would: an open task whose current attempt is
+ * `workerId`. `task` names the tasks row (`tasks` inside a drizzle `update(tasks)`).
+ */
+export { requeueingAttemptIsCurrentSql };
+
+/**
+ * Project a requeue onto its task outside a transition (task-projection.ts `projectRequeueSql`):
+ * for a requeue that applied nothing, or never reached the kernel. Answers whether the task is
+ * back in the queue for this attempt now (moved here, or already by `t_requeue`).
+ */
+export async function projectRequeue(
+  p: { deliveryId: string; taskId: string; workerId: string; attemptId?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  const moved = ((await exec(projectRequeueSql(p))).rows ?? []).length > 0;
+  if (moved) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'pending' AND ${endingWorkerIsCurrentSql(p.workerId)}`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptRequeued from the worker PATCH and the conflict-fix recovery: the attempt is retried on
+ * the same task, so the task goes back to `pending`, the move the kernel makes in the transition's
+ * own statement (`t_requeue`). A requeue the reducer does not bind (the delivery moved on while
+ * the task kept running, a re-send) is still projected under the same guard, so the task moves
+ * exactly when its requeuing worker is still its current attempt, kernel-owned or not.
+ * `handled` false: the task has no delivery to requeue through (the caller writes it itself).
+ */
+export async function attemptRequeued(p: {
+  task: AttemptTask;
+  workerId: string;
+  /** A short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `mount_gap`, `auth_failover`, `conflict_recovery`. */
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; requeued: boolean; result?: CommandResult }> {
+  const attemptKind = p.task.deliveryRole;
+  if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind))) return { handled: false, requeued: false };
+  const attemptId = attemptKind === 'owner' ? null : ((ctxOf(p.task).workflowAttemptId as string | undefined) ?? null);
+  if (attemptKind !== 'owner' && !attemptId) return { handled: false, requeued: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptRequeued', actor: p.source, workerId: p.workerId, reason: p.reason, ...(attemptId ? { attemptId } : { taskId: p.task.id }) },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptRequeued(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const requeued = await projectRequeue({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, attemptId }, deps.exec);
+  if (deliveryId && result?.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { handled: true, requeued, ...(result ? { result } : {}) };
+}
+
+/**
+ * AC-1 slice 8 (task-projection.ts `projectLoopExitSql`): a loop task's exit condition held (its
+ * PR's checks went green) while the loop parked its owner task in the queue. The loop exit sends
+ * the held attempt's end first (through the kernel client), then this moves the task to
+ * `completed` under the projection's guard. Answers whether it moved.
+ */
+export async function projectLoopExit(p: { deliveryId: string; taskId: string }, exec: Exec = seamExec): Promise<boolean> {
+  return ((await exec(projectLoopExitSql(p))).rows ?? []).length > 0;
 }
 
 // ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────
@@ -1055,17 +1182,7 @@ export async function observeBase(p: {
 // AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
 export { deliveryOwnedWorkers, recordPrStateObserved } from './render-observation';
 
-/**
- * A kernel-owned PR whose close or merge the kernel could not take in (S4a): its own live read
- * of GitHub failed, so no transition ran. A fast heal is scheduled (kernel-heal.ts); the caller
- * must not take a legacy path for the PR (the kernel still owns it) and must not report success.
- */
-export class KernelObservationFailed extends Error {
-  constructor(readonly deliveryId: string, readonly reason: string) {
-    super(`kernel could not observe the PR of delivery ${deliveryId}: ${reason}`);
-    this.name = 'KernelObservationFailed';
-  }
-}
+export { KernelObservationFailed } from './kernel-observation';
 
 /**
  * Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C).

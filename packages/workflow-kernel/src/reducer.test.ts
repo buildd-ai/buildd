@@ -95,6 +95,8 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['RepairNotNeeded', V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig' })]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }, 'APPROVED'],
   ['PolicyMergeApproved', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'PolicyMergeApproved', actor: 'rule:escalation_gate', headSha: 'H1', reason: 'policy-only escalation, every gate holds' }, 'APPROVED'],
   ['TreadmillCycleRestarted', V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [1, 2, 3].map((n) => A({ id: `m${n}`, family: 'conflict', mode: 'mechanical', attemptNo: n, boundHeadSha: `B${n}`, triggerReason: 'behind', status: 'ended', taskId: null }))), { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle' }, 'APPROVED'],
+  ['AttemptRequeued', V(D()), { type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry' }, 'WORKING'],
+  ['AttemptStarted', V(D()), { type: 'AttemptStarted', actor: 'claim', taskId: 't1', claimedBy: 'acct1', claimedAt: '2026-10-18 08:00:00.123456+00' }, 'WORKING'],
 ];
 
 describe('generic: every applied transition is a version CAS (§7)', () => {
@@ -399,6 +401,35 @@ describe('T3 HeadObserved by state (§6.4)', () => {
   });
 });
 
+describe('AttemptStarted (AC-1 slice 7): a claim starts the owner attempt without moving the delivery', () => {
+  const STAMP = '2026-10-18 08:00:00.123456+00';
+  const start = (o: Partial<Extract<Command, { type: 'AttemptStarted' }>> = {}): Command => ({ type: 'AttemptStarted', actor: 'claim', taskId: 't1', claimedBy: 'acct1', claimedAt: STAMP, ...o });
+
+  test('a start of the owner task while WORKING applies in place and records the claim it is for, with no attempt or round op', () => {
+    const dec = applied(run(V(D()), start()));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.idempotencyKey).toBe(`start:t1:${STAMP}`);
+    expect(dec.evidence).toMatchObject({ start: true, taskId: 't1', claimedBy: 'acct1', claimedAt: STAMP });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.rounds).toEqual([]);
+    expect(dec.patch).toEqual({});
+  });
+
+  test('a start of another task, or once the delivery moved past WORKING, is not bound', () => {
+    expectResult(run(V(D()), start({ taskId: 'other' })), 'stale', 'attempt_not_bound');
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'AWAITING_PUSH', 'ESCALATED', 'MERGED'] as const) {
+      expectResult(run(V(D({ state })), start()), 'stale', 'attempt_not_bound');
+    }
+  });
+
+  test('a start that names no claim is rejected; its key is the claim\'s, so a re-send is a duplicate and the next claim is not', () => {
+    expectResult(run(V(D()), start({ claimedAt: '' })), 'rejected', 'claim_not_named');
+    expectResult(run(V(D()), start({ claimedBy: '' })), 'rejected', 'claim_not_named');
+    expect(stableIdempotencyKey(start(), D())).toBe(`start:t1:${STAMP}`);
+    expect(stableIdempotencyKey(start({ claimedAt: '2026-10-18 08:05:00+00' }), D())).toBe('start:t1:2026-10-18 08:05:00+00');
+  });
+});
+
 describe('T4 AttemptEnded by outcome (§6.5)', () => {
   const end = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>>): Decision =>
     run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', taskId: 't1', outcome: 'success', localHeadSha: 'H1', commitCount: 1, live: live('H1'), ...o });
@@ -636,6 +667,48 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const skipped = repairing({ attemptNo: 3 });
     const withSkip = { ...skipped, attempts: [A({ id: 'p1', family: 'ci', attemptNo: 1, status: 'ended' }), A({ id: 'p2', family: 'ci', attemptNo: 2, status: 'skipped' }), ...skipped.attempts] };
     expect(applied(end(withSkip, { attemptId: 'c1', outcome: 'failed' })).toState).toBe('REPAIRING');
+  });
+});
+
+describe('AttemptRequeued (AC-1 slice 6): a retried attempt goes back to the queue without moving the delivery', () => {
+  const owner = (o: Partial<Extract<Command, { type: 'AttemptRequeued' }>> = {}): Command => ({ type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry', ...o });
+
+  test('an owner requeue while WORKING applies in place and records the requeue, with no attempt or round op', () => {
+    const dec = applied(run(V(D()), owner({ reason: 'loop_hold' })));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.idempotencyKey).toBe('requeue:w9');
+    expect(dec.evidence).toMatchObject({ requeue: true, reason: 'loop_hold', workerId: 'w9', taskId: 't1' });
+    expect(dec.attempts).toEqual([]);
+    expect(dec.rounds).toEqual([]);
+    expect(dec.patch).toEqual({});
+    expect(effectKinds(dec).sort()).toEqual(['publish_landing_status', 'render_activity']);
+  });
+
+  test('an owner requeue for another task, or after the delivery moved past WORKING, is not bound', () => {
+    expectResult(run(V(D()), owner({ taskId: 'other' })), 'stale', 'attempt_not_bound');
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'AWAITING_PUSH', 'ESCALATED', 'MERGED'] as const) {
+      expectResult(run(V(D({ state })), owner()), 'stale', 'attempt_not_bound');
+    }
+  });
+
+  test('a repair requeue binds only to the open attempt the delivery is bound to', () => {
+    const repairing = (a: Partial<AttemptSnapshot>, o: Partial<DeliverySnapshot> = {}) =>
+      V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'c1', ...o }), [], [A({ id: 'c1', family: 'conflict', triggerReason: 'behind', status: 'running', ...a })]);
+    const repair = (attemptId = 'c1'): Command => ({ type: 'AttemptRequeued', actor: 'sweep:conflict', workerId: 'w3', attemptId, reason: 'conflict_recovery' });
+    const dec = applied(run(repairing({}), repair()));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.evidence).toMatchObject({ requeue: true, attemptId: 'c1', reason: 'conflict_recovery' });
+    expect(dec.attempts).toEqual([]);
+    expectResult(run(repairing({}), repair('c2')), 'stale', 'attempt_not_bound');
+    expectResult(run(repairing({ status: 'ended' }), repair()), 'stale', 'attempt_not_bound');
+    expectResult(run(repairing({}, { state: 'APPROVED', boundAttemptId: null }), repair()), 'stale', 'attempt_not_bound');
+    expect(applied(run(V(D({ state: 'FIXING', boundAttemptId: 'a1', currentRound: 1 }), [decidedRC], [A({ status: 'running' })]), repair('a1'))).toState).toBe('FIXING');
+  });
+
+  test('a requeue naming no attempt is rejected; its key is the worker\'s, so a re-send is a duplicate by key', () => {
+    expectResult(run(V(D()), owner({ taskId: undefined })), 'rejected', 'attempt_not_named');
+    expect(stableIdempotencyKey(owner(), D())).toBe('requeue:w9');
+    expect(stableIdempotencyKey(owner({ workerId: 'w10' }), D())).toBe('requeue:w10');
   });
 });
 
@@ -1509,6 +1582,39 @@ describe('composition attestation: release PRs from already-reviewed changes', (
     const view = V(D({ state: 'AWAITING_REVIEW', currentRound: 2 }), [R({ status: 'decided' }), delta]);
     const dec = applied(run(view, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
     expect(dec.patch).toMatchObject({ approvedHeads: ['H1'], approvalBasis: 'verdict' });
+  });
+  // §13.13 rule 1, AC-20..AC-23.
+  test('AC-20: every constituent latest-approved, composition equal, no delta: APPROVED by composition and no round is started', () => {
+    const dec = applied(ca(v(), {}, [{ ...attEv[0], latestDecidedVerdictAtHead: 'approve', deliveryState: 'APPROVED', deliveryHeadSha: 'C1', openFindings: 0 }]));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvalBasis: 'composition' });
+    expect(dec.rounds.some((r) => r.op === 'insert')).toBe(false);
+  });
+  test('AC-21: a novel delta starts exactly one delta round scoped to its paths', () => {
+    const dec = applied(ca(v(), { novelDelta: { result: 'present', paths: ['a.ts', 'b.ts'] } }));
+    const inserts = dec.rounds.filter((r) => r.op === 'insert');
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]).toMatchObject({ kind: 'delta', scope: { novelDeltaPaths: ['a.ts', 'b.ts'], composition: true } });
+  });
+  test('AC-22: unknown composition or an unresolved constituent is never approval', () => {
+    expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'landed_patch_unreadable:S1' } }), 'rejected', 'composition_unverifiable');
+    expectResult(ca(v(), {}, []), 'rejected', 'composition_not_verified');
+  });
+  test('AC-23: an approve that a later request-changes at the same head superseded does not compose', () => {
+    const bad = ca(v(), {}, [{ ...attEv[0], latestDecidedVerdictAtHead: 'request_changes' }]);
+    expectResult(bad, 'rejected', 'composition_not_verified');
+    expect((bad as { missing: string[] }).missing).toEqual(['constituent_approval_superseded:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'CHANGES_REQUESTED', deliveryHeadSha: 'C1' }]).reasons).toEqual(['constituent_delivery_blocked:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'ESCALATED', deliveryHeadSha: 'C1' }]).reasons).toEqual(['constituent_delivery_blocked:rx']);
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], openFindings: 2 }]).reasons).toEqual(['constituent_open_findings:rx']);
+    // A block at a different head of that delivery does not unseat an approval at the reviewed head.
+    expect(verifyCompositionAttestation(att, [{ ...attEv[0], deliveryState: 'CHANGES_REQUESTED', deliveryHeadSha: 'C9' }]).ok).toBe(true);
+  });
+  test('AC-24: a composition attestation never closes or lifts an open finding on the composed PR', () => {
+    const f: import('./types').FindingSnapshot = { id: 'f1', originRoundId: 'r0', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'a.ts', line: 1, title: 'x', required: true, status: 'open', lastRound: 1 } as never;
+    expectResult(ca({ ...v(), findings: [f] }), 'rejected', 'open_findings');
+    // A delta round may still run; it leaves the finding open.
+    expect(ca({ ...v(), findings: [f] }, { novelDelta: { result: 'present', paths: ['a.ts'] } }).result).toBe('apply');
   });
   test('unverifiable, wrong PR, wrong head, wrong state and failed verification claim nothing', () => {
     expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'tree mismatch' } }), 'rejected', 'composition_unverifiable');

@@ -20,6 +20,10 @@ function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>>
     restartTreadmillCycles: step('restartTreadmillCycles', { checked: 1, restarted: 1, refused: 0, errors: 0 }) as KernelFloorDeps['restartTreadmillCycles'],
     pruneCommands: step('pruneCommands', 4),
     drainParkedCommands: step('drainParkedCommands', { claimed: 2, done: 1, retried: 1, dead: 0, pruned: 0 }),
+    publishOpenPrStatuses: step('publishOpenPrStatuses', {
+      repos: 1, checked: 2, published: 1, republished: 1, unchanged: 0, candidates: 0, errors: 0,
+      coverage: { context: 'Buildd / Review approval', checked: 2, missing: [], verdict: 'covered' },
+    }) as KernelFloorDeps['publishOpenPrStatuses'],
   };
   return { ran, deps };
 }
@@ -30,8 +34,8 @@ describe('the scheduled pass', () => {
     const s = steps();
     const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
-    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainParkedCommands', 'pruneCommands', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
-    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 9, changed: 7, errors: 0 });
+    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
+    expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 11, changed: 9, errors: 0 });
   });
 
   it('does nothing in shadow, without the command key (not switched over), or on the web host whatever its mode', async () => {
@@ -94,5 +98,33 @@ describe('isolation', () => {
     expect(r.parkedCommands).toEqual({ error: 'db down' });
     expect(r.kernelOutbox).toMatchObject({ done: 2 });
     expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+});
+
+// AC-37: the open-PR status coverage is an alert that can fail: every open head still without
+// Buildd / Review approval is an error of the floor run, and a pass that read nothing is not "covered".
+describe('open PR status coverage', () => {
+  const summary = (coverage: Record<string, unknown>, errors = 0) => async () => ({
+    repos: 1, checked: 2, published: 0, republished: 0, unchanged: 2, candidates: 0, errors, coverage: { context: 'Buildd / Review approval', ...coverage },
+  });
+
+  it('each open head missing the context counts as an error', async () => {
+    const s = steps({ publishOpenPrStatuses: summary({ checked: 2, verdict: 'gaps', missing: [{ repoFullName: 'acme/app', prNumber: 4, sha: 'a'.repeat(40) }, { repoFullName: 'acme/app', prNumber: 5, sha: 'b'.repeat(40) }] }) });
+    expect(kernelFloorOutcome(await runKernelFloor(s.deps)).errors).toBe(2);
+  });
+
+  it('the step failing is isolated and counts as an error', async () => {
+    const s = steps({ publishOpenPrStatuses: async () => { throw new Error('github down'); } });
+    const r = await runKernelFloor(s.deps);
+    expect(r.openPrStatuses).toEqual({ error: 'github down' });
+    expect(r.kernelOutbox).toMatchObject({ done: 2 });
+    expect(kernelFloorOutcome(r).errors).toBe(1);
+  });
+
+  it('a pass over no open PR reports nothing_checked, which is not an error and not covered', async () => {
+    const s = steps({ publishOpenPrStatuses: summary({ checked: 0, verdict: 'nothing_checked', missing: [] }) });
+    const r = await runKernelFloor(s.deps);
+    expect(r.openPrStatuses).toMatchObject({ coverage: { verdict: 'nothing_checked' } });
+    expect(kernelFloorOutcome(r).errors).toBe(0);
   });
 });

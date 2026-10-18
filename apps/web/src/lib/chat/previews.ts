@@ -328,7 +328,7 @@ const updateMission: Builder = async (input, env) => {
     // The route takes a boolean only; run what the card said.
     input = { ...input, autoSurfaceAudit: on };
   }
-  if (input.executor !== undefined) changes.push({ label: 'Runs in', before: m.executor === 'local' ? 'a local session' : 'runners', after: input.executor === 'local' ? 'a local session' : 'runners' });
+  if (input.executor !== undefined) changes.push({ label: 'Runs in', before: m.executor === 'local' ? 'your session' : 'runners', after: input.executor === 'local' ? 'your session' : 'runners' });
   // Add or remove criteria against the mission's CURRENT list, so a change
   // never drops a criterion the model couldn't see in full.
   const add = listOf(input.addGoalCriteria).filter((c): c is Obj => !!c && typeof c === 'object');

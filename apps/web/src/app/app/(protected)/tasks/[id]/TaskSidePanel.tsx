@@ -49,7 +49,7 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
     case 'running':
     case 'starting':
     case 'in_progress':
-      return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}{status === 'starting' ? 'Starting' : 'Running'}</span>;
+      return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}Working</span>;
     case 'fixing_ci':
       // The task's own row is done, but a CI-fix attempt is still working its PR.
       return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}Fixing CI</span>;

@@ -26,6 +26,11 @@ describe('deliveryViewsSql', () => {
     expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $2::text");
     expect(q.sql).toContain('AS lane_wait');
   });
+  test('reads the workspace git config and owner task only for an APPROVED delivery: the merge rule\'s inputs (spec 3ef37387 R-11)', () => {
+    const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
+    expect(q.sql).toMatch(/CASE WHEN d\.state = 'APPROVED' THEN \(SELECT jsonb_build_object\('git_config', w\.git_config\)[\s\S]*?END AS workspace/);
+    expect(q.sql).toMatch(/CASE WHEN d\.state = 'APPROVED' THEN \(SELECT jsonb_build_object\('requires_review'[\s\S]*?END AS owner_task/);
+  });
 });
 
 describe('kernelDeliveryForWorkerSql (list_prs, §7)', () => {

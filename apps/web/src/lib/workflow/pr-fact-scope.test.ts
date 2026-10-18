@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql as sqlTag } from 'drizzle-orm';
 import { recordPrFactSql } from '@buildd/core/pr-facts';
-import { deliveryOwnedTaskSql, notKernelMergedTaskSql, factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
+import { deliveryOwnedTaskSql, notDeliveryOwnedTaskSql, notKernelMergedTaskSql, factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -72,6 +72,14 @@ describe('deliveryOwnedTaskSql (S4b): the task-side definition of delivery-owned
     const { sql, params } = render(deliveryOwnedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id` }, { pr: { repoFullName: 'Acme/Repo', prNumber: 12 } }));
     expect(sql).toContain('AND kd.pr_number = $1::int AND lower(kd.repo_full_name) = lower($2::text)');
     expect(params).toEqual([12, 'Acme/Repo']);
+  });
+
+  test('notDeliveryOwnedTaskSql: the negation of a delivery-owned task, by its own columns', () => {
+    const { sql, params } = render(notDeliveryOwnedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id` }));
+    expect(sql).toMatch(/^NOT EXISTS \(SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw/);
+    expect(sql).toContain('kd.owner_task_id = t.id');
+    expect(sql).toContain("kd.authority = 'kernel'");
+    expect(params).toEqual([]);
   });
 
   test('notKernelMergedTaskSql: an attempt writer cannot move a completed task whose delivery MERGED', () => {
