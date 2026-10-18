@@ -12,6 +12,7 @@ import { workerHoldsRunnerSlot } from '@buildd/shared';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
+import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -142,14 +143,16 @@ export async function GET(req: NextRequest) {
 
     // Find heartbeats that are recent (within last 2 minutes)
     const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
-    const heartbeats = await db.query.workerHeartbeats.findMany({
+    // Raised to the Redis beat: a stored one can be one write interval old,
+    // longer than the "online now" window (lib/runner-beats.ts).
+    const heartbeats = await withLiveRunnerBeats(await db.query.workerHeartbeats.findMany({
       where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       with: {
         account: {
           columns: { id: true, name: true, maxConcurrentWorkers: true, teamId: true },
         },
       },
-    });
+    }));
 
     // Cross-reference with actual running workers from DB for each account
     // This prevents showing stale capacity when workers are stuck

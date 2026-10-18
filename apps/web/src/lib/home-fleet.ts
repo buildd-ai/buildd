@@ -16,6 +16,7 @@ import { tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
 import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
+import { withLiveRunnerBeats } from './runner-beats';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { taskShortLabel } from './segment-label';
@@ -59,10 +60,14 @@ export const HOME_QUESTION_ROW_CAP = 50;
  */
 export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetHeartbeatRow[]> {
   const query = fleetHeartbeatsQuery(input);
-  return query ? (await query) as FleetHeartbeatRow[] : [];
+  return query ? withLiveRunnerBeats((await query) as FleetHeartbeatRow[]) : [];
 }
 
-/** `loadFleetHeartbeats`' one statement, for a caller's batch; null when there is no scope. */
+/**
+ * `loadFleetHeartbeats`' one statement, for a caller's batch; null when there
+ * is no scope. The caller passes the rows through `withLiveRunnerBeats` (a
+ * stored beat can be one write interval old, lib/runner-beats.ts).
+ */
 export function fleetHeartbeatsQuery(input: { teamId: string | null; wsIds: string[]; now: number }) {
   const { teamId, wsIds, now } = input;
   const scope = fleetHeartbeatScope({ teamId, wsIds });
