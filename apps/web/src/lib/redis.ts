@@ -1,4 +1,5 @@
 import { Redis } from '@upstash/redis';
+import { BUCKET_SCRIPT, planCacheKey, type BucketCall, type BucketReply } from './read-rate-limit';
 
 /**
  * Resolve Upstash/Vercel-KV connection config from an env-like object.
@@ -286,4 +287,30 @@ export async function windowMembersAdd(
     await r.expire(key, ttlSec);
     return r.zcard(key);
   }, null);
+}
+
+// ── Read rate limit (lib/read-rate-limit.ts) ────────────────────────────────
+//
+// key: buildd:rl:{read|poll}:{subject} — the bucket's TAT (epoch ms), PX'd to
+// expire when the bucket is full again. key: buildd:rl:plan:{subject} — the
+// caller's team plan, written by the server when it authenticates them.
+
+let readBucketScript: ReturnType<Redis['createScript']> | null = null;
+
+/** One atomic bucket decision. Null when Redis is not configured or the call failed (the caller allows). */
+export async function evalReadBucket(call: BucketCall): Promise<BucketReply | null> {
+  return safe<BucketReply | null>('read bucket', async r => {
+    readBucketScript ??= r.createScript(BUCKET_SCRIPT);
+    const out = await readBucketScript.exec(
+      [call.bucketKey, call.planKey],
+      [call.nowMs, call.free.intervalMs, call.free.burst, call.paid.intervalMs, call.paid.burst].map(String),
+    ) as unknown;
+    if (!Array.isArray(out)) return null;
+    return { allowed: Number(out[0]) === 1, retryAfterMs: Number(out[1]) || 0, plan: typeof out[2] === 'string' ? out[2] : '' };
+  }, null);
+}
+
+/** Record a caller's plan for the read limiter. */
+export async function setReadPlan(subject: string, plan: string, ttlSec: number): Promise<void> {
+  await safe('set read plan', r => r.setex(planCacheKey(subject), ttlSec, plan), undefined);
 }
