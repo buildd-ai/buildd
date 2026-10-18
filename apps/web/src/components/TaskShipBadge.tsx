@@ -1,6 +1,6 @@
 'use client';
 
-// Client component: the "Shipped" link stops propagation so a click inside a
+// Client component: the "Released" link stops propagation so a click inside a
 // clickable TaskCard row does not also trigger the row. The task detail page
 // (a server component) mounts it too, and a server module cannot hand an
 // onClick to next/link — that failed the whole page render.
@@ -9,7 +9,7 @@ import Link from 'next/link';
 // Spec: docs/specs/surface-ia-home-missions-initiatives.md §10.3 — task-level
 // ship state is badge-only annotation, never a rail segment. States are
 // additive: a force-released task whose release later goes healthy shows
-// both "Force release" and "Shipped" at once.
+// both "Force release" and "Released" at once.
 export type TaskShipBadgeProps = {
   release: 'true' | 'false' | 'inherit' | null | undefined;
   /** Set when release_tasks attributes this task to a release in state 'healthy'. */
@@ -43,7 +43,7 @@ export function TaskShipBadge({ release, shippedReleaseId }: TaskShipBadgeProps)
           onClick={(e) => e.stopPropagation()}
           className="relative z-10 pointer-events-auto px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-status-success/10 text-status-success hover:bg-status-success/20 transition-colors"
         >
-          Shipped
+          Released
         </Link>
       )}
     </span>

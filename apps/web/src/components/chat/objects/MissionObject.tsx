@@ -59,10 +59,10 @@ export function missionCardRows(model: MissionBoardModel, max = 6): { rows: Boar
   return { rows: sorted.slice(0, max), more: Math.max(0, sorted.length - max) };
 }
 
-/** "3 of 12 landed · 4 running · 1 waiting on you" */
+/** "3 of 12 done · 4 running · 1 waiting on you" */
 export function missionCountsLine(model: MissionBoardModel): string {
   const running = Object.values(model.tasks).filter(t => t.status === 'running').length;
-  const bits = [`${model.landed.done} of ${model.landed.total} landed`];
+  const bits = [`${model.landed.done} of ${model.landed.total} done`];
   if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks';
   if (running > 0) bits.push(`${running} running`);
   if (model.needsYou.length > 0) bits.push(`${model.needsYou.length} need${model.needsYou.length === 1 ? 's' : ''} you`);

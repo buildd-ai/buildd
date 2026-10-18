@@ -673,7 +673,8 @@ const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
 // CiGreenObserved / CiObserved go through the client too (AC-9): the control plane applies them in own mode.
 mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand, observeCiGreen: mockObserveCiGreen }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
-mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
+const mockKernelDeliveriesLandingAt = mock(async (..._a: any[]): Promise<Array<{ deliveryId: string; workspaceId: string; prNumber: number }>> => []);
+mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr, kernelDeliveriesLandingAt: mockKernelDeliveriesLandingAt }));
 
 // The mission loop-on-merge and integration-PR helpers, recorded in call order
 // for the missions characterization at the end of this file. Real modules are
@@ -6459,6 +6460,21 @@ describe('pull_request merged — effects that belong to the merge, not the tran
   });
 });
 
+describe('release PR CI failure alert copy', () => {
+  beforeEach(() => {
+    resetAll();
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42 } }]
+      : null;
+  });
+
+  it('says production is unchanged, never shipped', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    const alert = mockNotifyTeamOf.mock.calls.find(c => c[1] === 'needsAttention' && String(c[2]?.title).startsWith('Release CI failed'));
+    expect(alert?.[2].message).toBe('CI is red on release PR #42. Production is unchanged.');
+  });
+});
+
 describe('release PR CI success pins the live head', () => {
   beforeEach(() => {
     resetAll();
@@ -6522,6 +6538,15 @@ describe('release PR CI success pins the live head', () => {
     expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
   });
 
+  it('§4 merge holds: GitHub holding the release PR on a required check that has not passed leaves it pending, never failed', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) }, merged: false });
+    mockMergePullRequest.mockResolvedValueOnce({ merged: false, message: 'Required status check "Buildd / Review approval" is expected.', status: 405 } as any);
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+    expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
+  });
+
   it('D7 never re-settles a task the close already settled (the guarded write found nothing held)', async () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
     updateReturningByStatus.completed = [];
@@ -6568,6 +6593,42 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).not.toHaveBeenCalled();
     expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+});
+
+describe('§4 merge holds: a commit status on a head whose merge GitHub is holding wakes it', () => {
+  const statusPayload = (o: Record<string, unknown> = {}) => ({
+    sha: 'a'.repeat(40), state: 'success', context: 'build', repository: { full_name: 'test-org/test-repo' }, installation: { id: 5000 }, ...o,
+  });
+  beforeEach(() => {
+    resetAll();
+    mockObserveCiGreen.mockClear();
+    mockKernelDeliveriesLandingAt.mockReset();
+    mockKernelDeliveriesLandingAt.mockResolvedValue([{ deliveryId: 'd-1', workspaceId: 'ws-1', prNumber: 42 }]);
+  });
+
+  it('a check reporting success on a landing head goes to the kernel for that PR, as buildd\'s own webhook', async () => {
+    const res = await POST(createWebhookRequest('status', statusPayload()));
+    expect(res.status).toBe(200);
+    expect(mockKernelDeliveriesLandingAt).toHaveBeenCalledWith('test-org/test-repo', 'a'.repeat(40));
+    expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
+    expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'a'.repeat(40), installationId: 5000, source: 'webhook:status' });
+    expect(mockObserveCiGreen.mock.calls[0][1]).toEqual({ principal: { kind: 'system', id: 'system:webhook:status' } });
+  });
+
+  it('nothing is woken by a pending or failing status, or by buildd\'s own review status', async () => {
+    await POST(createWebhookRequest('status', statusPayload({ state: 'pending' })));
+    await POST(createWebhookRequest('status', statusPayload({ state: 'failure' })));
+    await POST(createWebhookRequest('status', statusPayload({ context: 'Buildd / Review approval' })));
+    await POST(createWebhookRequest('status', statusPayload({ context: 'buildd/landing' })));
+    expect(mockKernelDeliveriesLandingAt).not.toHaveBeenCalled();
+    expect(mockObserveCiGreen).not.toHaveBeenCalled();
+  });
+
+  it('no delivery landing at that head: nothing reaches the kernel', async () => {
+    mockKernelDeliveriesLandingAt.mockResolvedValue([]);
+    await POST(createWebhookRequest('status', statusPayload()));
+    expect(mockObserveCiGreen).not.toHaveBeenCalled();
   });
 });
 

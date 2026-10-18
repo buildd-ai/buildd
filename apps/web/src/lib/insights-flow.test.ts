@@ -209,6 +209,8 @@ describe('buildFlowSeries: lost work', () => {
     }));
     expect(s.headline.shippedShare).toBe(1);
     expect(s.headline.otherHours).toBeCloseTo(1, 5);
+    // Terms catalog: settled work reads Done, never Completed.
+    expect(s.tasks.find(t => t.key.includes('research'))?.outcome).toBe('Done');
   });
 
   it('weights the share by agent-hours, not task count', () => {

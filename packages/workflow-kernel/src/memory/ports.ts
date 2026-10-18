@@ -140,6 +140,8 @@ export class FakeGithub implements GithubFacts {
   onMerge?: (p: { repoFullName: string; prNumber: number; headSha: string }) => void;
   /** What a posted review answers; absent = posted. */
   reviewAnswer: PostedReview = { id: null, posted: true };
+  /** Status writes GitHub accepts but does not show on a read (yet): recorded, never read back. */
+  dropStatuses = false;
 
   /** `ciGreen` answers, keyed `repo@sha`; absent = unknown (null). */
   readonly green = new Map<string, boolean>();
@@ -159,7 +161,7 @@ export class FakeGithub implements GithubFacts {
     if (live) this.prs.set(`${repoFullName}#${prNumber}`, live); else this.prs.delete(`${repoFullName}#${prNumber}`);
   }
   async statusOf(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string; targetUrl: string | null } | null> {
-    const last = this.written.filter((w) => w.op === 'publishStatus' && w.repoFullName === repoFullName && w.sha === sha && w.context === context).at(-1);
+    const last = this.written.filter((w) => w.op === 'publishStatus' && !w.dropped && w.repoFullName === repoFullName && w.sha === sha && w.context === context).at(-1);
     return last ? { state: String(last.state), description: String(last.description), targetUrl: typeof last.targetUrl === 'string' ? last.targetUrl : null } : null;
   }
   async readPr(repoFullName: string, prNumber: number): Promise<LivePr | null> {
@@ -180,7 +182,7 @@ export class FakeGithub implements GithubFacts {
       return { ...this.mergeAnswer };
     },
     postReview: async (p) => { this.written.push({ op: 'postReview', ...p }); return { ...this.reviewAnswer }; },
-    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p }); await this.onStatus?.(p); },
+    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p, ...(this.dropStatuses ? { dropped: true } : {}) }); await this.onStatus?.(p); },
     upsertComment: async (p) => { this.written.push({ op: 'upsertComment', ...p }); return { id: null }; },
     deleteBranch: async (p) => { this.written.push({ op: 'deleteBranch', ...p }); },
   };

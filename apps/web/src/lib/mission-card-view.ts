@@ -769,8 +769,8 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
   };
 }
 
-/** `Completed 3d ago · 6/6` — the whole of a compact card's body (D7). */
+/** `Done 3d ago · 6/6` — the whole of a compact card's body (D7). */
 export function compactCardLine(view: Pick<MissionCardView, 'completedAt' | 'done' | 'total'>, timeAgo: (d: string) => string): string {
-  const when = view.completedAt ? `Completed ${timeAgo(view.completedAt)}` : 'Completed';
+  const when = view.completedAt ? `Done ${timeAgo(view.completedAt)}` : 'Done';
   return view.total > 0 ? `${when} · ${view.done}/${view.total}` : when;
 }
