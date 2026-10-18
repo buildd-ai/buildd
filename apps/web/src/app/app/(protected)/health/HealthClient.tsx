@@ -58,6 +58,7 @@ import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
 import { RunnerIsolation } from './_components/RunnerIsolation';
+import { RunnerRoute } from './_components/RunnerRoute';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
@@ -921,6 +922,7 @@ export function HealthClient({
                       </button>
                     </div>
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
+                    {health?.expanded && <RunnerRoute runner={hb} />}
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         <RunnerSlotDetail

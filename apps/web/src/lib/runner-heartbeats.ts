@@ -110,6 +110,8 @@ export async function getRunnerHeartbeats(
       // capability only. See deriveSandboxPosture.
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
       isolation: readIsolationRecord(hb.environment),
+      modelAuthSource: hb.modelAuthSource ?? null,
+      codexAuthSource: hb.codexAuthSource ?? null,
       shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
       runnerClass: classifyRunnerOwnership(hb.account),
       mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
