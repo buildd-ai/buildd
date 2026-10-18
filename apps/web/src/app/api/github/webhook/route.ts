@@ -48,7 +48,7 @@ import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
 // A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { observeBase, observeCiGreen, observePrState, systemPrincipal } from '@/lib/workflow/kernel-client';
+import { observeBase, observeCiGreen, observePrState, systemPrincipal, withWebhookBudget } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
 import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
@@ -76,7 +76,18 @@ export async function POST(req: NextRequest) {
   console.log(`GitHub webhook: ${event} (${deliveryId})`);
 
   try {
-    switch (event) {
+    // GitHub fails a delivery at about 10 s: every kernel door call below waits only a short, shared
+    // budget and otherwise takes its durable path (parked, or recorded unapplied and healed).
+    await withWebhookBudget(deliveryId, () => dispatchEvent(event, data));
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error(`Webhook error (${event}):`, error);
+    return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
+  }
+}
+
+async function dispatchEvent(event: string, data: any): Promise<void> {
+  switch (event) {
       case 'installation':
         await handleInstallationEvent(data as GitHubInstallationEvent);
         break;
@@ -131,12 +142,6 @@ export async function POST(req: NextRequest) {
 
       default:
         console.log(`Unhandled event: ${event}`);
-    }
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    console.error(`Webhook error (${event}):`, error);
-    return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 }
 
