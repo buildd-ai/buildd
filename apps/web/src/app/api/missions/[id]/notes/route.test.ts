@@ -83,6 +83,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => args,
   desc: (field: any) => ({ field, type: 'desc' }),
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
+  gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -163,6 +164,56 @@ describe('GET /api/missions/[id]/notes', () => {
     const data = await res.json();
     expect(data.error).toContain('UUID');
     expect(mockMissionNotesFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-UUID since', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+    const req = createRequest({
+      headers: { authorization: 'Bearer bld_test' },
+      url: `http://localhost:3000/api/missions/${MISSION_ID}/notes?since=note-1`,
+    });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect(mockMissionNotesFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('since=<note>: only notes at or after that note, read in SQL, and says so', async () => {
+    const SINCE = '22222222-2222-4222-8222-222222222222';
+    const at = new Date('2026-10-18T10:00:00Z');
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+    mockMissionNotesFindFirst.mockResolvedValue({ createdAt: at });
+    mockMissionNotesFindMany.mockResolvedValue([{ id: 'n-new', type: 'update', title: 'new', status: 'open', createdAt: new Date() }]);
+    const req = createRequest({
+      headers: { authorization: 'Bearer bld_test' },
+      url: `http://localhost:3000/api/missions/${MISSION_ID}/notes?since=${SINCE}`,
+    });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.since).toBe(SINCE);
+    expect(data.notes.map((n: any) => n.id)).toEqual(['n-new']);
+    // The since note is looked up inside this mission only.
+    expect(JSON.stringify(mockMissionNotesFindFirst.mock.calls[0][0])).toContain(MISSION_ID);
+    const where = JSON.stringify(mockMissionNotesFindMany.mock.calls[0][0].where);
+    expect(where).toContain('"type":"gte"');
+    expect(where).toContain(at.toISOString());
+  });
+
+  it('since=<unknown note>: the newest page, with since null so the client replaces its list', async () => {
+    const SINCE = '22222222-2222-4222-8222-222222222222';
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1', level: 'admin' });
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: null });
+    mockMissionNotesFindFirst.mockResolvedValue(undefined);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    const req = createRequest({
+      headers: { authorization: 'Bearer bld_test' },
+      url: `http://localhost:3000/api/missions/${MISSION_ID}/notes?since=${SINCE}`,
+    });
+    const data = await (await GET(req, { params: mockParams })).json();
+    expect(data.since).toBeNull();
+    expect(JSON.stringify(mockMissionNotesFindMany.mock.calls[0][0].where)).not.toContain('"type":"gte"');
   });
 
   it('returns 401 when mission not found', async () => {

@@ -12,8 +12,14 @@
  *
  * The box, the message list with sent / delivered, the header and the
  * presence strip are the kit's `SteerComposer` (@builddai/ai-kit/chat/react).
- * buildd keeps the instruct route, the polling, who may steer, and the
+ * buildd keeps the instruct route, the refresh, who may steer, and the
  * presence it shows (`steerPresence`: runner, last heartbeat, current action).
+ *
+ * The feed refreshes on the worker's own events (spec 3ef37387 R-21):
+ * worker:progress on the worker channel (the check-ins around a delivery move
+ * the worker's current action), and worker:completed / worker:failed when the
+ * run ends (a message it never read turns undelivered). A read once a minute is the fallback for a missed event, and
+ * a hidden tab reads nothing until it is shown again (hooks/useLiveListen.ts).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { SteerComposer, steerTitle, type SteerMessage, type SteerPresenceItem } from '@builddai/ai-kit/chat/react';
@@ -22,6 +28,8 @@ import type { InstructionHistoryEntry, MessageDeliveryState } from '@/lib/worker
 import { messageDeliveryStatus } from '@/lib/worker-instructions';
 import { steerPresence } from '@/lib/chat/steer-presence';
 import { ObjectStoreProvider, useObjectEntry } from './objects/ObjectStoreProvider';
+import { useLiveListen } from '@/hooks/useLiveListen';
+import { CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { BuilddObjectRef } from './chat-contract';
 
 interface TaskMessagesResponse {
@@ -43,6 +51,9 @@ const KIT_DELIVERY: Record<MessageDeliveryState, SteerMessage['status']> = {
 };
 
 const NO_AGENT = 'No agent is running on this task right now.';
+
+/** The worker events that can change a message's delivery state. */
+export const STEER_EVENTS = ['worker:progress', 'worker:completed', 'worker:failed'] as const;
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -99,13 +110,12 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
   }, [taskId]);
 
   useEffect(() => { load(); }, [load]);
-  // Delivery/read status changes out of band (the runner's own check-in), and
-  // there's no per-message realtime event for it yet — poll while the canvas
-  // is open, the same tradeoff the task page's own instruction history makes.
-  useEffect(() => {
-    const id = setInterval(load, 5_000);
-    return () => clearInterval(id);
-  }, [load]);
+  const workerId = data?.workerId ?? null;
+  useLiveListen({
+    channel: workerId ? `${CHANNEL_PREFIX}worker-${workerId}` : null,
+    events: STEER_EVENTS,
+    refresh: load,
+  });
 
   const task = view?.kind === 'task' ? view : null;
   const taskLabel = task ? taskDisplayLabel({ title: task.title, label: null }).label : objRef.fallbackText;
@@ -118,7 +128,6 @@ function SteerBody({ taskId, onClose }: { taskId: string; onClose(): void }) {
     ...(presence.heartbeatLabel ? [{ key: 'heartbeat', label: presence.heartbeatLabel, tone: 'muted' as const }] : []),
     ...(presence.actionLabel ? [{ key: 'action', label: presence.actionLabel, tone: 'live' as const }] : []),
   ];
-  const workerId = data?.workerId ?? null;
 
   const send = async (text: string) => {
     if (!workerId) return;

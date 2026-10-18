@@ -7,6 +7,7 @@ import type { MissionNote, MissionNoteType } from '@buildd/shared';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
 import { isReplyableQuestion } from '@/lib/mission-note-reply';
 import SideSheet from '@/components/SideSheet';
+import { mergeNotesSince, notesUrl } from './mission-notes-merge';
 
 const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: string; icon: string }> = {
   decision: { label: 'DECISION', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
@@ -43,13 +44,26 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // The newest page once, then only what is new (mission-notes-merge.ts).
+  const notesRef = useRef<MissionNote[]>([]);
   const fetchNotes = useCallback(async () => {
     try {
-      const res = await fetch(`/api/missions/${missionId}/notes?limit=50`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setNotes(data.notes);
-      }
+      const held = notesRef.current;
+      const res = await fetch(notesUrl(missionId, held), { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const incoming: MissionNote[] = Array.isArray(data.notes) ? data.notes : [];
+      let next: MissionNote[];
+      if (held.length > 0 && data.since && !data.hasMore) next = mergeNotesSince(held, incoming);
+      else if (held.length > 0 && data.since && data.hasMore) {
+        // More arrived than one page: start again from the newest page.
+        notesRef.current = [];
+        const full = await fetch(notesUrl(missionId, []), { credentials: 'include' });
+        if (!full.ok) return;
+        next = (await full.json()).notes ?? [];
+      } else next = incoming;
+      notesRef.current = next;
+      setNotes(next);
     } catch {
       // Non-fatal
     } finally {
@@ -58,6 +72,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
   }, [missionId]);
 
   useEffect(() => {
+    notesRef.current = [];
     fetchNotes();
   }, [fetchNotes]);
 
@@ -67,6 +82,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
     const channel = subscribeToChannel(channelName);
     if (!channel) return;
 
+    // Each event reads only the notes since the newest one held.
     const handleNote = () => fetchNotes();
     channel.bind('mission:note_posted', handleNote);
 
