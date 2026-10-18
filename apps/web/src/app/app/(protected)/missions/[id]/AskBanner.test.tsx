@@ -44,7 +44,7 @@ describe('the Feed with nothing for a person to do', () => {
   it('says what the mission is doing and never "Waiting on you"', () => {
     const model = { ...boardFixture('running'), needsYou: [] };
     const html = renderToStaticMarkup(<MissionFeedLayout model={model} missionId="mission-1" timeZone="UTC" />);
-    expect(html).toMatch(/data-testid="history-run-state"[^>]*>Nothing needs you\./);
+    expect(html).toMatch(/data-testid="history-run-state"[^>]*>2 working/);
     expect(html).not.toContain('Waiting on you');
     expect(html).not.toContain('needs-you-band');
   });
