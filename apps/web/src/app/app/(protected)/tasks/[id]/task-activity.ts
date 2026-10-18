@@ -148,7 +148,7 @@ export interface NowState {
 // Status milestones that record bookkeeping around a question rather than work.
 const NOT_A_HEADLINE = /^(Asked:|Question:|Answer received:|User:)/;
 
-const VERBS: Record<ActivityKind, string> = { new: 'Writing', edit: 'Editing', read: 'Reading', run: 'Running' };
+const VERBS: Record<ActivityKind, string> = { new: 'Writing', edit: 'Editing', read: 'Reading', run: 'Running a command' };
 
 export function basename(p: string): string {
   const trimmed = p.replace(/\/+$/, '');

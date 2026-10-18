@@ -244,7 +244,7 @@ describe('frames (R-7)', () => {
       for (const l of lines) expect(textWidth(stripAnsi(l))).toBe(cols);
       const t = text(lines);
       expect(t).toMatch(/9 slots · (1 running · )?8 free/);
-      expect(t).toContain('1 of 9 busy');
+      expect(t).toContain('1 of 9 slots in use');
       expect(t).toContain('Looked for work 14:58 · started 3');
       expect(t).toContain('when #1 ends (same files)');
       expect(t).not.toMatch(/\bnext\s*$/m);

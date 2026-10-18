@@ -10,7 +10,7 @@ describe('MissionRow', () => {
     );
     expect(html).toContain('href="/app/missions/x"');
     expect(html).toContain('data-size="sm"');
-    expect(html).toContain('Auditing · 2 of 5 merged · ~4:55 PM');
+    expect(html).toContain('In review · 2 of 5 merged · ~4:55 PM');
     expect(html).toContain('Next');
   });
 
