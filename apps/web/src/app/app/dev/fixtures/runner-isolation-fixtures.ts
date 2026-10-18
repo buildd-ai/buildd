@@ -47,6 +47,7 @@ function row(n: number, name: string, inProblems: boolean, over: Partial<RunnerH
       mountAllowlistEnforced: false,
       isolation: null,
       shared: true,
+      mine: true,
       ...over,
     },
   };

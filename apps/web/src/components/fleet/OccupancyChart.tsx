@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { OCCUPANCY_WINDOWS, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
+import { OCCUPANCY_OWNERS, OCCUPANCY_WINDOWS, type OccupancyBreakdown, type OccupancyOwner, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
 import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sample';
 import Segmented from '@/components/ui/Segmented';
@@ -118,6 +118,19 @@ function Metric({ label, value, testId }: { label: string; value: string; testId
       {/* The number first, a sentence-case label under it (the prototype's stat). */}
       <span className="font-mono text-[18px] font-semibold leading-tight text-text-primary">{value}</span>
       <span className="text-meta text-text-muted">{label}</span>
+    </div>
+  );
+}
+
+const OWNER_LABELS: Record<OccupancyOwner, string> = { mine: 'Yours', others: 'Teammates', unattributed: 'Other / unattributed' };
+
+/** Average busy slots by owner. The parts sum to the average above; work with no recorded owner is its own line, never folded into anyone's. */
+function OwnerSplit({ by }: { by: OccupancyBreakdown }) {
+  return (
+    <div data-testid="occupancy-owner-split" className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
+      {OCCUPANCY_OWNERS.map(o => (
+        <Metric key={o} testId={`occupancy-owner-${o}`} label={`${OWNER_LABELS[o]}, average`} value={fmtLevel(by[o].avg)} />
+      ))}
     </div>
   );
 }
@@ -248,6 +261,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
+      {!runnerIdle && <OwnerSplit by={series.summary.runnerBy} />}
       {runnerIdle ? (
         <p data-testid="occupancy-runner-idle" className="py-2 text-body text-text-muted">No runner work in the {words}.</p>
       ) : (

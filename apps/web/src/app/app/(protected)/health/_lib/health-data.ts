@@ -320,7 +320,7 @@ export async function loadHealth({
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
-      ? getRunnerHeartbeats(activeTeamId, scopedWsIds).catch(() => [] as RunnerHeartbeat[])
+      ? getRunnerHeartbeats(activeTeamId, scopedWsIds, userId).catch(() => [] as RunnerHeartbeat[])
       : [] as RunnerHeartbeat[],
 
     // Task-keyed totals over the page window (was a fixed 30d role rollup).

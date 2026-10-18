@@ -83,13 +83,15 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-async function mount(sessions: number) {
+const DEFAULT_RUNNERS = [{ id: 'hb-1', accountId: 'acct', accountName: 'Runner one', lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 1, maxConcurrentWorkers: 3 }];
+
+async function mount(sessions: number, runners: object[] = DEFAULT_RUNNERS) {
   await act(async () => {
     root.render(
       <HealthClient
         page="runners"
         orphanedPrs={[]}
-        runners={[{ id: 'hb-1', accountId: 'acct', accountName: 'Runner one', lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 1, maxConcurrentWorkers: 3 } as never]}
+        runners={runners as never}
         usageStats={null}
         consumption={null}
         schedules={[]}
@@ -171,5 +173,26 @@ describe('Health › Runners at first glance', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { toggle.click(); });
     expect(q('runner-lanes-chart')).not.toBeNull();
+  });
+});
+
+describe('Health › Runners ownership', () => {
+  const hb = (id: string, name: string, mine: boolean) => ({ id, accountId: id, accountName: name, lastHeartbeatAt: ago(0).toISOString(), activeWorkerCount: 0, maxConcurrentWorkers: 2, mine });
+
+  it('lists the viewer\'s runners under "Your runners" and teammates\' under "Team runners"', async () => {
+    await mount(0, [hb('a', 'Mine one', true), hb('b', 'Teammate box', false)]);
+    const mine = q('health-runners-mine');
+    const team = q('health-runners-team');
+    expect(mine!.textContent).toContain('Your runners');
+    expect(mine!.textContent).toContain('Mine one');
+    expect(mine!.textContent).not.toContain('Teammate box');
+    expect(team!.textContent).toContain('Team runners');
+    expect(team!.textContent).toContain('Teammate box');
+  });
+
+  it('omits a section with no runners', async () => {
+    await mount(0, [hb('a', 'Mine one', true)]);
+    expect(q('health-runners-mine')).not.toBeNull();
+    expect(q('health-runners-team')).toBeNull();
   });
 });
