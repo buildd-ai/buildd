@@ -17,6 +17,7 @@
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
 import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
+import { reviewRoundsOf } from '../pr-activity-rounds';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
@@ -260,7 +261,10 @@ export function renderDeliveryActivity(p: {
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
   // §7 / AC-24: the same review line get_pr and the task page print.
   const review = reviewSummaryOf(p.view);
-  const reviewLine = review ? `Review: ${reviewSummaryLine(review)}` : '';
+  const read = reviewRoundsOf(p.view.rounds);
+  const reviewLine = review
+    ? `Review: ${reviewSummaryLine(review)}${read ? `\nRounds: ${read.line}${read.githubNote ? `\n${read.githubNote}` : ''}` : ''}`
+    : '';
   const findings = renderFindingsSummary(p.view);
   return `${body}\n${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
 }
