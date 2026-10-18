@@ -23,7 +23,7 @@ let world: World;
 let clock: number;
 let table: Map<string, StoredMissionSummary>;
 let loads: string[][];
-let recorded: Array<{ event: string; fields: Record<string, number> }>;
+let recorded: Array<{ event: string; fields: Record<string, number | string> }>;
 
 function deps(): MissionSummaryStoreDeps {
   return {
@@ -224,7 +224,37 @@ describe('the reconcile', () => {
     expect(counts).toMatchObject({ checked: world.missions.length, missing: 0, repaired: 1, missedWrites: 1 });
     expect(summary('m-build').progress.done).toBe(2);
     expectStoredEqualsComputed();
-    expect(recorded).toEqual([{ event: 'mission_summary.reconcile', fields: expect.objectContaining({ repaired: 1, missedWrites: 1 }) }]);
+    expect(recorded.map(r => r.event)).toEqual(['mission_summary.reconcile.missed_write', 'mission_summary.reconcile']);
+    expect(recorded[1]).toEqual({ event: 'mission_summary.reconcile', fields: expect.objectContaining({ repaired: 1, missedWrites: 1 }) });
+  });
+
+  it('records which fields differed and each source\'s newest write for a missed write', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged', updatedAt: new Date(clock) });
+    recorded = [];
+    await store.reconcile({ limit: 50 });
+    const trace = recorded.find(r => r.event === 'mission_summary.reconcile.missed_write');
+    expect(trace?.fields).toMatchObject({ missionId: 'm-build', newest_workers: new Date(clock).toISOString() });
+    expect(String(trace?.fields.fields)).not.toBe('');
+  });
+
+  it('a refresh landing between the stored read and the load is not a missed write', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged' });
+    const d = deps();
+    const base = d.readStored;
+    let reads = 0;
+    // The write's own refresh lands after the first stored read, before the compare.
+    d.readStored = async ids => {
+      const out = await base(ids);
+      if (reads++ === 0) { tick(); await createMissionSummaryStore(deps()).recompute(['m-build']); }
+      return out;
+    };
+    recorded = [];
+    const counts = await createMissionSummaryStore(d).reconcile({ limit: 50 });
+    expect(counts.missedWrites).toBe(0);
+    expect(counts.raced).toBe(1);
+    expect(recorded.some(r => r.event === 'mission_summary.reconcile.missed_write')).toBe(false);
   });
 
   it('a reading that only aged is repaired but is not a missed write', async () => {
