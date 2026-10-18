@@ -90,6 +90,7 @@ import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -4131,11 +4132,6 @@ export async function PATCH(
         const waitingForData = worker.waitingFor as { prompt?: string } | null;
         const lastQuestion = waitingForData?.prompt || undefined;
 
-        // Re-read worker to pick up auto-detected PR fields
-        const freshWorker = await db.query.workers.findFirst({
-          where: sqlWhere(eq(workers.id, id)),
-        });
-
         taskUpdate.result = {
           summary,
           ...(summarySource && { summarySource }),
@@ -4145,8 +4141,8 @@ export async function PATCH(
           files: filesChanged ?? worker.filesChanged ?? 0,
           added: linesAdded ?? worker.linesAdded ?? 0,
           removed: linesRemoved ?? worker.linesRemoved ?? 0,
-          prUrl: freshWorker?.prUrl ?? worker.prUrl ?? undefined,
-          prNumber: freshWorker?.prNumber ?? worker.prNumber ?? undefined,
+          // No prUrl / prNumber: a task's PR is derived on read from its delivery or its
+          // attempt's worker row (workflow/task-pr.ts), never snapshotted by an attempt's end.
           ...(phases.length > 0 && { phases }),
           ...(lastQuestion && { lastQuestion }),
           // Structured output from SDK (validated JSON matching task.outputSchema)
@@ -5397,10 +5393,15 @@ export async function PATCH(
         const durationMs = startedAt && completedAt
           ? new Date(completedAt as any).getTime() - new Date(startedAt as any).getTime()
           : null;
+        // The PR is derived on read (workflow/task-pr.ts); the result no longer stores it. Read only
+        // when there is a callback to send it to.
+        const taskPr = (taskForNotify.context as { callback?: unknown } | null)?.callback
+          ? await taskPrOf(worker.taskId)
+          : null;
         sendTaskCallback(taskForNotify as any, {
           status,
           summary: isSensitive ? undefined : result?.summary,
-          prUrl: result?.prUrl,
+          prUrl: taskPr?.prUrl ?? result?.prUrl,
           structuredOutput: isSensitive ? undefined : (result as any)?.structuredOutput,
         }, {
           turns: updates.turns ?? worker.turns,
