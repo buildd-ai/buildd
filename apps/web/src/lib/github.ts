@@ -328,7 +328,7 @@ export async function postPrReview(params: {
       // A verdict that went up as a comment review (own PR, below) is matched by its body.
       const duplicate = existing.find(
         (r: { commit_id?: string; state?: string; body?: string }) =>
-          r.commit_id === headSha && (r.state === state || (r.state === 'COMMENTED' && r.body === body)),
+          r.commit_id === headSha && (r.state === state || (r.state === 'COMMENTED' && (r.body === body || r.body === withOwnPrNote(body)))),
       );
       if (duplicate) {
         return { posted: false, reason: 'a matching review already exists for this commit' };
@@ -352,7 +352,7 @@ export async function postPrReview(params: {
     // not this review, so the same text goes up as a comment review instead.
     if (isOwnPrReviewRefusal(reason)) {
       try {
-        const result = await post('COMMENT');
+        const result = await githubApi(installationId, path, { method: 'POST', body: JSON.stringify({ commit_id: headSha, event: 'COMMENT', body: withOwnPrNote(body) }) });
         return { posted: true, reviewId: result?.id, commentedOwnPr: true };
       } catch (commentErr) {
         reason = commentErr instanceof Error ? commentErr.message : 'unknown error';
@@ -361,6 +361,17 @@ export async function postPrReview(params: {
     console.warn(`[github] failed to post review on ${repoFullName}#${prNumber}:`, reason);
     return { posted: false, reason };
   }
+}
+
+/**
+ * What a verdict posted as a comment says about itself. GitHub shows such a review as COMMENTED
+ * whatever the verdict was, so the body states the limit: the review's state is not the decision.
+ */
+export const OWN_PR_REVIEW_NOTE =
+  "Posted as a comment: GitHub does not let the account that opened a PR approve it or request changes on it, so this review's state reads COMMENTED whatever the verdict. The verdict is the one buildd recorded for the commit named above, published as the `Buildd / Review approval` commit status, and a merge is gated on that, never on this text.";
+
+function withOwnPrNote(body: string): string {
+  return `${body}\n\n${OWN_PR_REVIEW_NOTE}`;
 }
 
 /** GitHub's 422 for an approve or request-changes review by the PR's own author. */

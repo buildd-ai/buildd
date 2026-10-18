@@ -576,6 +576,14 @@ export function findingsSection(brief: FindingsBrief | null | undefined): string
     '',
     'On request-changes, list each distinct issue in `findings`: `{ path, line, title }`, one per issue, with the',
     'file and line it is about. buildd keeps every finding open until a later review verifies it, whatever is pushed.',
+    '',
+    'Before you approve, trace what the change does, not only what it looks like: for each changed function, follow the',
+    'paths a caller can take, including the empty, missing, repeated and already-done inputs (an optional argument left',
+    'out, a list with nothing in it, a command run twice, a state it was not made for), and check that the tests name',
+    'those cases. Check that every touched file belongs to the task and that nothing added is unused. List every blocking',
+    'issue you can find in this one review, so the fix is one round, not one issue per round; an approval is a claim that',
+    'you looked for these and found none. A new issue you find later in code you already approved is still a finding:',
+    'say that it is new, and that the earlier approval was wrong about it.',
   ];
   const open = brief?.open ?? [];
   if (open.length) {

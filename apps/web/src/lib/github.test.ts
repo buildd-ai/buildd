@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, mergePullRequest, checkSuitesAllPassed, dropSupersededSuites, allCheckSuitesPassed, retryAfterFromHeaders, githubApi } from './github';
+import { postPrReview, OWN_PR_REVIEW_NOTE, mergePullRequest, checkSuitesAllPassed, dropSupersededSuites, allCheckSuitesPassed, retryAfterFromHeaders, githubApi } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -160,7 +160,7 @@ describe('postPrReview on a PR buildd itself opened', () => {
     postPrReview({ installationId: 5000, repoFullName: 'org/repo', prNumber: 42, headSha: 'sha-1', event, body });
 
   for (const [event, refusal] of [['APPROVE', OWN_APPROVE], ['REQUEST_CHANGES', OWN_CHANGES]] as const) {
-    it(`re-posts a refused ${event} as a COMMENT review at the same commit with the same body`, async () => {
+    it(`re-posts a refused ${event} as a COMMENT review at the same commit, saying GitHub's state is not the verdict`, async () => {
       const posts: Array<Record<string, unknown>> = [];
       global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
         if (opts?.method !== 'POST') return jsonResponse(200, []);
@@ -173,7 +173,7 @@ describe('postPrReview on a PR buildd itself opened', () => {
 
       expect(posts).toEqual([
         { commit_id: 'sha-1', event, body: 'Verdict body' },
-        { commit_id: 'sha-1', event: 'COMMENT', body: 'Verdict body' },
+        { commit_id: 'sha-1', event: 'COMMENT', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` },
       ]);
       expect(result).toEqual({ posted: true, reviewId: 77, commentedOwnPr: true });
     });
@@ -188,6 +188,15 @@ describe('postPrReview on a PR buildd itself opened', () => {
     const result = await call('APPROVE');
     expect(result.posted).toBe(false);
     expect(result.reason).toBe('a matching review already exists for this commit');
+  });
+
+  it('does not stack a second comment review when the earlier one carries the own-PR note', async () => {
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      if (opts?.method === 'POST') throw new Error('must not POST again');
+      return jsonResponse(200, [{ id: 77, commit_id: 'sha-1', state: 'COMMENTED', body: `Verdict body\n\n${OWN_PR_REVIEW_NOTE}` }]);
+    }) as unknown as typeof fetch;
+
+    expect((await call('APPROVE')).reason).toBe('a matching review already exists for this commit');
   });
 
   it('a 422 for any other reason is not retried as a comment', async () => {

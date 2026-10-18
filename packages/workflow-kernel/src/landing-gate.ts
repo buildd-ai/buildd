@@ -90,6 +90,19 @@ export function reviewGate(view: KernelView, o: ReviewGateOptions = {}): ReviewG
   return { ok: true, coverage, overridden: override };
 }
 
+/**
+ * The approval a standing verdict or a new head leaves behind: the newest decided `approve` round
+ * (before `beforeRound`, when given) whose head is not the one now in question. A status or a
+ * review that names it tells a reader the earlier approval is no longer what lands, and where it
+ * was made, rather than leaving "approved" and "changes requested" to be reconciled from comments.
+ */
+export function priorApprovalOf(view: Pick<KernelView, 'rounds'>, head: string | null | undefined, beforeRound?: number): RoundSnapshot | null {
+  return view.rounds
+    .filter((r) => r.status === 'decided' && (r.effectiveVerdict ?? r.verdict) === 'approve' && (beforeRound == null || r.round < beforeRound))
+    .sort((a, b) => b.round - a.round)
+    .find((r) => r.headSha !== head) ?? null;
+}
+
 function notApprovedReason(d: DeliverySnapshot): string {
   switch (d.state) {
     case 'WORKING': case 'AWAITING_PUSH': return 'work on the PR is still running';
@@ -163,17 +176,23 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
       return status('failure', T.finding, `${describeFinding(r.findings[0]!)}${more}`);
     }
     if (r.blocker === 'open_verdict' && r.round && (r.round.effectiveVerdict ?? r.round.verdict) !== 'escalate') {
-      return status('failure', T.changesRequested, r.reason);
+      const prior = priorApprovalOf(view, null, r.round.round);
+      return status('failure', T.changesRequested, prior ? `${r.reason}; supersedes the approval of ${short(prior.headSha)}` : r.reason);
     }
     return null;
   };
   // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
-  if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
+  const stale = priorApprovalOf(view, d.currentHeadSha);
+  const staleNote = stale ? `; the approval of ${short(stale.headSha)} does not cover it` : '';
+  if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet${staleNote}`);
   if (g.blocker === 'not_approved') {
-    if (d.state === 'AWAITING_REVIEW') return status('pending', T.inProgress, `${at} is waiting for its review`);
+    if (d.state === 'AWAITING_REVIEW') return status('pending', T.inProgress, `${at} is waiting for its review${staleNote}`);
     if (d.state === 'WORKING' || d.state === 'AWAITING_PUSH') return status('pending', T.inProgress, 'work on the PR is still running');
-    if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}`);
-    if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress`);
+    const standing = openVerdict(view);
+    const withdrawn = standing ? priorApprovalOf(view, null, standing.round) : null;
+    const withdrawnNote = withdrawn ? `; supersedes the approval of ${short(withdrawn.headSha)}` : '';
+    if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}${withdrawnNote}`);
+    if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress${withdrawnNote}`);
     // A repair (behind, conflict, CI) is landing eligibility, not a verdict on the review: while the
     // review of this head stands clean the check is pending, never a red that reads as a rejection.
     if (d.state === 'REPAIRING') {

@@ -164,7 +164,9 @@ const TABLE: Row[] = [
   { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
   { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
   { name: 'approved, the landing path merges (approve-and-merge, auto-threshold)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · merging', tone: 'live' },
-  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Waiting on you', tone: 'needs' },
+  // A review escalation names its cause (escalation-brief); a non-review one keeps the generic words.
+  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Review required', tone: 'needs' },
+  { name: 'escalated, not a review', input: V({ state: 'ESCALATED', stateReason: 'landing_needs_human' }), label: 'Waiting on you', tone: 'needs' },
   { name: 'in review', input: V({ state: 'AWAITING_REVIEW' }), label: 'In review', tone: 'live' },
   { name: 'changes requested', input: V({ state: 'CHANGES_REQUESTED' }), label: 'Changes requested', tone: 'live' },
   { name: 'fixing review feedback', input: V({ state: 'FIXING' }), label: 'Fixing', tone: 'live' },
@@ -252,7 +254,7 @@ describe('S17: each canonical state reads the same label, tone and counts on eve
       // landing path is still merging.
       const headerHtml = renderToStaticMarkup(HeaderStatusPill({
         status: 'running', merged: false,
-        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state },
+        delivery: { headline: d.headline, owner: d.owner, needsYou: r.needsYou, stage: d.stage, detail: d.detail, state: d.state, escalationTitle: d.escalationTitle },
       }));
       expect(headerHtml.replace(/<[^>]+>/g, '')).toBe(r.label);
       const pillClasses = new Set(headerHtml.match(/class="([^"]*)"/)![1].split(/\s+/));
@@ -356,7 +358,7 @@ describe('deliveryReading speaks the terms catalog', () => {
     expect(label({ state: 'BLOCKED_ON_TRUNK' })).toBe(TERMS['pr.blocked_on_base'].word);
     expect(label({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true })).toBe(TERMS['pr.ready_to_merge'].word);
     expect(label({ state: 'LANDING' })).toBe(TERMS['pr.merging'].word);
-    expect(label({ state: 'ESCALATED', stateReason: 'review_escalated' })).toBe(TERMS['decision.waiting_on_you'].word);
+    expect(label({ state: 'ESCALATED', stateReason: 'landing_needs_human' })).toBe(TERMS['decision.waiting_on_you'].word);
     expect(label({ state: 'MERGED' })).toBe(TERMS['pr.merged'].word);
     expect(label({ state: 'SUPERSEDED' })).toBe(TERMS['pr.merged_elsewhere'].word);
     expect(label({ state: 'CLOSED_UNMERGED' })).toBe(TERMS['pr.closed'].word);

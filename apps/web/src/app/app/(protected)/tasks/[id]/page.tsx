@@ -121,6 +121,7 @@ import { taskRunnerLine } from '@/lib/hosted-runner-usage';
 import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
 import TaskVerdictBlock from './TaskVerdictBlock';
+import EscalationDecision from '@/components/EscalationDecision';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
@@ -920,6 +921,15 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
+    escalation: deliveryView?.escalation
+      ? {
+          title: deliveryView.escalation.title,
+          summary: deliveryView.escalation.summary,
+          open: deliveryView.escalation.findings.open.length,
+          awaitingVerification: deliveryView.escalation.findings.addressedAwaitingVerification.length,
+          resolved: deliveryView.escalation.findings.resolved.length,
+        }
+      : null,
     // The platform updating the branch or merging: in progress, not "ready to merge".
     deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null,
     // A merged PR is stated once, on the status row, and the time goes with it.
@@ -1534,6 +1544,9 @@ export default async function TaskDetailPage({
         {/* An open question's own card is below: the verdict would only point at it. */}
         {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
+        )}
+        {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
+          <EscalationDecision brief={deliveryView.escalation} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
         )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}

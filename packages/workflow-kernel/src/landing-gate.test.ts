@@ -71,7 +71,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]))!.state).toBe('success');
   });
   test('failure while a verdict is open, or the delivery is anywhere else', () => {
-    expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('Changes requested: review round 2 asked for changes at abcdef1');
+    expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('Changes requested: review round 2 asked for changes at abcdef1; supersedes the approval of abcdef1');
     expect(landingStatusOf(V(D({ state: 'CHANGES_REQUESTED' })))!.description).toBe('Changes requested: waiting for a fix to abcdef1');
     expect(landingStatusOf(V(D({ state: 'FIXING' })))!.description).toBe('Changes requested: a fix for abcdef1 is in progress');
     expect(landingStatusOf(V(D({ state: 'BLOCKED_ON_TRUNK' })))!.description).toBe('Merge blocked: the base branch is red');
