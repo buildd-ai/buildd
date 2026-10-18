@@ -139,6 +139,8 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
+import { changedFields, livenessWriteDue, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -793,9 +795,25 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  const worker = await db.query.workers.findFirst({
-    where: sqlWhere(eq(workers.id, id)),
+  // One round trip for the worker, its workspace and its task (spec 3ef37387
+  // R-33): the workspace and task are addressed through the worker row in SQL,
+  // so nothing waits on the worker read. The task fields are the ones a
+  // progress report reads (pending worker messages, note scope, park context,
+  // lease category); a terminal report re-reads what it needs after its writes.
+  const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId) =>
+    sql`(SELECT ${col} FROM ${workers} WHERE ${workers.id} = ${id})`;
+  const opening = await readRound({
+    worker: db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) }),
+    workspace: db.query.workspaces.findFirst({
+      where: sqlWhere(eq(workspaces.id, workerOf(workers.workspaceId))),
+      columns: { dataClass: true, teamId: true, gitConfig: true },
+    }),
+    task: db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, workerOf(workers.taskId))),
+      columns: { context: true, missionId: true, title: true, pathManifest: true, category: true },
+    }),
   });
+  const worker = opening.worker;
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
@@ -808,13 +826,10 @@ export async function PATCH(
   }
 
   // Resolve workspace sensitivity once — used throughout the handler to redact prose.
-  const wsForSensitivity = worker.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
-        columns: { dataClass: true, teamId: true, gitConfig: true },
-      })
-    : null;
+  const wsForSensitivity = worker.workspaceId ? opening.workspace ?? null : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
+  // The task as it stood when this report arrived (null when the worker has none).
+  const openingTask = worker.taskId ? opening.task ?? null : null;
 
   let body = await req.json();
 
@@ -1163,7 +1178,11 @@ export async function PATCH(
     // The same poll is the session's heartbeat: /respond sends the answer
     // cold once it goes stale (the terminal closed mid-wait). Its own write,
     // so neither the park clock nor a just-cleared question is touched.
-    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+    // At most once a minute: /respond reads it on a 5-minute window.
+    const seenAt = Date.parse(String((worker.waitingFor as { sessionSeenAt?: unknown } | null)?.sessionSeenAt ?? ''));
+    if (declaredConsumer === 'agent' && !(Date.now() - seenAt < INTERACTIVE_SESSION_SEEN_WRITE_MS)) {
+      await recordInteractiveSessionSeen(id);
+    }
   }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
@@ -1397,9 +1416,7 @@ export async function PATCH(
     // platform blocker to a repair task instead of a person.
     let stored = briefed;
     if (briefed) {
-      const parkTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { title: true, pathManifest: true, missionId: true } })
-        : null;
+      const parkTask = openingTask;
       const gitConfig = wsForSensitivity?.gitConfig ?? null;
       const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
@@ -4941,14 +4958,44 @@ export async function PATCH(
       ? eq(workers.status, worker.status)
       : not(inArray(workers.status, TERMINAL_WORKER_STATUSES));
 
-  const [updated] = await db
-    .update(workers)
-    .set(updates)
-    .where(and(eq(workers.id, id), finalWriteGuard))
-    .returning();
+  // A progress report writes only what it changes, and a report that changes
+  // nothing writes nothing (spec 3ef37387 R-33): the runner re-sends its whole
+  // view every ~10 s. `updated_at` still moves on a floor (lib/worker-patch-diff.ts),
+  // except under an interactive park, whose clock it is. A terminal transition
+  // or a reactivation writes as it always has.
+  const progressReport = !terminalTransitionReserved && !reactivatingTerminalWorker;
+  let writeSet: Partial<typeof workers.$inferInsert> | null = updates;
+  if (progressReport) {
+    const changed = changedFields(updates as Record<string, unknown>, worker as Record<string, unknown>);
+    if (changed.length > 0) {
+      writeSet = { updatedAt: updates.updatedAt };
+      if (updates.turns !== undefined) writeSet.turns = updates.turns;
+      for (const key of changed) (writeSet as Record<string, unknown>)[key] = (updates as Record<string, unknown>)[key];
+    } else if (!keepsParkClock(worker, { status, waitingFor }) && livenessWriteDue(worker)) {
+      writeSet = { updatedAt: updates.updatedAt };
+    } else {
+      writeSet = null;
+    }
+  }
 
-  if (!updated) {
-    return workerConflictResponse(id);
+  let updated: typeof workers.$inferSelect;
+  if (writeSet) {
+    const [row] = await db
+      .update(workers)
+      .set(writeSet)
+      .where(and(eq(workers.id, id), finalWriteGuard))
+      .returning();
+    if (!row) {
+      return workerConflictResponse(id);
+    }
+    updated = row;
+  } else {
+    // Nothing to write. The write's guard is what told a runner its worker was
+    // ended under it; without one, the row read above says the same.
+    if (isTerminalWorkerStatus(worker.status)) {
+      return workerConflictResponse(id);
+    }
+    updated = worker;
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the
@@ -5128,11 +5175,15 @@ export async function PATCH(
   }
 
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
+  // A progress report uses the opening read; a terminal one re-reads, since its
+  // own writes above may have moved the context.
   const taskContext = worker.taskId
-    ? (await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { context: true },
-      }))?.context as Record<string, unknown> | null
+    ? (isTerminalStatus
+        ? (await db.query.tasks.findFirst({
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
+            columns: { context: true },
+          }))?.context
+        : openingTask?.context) as Record<string, unknown> | null
     : null;
 
   // Serve pending worker-to-worker messages in the response. Written by
@@ -5219,10 +5270,7 @@ export async function PATCH(
       ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))]
       : newlyObservedPaths;
   if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    const leaseTask = await db.query.tasks.findFirst({
-      where: sqlWhere(eq(tasks.id, worker.taskId)),
-      columns: { category: true, context: true },
-    }).catch(() => null);
+    const leaseTask = openingTask;
     const applied = await applyWorkingSetSync({
       worker: { id, workspaceId: worker.workspaceId, taskId: worker.taskId },
       delta: workingSetDelta,
@@ -5233,10 +5281,7 @@ export async function PATCH(
   }
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
-      const leaseTask = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { category: true, context: true },
-      });
+      const leaseTask = openingTask;
       const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
         ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
         : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
@@ -5519,11 +5564,17 @@ export async function PATCH(
   // nothing visible to subscribers has changed — this is the single biggest
   // lever for daily Pusher message volume, since runners sync every ~30 s
   // even when idle within a task.
+  // A report that leaves the current action alone (a bare delivery
+  // acknowledgement) has not cleared it.
   const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
     { status: worker.status, currentAction: worker.currentAction },
-    { status: updated.status, currentAction: updates.currentAction },
+    { status: updated.status, currentAction: updates.currentAction !== undefined ? updates.currentAction : worker.currentAction },
     taskProgress,
   );
+  // A human message moved to delivered or read. The task's steering
+  // conversation listens on the worker channel for it; nothing on the
+  // workspace channel shows delivery.
+  const deliveryMoved = !!writeSet && ('instructionHistory' in writeSet || 'pendingInstructions' in writeSet);
 
   if (shouldPublish) {
     await triggerEvent(channels.worker(id), eventName, pusherPayload);
@@ -5531,6 +5582,8 @@ export async function PATCH(
     if (worker.workspaceId) {
       await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
     }
+  } else if (deliveryMoved) {
+    await triggerEvent(channels.worker(id), events.WORKER_PROGRESS, { ...pusherPayload, delivery: true });
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
@@ -5635,30 +5688,40 @@ export async function PATCH(
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
-      const taskForNotes = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { missionId: true },
-      });
       // Task-scoped notes (a task with no mission) are addressed by taskId. The
       // block used to require a missionId, so replies on mission-less tasks were
       // never delivered at all.
-      const noteScope = taskForNotes?.missionId
-        ? eq(missionNotes.missionId, taskForNotes.missionId)
+      const noteScope = openingTask?.missionId
+        ? eq(missionNotes.missionId, openingTask.missionId)
         : and(isNull(missionNotes.missionId), eq(missionNotes.taskId, worker.taskId));
       // Not yet handed to THIS worker.
       const undeliveredToWorker = sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`;
       const servedNoteIds: string[] = [];
 
-      // Find this worker's answered questions
-      const workerQuestions = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.workerId, id),
-          eq(missionNotes.type, 'question'),
-          eq(missionNotes.status, 'answered'),
-        )),
-        columns: { id: true, title: true },
+      // This worker's answered questions and the mission guidance it has not
+      // seen, in one round trip; replies are read only when a question exists.
+      const noteReads = await readRound({
+        questions: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.workerId, id),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'answered'),
+          )),
+          columns: { id: true, title: true },
+        }),
+        guidance: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.type, 'guidance'),
+            eq(missionNotes.status, 'open'),
+            undeliveredToWorker,
+          )),
+          orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
+          limit: 5,
+        }),
       });
+      const workerQuestions = noteReads.questions ?? [];
 
       if (workerQuestions.length > 0) {
         // Fetch the undelivered replies to those questions
@@ -5685,17 +5748,7 @@ export async function PATCH(
       }
 
       // Also deliver mission-wide guidance notes this worker has not seen
-      const guidance = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.type, 'guidance'),
-          eq(missionNotes.status, 'open'),
-          undeliveredToWorker,
-        )),
-        orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
-        limit: 5,
-      });
-
+      const guidance = noteReads.guidance ?? [];
       if (guidance.length > 0) {
         const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
         servedNoteIds.push(...guidance.map(g => g.id));

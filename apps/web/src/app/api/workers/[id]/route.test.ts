@@ -176,6 +176,8 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: (table: any) => mockGenericInsert(table),
     select: mockSelect,
+    // One round trip of independent reads (lib/read-round.ts): the mocked reads, in order.
+    batch: (reads: any[]) => Promise.all(reads),
   },
 }));
 
@@ -2580,7 +2582,9 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones).toEqual([runner, { ...agent, origin: 'agent' }]);
     worker.milestones = capturedSet.milestones;
     await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: capturedSet.milestones } }), { params: mockParams });
-    expect(capturedSet.milestones).toHaveLength(2);
+    // The same snapshot again merges to exactly what is stored (no duplicate
+    // narration), so the list is not rewritten at all (R-33).
+    expect(capturedSet.milestones).toBeUndefined();
   });
 
   it('caps full runner snapshots without evicting lifecycle checkpoints', async () => {
@@ -3099,7 +3103,10 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('a re-send of a question the server already disposed reuses it and files nothing twice', async () => {
       await parkWith(BLOCKER, { stored: { ...BLOCKER, disposition: 'recovered', dispositionBy: 'server_recheck', repairTaskId: REPAIR_ID } });
-      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', repairTaskId: REPAIR_ID });
+      // The disposition reused is the one stored, so the stored park stands
+      // unwritten (R-33: only changed fields); the status move is written.
+      expect(capturedSet.status).toBe('waiting_input');
+      expect(capturedSet.waitingFor).toBeUndefined();
       expect(askedSomeone()).toBe(false);
     });
 
