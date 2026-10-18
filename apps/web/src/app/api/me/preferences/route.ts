@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { users } from '@buildd/core/db/schema';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
  * GET/PATCH /api/me/preferences: the signed-in person's own display
@@ -33,5 +34,6 @@ export async function PATCH(req: NextRequest) {
   }
 
   await db.update(users).set({ showKeyboardHints: flag, updatedAt: new Date() }).where(eq(users.id, user.id));
+  await clearCallerCache(callerDep.user(user.id));
   return NextResponse.json({ showKeyboardHints: flag });
 }

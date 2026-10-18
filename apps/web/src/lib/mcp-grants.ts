@@ -37,6 +37,7 @@ import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { normalizedRepoSql } from './repo-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from './caller-cache';
 
 export type { McpGrantActsAs, McpGrantScope };
 
@@ -59,6 +60,8 @@ export interface ResolvedGrant {
   scopes: McpGrantScope[];
   /** Granted ∩ current membership, ordered by workspace id. */
   workspaces: GrantedWorkspace[];
+  /** When the grant itself expires (null = never); absent on a legacy token. */
+  expiresAt?: Date | string | null;
 }
 
 /** Who a request on a grant acts as. */
@@ -159,6 +162,7 @@ export async function getActiveGrant(grantId: string, userId: string) {
       clientId: mcpOauthGrants.clientId,
       actsAs: mcpOauthGrants.actsAs,
       scopes: mcpOauthGrants.scopes,
+      expiresAt: mcpOauthGrants.expiresAt,
     })
     .from(mcpOauthGrants)
     .where(and(
@@ -216,6 +220,7 @@ export async function resolveGrant(grantId: string, userId: string, clientId: st
     actsAs: grant.actsAs,
     scopes: grant.scopes,
     workspaces: reachable,
+    expiresAt: grant.expiresAt ?? null,
   };
 }
 
@@ -278,6 +283,8 @@ export async function revokeGrant(grantId: string, userId: string): Promise<bool
     .update(oauthRefreshTokens)
     .set({ revokedAt: now })
     .where(and(eq(oauthRefreshTokens.grantId, grantId), eq(oauthRefreshTokens.userId, userId), isNull(oauthRefreshTokens.revokedAt)));
+  // Access tokens on it are refused on their next call, on every instance.
+  if (rows.length > 0) await clearCallerCache(callerDep.grant(grantId));
   return rows.length > 0;
 }
 

@@ -74,6 +74,18 @@ export interface VerdictFindings {
   deferredFindings?: Array<{ id: string; taskId?: string | null; reason: string }>;
 }
 
+/**
+ * Living Spec r7 AC-45: a person's decision on an escalation (a bounded fix, a forced
+ * review), bound to the head they decided on. `id` names the decision: the same id again is
+ * the same decision (a double tap, a retried request) and is answered by the transition it
+ * already made, never applied twice. A head that is no longer current refuses it
+ * (`decision_head_stale`, AC-46): the person decided on something else.
+ */
+export interface HumanDecision {
+  id: string;
+  headSha: string;
+}
+
 interface Base {
   actor: Actor;
   /** Human/agent callers send back the version they read (§7.2); reducer-driven callers omit it. */
@@ -237,7 +249,7 @@ export type Command =
       /** Why (a short tag: `account_cap`, `orphaned_claim`, `retry_cap`, `workspace_mismatch`, `mission_budget`). */
       reason: string;
     })
-  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
+  | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean; decision?: HumanDecision })
   | (Base & {
       type: 'ReviewVerdictRecorded';
       roundId: string;
@@ -246,6 +258,17 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /**
+       * The commit the reviewer's checkout was at when it judged (`git rev-parse HEAD`).
+       * Only a verdict read at the round's own head decides it: any other commit (or
+       * `null`, none reported) is inconclusive, never an approval, and fails the round
+       * as T27 does. Absent = a caller that does not attest it.
+       */
+      evidenceSha?: string | null;
+      /** The reviewer that judged: one inconclusive verdict per reviewer spends the round's budget. */
+      reviewerTaskId?: string;
+      /** T27's budget for an inconclusive verdict. Absent = 0: it escalates at once. */
+      maxContractRetries?: number;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -260,6 +283,8 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /** As T6's: a verdict read at any other commit than `headBound` is never adopted. */
+      evidenceSha?: string | null;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -271,6 +296,8 @@ export type Command =
       disposition: 'waived' | 'deferred';
       reason: string;
       deferredToTaskId?: string | null;
+      /** The decision this is, bound to the head and version the person saw: a restated finding is a new one. */
+      decision?: HumanDecision;
     })
   | (Base & { type: 'ReviewBudgetExhausted' })
   | (Base & {
@@ -545,6 +572,8 @@ export type Command =
       commitId?: string;
       /** approve: the person holds merge permission on the repo (T14's evidence). */
       hasMergePermission?: boolean;
+      /** AC-45: the decision this is and the head it was made on. */
+      decision?: HumanDecision;
     })
   | (Base & { type: 'DeliveryFailed'; reason: string })
   | (Base & {
@@ -560,7 +589,7 @@ export type Command =
       type: 'ReviewRoundFailed';
       roundId: string;
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
-      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head';
       maxContractRetries: number;
       /**
        * The reviewer task whose run failed. The failure is counted once per

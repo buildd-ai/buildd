@@ -14,6 +14,7 @@ import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFie
 import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearWorkspaceSettingsCache } from '@/lib/team-cache';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
 const VALID_TRIGGERS: ReleaseTrigger[] = ['every_merge', 'on_mission_complete', 'manual', 'scheduled'];
@@ -301,7 +302,7 @@ type SaveGroup = keyof typeof SAVE_GROUPS;
 //
 //   script fields:
 //     command?: string                  — e.g. "bun run release"
-export async function POST(
+async function savePost(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
@@ -582,7 +583,7 @@ export async function POST(
 // policyConfig: a WorkspacePolicyConfig (the proposal POST /policy-init returns).
 // Sets gitConfig.policyConfig AND configStatus='admin_confirmed' in one write.
 // Admin only (session owner/admin, or an admin-level API key).
-export async function PATCH(
+async function savePatch(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
 ) {
@@ -738,4 +739,20 @@ export async function PATCH(
         console.error('PATCH workspace config error:', error);
         return NextResponse.json({ error: 'Failed to save config' }, { status: 500 });
     }
+}
+
+// Every successful write above changes the row the settings page caches
+// (lib/workspace-settings.ts): clear it once here, whichever branch wrote.
+type ConfigCtx = { params: Promise<{ id: string }> };
+async function clearedAfterWrite(ctx: ConfigCtx, res: Response): Promise<Response> {
+    if (res.ok) await clearWorkspaceSettingsCache((await ctx.params).id);
+    return res;
+}
+
+export async function POST(req: NextRequest, ctx: ConfigCtx) {
+    return clearedAfterWrite(ctx, await savePost(req, ctx));
+}
+
+export async function PATCH(req: NextRequest, ctx: ConfigCtx) {
+    return clearedAfterWrite(ctx, await savePatch(req, ctx));
 }

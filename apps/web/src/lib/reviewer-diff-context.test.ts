@@ -65,6 +65,7 @@ import {
   REVIEWER_CONTEXT_TEMPLATE,
   DELTA_REVIEWER_CONTEXT_PROMPT_ID,
   DELTA_REVIEWER_CONTEXT_TEMPLATE,
+  checkoutInstruction,
 } from './reviewer';
 import { installPrompts, resetPrompts, promptFallbackCounts, templatePlaceholders } from '@buildd/core/prompts';
 import { promptContentHash } from '@buildd/core/prompts-source';
@@ -204,6 +205,9 @@ describe('buildReviewerContext — text from the prompts table', () => {
       const out = await buildReviewerContext({ ...BASE, baseRef: 'dev' });
       expect(out.startsWith('# Private reviewer text')).toBe(true);
       expect(out).not.toContain('# Reviewer Task');
+      // 0230612e: the checkout instruction rides outside the template; an override row cannot drop it.
+      expect(out).toContain(checkoutInstruction(BASE.headSha));
+      expect(out).toContain(`git checkout --detach ${BASE.headSha}`);
       expect(out).toContain('42');
       expect(out).toContain('org/repo');
       expect(out).toContain('Base branch: `dev`');
@@ -243,6 +247,8 @@ describe('buildReviewerContext — text from the prompts table', () => {
       expect(out).toContain('looked fine');
       // 58c8961e: appended outside the template, so an override row cannot drop it.
       expect(out).toContain(WEAKENED_TESTS_CHECKLIST);
+      // 0230612e: so is the checkout the verdict's evidence is read against.
+      expect(out).toContain(checkoutInstruction(BASE.headSha));
     } finally {
       resetPrompts();
     }

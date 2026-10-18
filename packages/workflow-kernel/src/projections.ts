@@ -19,7 +19,7 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
-import { openRequiredFindings } from './findings';
+import { findingTotals, openRequiredFindings, type FindingTotals } from './findings';
 import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
@@ -158,6 +158,13 @@ export interface DeliveryView {
   /** Of those, how many a push already touched (`addressed`): a fix waiting for a re-review (AC-17). */
   addressedFindings?: number;
   /**
+   * Living Spec r7 AC-47: the required findings partitioned, each counted once: open,
+   * addressed awaiting verification, verified resolved, set aside (waived or deferred).
+   * `open + addressedAwaitingVerification` equals `openFindings`. Count from this, never by
+   * adding `openFindings` and `addressedFindings` (the second is inside the first).
+   */
+  findingTotals: FindingTotals;
+  /**
    * R-43: what the `Buildd / Review approval` status says on the current head, in the
    * same plain terms it publishes, so a surface can show it apart from CI. Null
    * when nothing is published (no PR head, or the delivery is over).
@@ -284,6 +291,7 @@ function addressedNote(findings: FindingSnapshot[]): string | null {
  * `landing_needs_human` says which kind of refusal it was (S15 / T16 / §6.7), so a
  * person reading "a person has to merge it" knows whether the base kept moving
  * faster than CI, the base keeps changing what the PR changes (and which files),
+ * the gap touches a risky path (and which),
  * GitHub itself refused the merge, or the branch could not be updated. A policy
  * refusal (deny path, human tier, migration) is its own escalation reason.
  */
@@ -293,6 +301,15 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
   if (t?.command === 'ConflictObserved' && ev?.treadmill === true) {
     const files = Array.isArray(ev.files) ? (ev.files as unknown[]).filter((f): f is string => typeof f === 'string') : [];
     if (ev.cause === 'refresh_unsafe') {
+      // dc4436aa: a risky path in the gap is not the base changing this PR's files. Evidence
+      // from before `deltaBasis` was recorded is told apart by the rule's own words.
+      const risky = ev.deltaBasis === 'risky_path' || (ev.deltaBasis == null && (str('deltaReason') ?? '').startsWith('the gap involves'));
+      if (risky) {
+        return {
+          headline: 'Merge held: the base or this PR touches a migration, lockfile, manifest or CI file',
+          detail: files.length ? `the gap touches ${files.join(', ')}` : str('deltaReason'),
+        };
+      }
       return {
         headline: 'Merge held: the base keeps changing what this PR changes',
         detail: files.length ? `the base changed ${files.join(', ')}` : str('deltaReason'),
@@ -477,6 +494,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     findings: input.view.findings ?? [],
     openFindings: openRequiredFindings(input.view).length,
     addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
+    findingTotals: findingTotals(input.view.findings),
     reviewApproval: reviewApprovalOf(input.view),
     escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
   };

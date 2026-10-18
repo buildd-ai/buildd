@@ -4583,17 +4583,14 @@ export async function handleBuilddAction(
         return text(`${schedules.length} schedule(s):\n\n${summary}`);
       }
 
-      // No workspace — list across all accessible workspaces
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // No workspace — every reachable workspace's schedules in one read (R-22).
+      const across = await api('/api/workspaces/across/schedules');
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
       const allSchedules: { workspace: string; schedule: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/schedules`);
-        for (const s of (data.schedules || [])) {
-          if (matchesFilters(s)) allSchedules.push({ workspace: ws.name, schedule: s });
-        }
+      for (const s of (across.schedules || [])) {
+        if (matchesFilters(s)) allSchedules.push({ workspace: s.workspaceName ?? s.workspaceId, schedule: s });
       }
 
       if (allSchedules.length === 0) {
@@ -4602,7 +4599,7 @@ export async function handleBuilddAction(
       }
 
       const summary = allSchedules.map(({ workspace, schedule: s }) => renderLine(s, workspace)).join('\n\n');
-      return text(`${allSchedules.length} schedule(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allSchedules.length} schedule(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'trace_schedule': {
@@ -4857,28 +4854,25 @@ export async function handleBuilddAction(
 
       // No workspace — list across all accessible workspaces, deduplicating
       // team-level roles (workspaceId === null) so they appear only once.
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // Every reachable workspace's skills in one read (R-22).
+      const qp = new URLSearchParams();
+      if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
+      if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
+      const across = await api(`/api/workspaces/across/skills${qp.toString() ? `?${qp}` : ''}`);
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
       const allSkills: { workspace: string; skill: any }[] = [];
       const seenTeamLevelSlugs = new Set<string>();
-      for (const ws of workspaces) {
-        const qp = new URLSearchParams();
-        if (typeof params.enabled === 'boolean') qp.set('enabled', String(params.enabled));
-        if (typeof params.isRole === 'boolean') qp.set('isRole', String(params.isRole));
-        const qs = qp.toString() ? `?${qp.toString()}` : '';
-        const data = await api(`/api/workspaces/${ws.id}/skills${qs}`);
-        for (const s of (data.skills || [])) {
-          if (s.workspaceId === null) {
-            // Team-level role — deduplicate across all workspace calls.
-            if (!seenTeamLevelSlugs.has(s.slug)) {
-              seenTeamLevelSlugs.add(s.slug);
-              allSkills.push({ workspace: 'All workspaces (team-level)', skill: s });
-            }
-          } else {
-            allSkills.push({ workspace: ws.name, skill: s });
+      for (const s of (across.skills || [])) {
+        if (s.workspaceId === null) {
+          // Team-level role — listed once.
+          if (!seenTeamLevelSlugs.has(s.slug)) {
+            seenTeamLevelSlugs.add(s.slug);
+            allSkills.push({ workspace: 'All workspaces (team-level)', skill: s });
           }
+        } else {
+          allSkills.push({ workspace: s.workspaceName ?? s.workspaceId, skill: s });
         }
       }
 
@@ -4901,7 +4895,7 @@ export async function handleBuilddAction(
 
       const summary = allSkills.map(({ workspace, skill: s }) => skillLineCross(s, workspace)).join('\n');
 
-      return text(`${allSkills.length} skill(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allSkills.length} skill(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'get_skill': {
@@ -5282,25 +5276,20 @@ export async function handleBuilddAction(
         return text(`${artifactsList.length} artifact(s):\n\n${summary}`);
       }
 
-      // No workspace — aggregate across all
-      const wsData = await api('/api/workspaces');
-      const workspaces = wsData.workspaces || [];
-      if (workspaces.length === 0) return text('No workspaces found.');
+      // No workspace — every reachable workspace's artifacts in one read (R-22), newest first.
+      const across = await api(`/api/workspaces/across/artifacts?${searchParams}`);
+      const workspaceCount: number = across.workspaceCount ?? 0;
+      if (workspaceCount === 0) return text('No workspaces found.');
 
-      const allArtifacts: { workspace: string; artifact: any }[] = [];
-      for (const ws of workspaces) {
-        const data = await api(`/api/workspaces/${ws.id}/artifacts?${searchParams}`);
-        for (const a of (data.artifacts || [])) {
-          allArtifacts.push({ workspace: ws.name, artifact: a });
-        }
-      }
+      const allArtifacts: { workspace: string; artifact: any }[] = (across.artifacts || [])
+        .map((a: any) => ({ workspace: a.workspaceName ?? a.workspaceId, artifact: a }));
 
       if (allArtifacts.length === 0) {
         return text(`No artifacts found${params.key ? ` with key "${params.key}"` : ''}.`);
       }
 
       const summary = allArtifacts.map(({ workspace, artifact: a }) => formatArtifact(a, workspace)).join('\n\n');
-      return text(`${allArtifacts.length} artifact(s) across ${workspaces.length} workspace(s):\n\n${summary}`);
+      return text(`${allArtifacts.length} artifact(s) across ${workspaceCount} workspace(s):\n\n${summary}`);
     }
 
     case 'get_artifact': {
