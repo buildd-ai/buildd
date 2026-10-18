@@ -35,6 +35,10 @@ import {
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
 import { noteWorkChanged, workChangeOfKernelInput } from '@/lib/work-changed';
 import { KernelObservationFailed } from './kernel-observation';
+import {
+  KERNEL_SPAN, breakerSpanAttributes, currentKernelRoute, doorSpanAttributes, emitKernelSpan, inferDoorCaller, passSpanAttributes, webCommandSpanAttributes,
+  type DoorCaller, type DoorOutcome, type WebCommandReason,
+} from './kernel-telemetry';
 
 export { KernelObservationFailed } from './kernel-observation';
 
@@ -264,8 +268,9 @@ export interface ControlPlaneBudgetReport {
  * earlier deadline. On the web host in shadow, and on the control plane, nothing is submitted and the
  * budget never binds.
  */
-export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
+export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number; quiet?: boolean } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
   const now = o.now ?? Date.now;
+  const startedAt = Date.now();
   const outer = budgetScope.getStore();
   const own = now() + budgetMs;
   const scope: BudgetScope = {
@@ -273,6 +278,10 @@ export async function withControlPlaneBudget<T>(label: string, budgetMs: number,
     deadline: outer ? Math.min(own, outer.deadline - outer.now() + now()) : own,
   };
   const value = await budgetScope.run(scope, fn);
+  // A pass that ran out of budget is what a monitor wants to see; one that did not is noise.
+  if (!o.quiet && (scope.refused > 0 || scope.drainsSkipped > 0)) {
+    emitKernelSpan({ name: KERNEL_SPAN.pass, startMs: startedAt, durationMs: Date.now() - startedAt, attributes: passSpanAttributes({ label, budgetMs, submitted: scope.submitted, refused: scope.refused, drainsSkipped: scope.drainsSkipped, waitedMs: scope.waitedMs, host: kernelHost() }) });
+  }
   return { value, budget: { label, budgetMs, submitted: scope.submitted, refused: scope.refused, drainsSkipped: scope.drainsSkipped, waitedMs: scope.waitedMs } };
 }
 
@@ -331,7 +340,7 @@ export async function submitKernelCommand<K extends KernelOp>(op: K, input: Kern
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
       throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
     }
-    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false));
+    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false, commandsConfigured(deps.env ?? process.env) ? 'shadow' : 'no_command_key'));
   }
   return noted(input, await submitRemote(op, input, { ...opts, idempotencyKey }, deps));
 }
@@ -346,10 +355,25 @@ function noted<T>(input: unknown, answer: T): T {
   return answer;
 }
 
-async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery = true): Promise<KernelAnswer<K>> {
-  const result = await (deps.run ?? runKernelOp)(op, input);
+async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery: boolean, reason: WebCommandReason): Promise<KernelAnswer<K>> {
+  const result = await runReported(op, input, deps, reason);
   const delivery = withDelivery ? await (deps.deliveryAfter ?? deliveryAfter)(op, input, result).catch(() => null) : null;
   return { result, delivery, host: (deps.host ?? kernelHost)(), replayed: false, idempotencyKey };
+}
+
+/** Runs the command on this host; on the web host it is also reported (`kernel.web_command`), with why. */
+async function runReported<K extends KernelOp>(op: K, input: KernelOps[K]['input'], deps: ClientDeps, reason: WebCommandReason): Promise<KernelOps[K]['result']> {
+  if ((deps.host ?? kernelHost)() !== 'web') return (deps.run ?? runKernelOp)(op, input);
+  const startedAt = Date.now();
+  let failed = false;
+  try {
+    return await (deps.run ?? runKernelOp)(op, input);
+  } catch (err) {
+    failed = true;
+    throw err;
+  } finally {
+    emitKernelSpan({ name: KERNEL_SPAN.webCommand, startMs: startedAt, durationMs: Date.now() - startedAt, attributes: webCommandSpanAttributes({ op, reason, latencyMs: Date.now() - startedAt }), error: failed });
+  }
 }
 
 async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps): Promise<KernelAnswer<K>> {
@@ -434,7 +458,7 @@ async function submitUntil<K extends KernelOp>(
       // The control plane is in shadow, or holds no command key yet (half switched over): the web host is
       // the host after all. It refused before running anything, so nothing was applied there.
       cached = { mode: 'shadow', at: now() };
-      return runHere(op, input, opts.idempotencyKey, deps, opts.withDelivery !== false);
+      return runHere(op, input, opts.idempotencyKey, deps, opts.withDelivery !== false, answer.code === 'not_host' ? 'not_host' : 'unconfigured');
     }
     if (res.status === 500 && answer?.code === 'command_failed') {
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
@@ -520,6 +544,8 @@ export interface DoorCall {
   principal: KernelPrincipal | null;
   /** The caller's key (an `Idempotency-Key` header); absent, one is made for this call. */
   idempotencyKey?: string;
+  /** Who is calling, for the door's span; absent, it is inferred (kernel-telemetry.ts `inferDoorCaller`). */
+  caller?: DoorCaller;
   deps?: ClientDeps;
 }
 
@@ -534,7 +560,46 @@ export const DOOR_UNKNOWN_RETRIES = 2;
  */
 export const DOOR_BUDGET_MS = 20_000;
 
-async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
+async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, o: { skew?: boolean } = {}): Promise<KernelOps[K]['result']> {
+  // The door's span (kernel-telemetry.ts): op, outcome, latency, budget, caller.
+  const startedAt = Date.now();
+  const budgetMs = Math.min(Number((c.deps?.env ?? process.env).KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, controlPlaneBudgetLeft() ?? Infinity);
+  try {
+    const result = await doorUnreported(op, input, c);
+    reportDoor(op, c, { startedAt, budgetMs, outcome: 'applied' });
+    return result;
+  } catch (err) {
+    reportDoor(op, c, { startedAt, budgetMs, outcome: doorOutcomeOf(err, op, o.skew === true), err });
+    throw err;
+  }
+}
+
+/** How a door call that threw ended, for its span. */
+function doorOutcomeOf(err: unknown, op: KernelOp, skew: boolean): DoorOutcome {
+  if (err instanceof ControlPlaneUnavailableError) return err.parked ? 'parked' : 'unavailable';
+  if (skew && refusedAsUnknownOp(err, op)) return 'skew_fallback';
+  if (err instanceof KernelCommandRefusedError) return 'refused';
+  return 'failed';
+}
+
+function reportDoor(op: KernelOp, c: DoorCall, p: { startedAt: number; budgetMs: number; outcome: DoorOutcome; err?: unknown; pass?: string }): void {
+  const pass = p.pass ?? budgetScope.getStore()?.label ?? null;
+  const errorCode = p.err instanceof KernelCommandRefusedError ? String(p.err.body.code ?? p.err.status)
+    : p.err instanceof ControlPlaneUnavailableError ? p.err.outcome
+      : p.err instanceof KernelCommandFailedError ? 'command_failed' : null;
+  const latencyMs = Date.now() - p.startedAt;
+  emitKernelSpan({
+    name: KERNEL_SPAN.door, startMs: p.startedAt, durationMs: latencyMs,
+    error: p.outcome !== 'applied' && p.outcome !== 'skew_fallback',
+    attributes: doorSpanAttributes({
+      op, outcome: p.outcome, latencyMs, budgetMs: Number.isFinite(p.budgetMs) ? p.budgetMs : 0,
+      caller: inferDoorCaller({ explicit: c.caller, route: currentKernelRoute(), pass, principal: c.principal }),
+      host: (c.deps?.host ?? kernelHost)(), pass, errorCode,
+    }),
+  });
+}
+
+async function doorUnreported<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
   try {
@@ -606,11 +671,11 @@ export function refusedAsUnknownOp(err: unknown, op: KernelOp): boolean {
  */
 async function doorOrHereOnSkew<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, what: string): Promise<KernelOps[K]['result']> {
   try {
-    return await door(op, input, c);
+    return await door(op, input, c, { skew: true });
   } catch (err) {
     if (!refusedAsUnknownOp(err, op)) throw err;
     console.error(`[workflow] SKEW: the control plane does not know ${op} (an older build); applying ${what} on the ${(c.deps?.host ?? kernelHost)()} host instead. This should stop once the control plane is on this release.`);
-    return (c.deps?.run ?? runKernelOp)(op, input);
+    return runReported(op, input, c.deps ?? {}, 'skew');
   }
 }
 
@@ -638,9 +703,12 @@ export const ATTEMPT_START_BUDGET_MS = 750;
 export const ATTEMPT_START_SKIP_MS = 45_000;
 /** Process-level: until when starts skip the door (0: the door is tried). */
 let attemptStartSkipUntil = 0;
+/** When the open breaker opened (0: closed), for the span that reports it closing. */
+let attemptStartOpenedAt = 0;
 /** Close the start breaker (tests). */
 export function resetAttemptStartBreaker(): void {
   attemptStartSkipUntil = 0;
+  attemptStartOpenedAt = 0;
 }
 
 /**
@@ -663,16 +731,29 @@ export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input
  */
 async function shortDoor<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall, label: string): Promise<KernelOps[K]['result']> {
   const now = c.deps?.now ?? Date.now;
-  if (now() < attemptStartSkipUntil) {
-    throw new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
-  }
+  const host = (c.deps?.host ?? kernelHost)();
   const env = c.deps?.env ?? process.env;
   const budgetMs = Number(env.KERNEL_START_BUDGET_MS) || ATTEMPT_START_BUDGET_MS;
+  if (now() < attemptStartSkipUntil) {
+    const err = new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
+    reportDoor(op, c, { startedAt: Date.now(), budgetMs, outcome: 'breaker_open', err, pass: label });
+    throw err;
+  }
   try {
-    const { value } = await withControlPlaneBudget(label, budgetMs, () => door(op, input, c), { now });
+    const { value } = await withControlPlaneBudget(label, budgetMs, () => door(op, input, c), { now, quiet: true });
+    if (attemptStartOpenedAt) {
+      emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, attributes: breakerSpanAttributes({ state: 'closed', op, skipMs: ATTEMPT_START_SKIP_MS, openMs: now() - attemptStartOpenedAt, host }) });
+      attemptStartOpenedAt = 0;
+    }
     return value;
   } catch (err) {
-    if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+    if (err instanceof ControlPlaneUnavailableError) {
+      attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+      if (!attemptStartOpenedAt) {
+        attemptStartOpenedAt = now();
+        emitKernelSpan({ name: KERNEL_SPAN.breaker, startMs: Date.now(), durationMs: 0, error: true, attributes: breakerSpanAttributes({ state: 'open', op, skipMs: ATTEMPT_START_SKIP_MS, host }) });
+      }
+    }
     throw err;
   }
 }

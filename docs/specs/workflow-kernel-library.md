@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [apps/web/src/lib/workflow/kernel-telemetry.test.ts, apps/control-plane/src/axiom-export.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -673,6 +673,100 @@ the web host.
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
 keeps AC-13; evidence tables below reference criteria rather than define them.
+
+
+### Observability
+
+The kernel reports to Axiom, dataset `buildd-traces`, where monitors page the
+owner by email and Pushover. Each thing worth an alert is one span with a
+stable name and a fixed attribute set (`kernel-telemetry.ts`, pinned by
+`kernel-telemetry.test.ts`). On the web host the spans go through the
+OpenTelemetry API that `instrumentation.ts` registers (service `buildd-web`).
+The control plane has no OpenTelemetry SDK, so its entry installs a sink
+(`apps/control-plane/src/axiom-export.ts`) that posts the same spans as
+OTLP/HTTP JSON to Axiom's traces endpoint after the response, into the same
+dataset, as service `buildd-control-plane`. The sink is installed only when the
+Worker holds the secret `AXIOM_INGEST_TOKEN` (an Axiom token with ingest rights
+on the dataset). Without it the control plane's spans go to the no-op tracer
+and nothing is sent. `AXIOM_TRACES_DATASET` and `AXIOM_OTLP_URL` override the
+dataset and the endpoint.
+
+Emitting never throws and never waits. A door call costs one span start and
+end, so the claim path's overhead does not change measurably. Custom attributes
+are under `['attributes.custom']`; numbers are integers, and ms are rounded.
+
+| Span `name` | When | Attributes |
+|---|---|---|
+| `kernel.door` | every door call (`door`, the short doors, `doorOrHereOnSkew`), on whichever host ran the door | `kernel.op`; `kernel.outcome` = `applied` \| `parked` \| `unavailable` \| `breaker_open` \| `skew_fallback` \| `refused` \| `failed`; `kernel.latency_ms`; `kernel.budget_ms` (the door's budget, cut to its pass's); `kernel.caller` = `webhook` \| `claim` \| `patch` \| `cron` \| `mcp` \| `api` \| `dashboard` \| `other`; `kernel.host` = `web` \| `control-plane`; `kernel.pass` (when inside a budget pass); `kernel.error_code` (the refusal's code, `not_applied`/`unknown` for an unavailable control plane, or `command_failed`) |
+| `kernel.breaker` | the AttemptStarted breaker opening (the first unanswered start) and closing (the first answered start after it) | `kernel.breaker.state` = `open` \| `closed`; `kernel.op`; `kernel.breaker.skip_ms`; `kernel.breaker.open_ms` (on close); `kernel.host` |
+| `kernel.web_command` | a kernel command the web host ran itself through the command client | `kernel.op`; `kernel.reason` = `no_command_key` \| `shadow` \| `not_host` \| `unconfigured` \| `skew`; `kernel.mode` (`own` for the last three: a regression); `kernel.latency_ms`; `kernel.host` = `web` |
+| `kernel.pass` | a control-plane budget pass (`withControlPlaneBudget`: a sweep, a webhook) that ran out: a door refused unsent or a drain left to the floor. Not emitted for the short doors' own scope | `kernel.pass`; `kernel.budget_ms`; `kernel.pass.submitted`; `kernel.pass.refused`; `kernel.pass.drains_skipped`; `kernel.pass.waited_ms`; `kernel.host` |
+| `kernel.floor` | once per kernel floor run (`runKernelFloor`, either host), after the pass | `kernel.host`; `kernel.outbox.parked` and `kernel.outbox.parked_oldest_age_s` (pending door commands); `kernel.outbox.effects_due` and `kernel.outbox.effects_oldest_age_s` (effects due or past their lease); `kernel.outbox.unread` = true instead when the depth read failed; `kernel.floor.repairs.facts_imported`, `.effects_enqueued`, `.trunk_recovered`, `.treadmill_restarted`, `.parked_answered`, `.parked_dead`, `.total`; `kernel.floor.errors` |
+| `kernel.command` | each request the control plane's command endpoint answers | `kernel.op` (`unknown` before the body parsed); `kernel.outcome` = `applied` \| `replayed` \| `failed` \| `refused` \| `unavailable` \| `in_progress`; `kernel.status`; `kernel.error_code`; `kernel.latency_ms`; `kernel.host` = `control-plane` |
+
+The caller is the door's own `DoorCall.caller` when it names one. Otherwise it
+is taken from the request's route (the control plane names it per request; on
+the web host it comes from the request span), then the budget pass, then the
+principal. A door with none of these reads `other`.
+
+Every failed span carries OpenTelemetry status ERROR (`error == true` in
+Axiom), except `skew_fallback`, whose command was applied.
+
+Recommended monitors. Each query returns one value `v`, in the style of the
+existing `buildd-traces` monitors:
+
+1. **Control plane not answering doors** (threshold: above 10, every 5 min over 15 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" | extend outcome = tostring(['attributes.custom']['kernel.outcome']) | summarize n = count(), bad = countif(outcome in ("unavailable", "parked", "breaker_open")) | extend v = iff(bad >= 3 and n > 0, 100.0 * bad / n, 0.0) | project v
+   ```
+2. **AttemptStarted breaker opened** (above 0, every 5 min over 10 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.breaker" and tostring(['attributes.custom']['kernel.breaker.state']) == "open" | summarize v = count()
+   ```
+3. **Kernel command ran on the web host** (above 0, every 10 min over 30 min). This also fires during a deliberate rollback to shadow. To catch only own-mode regressions, add `and tostring(['attributes.custom']['kernel.mode']) == "own"`:
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.web_command" | summarize v = count()
+   ```
+4. **Doors slow** (p95 above 5000 ms, every 5 min over 15 min; the claim's start is bounded by its own budget and the breaker):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" and tostring(['attributes.custom']['kernel.caller']) != "claim" | extend ms = toint(['attributes.custom']['kernel.latency_ms']) | summarize n = count(), p = percentile(ms, 95) | extend v = iff(n >= 5, p, 0.0) | project v
+   ```
+5. **Doors refused or failing** (a bug, not an outage; above 2, every 10 min over 30 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.door" and tostring(['attributes.custom']['kernel.outcome']) in ("refused", "failed") | summarize v = count()
+   ```
+6. **Parked door commands waiting** (oldest above 7200 s, every 15 min over 75 min, so the last hourly floor is always in range):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.outbox.parked_oldest_age_s']))
+   ```
+7. **Kernel effects backed up** (oldest due above 1800 s, every 15 min over 75 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.outbox.effects_oldest_age_s']))
+   ```
+8. **Floor repairing missed events** (above 3, every 15 min over 75 min; each is a webhook or effect row the live path lost):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.floor.repairs.facts_imported']) + toint(['attributes.custom']['kernel.floor.repairs.effects_enqueued']))
+   ```
+9. **Parked commands given up, or the floor failing** (above 0, every 15 min over 75 min):
+   ```
+   ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = max(toint(['attributes.custom']['kernel.floor.repairs.parked_dead']) + toint(['attributes.custom']['kernel.floor.errors']))
+   ```
+10. **Floor not running** (below 1, every 30 min over 130 min; needs the control plane's token, since the floor runs there in own mode):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.floor" | summarize v = count()
+    ```
+11. **Control-plane commands failing** (above 3, every 5 min over 15 min):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.command" and tostring(['attributes.custom']['kernel.outcome']) in ("failed", "unavailable") | summarize v = count()
+    ```
+12. **Control-plane commands slow** (p95 above 5000 ms, every 5 min over 15 min):
+    ```
+    ['buildd-traces'] | where ['resource.custom']['node.env'] == "production" and name == "kernel.command" and tostring(['attributes.custom']['kernel.outcome']) in ("applied", "replayed") | extend ms = toint(['attributes.custom']['kernel.latency_ms']) | summarize n = count(), p = percentile(ms, 95) | extend v = iff(n >= 5, p, 0.0) | project v
+    ```
+
+Monitors 2, 6 to 12, and the door monitors for doors the control plane runs
+itself (claims, worker PATCH and webhooks served there), report nothing until
+the Worker holds `AXIOM_INGEST_TOKEN`.
 
 ## 4. One landing authority
 
@@ -1826,6 +1920,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/lib/workflow/` (moves to the package in S1–S2)
 - `apps/control-plane/src/` (hosts the kernel in S3: the command route and the cron trigger)
 - `apps/web/src/lib/workflow/command-api.ts`, `command-ledger.ts`, `kernel-client.ts`, `kernel-floor.ts`, `kernel-host.ts` (S3)
+- `apps/web/src/lib/workflow/kernel-telemetry.ts`, `apps/control-plane/src/axiom-export.ts` (Observability, §3)
 - `apps/web/src/modules.ts` (handler composition replaced in S2)
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
