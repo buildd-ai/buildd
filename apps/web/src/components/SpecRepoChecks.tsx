@@ -1,9 +1,12 @@
 import Notice from '@/components/ui/Notice';
+import Disclosure from '@/components/ui/Disclosure';
 import type { RepoCopyPreflight } from '@/lib/specs/repo-copy';
 
 /**
  * The repo checks on the would-be repo copy, before approval (living-specs.md
- * §18, R-34). Each result is shown; a failure warns and never blocks Approve.
+ * §18, R-34). One sentence says how they stand; each check's own lines
+ * (lint output, mostly) sit behind a toggle. A failure warns and never blocks
+ * Approve.
  */
 export default function SpecRepoChecks({ preflight }: { preflight: RepoCopyPreflight | null }) {
   if (!preflight || preflight.state === 'off') return null;
@@ -18,6 +21,7 @@ export default function SpecRepoChecks({ preflight }: { preflight: RepoCopyPrefl
           ? `The repo copy at ${preflight.path} fails ${failing.map((c) => c.name).join(', ')}. You can still approve; the copy's PR stays open until it passes.`
           : `The repo copy at ${preflight.path} passes the repo checks.`}
       </p>
+      <Disclosure summary={<span className="text-meta" data-testid="spec-repo-checks-details">Show check details</span>} count={preflight.checks.length}>
       <ul className="flex flex-col gap-1">
         {preflight.checks.map((c) => (
           <li key={c.name} className="text-meta text-text-muted" data-testid="spec-repo-check" data-check={c.name} data-ok={c.ok ? 'true' : 'false'}>
@@ -31,6 +35,7 @@ export default function SpecRepoChecks({ preflight }: { preflight: RepoCopyPrefl
           </li>
         ))}
       </ul>
+      </Disclosure>
     </section>
   );
 }

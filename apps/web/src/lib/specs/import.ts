@@ -593,9 +593,19 @@ export const MAX_CONFIRM_BATCH = 200;
 /** The index page an OAuth session's confirmation link opens. */
 export const importConfirmPath = (workspaceId: string) => `/app/workspaces/${workspaceId}/specs#imported`;
 
-export async function confirmImportedSpecs(caller: SpecCaller, input: { workspaceId?: unknown; specIds: unknown }, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ConfirmResult } | SpecError> {
+/**
+ * `expectedRevisions` ({ [specId]: revision }) is what the person read: a spec
+ * whose head moved since (a re-import landed) is skipped, never approved at a
+ * revision they did not see. The spec page always sends it; the batch may.
+ */
+export async function confirmImportedSpecs(caller: SpecCaller, input: { workspaceId?: unknown; specIds: unknown; expectedRevisions?: unknown }, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ConfirmResult } | SpecError> {
   const specIds = strList(input.specIds);
   if (!specIds || !specIds.length || specIds.length > MAX_CONFIRM_BATCH || !specIds.every(isUuid)) return fail(400, `specIds is a list of 1 to ${MAX_CONFIRM_BATCH} spec ids`);
+  const ex = input.expectedRevisions;
+  if (ex !== undefined && ex !== null && (typeof ex !== 'object' || Array.isArray(ex) || !Object.values(ex).every((n) => Number.isInteger(n) && (n as number) >= 1))) {
+    return fail(400, 'expectedRevisions maps a spec id to the revision you read');
+  }
+  const expected = (ex ?? {}) as Record<string, number>;
   let workspaceId = input.workspaceId;
   if (workspaceId === undefined || workspaceId === null) {
     // Without one, the batch names it: every spec must be in the same workspace.
@@ -624,6 +634,11 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
     if (s.status === 'retired' || s.status === 'superseded') { result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'retired', message: `it is ${s.status}; restore it first to confirm it` }); continue; }
     if (s.repoSource?.state !== 'imported' || s.repoSource.revision !== s.headRevision) {
       result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'not_imported', message: s.repoSource?.state === 'confirmed' ? 'already confirmed' : 'no imported revision is waiting for confirmation' });
+      continue;
+    }
+    const saw = expected[id];
+    if (saw !== undefined && saw !== s.headRevision) {
+      result.skipped.push({ specId: id, title: s.title, path: s.repoSource.path, reason: 'conflict', message: `you read revision ${saw}, and revision ${s.headRevision} was imported since: read it, then confirm` });
       continue;
     }
     todo.push(s);
