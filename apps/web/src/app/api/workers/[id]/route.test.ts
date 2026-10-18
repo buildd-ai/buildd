@@ -1050,6 +1050,24 @@ describe('GET /api/workers/[id]', () => {
     expect(JSON.parse(text).status).toBe('running');
   });
 
+  it('serves the owning account key its worker without the dispatch token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'running',
+      workspace: { id: 'ws-1', webhookConfig: { url: 'https://dispatch.example', token: 'dispatch-secret' } },
+    });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('dispatch-secret');
+    expect(JSON.parse(text).workspace.webhookConfig.url).toBe('https://dispatch.example');
+  });
+
   it('returns worker when authenticated and authorized', async () => {
     const mockWorker = {
       id: 'worker-1',

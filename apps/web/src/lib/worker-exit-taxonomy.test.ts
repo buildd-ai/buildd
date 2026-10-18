@@ -544,3 +544,12 @@ describe('worktree setup timeout', () => {
     expect(consumesRetryAttempt(cause)).toBe(false);
   });
 });
+
+describe('worktree setup timeout — long command lines', () => {
+  it('is recognised when the runner leads with the timeout marker, even past a 400-char cut', () => {
+    const long = 'x'.repeat(380);
+    const stored = `git worktree add failed (timed out): branch "b" could not be created at /w (base origin/dev): Command failed: git worktree add -b ${long}`.slice(0, 400);
+    const startBlock = `Worktree setup failed for branch b in /repo; refusing to run in the shared clone: ${stored}`;
+    expect(isWorktreeSetupTimeoutError(startBlock)).toBe(true);
+  });
+});

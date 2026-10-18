@@ -22,6 +22,18 @@ describe('reducer', () => {
     expect(s.workers['w-name']).toBeDefined();
   });
 
+  test('a late worker snapshot keeps the stream\'s newer copy of the workers it names (fresher)', () => {
+    let s = fixtureState();
+    s = reduce(s, { type: 'worker_update', worker: { ...WORKERS[1], currentAction: 'Pushed just now' } });
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }, WORKERS[0]], fresher: [WORKERS[1].id] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Pushed just now');
+    expect(s.workers[WORKERS[0].id]).toBeDefined();
+    // Without fresher the snapshot replaces the list, as before.
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Old snapshot');
+    expect(Object.keys(s.workers)).toEqual([WORKERS[1].id]);
+  });
+
   test('a claimed task appears under running from one worker_update, no refetch needed (AC-2)', () => {
     let s: TopState = { ...fixtureState(), selectedMission: NO_MISSION };
     expect(rowsByTitle(s)['fix flaky test'].group).toBe('waiting');
