@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Redis } from '@upstash/redis';
 import { BUCKET_SCRIPT, planCacheKey, type BucketCall, type BucketReply } from './read-rate-limit';
 
@@ -319,4 +320,55 @@ export async function evalReadBucket(call: BucketCall): Promise<BucketReply | nu
 /** Record a caller's plan for the read limiter. */
 export async function setReadPlan(subject: string, plan: string, ttlSec: number): Promise<void> {
   await safe('set read plan', r => r.setex(planCacheKey(subject), ttlSec, plan), undefined);
+}
+
+// ── Per-workspace change versions (lib/change-version.ts) ─────────────────
+//
+// key: buildd:cv:{scope} — a random token, replaced (never incremented) on
+// every bump. A key that expired or was evicted is seeded with a fresh random
+// token, so it can never reproduce a value an old ETag was computed from: an
+// INCR counter restarting at 1 could, and would answer a stale client 304.
+
+/** The slice of the Upstash client the version tokens use (a fake in tests). */
+export interface VersionTokenRedis {
+  pipeline(): { set(key: string, value: string, opts: { nx?: boolean; ex: number }): unknown; exec(): Promise<unknown> };
+  mget<T>(...keys: string[]): Promise<T>;
+}
+
+const freshVersionToken = () => `v${randomBytes(12).toString('base64url')}`;
+
+/** Replace each key's token with a fresh one and refresh its TTL. */
+export async function bumpVersionTokensWith(r: VersionTokenRedis, keys: readonly string[], ttlSec: number): Promise<boolean> {
+  if (keys.length === 0) return true;
+  const p = r.pipeline();
+  for (const key of keys) p.set(key, freshVersionToken(), { ex: ttlSec });
+  await p.exec();
+  return true;
+}
+
+/** Each key's token, in order; a missing key is seeded (SET NX) with a fresh token and read again. */
+export async function readVersionTokensWith(r: VersionTokenRedis, keys: readonly string[], ttlSec: number): Promise<string[] | null> {
+  if (keys.length === 0) return [];
+  const got = await r.mget<Array<string | number | null>>(...keys);
+  const missing = keys.filter((_, i) => got[i] == null);
+  if (missing.length === 0) return got.map(String);
+  const p = r.pipeline();
+  for (const key of missing) p.set(key, freshVersionToken(), { nx: true, ex: ttlSec });
+  await p.exec();
+  const again = await r.mget<Array<string | number | null>>(...missing);
+  const byKey = new Map(missing.map((k, i) => [k, again[i]]));
+  const out = keys.map((k, i) => got[i] ?? byKey.get(k) ?? null);
+  return out.some(v => v == null) ? null : out.map(String);
+}
+
+/** Bump each key (a fresh token). False when Redis could not be asked. */
+export async function bumpVersionTokens(keys: readonly string[], ttlSec: number): Promise<boolean> {
+  if (keys.length === 0) return true;
+  return safe('bump versions', r => bumpVersionTokensWith(r as unknown as VersionTokenRedis, keys, ttlSec), false);
+}
+
+/** Each key's current token, in order. `null` = Redis unavailable: the caller serves the full answer. */
+export async function readVersionTokens(keys: readonly string[], ttlSec: number): Promise<string[] | null> {
+  if (keys.length === 0) return [];
+  return safe<string[] | null>('read versions', r => readVersionTokensWith(r as unknown as VersionTokenRedis, keys, ttlSec), null);
 }
