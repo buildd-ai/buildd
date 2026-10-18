@@ -26,12 +26,12 @@ const beats = new Map<string, unknown>();
 mock.module('../../src/lib/redis', () => ({
   ...redis,
   setWithTtl: async (key: string, value: unknown, ttl: number) => {
-    if (!key.startsWith('buildd:live:worker:')) return redis.setWithTtl(key, value, ttl);
+    if (!key.startsWith('buildd:live:worker')) return redis.setWithTtl(key, value, ttl);
     beats.set(key, value);
     return true;
   },
-  getKey: async (key: string) => key.startsWith('buildd:live:worker:') ? beats.get(key) ?? null : redis.getKey(key),
-  getKeys: async (keys: string[]) => keys.every(k => k.startsWith('buildd:live:worker:'))
+  getKey: async (key: string) => key.startsWith('buildd:live:worker') ? beats.get(key) ?? null : redis.getKey(key),
+  getKeys: async (keys: string[]) => keys.every(k => k.startsWith('buildd:live:worker'))
     ? keys.map(k => beats.get(k) ?? null) : Promise.all(keys.map(k => redis.getKey(k))),
 }));
 const deferred: Array<() => Promise<unknown>> = [];
@@ -158,6 +158,17 @@ describe('PATCH /api/workers/[id] query budget (R-33)', () => {
     await expectWithinBudget('Redis heartbeat', rec);
     expect(rec.queries.filter(x => ['update', 'insert', 'delete'].includes(x.operation))).toEqual([]);
     expect(beats.has(`buildd:live:worker:${s.workerId}`)).toBe(true);
+  });
+
+  it('a parked interactive poll records Redis presence without moving its expiry clock', async () => {
+    const s = await seed();
+    await q(sql`UPDATE workers SET runner = 'mcp', status = 'waiting_input', supports_instruction_ack = true,
+      waiting_for = '{"type":"question","prompt":"Continue?","sessionSeenAt":"2026-01-01T00:00:00Z"}'::jsonb,
+      updated_at = now() - interval '2 hours' WHERE id = ${s.workerId}::uuid`);
+    const rec = await patch(s, { consumer: 'agent', consumeInstructions: true });
+    await expectWithinBudget('parked heartbeat', rec);
+    expect(rec.queries.filter(x => ['update', 'insert', 'delete'].includes(x.operation))).toEqual([]);
+    expect(beats.has(`buildd:live:worker-session:${s.workerId}`)).toBe(true);
   });
 
   it('a delivery acknowledgement', async () => {
