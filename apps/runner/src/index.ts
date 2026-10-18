@@ -38,6 +38,7 @@ import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress,
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
+import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
 
@@ -1998,6 +1999,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
+        // The server's read rate limit: hand `buildd top` the wait so it holds instead of asking again.
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, tasks: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list tasks:', err.message);
         return Response.json({ error: err.message || 'Failed to load tasks', tasks: [] }, { status: 502, headers: corsHeaders });
       }
@@ -2042,6 +2048,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         const missions = await buildd!.listRecentMissions();
         return Response.json({ missions }, { headers: corsHeaders });
       } catch (err: any) {
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, missions: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list missions:', err.message);
         return Response.json({ error: err.message || 'Failed to load missions', missions: [] }, { status: 502, headers: corsHeaders });
       }

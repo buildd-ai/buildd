@@ -96,6 +96,21 @@ export interface OccupancyBucket {
   sessionsBy: OccupancyBreakdown;
 }
 
+/**
+ * How much of the window's runner work carries a resolvable identity. Counts
+ * are workers (not slot-time) that held a runner slot in the window. Missing
+ * identity is counted, never guessed: such work shows as "unattributed" /
+ * "unknown" and `ownerMissing <= total`, `runnerMissing <= total`.
+ */
+export interface OccupancyCoverage {
+  /** Runner workers that held a slot in the window. */
+  total: number;
+  /** No task owner (or claimer) recorded: shown as Other / unattributed. */
+  ownerMissing: number;
+  /** No runner account, or an account with no recorded ownership: class unknown. */
+  runnerMissing: number;
+}
+
 export interface OccupancySeries {
   windowKey: OccupancyWindow;
   window: { from: number; to: number };
@@ -109,6 +124,8 @@ export interface OccupancySeries {
     sessionsBy: OccupancyBreakdown;
     /** Runner slots by whose runner held them, independent of whose task it was. */
     runnerByClass: Record<RunnerClass, OccupancyLevel>;
+    /** Identity completeness of the runner work in the window; see `OccupancyCoverage`. */
+    coverage: OccupancyCoverage;
   };
   /**
    * Runner-slot usage per attributed member over the window, busiest first.
@@ -218,6 +235,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   const runnerEdges = emptyEdges();
   const sessionEdges = emptyEdges();
   const memberEdges = new Map<string, Edge[]>();
+  const coverage: OccupancyCoverage = { total: 0, ownerMissing: 0, runnerMissing: 0 };
   const classEdges = Object.fromEntries(RUNNER_CLASSES.map(c => [c, [] as Edge[]])) as Record<RunnerClass, Edge[]>;
   for (const w of workers) {
   if (w.startedAt == null) continue;
@@ -233,7 +251,12 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
       e.push({ t: start, d: 1 }, { t: end, d: -1 });
       memberEdges.set(w.ownerId, e);
     }
-  if (executor === 'runner') classEdges[w.runnerClass ?? 'unknown'].push({ t: start, d: 1 }, { t: end, d: -1 });
+  if (executor === 'runner') {
+    classEdges[w.runnerClass ?? 'unknown'].push({ t: start, d: 1 }, { t: end, d: -1 });
+    coverage.total += 1;
+    if (ownerOf(w, null, executor) === 'unattributed') coverage.ownerMissing += 1;
+    if ((w.runnerClass ?? 'unknown') === 'unknown') coverage.runnerMissing += 1;
+  }
   }
   const members: OccupancyMember[] = [...memberEdges].map(([id, edges]) => {
     const s = level(edges, from, now, bucketMs, count).summary;
@@ -253,7 +276,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
       runnerBy: runner.at(k),
       sessionsBy: sessions.at(k),
     })),
-    summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary, runnerByClass },
+    summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary, runnerByClass, coverage },
     members,
   };
 }

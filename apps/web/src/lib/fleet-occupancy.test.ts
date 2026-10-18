@@ -319,6 +319,19 @@ describe('task owner and runner ownership (AC-2)', () => {
     expect(s.summary.runnerByClass.unknown.peak).toBe(1);
     expect(occupancyDiscrepancies(s)).toEqual([]);
   });
+
+  it('counts runner work missing an owner or a runner identity instead of guessing', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ...span, taskOwnerId: 'me', runnerClass: 'personal' }),
+        row({ ...span, taskOwnerId: null, runnerClass: 'managed' }),
+        row({ ...span, taskOwnerId: 'you' }),
+        row({ ...span, runner: 'mcp', ownerId: null }),
+      ],
+    });
+    expect(s.summary.coverage).toEqual({ total: 3, ownerMissing: 1, runnerMissing: 1 });
+  });
 });
 
 describe('classifyRunnerOwnership', () => {

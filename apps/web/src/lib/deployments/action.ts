@@ -13,6 +13,8 @@
  *   workspace (operator-capability.ts). No admin key, no reveal.
  * - `admin`: a human's admin API key, the escape hatch. Not grant-checked
  *   (the same key can already manage the credential), but audited the same way.
+ * - `user`: a signed-in team owner or admin (Settings → Runners → Cloudflare →
+ *   Deploy). The route checks the team role; like `admin`, not grant-checked.
  *
  * Orchestration only; storage and the provider call are injected, so the
  * ordering (no credential read before the audit row exists, no credential
@@ -21,7 +23,7 @@
 import { authorizeAgent, type AgentDenyReason, type DeploymentTarget, type OperatorGrant } from '../operator-capability';
 import type { AgentCapability } from '../permission-registry';
 import type { CloudflareCredential, FetchLike } from '../cloudflare-credential-shared';
-import { cloudflareScriptName, parseCloudflareParams, runCloudflareOperation, type CloudflareOperation } from './cloudflare';
+import { cloudflareScriptName, parseCloudflareParams, runCloudflareOperation, type CloudflareOperation, type LoadReleaseBundle } from './cloudflare';
 
 export const DEPLOYMENT_PROVIDERS = ['cloudflare'] as const;
 export type DeploymentProvider = (typeof DEPLOYMENT_PROVIDERS)[number];
@@ -35,6 +37,8 @@ export const DEPLOYMENT_OPERATIONS: Record<CloudflareOperation, { capabilities: 
   put_secret: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'set one Worker secret (value never echoed)' },
   upload_worker: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'upload a built module Worker; secrets are kept' },
   ensure_bucket: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'create the project\'s R2 bucket if missing, set lifecycle rules' },
+  deploy_worker_script: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'upload a release\'s cloud runner Worker (Durable Objects, containers, migrations) and turn on its workers.dev URL' },
+  deploy_containers: { capabilities: ['deployments:write', 'deployment_secrets:use'], summary: 'create or roll out the cloud runner\'s container applications on the release\'s image' },
 };
 export type DeploymentOperation = keyof typeof DEPLOYMENT_OPERATIONS;
 export const DEPLOYMENT_OPERATION_NAMES = Object.keys(DEPLOYMENT_OPERATIONS) as DeploymentOperation[];
@@ -81,7 +85,8 @@ export function parseDeploymentRequest(raw: unknown): { ok: true; request: Deplo
 
 export type DeploymentPrincipal =
   | { kind: 'operator'; grant: OperatorGrant; teamId: string; accountId: string; taskId: string; workerId: string }
-  | { kind: 'admin'; teamId: string; accountId: string; workspaceId: string };
+  | { kind: 'admin'; teamId: string; accountId: string; workspaceId: string }
+  | { kind: 'user'; teamId: string; userId: string; workspaceId: string };
 
 /** One audit row, as written. No field takes a credential value. */
 export interface DeploymentAuditInput {
@@ -90,7 +95,9 @@ export interface DeploymentAuditInput {
   taskId: string | null;
   workerId: string | null;
   accountId: string | null;
-  principal: 'operator' | 'admin';
+  /** The signed-in person, for principal `user`. */
+  userId: string | null;
+  principal: 'operator' | 'admin' | 'user';
   roleSlug: string | null;
   operation: string;
   capabilities: string[];
@@ -112,6 +119,8 @@ export interface DeploymentDeps {
   /** The team's credential for this provider and reference, or null. */
   resolveCredential(teamId: string, provider: DeploymentProvider, credentialRef: string): Promise<CloudflareCredential | null>;
   fetchImpl?: FetchLike;
+  /** The cloud runner release bundle, for deploy_worker_script and deploy_containers. */
+  loadRelease?: LoadReleaseBundle;
 }
 
 export interface DeploymentResponse {
@@ -150,7 +159,8 @@ export async function runDeploymentAction(
     workspaceId,
     taskId: principal.kind === 'operator' ? principal.taskId : null,
     workerId: principal.kind === 'operator' ? principal.workerId : null,
-    accountId: principal.accountId,
+    accountId: principal.kind === 'user' ? null : principal.accountId,
+    userId: principal.kind === 'user' ? principal.userId : null,
     principal: principal.kind,
     roleSlug: principal.kind === 'operator' ? principal.grant.roleSlug : null,
     operation: req.operation,
@@ -193,7 +203,7 @@ export async function runDeploymentAction(
 
   let outcome: Awaited<ReturnType<typeof runCloudflareOperation>>;
   try {
-    outcome = await runCloudflareOperation(params, script, cred, deps.fetchImpl);
+    outcome = await runCloudflareOperation(params, script, cred, deps.fetchImpl, deps.loadRelease);
   } catch (err) {
     // A network throw can carry the request URL (which holds the account id); keep it out of the reply.
     console.error('[deployments] provider call threw:', err instanceof Error ? err.name : 'unknown');

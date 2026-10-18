@@ -12,6 +12,7 @@ import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redi
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteBearerTenant } from './request-tenant';
 
 /**
  * Cache API key hash → account record.
@@ -353,6 +354,8 @@ export async function authenticateApiKey(apiKey: string | null, request?: { url:
     lastUseWrites.set(account.id, true);
     try { await db.update(accounts).set({ lastUsedAt: new Date() }).where(eq(accounts.id, account.id)); } catch { /* Telemetry is best effort. */ }
   }
+  // Team and plan on the request's spans, and the plan for the read limiter (proxy.ts).
+  await noteBearerTenant(apiKey, account.teamId);
   return account;
 }
 const lastUseWrites = new TTLCache<true>({ maxSize: 500, ttlMs: 60_000 });
