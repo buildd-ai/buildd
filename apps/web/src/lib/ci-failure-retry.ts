@@ -42,7 +42,7 @@ import { buildReleaseCandidateFixTask, classifyCiRedReleasePr, RELEASE_CANDIDATE
 import { policyValue } from '@/lib/policy-overrides';
 // T10 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { observeCiFailure, systemPrincipal } from '@/lib/workflow/kernel-client';
-import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { deliveryOwnedTaskSql, notKernelMergedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-anchor-observer';
@@ -194,10 +194,14 @@ export interface EscalationInput {
  * Returns false when this head was already escalated.
  */
 export async function escalateCiRedHead(input: EscalationInput): Promise<boolean> {
+  // AC-1 slice 8 (workflow-kernel-library.md §9): the owner task of a kernel delivery bound to this
+  // PR keeps its status here. The kernel's escalation fails it in the transition's own statement
+  // (`t_escalate`); this write, from the kernel's Escalate effect, only records why and once per head.
+  const kernelOwned = deliveryOwnedTaskSql(taskCols(), { pr: { repoFullName: input.repoFullName, prNumber: input.prNumber } });
   const rows = await db
     .update(tasks)
     .set({
-      status: 'failed',
+      status: sql`CASE WHEN ${kernelOwned} THEN ${tasks.status} ELSE 'failed' END`,
       // Merge, never replace: result.nextSuggestion is the agent's handoff
       // advice and Home's blocked card leads with it. Overwriting the
       // whole object here would delete the only guidance the human gets.

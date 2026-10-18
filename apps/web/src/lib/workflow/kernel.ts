@@ -26,7 +26,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
-import { attemptEndTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes } from './task-projection';
+import { attemptEndTaskProjectionCtes, escalationTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes, requeueTaskProjectionCtes, startTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -300,6 +300,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   ctes.push(...attemptEndTaskProjectionCtes(d, 'd'));
   // AC-1 slice 6: AttemptRequeued moves the attempt's task back to the queue, in this statement.
   ctes.push(...requeueTaskProjectionCtes(d, 'd'));
+  // AC-1 slice 8: a CI escalation (its repairs spent) fails the owner task, in this statement.
+  ctes.push(...escalationTaskProjectionCtes(d, 'd'));
 
   ctes.push(sql`t AS (
   INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)

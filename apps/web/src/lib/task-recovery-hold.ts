@@ -17,6 +17,7 @@
  * The planners and `taskRecoverySentence` are pure; DB access is lazy.
  */
 
+import type { SQL } from 'drizzle-orm';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -188,6 +189,13 @@ export async function holdTaskForCredential(input: {
   lastCommitSha?: string | null;
   error?: string | null;
   now?: string;
+  /**
+   * AC-1 slice 8: the hold of a delivery owner's attempt is a requeue the kernel makes
+   * (AttemptRequeued). This statement then writes only the probe floor and the hold, under the
+   * requeue's guard (`guard`: only while the held worker is the open task's current attempt), and
+   * `requeue` moves the task back to the queue. Answers whether it did.
+   */
+  ownerAttempt?: { guard: SQL; requeue: () => Promise<boolean> };
 }): Promise<CredentialHold | null> {
   const [{ db }, { tasks }, { and, eq, not }, { wakeTask }] = await Promise.all([
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('./dispatch-authority'),
@@ -197,17 +205,15 @@ export async function holdTaskForCredential(input: {
   const updated = await db
     .update(tasks)
     .set({
-      status: 'pending',
-      claimedBy: null,
-      claimedAt: null,
-      expiresAt: null,
+      ...(input.ownerAttempt ? {} : { status: 'pending' as const, claimedBy: null, claimedAt: null, expiresAt: null }),
       startAt: plan.startAt,
       context: plan.context,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, input.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()))
+    .where(and(eq(tasks.id, input.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql(), ...(input.ownerAttempt ? [input.ownerAttempt.guard] : [])))
     .returning({ id: tasks.id });
   if (!updated?.length) return null;
+  if (input.ownerAttempt && !(await input.ownerAttempt.requeue())) return null;
   // An exhausted hold waits for a release, not a clock.
   if (!plan.hold.exhausted) await wakeTask(input.taskId, 'task.requeued', { notBefore: plan.startAt });
   return plan.hold;
