@@ -194,8 +194,10 @@ describe('workflow kernel tables have one writer', () => {
  * `observeBase` (T29), which the GitHub webhook, the reviewer's push subscriber, the reconcile and
  * refresh sweeps and the dependency gate report. With them every seam command the web host reaches
  * is a door op: no module outside the kernel imports one from the seam.
+ * And AC-1 slice 6's `attemptRequeued` (AttemptRequeued): the worker PATCH's retries, loop holds and
+ * budget, mount, auth and codex requeues, and the conflict-fix recovery, applied only on the control plane.
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict', 'observePrState', 'observeHead', 'observeBase'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'attemptRequeued', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict', 'observePrState', 'observeHead', 'observeBase'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -255,6 +257,10 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`import { noopEvidenceOf, attemptEnded as workflowAttemptEnded } from '@/lib/workflow/seam';`)).toEqual(['attemptEnded']);
     expect(seamDoorImports(`const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');`)).toEqual(['attemptEnded']);
     expect(seamDoorImports(`import { attemptEnded } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    // AC-1 slice 6: the requeue is a door; its fallback projection and guard are not commands.
+    expect(seamDoorImports(`import { attemptRequeued, projectRequeue, requeueingAttemptIsCurrentSql } from '@/lib/workflow/seam';`)).toEqual(['attemptRequeued']);
+    expect(seamDoorImports(`const { attemptRequeued: requeue } = await import('@/lib/workflow/seam');`)).toEqual(['attemptRequeued']);
+    expect(seamDoorImports(`import { attemptRequeued } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { observeCiFailure } from '@/lib/workflow/seam';`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeBase', 'observeCiGreen', 'observePrState']);
@@ -369,10 +375,10 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). A kernel owner's requeue (a retry, a loop hold, the budget, mount, auth and codex requeues: AC-1 slice 6) writes no status or claim either: AttemptRequeued moves it (t_requeue, projectRequeue). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
-  'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
+  'apps/web/src/lib/stale-workers.ts': `${ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt')}. For the current attempt of a kernel owner task (AC-1 slice 5) the caps write result but not status, and the unanswered-question sweep writes nothing: AttemptEnded(lost) projects it (t_attempt, projectOwnerEnd). A late reap after a re-claim, or a placeholder row, ends nothing (reapedOwnerAttemptIsCurrent)`,
   'apps/web/src/lib/interactive-detach.ts': ATTEMPT('a released interactive session requeues its open task'),
   'apps/web/src/lib/credential-recovery.ts': ATTEMPT('requeue of tasks failed on an auth error once the credential is back'),
   'apps/web/src/lib/github-repo-access-store.ts': ATTEMPT('requeue of a task failed on blocked GitHub access, once access is verified'),
@@ -405,11 +411,13 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
  * that can move a task away from completed); a string is why the file's writes cannot.
  */
 const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
-  // 9 includes the reactivation (worker resumes from completed): a person's follow-up on a shipped
+  // 7 includes the reactivation (worker resumes from completed): a person's follow-up on a shipped
   // task runs the worker, but the task keeps completed. Kept guarded rather than exempted, so a
   // follow-up that then fails or is requeued can never reopen work that already merged.
-  'apps/web/src/app/api/workers/[id]/route.ts': 9,
-  'apps/web/src/lib/stale-workers.ts': 8,
+  // AC-1 slice 6: the budget, codex, mount-gap and auth-failover requeues share one helper
+  // (`requeueWorkerTask`): its two statements (the no-delivery requeue, a kernel owner's fields).
+  'apps/web/src/app/api/workers/[id]/route.ts': 7,
+  'apps/web/src/lib/stale-workers.ts': 6,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
   'apps/web/src/lib/task-recovery-hold.ts': 1,
   'apps/web/src/lib/ci-failure-retry.ts': 1,
@@ -429,10 +437,13 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
  * family lowers its number (to 0, then the file leaves TASK_STATUS_WRITERS); never raise one.
  */
 const ATTEMPT_SITE_CEILING: Record<string, number> = {
-  'apps/web/src/app/api/workers/[id]/route.ts': 13,
+  // AC-1 slice 6: the four requeues outside a completion became one helper, and a kernel owner's
+  // requeue (those four, a retry, a loop hold) is AttemptRequeued's move, not this route's.
+  'apps/web/src/app/api/workers/[id]/route.ts': 10,
   'apps/web/src/app/api/workers/claim/route.ts': 4,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 3,
-  'apps/web/src/lib/stale-workers.ts': 11,
+  // AC-1 slice 5: the three cap failures are one statement, which writes no status for a kernel owner attempt.
+  'apps/web/src/lib/stale-workers.ts': 9,
   'apps/web/src/lib/interactive-detach.ts': 1,
   'apps/web/src/lib/credential-recovery.ts': 1,
   'apps/web/src/lib/github-repo-access-store.ts': 1,

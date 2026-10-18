@@ -27,7 +27,7 @@ mock.module('@/lib/redis', () => ({
 }));
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, observePrState, observeHead, observeBase, KernelObservationFailed, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, observePrState, observeHead, observeBase, KernelObservationFailed, attemptEnded, attemptRequeued, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
 const { drainParkedCommands, postgresCommandOutbox } = await import('../../src/lib/workflow/command-outbox');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
@@ -545,6 +545,50 @@ describe('AC-35: a door command the control plane never answered lands once it r
     const again = await submitKernelCommand('attempt_ended', { ...ownerEnd(pr), workspaceId: w!.workspaceId }, { principal: runner, idempotencyKey: key });
     expect(again.replayed).toBe(true);
     expect(await countOf(pr, 'AttemptEnded')).toBe(1);
+  }, AC35_TIMEOUT_MS);
+
+  // AC-1 slice 6: AttemptRequeued is a door op like T4.
+  const ownerRequeue = (pr: OpenedPr) => ({
+    task: { id: pr.ownerTaskId, workspaceId: w!.workspaceId, deliveryId: pr.deliveryId, deliveryRole: 'owner', context: null },
+    workerId: pr.workerId, reason: 'retry', source: 'runner',
+  });
+  const openOwner = (pr: OpenedPr) => q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() - interval '5 minutes' WHERE id = ${pr.ownerTaskId}::uuid`);
+
+  test('AC-1 slice 6: a requeue from the web host → one attempt_requeued command; the control plane applies it and moves the task, tagged control-plane', async () => {
+    const pr = await working('feat/cp-requeue');
+    await openOwner(pr);
+    cp = installControlPlane();
+    const before = (await w!.delivery(pr)).version;
+    const r = await attemptRequeued(ownerRequeue(pr), { principal: runner });
+    expect(r).toMatchObject({ handled: true, requeued: true, result: { result: 'applied' } });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'attempt_requeued' }]);
+    expect(await w!.taskStatus(pr.ownerTaskId)).toBe('pending');
+    const hosts = await hostsSince(pr.deliveryId, before);
+    expect(hosts.map((t) => t.command)).toEqual(['AttemptRequeued']);
+    expect(hosts.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  }, AC35_TIMEOUT_MS);
+
+  test('AC-1 slice 6: a requeue while the control plane is down is parked; the caller\'s projection settles the task, and the floor records it once without moving a re-claimed task', async () => {
+    const pr = await working('feat/park-requeue');
+    await openOwner(pr);
+    cp = installControlPlane();
+    cp.down = true;
+    const key = `attempt_requeued:${crypto.randomUUID()}`;
+    const err = await attemptRequeued(ownerRequeue(pr), { principal: runner, idempotencyKey: key }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.parked).toBe(true);
+    expect(await countOf(pr, 'AttemptRequeued')).toBe(0);
+    // What the worker PATCH does next on the web host: the guarded projection, no command.
+    expect(await seam.projectRequeue({ deliveryId: pr.deliveryId, taskId: pr.ownerTaskId, workerId: pr.workerId })).toBe(true);
+    expect(await w!.taskStatus(pr.ownerTaskId)).toBe('pending');
+    // A runner claims it again before the control plane is back.
+    await q(sql`UPDATE workers SET created_at = now() - interval '10 minutes' WHERE id = ${pr.workerId}::uuid`);
+    await q(sql`UPDATE tasks SET status = 'assigned', claimed_at = now() WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status) VALUES (${w!.workspaceId}::uuid, ${pr.ownerTaskId}::uuid, 'w2', 'test', ${pr.branch}, 'running')`);
+    cp.down = false;
+    expect(await onControlPlane(() => floorPass([key], 'control-plane'))).toMatchObject({ claimed: 1, done: 1, dead: 0 });
+    expect(await countOf(pr, 'AttemptRequeued')).toBe(1);
+    expect(await w!.taskStatus(pr.ownerTaskId)).toBe('assigned');
   }, AC35_TIMEOUT_MS);
 
   test('GitHub\'s one green while the control plane is down: the web host\'s floor re-submits it with the same key once it answers, and it is recorded once', async () => {

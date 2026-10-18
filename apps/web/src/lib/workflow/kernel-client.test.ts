@@ -483,6 +483,59 @@ describe('T4 is a door too (AC-9): an attempt\'s end from the web host', () => {
   });
 });
 
+describe('AttemptRequeued is a door too (AC-1 slice 6): a requeue from the web host', () => {
+  const requeue = {
+    task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'owner', context: null },
+    workerId: 'w-1', reason: 'retry', source: 'runner',
+  };
+  const runner = { kind: 'account' as const, id: USER, grant: null };
+
+  it('in own mode it is submitted to the control plane, the task\'s workspace on the input, and nothing runs here', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'attempt_requeued', result: { handled: true, requeued: true } }); }) as unknown as typeof fetch;
+    const r = await attemptRequeued(requeue, { principal: runner, idempotencyKey: 'attempt_requeued:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: true, requeued: true });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'attempt_requeued', input: { ...requeue, workspaceId: WS }, principal: runner, idempotencyKey: 'attempt_requeued:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    await attemptRequeued(requeue, { principal: runner, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['attempt_requeued']);
+  });
+
+  it('release skew: an older control plane refuses it as unknown, so the web host applies it and says so; any other refusal stays one', async () => {
+    const { attemptRequeued } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_requeued"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await attemptRequeued(requeue, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['attempt_requeued']);
+    expect(String(errors[0])).toContain('SKEW');
+    const r2 = local();
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    expect(await attemptRequeued(requeue, { principal: runner, deps: { ...r2.deps, env: OWN, fetch: refusing } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(r2.ran).toEqual([]);
+  });
+
+  it('the host requeues only a task of the workspace the reach check judged, and the endpoint knows the op', async () => {
+    const { runKernelOp, isKernelOp } = await import('./command-api');
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    await expect(runKernelOp('attempt_requeued', { ...requeue, workspaceId: OTHER })).rejects.toThrow(/not the task's workspace/);
+    expect(isKernelOp('attempt_requeued')).toBe(true);
+  });
+});
+
 describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the landing path\'s CI failure', () => {
   const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3, source: 'cron:ci-red' };
   const sweep = { kind: 'system' as const, id: 'system:cron:ci-red' };
@@ -710,7 +763,7 @@ describe('AC-35: a door command the control plane never answered is parked for t
     const { PARK_ON_UNAVAILABLE } = await import('./command-outbox');
     const { KERNEL_OPS } = await import('./command-api');
     expect(Object.keys(PARK_ON_UNAVAILABLE).sort()).toEqual([...KERNEL_OPS].sort());
-    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'observe_base', 'observe_ci_green', 'observe_head', 'record_review_verdict']);
+    expect(KERNEL_OPS.filter((op) => PARK_ON_UNAVAILABLE[op]).sort()).toEqual(['adopt_review_verdict', 'attempt_ended', 'attempt_requeued', 'observe_base', 'observe_ci_green', 'observe_head', 'record_review_verdict']);
     // A fix claim is rolled back and claimed afresh when unanswered: its old command is never re-sent.
     expect(PARK_ON_UNAVAILABLE.claim_fix).toBe(false);
   });

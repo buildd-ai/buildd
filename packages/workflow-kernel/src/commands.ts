@@ -165,6 +165,23 @@ export type Command =
        */
       noopEvidence?: { findingIds: string[]; evidence: string } | null;
     })
+  | (Base & {
+      /**
+       * AC-1 slice 6 (workflow-kernel-library.md §9): an attempt's task goes back to the queue
+       * (a retry, a loop hold, a budget or credential wall, a stalled repair recovered). Not an
+       * end: the attempt's work is retried on the same task, and the delivery does not move. The
+       * kernel records it and moves the task to `pending` in the transition's own statement, only
+       * while the requeuing worker is the task's current attempt. Named like AttemptEnded: an
+       * owner attempt by task id, a repair attempt by its workflow_attempts id.
+       */
+      type: 'AttemptRequeued';
+      /** The worker row whose attempt is requeued: its current-attempt check, and the idempotency key. */
+      workerId: string;
+      taskId?: string;
+      attemptId?: string;
+      /** Why (a short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `conflict_recovery`, ...). */
+      reason: string;
+    })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
       type: 'ReviewVerdictRecorded';
