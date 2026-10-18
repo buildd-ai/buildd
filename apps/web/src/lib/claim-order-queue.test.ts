@@ -296,6 +296,45 @@ describe('loadRunnerQueue', () => {
   });
 });
 
+describe('whose work each row is (R-58, AC-42)', () => {
+  const VIEWER = 'user-viewer';
+  it('reads the owner in the same query: the task, else its mission, else its schedule, and the owner name', () => {
+    const q = buildRunnerQueueQuery(new QueryBuilder() as any, { workspaceIds: ['ws-a'], gates: runnerQueueGates(caller, NOW) }).toSQL().sql;
+    expect(q).toContain('coalesce("tasks"."created_by_user_id", "missions"."created_by_user_id", "task_schedules"."created_by_user_id")');
+    expect(q).toContain('left join "task_schedules" on "task_schedules"."id" = "tasks"."schedule_id"');
+    // Never the email: only the name is read, and only its first word is sent.
+    expect(q).not.toContain('"email"');
+  });
+
+  it('"you" for the viewer\'s own work, a first name for a teammate\'s, unattributed when no owner is known', () => {
+    const own = classifyRunnerQueueRow(row({ ownerUserId: VIEWER, ownerName: 'Robin Vale' }), VIEWER).task;
+    expect(own.owner).toBe('you');
+    expect(own.ownerName).toBeUndefined();
+    const mate = classifyRunnerQueueRow(row({ ownerUserId: 'user-other', ownerName: 'Sam Okafor' }), VIEWER).task;
+    expect(mate.owner).toBe('teammate');
+    expect(mate.ownerName).toBe('Sam');
+    // Filed by a schedule nobody owns.
+    expect(classifyRunnerQueueRow(row({ ownerUserId: null, ownerName: null }), VIEWER).task.owner).toBe('unattributed');
+  });
+
+  it('with no person behind the runner key, nothing reads as "you"', () => {
+    expect(classifyRunnerQueueRow(row({ ownerUserId: VIEWER, ownerName: 'Robin Vale' }), null).task.owner).toBe('teammate');
+  });
+
+  it('loadRunnerQueue labels every section and keeps the claim order', async () => {
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, viewerUserId: VIEWER }, {
+      calibrated: () => false,
+      read: async () => [
+        row({ id: 't-1', ownerUserId: VIEWER }),
+        row({ id: 't-2', ownerUserId: 'user-other', ownerName: 'Sam' }),
+        row({ id: 't-3', ownerUserId: VIEWER, g_missionLocal: false }),
+      ],
+    });
+    expect(out.teams[0].queue.map(t => [t.id, t.owner])).toEqual([['t-1', 'you'], ['t-2', 'teammate']]);
+    expect(out.teams[0].notForRunner.map(t => [t.id, t.owner])).toEqual([['t-3', 'you']]);
+  });
+});
+
 describe('the claim route and the queue share one candidate WHERE', () => {
   const { claimCandidateWhere } = claimWhereMod;
   const input = { workspaceIds: ['ws-a', 'ws-b'], now: NOW, accountType: 'service', runner: 'http://localhost:8766', availableSkills: ['builder'], executor: 'host' as const };

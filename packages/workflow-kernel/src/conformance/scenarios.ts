@@ -2702,7 +2702,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    name: 'AC-76: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-77: never a stale success)',
     async run(host) {
       const s = await new Delivery(host, 81).open();
       const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;

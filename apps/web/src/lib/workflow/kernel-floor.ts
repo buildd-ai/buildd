@@ -80,7 +80,7 @@ export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; c
   const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
   // A parked command given up is an error: a verdict or an end that never landed.
   const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
-  // AC-37: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
+  // AC-76: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
   const open = ok(r.openPrStatuses) ? r.openPrStatuses : null;
   return {
     processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
