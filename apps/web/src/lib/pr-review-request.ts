@@ -398,6 +398,9 @@ export async function readPrReviewStatus(params: {
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** A wait re-reads the status at least this often even when the version says nothing moved. */
+export const REVIEW_STATUS_FLOOR_MS = 15_000;
+
 /**
  * Read the status, and keep reading until it turns terminal or the wait runs out.
  *
@@ -406,6 +409,13 @@ const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(reso
  * is clamped rather than rejected: the caller gets `timedOut: true` and can
  * simply call again, which is strictly better than the function being killed
  * mid-response by the platform timeout.
+ *
+ * Between reads it checks `version` (the workspace's change version, a Redis
+ * read: spec 3ef37387 R-20) and reads the status again only when it moved, or
+ * every {@link REVIEW_STATUS_FLOOR_MS} for a write nothing noted. Every write
+ * that moves a review (the reviewer's task and worker, the PR's state) moves
+ * the version. With no version (Redis down, or none given) it reads each tick
+ * as before.
  */
 export async function waitForPrReviewStatus(params: {
   workspaceId: string;
@@ -417,6 +427,7 @@ export async function waitForPrReviewStatus(params: {
     read?: (p: { workspaceId: string; prNumber: number; autoMergeExpected?: boolean; waitFor?: PrReviewWaitFor }) => Promise<PrReviewStatus>;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
+    version?: () => Promise<string | null>;
   };
 }): Promise<{ status: PrReviewStatus; timedOut: boolean }> {
   const read = params.deps?.read ?? readPrReviewStatus;
@@ -432,14 +443,24 @@ export async function waitForPrReviewStatus(params: {
     waitFor: params.waitFor,
   };
 
+  const version = params.deps?.version;
+  let seen = budgetMs > 0 && version ? await version() : null;
+  let status = await read(readArgs);
+  let readAt = now();
   for (;;) {
-    const status = await read(readArgs);
     if (status.terminal) return { status, timedOut: false };
 
     const elapsed = now() - startedAt;
     const remaining = budgetMs - elapsed;
     if (remaining < REVIEW_POLL_INTERVAL_MS) return { status, timedOut: true };
     await sleep(REVIEW_POLL_INTERVAL_MS);
+
+    const v = version ? await version() : null;
+    const moved = v === null || seen === null || v !== seen;
+    if (!moved && now() - readAt < REVIEW_STATUS_FLOOR_MS) continue;
+    seen = v;
+    status = await read(readArgs);
+    readAt = now();
   }
 }
 

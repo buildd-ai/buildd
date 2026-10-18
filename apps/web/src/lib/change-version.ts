@@ -153,6 +153,14 @@ export function bumpChangeVersions(t: ChangeVersionTargets): Promise<string[]> {
   return store.bump(t);
 }
 
+/** These scopes' versions as one string, or null when unknown (a waiter then reads as before). Redis only. */
+export async function currentChangeVersion(scopes: string[]): Promise<string | null> {
+  const sorted = [...new Set(scopes)].sort();
+  if (sorted.length === 0) return null;
+  const v = await store.read(sorted);
+  return v ? v.join('|') : null;
+}
+
 export interface ListTagInput {
   /** The route, e.g. `/api/tasks`. */
   route: string;

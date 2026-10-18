@@ -4,7 +4,8 @@
  * `POST` hands a pull request to a reviewer agent — including a PR buildd did
  * not open, which is adopted as a task + worker first (see
  * `@/lib/pr-review-request`). `GET` reports where that review is, optionally
- * long-polling until it settles.
+ * waiting until it settles: the wait re-reads the review only when the
+ * workspace's change version moves, not on every tick.
  *
  * The review then runs on exactly the same rails as a worker PR's review: the
  * verdict handler in `/api/workers/[id]`, the sticky activity comment, and
@@ -12,6 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { currentChangeVersion, wsScope } from '@/lib/change-version';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
@@ -659,6 +661,8 @@ export async function GET(req: NextRequest) {
     autoMergeExpected,
     waitFor,
     waitSeconds,
+    // The wait re-reads the review only when the workspace's change version moves (spec 3ef37387 R-20).
+    deps: { version: () => currentChangeVersion([wsScope(workspace.id)]) },
   });
 
   return NextResponse.json({
