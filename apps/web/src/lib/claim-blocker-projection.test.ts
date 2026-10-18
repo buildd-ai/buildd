@@ -41,4 +41,23 @@ describe('claimBlockerKind (spec 97b1bd0b AC-8)', () => {
     expect(claimBlockerKind('path_overlap')).toBe('other');
     expect(claimBlockerKind(null)).toBeNull();
   });
+  it('a Codex-only refusal is stale once the task routes to Claude (AC-7)', () => {
+    const b = projectClaimBlocker({ reason: 'codex_single_flight', occurredAt: ago(1000) }, NOW, 'claude');
+    expect(b.state).toBe('stale');
+    expect(b.reason).toBe('codex_single_flight');
+  });
+  it('a Codex-only refusal stays blocked while the task still routes to Codex', () => {
+    expect(projectClaimBlocker({ reason: 'codex_single_flight', occurredAt: ago(1000) }, NOW, 'codex').state).toBe('blocked');
+  });
+  it('a backend-neutral refusal is unaffected by the effective backend', () => {
+    expect(projectClaimBlocker({ reason: 'workspace_cap', occurredAt: ago(1000) }, NOW, 'claude').state).toBe('blocked');
+  });
+  it('projectClaimBlockers applies each task\'s effective backend', () => {
+    const m = projectClaimBlockers(['a', 'b'], [
+      { taskId: 'a', reason: 'codex_single_flight', occurredAt: ago(1000) },
+      { taskId: 'b', reason: 'codex_single_flight', occurredAt: ago(1000) },
+    ], NOW, new Map([['a', 'claude'], ['b', 'codex']]));
+    expect(m.get('a')!.state).toBe('stale');
+    expect(m.get('b')!.state).toBe('blocked');
+  });
 });
