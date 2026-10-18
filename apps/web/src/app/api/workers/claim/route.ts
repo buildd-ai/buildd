@@ -62,7 +62,7 @@ import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, ty
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { callerSeatKeys } from '@/lib/runner-seat-wall';
-import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -81,7 +81,7 @@ import { describeExplicitDeferral } from './explicit-deferral';
 import { decideClaimIsolation, teamSizeLoader } from './isolation-gate';
 import { CREDENTIAL_BLOCK_CONTEXT_KEY, credentialBlockFromDeferral, stampCredentialBlock } from '@/lib/credential-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
-import { advisoryBlockingPeer, advisoryMutexApplies, findActiveClaimBlocker, producesNoFileEdits } from './coordination-gates';
+import { findActiveClaimBlocker } from './coordination-gates';
 import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from './coordination-snapshot';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved, TASK_RESERVATION_KEY, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
@@ -149,7 +149,6 @@ import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/
 import {
   buildClaimPlanInput,
   EMPTY_PLANNER_SIGNALS,
-  plannerScopedTaskIds,
   resolveClaimPlannerConfig,
   splitOwnOpenPrs,
   type ClaimPlannerMode,
@@ -161,8 +160,6 @@ import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlanner
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
-  gatedStartApplies,
-  gatedStartReachable,
   isLiveHolderStatus,
   openPrStartVerdict,
   releaseGatedStartPaths,
@@ -1486,20 +1483,16 @@ export async function POST(req: NextRequest) {
   const {
     missionClaimMap,
     missionActiveCountMap,
-    missionAdvisoryInFlight,
     missionInFlightRows,
   } = await loadMissionCoordination(filteredMissionIds);
 
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
-  // deterministic rail (no I/O); the decisions run after the response. The
-  // gated START path is live (task 7eb191b9): an advisory deferral looks up an
-  // applied Jev START for its exact state, one indexed ledger read, and holds
-  // on any miss or error. `CLAIM_HOLD_APPLYING_FRACTION = 0` turns it off.
+  // deterministic rail (no I/O); the decisions run after the response and are
+  // recorded, never applied: the overlap policy decides (./overlap-policy).
   const holdStart = new ClaimHoldCollector();
-  const holdStartGated = gatedStartReachable();
-  // Every hold/start call in the loop is non-throwing: the collector methods,
-  // gatedStartApplies and acquireGatedStartPaths catch internally, and this
+  // Every hold/start call in the loop is non-throwing: the collector methods
+  // and acquireGatedStartPaths catch internally, and this
   // context builder does too. The bookkeeping runs for every team, opted in or
   // not, so a malformed row must cost a skipped note, never a failed claim.
   const holdStartContext = (t: any, isForced: boolean): ClaimHoldTaskContext | null => {
@@ -1625,8 +1618,6 @@ export async function POST(req: NextRequest) {
   const applyIds = new Set(applyTasks.map(t => t.id));
   const applyTaskById = new Map(applyTasks.map(t => [t.id, t]));
   const applyInitial = applyTasks.length > 0 ? planFor(applyTasks, [], availableSlots) : null;
-  /** Predicted-scope tasks whose advisory_manifest mutex the planner's edges replace. */
-  const plannerReplacesMutex = applyInitial ? plannerScopedTaskIds(applyInitial.ctx) : new Set<string>();
   const plannerAttempted = new Set<string>();
   const claimedTasksSoFar = () => claimedWorkers.map(w => w.task as unknown);
   function* plannedClaimOrder(): Generator<(typeof filteredTasks)[number]> {
@@ -1656,7 +1647,6 @@ export async function POST(req: NextRequest) {
     // wins, so the outcome join can grade a started pair and the dashboard can
     // say who decided.
     const softOverlapStarted: Array<Record<string, unknown>> = [];
-    const jevStartNotes: ClaimHoldNote[] = [];
     let sawCoordinationBlocker = false;
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
@@ -2050,90 +2040,17 @@ export async function POST(req: NextRequest) {
           if (bypassOrDefer('mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() })) continue;
         }
 
-        // 4. Advisory-manifest serialization (compensating guard).
-        //    An undeclared scope — null, [], or '**' (declaresNoScope) — no
-        //    longer mints stored dependsOn edges (correct — those edges block
-        //    until completed+merged, which is not what a file conflict needs),
-        //    and neither path-overlap layer can help: layer 1 returns null for a
-        //    wildcard candidate, and layer 2 is nested inside
-        //    `if (taskManifest?.length)` and compares *this* task's concrete
-        //    paths — of which a scope-undeclared task has none, whatever leases
-        //    the other side holds. Two scope-undeclared tasks in one mission
-        //    would therefore edit the same files concurrently and ping-pong
-        //    conflict retries — the exact failure mode the ['**'] default was
-        //    introduced to stop.
-        //
-        //    Auto-leasing observed touches (PATCH /api/workers/[id] →
-        //    claimObservedPaths) does not retire this guard. It fills layer 2's
-        //    supply side, so a task that DID declare paths is now deferred on a
-        //    file a live worker is actually editing. It cannot help here,
-        //    because the deferral this guard makes is decided by the *candidate*
-        //    having nothing to compare, and because a lease only exists after
-        //    the holder's first sync — this gate runs before either task starts.
-        //
-        //    So: at most one scope-undeclared task per mission in flight. This
-        //    is a SOFT deferral — the task stays pending and is retried on the
-        //    next poll (seconds), never a stored edge (which would wait for
-        //    completed + PR merged). Mission-scoped, so it cannot reintroduce
-        //    workspace-wide serialization.
-        //
-        //    The in-flight set includes `waiting_input` workers (same statuses
-        //    the mission concurrency count uses): that worker's worktree still
-        //    holds uncommitted edits, so treating it as free would reintroduce
-        //    the conflict. Cost: a mission's other scope-undeclared tasks wait
-        //    on a parked question — visible as the advisory_manifest deferral
-        //    counter and as the parked task's own "Needs Input" state.
-        //
-        //    `category: 'review'` candidates skip this gate entirely: a
-        //    reviewer never edits files, so it cannot conflict with whatever
-        //    the mission's in-flight scope-undeclared occupant is doing, and
-        //    gating it here just adds a second review-starvation failure mode
-        //    on top of the one already fixed above (an orchestration task
-        //    holding the slot would otherwise block every reviewer forever).
-        //
-        //    `artifact_required` / `none` candidates skip it too, and never
-        //    occupy the slot: their deliverable is not a code change, so they
-        //    have no files to collide on. Without this a research task filed
-        //    without a manifest (there is no way to add one after creation)
-        //    waited behind any unrelated '**' task in the mission.
-        //    Under the planner's 'apply', a task with a confident predicted
-        //    scope (plannerReplacesMutex) was already ordered by real edges
-        //    against that scope, so the mutex no longer applies to it.
-        //    `localMissionClaim` (verified interactive session, explicit
-        //    taskId, mission.executor='local' — same predicate as the role
-        //    gate exemption above) also skips it: a person running a local
-        //    mission's tasks from their own session is the one choosing what
-        //    to claim next, in an isolated worktree per task, same as the
-        //    LX-2/LX-4 exemptions already granted to the mission-local and
-        //    role gates. This is narrower than an admin force claim — which
-        //    still does NOT lift this gate (see the force-claim comment
-        //    block and its regression test) — because force alone carries no
-        //    guarantee a human is actually supervising concurrent work.
-        if (advisoryMutexApplies(task as any) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
-          const blockingPeer = advisoryBlockingPeer(task.id, missionAdvisoryInFlight.get(taskMissionId));
-          // Noted like layer 1 above. An applied gated START relaxes
-          // only this serialization; there are no declared paths to acquire,
-          // and observed touches are leased by the exclusive primitive later.
-          if (blockingPeer) sawCoordinationBlocker = true;
-          const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
-          const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
-          if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
-            jevStartNotes.push(holdNote);
-            console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
-          } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
-            // A person's dashboard Force start lifts this serialization for
-            // this task (artifact §7.2: human force only). The admin MCP
-            // force claim above still does not.
-            if (!startForceBypassed.includes('advisory_manifest')) startForceBypassed.push('advisory_manifest');
-          } else if (blockingPeer) {
-            console.log(
-              `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
-              `(mission ${taskMissionId} already has scope-undeclared task ${blockingPeer} in flight)`,
-            );
-            deferTask(task, 'advisory_manifest', { missionId: taskMissionId, blockingPeer });
-            continue;
-          }
-        }
+        // No scope-undeclared serialization. A task that declares no files
+        //    (null, [], '**') starts like any other: it runs in its own worktree
+        //    on its own branch, and the merge settles an overlap (runner
+        //    pre-merge + mergiraf, mission refresh, the conflict resolver). The
+        //    one-per-mission mutex that used to sit here (`advisory_manifest`)
+        //    held ordinary work, CI repairs included, behind unrelated tasks;
+        //    the model's START that was meant to relax it never applied
+        //    (docs/specs/claim-overlap-scheduling.md, "Undeclared scope").
+        //    What still holds an undeclared task: a declared dependency, an
+        //    explicit hold, the mission cap above, and, once it edits, the
+        //    exclusive lease on any unmergeable path it touches.
       }
     }
 
@@ -3026,16 +2943,6 @@ export async function POST(req: NextRequest) {
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
     // Review tasks consume neither the concurrency count nor the pacing slot.
-    if (taskMissionId && (task as any).category !== 'review'
-      && !producesNoFileEdits((task as any).outputRequirement)
-      && declaresNoScope((task as any).pathManifest as string[] | null)) {
-      // Reserve the mission's single scope-undeclared slot for the rest of the
-      // batch, so one poll cannot claim two '**' tasks from the same mission.
-      // Keyed on category alone, like both sides of the advisory guard above.
-      const set = missionAdvisoryInFlight.get(taskMissionId) ?? new Set<string>();
-      set.add(task.id);
-      missionAdvisoryInFlight.set(taskMissionId, set);
-    }
     if (taskMissionId && !isReviewTask) {
       // Increment concurrency count so a second task from the same mission in
       // this batch sees the updated active count.
@@ -3229,18 +3136,6 @@ export async function POST(req: NextRequest) {
     });
     // Learning observes only successful claims, never a decision that later lost a rail or race.
     if (!forced && startForceBypassed.length === 0) {
-      for (const note of jevStartNotes) {
-        const c = note.candidate;
-        fireGateEvent({
-          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
-          reason: 'claim_learning_jev_start', taskId: task.id, workspaceId: task.workspaceId,
-          missionId: (task as any).missionId ?? null, workerId: worker.id,
-          callerOrigin: gateCallerOrigin({ apiAccount: account }),
-          detail: { gate: c.gate, paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [],
-            areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths), fingerprint: CLAIM_LEARNING_HOOKS.fingerprint,
-            candidateDigest: note.digest, startedAt: now.toISOString() },
-        });
-      }
       const declared = (task.pathManifest ?? []).filter((p: string) => p !== '**');
       if (!sawCoordinationBlocker && declared.length > 0) {
         fireGateEvent({

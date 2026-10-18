@@ -425,23 +425,8 @@ describe('ClaimHoldCollector never throws into the claim loop', () => {
     expect(c.candidates).toHaveLength(0);
   });
 
-  it('advisory_manifest noting never throws on a bad context', () => {
-    const c = new ClaimHoldCollector();
-    expect(() => c.noteAdvisoryManifest(null as any, 'peer')).not.toThrow();
-    expect(c.skipped.error).toBe(1);
-  });
-});
-
-describe('ClaimHoldCollector.noteAdvisoryManifest', () => {
-  it('records the scope-undeclared serialization', () => {
-    const c = new ClaimHoldCollector();
-    const note = c.noteAdvisoryManifest(ctx({ missionId: 'm1' }), 'peer-task');
-    expect(note?.candidate).toMatchObject({ gate: 'advisory_manifest', scope: 'undeclared', holder: { taskId: 'peer-task', prNumber: null } });
-  });
-
-  it('a failed lease read is unknown state, not recorded', () => {
-    const c = new ClaimHoldCollector();
-    expect(c.noteAdvisoryManifest(ctx({ leaseReadFailed: true }), 'peer-task')).toBeNull();
+  it('has no scope-undeclared note: undeclared scope is not an overlap deferral', () => {
+    expect((new ClaimHoldCollector() as unknown as Record<string, unknown>).noteAdvisoryManifest).toBeUndefined();
   });
 });
 
@@ -550,7 +535,7 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
   it('a team that has not opted in costs one access check, then nothing for a while', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    c.noteAdvisoryManifest(ctx({ taskId: 'task-2', missionId: 'm' }), 'peer');
+    c.noteOpenPrOverlap(ctx({ taskId: 'task-2' }), ['apps/web/src/widget.ts'], [pr()], new Map());
     let access = 0;
     const dd = decisionDeps({ resolveAccess: async () => { access++; return { ok: false, error: { kind: 'capability_disabled', message: 'off' } } as any; } });
     const h = harness({}, dd);

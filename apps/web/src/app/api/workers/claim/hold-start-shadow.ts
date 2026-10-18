@@ -6,9 +6,9 @@
  * Three pieces, each built so the hottest path in the system cannot slow
  * down or change behaviour by default:
  *
- *  1. `ClaimHoldCollector`: called synchronously at the three advisory
- *     deferrals in the dispatch loop (scope-undeclared serialization, layer 1
- *     open-PR overlap, soft same-file or prefix overlap). It runs the deterministic
+ *  1. `ClaimHoldCollector`: called synchronously at the advisory overlap
+ *     deferrals in the dispatch loop (layer 1 open-PR overlap, soft same-file
+ *     or prefix overlap). Undeclared scope is not one: it starts. It runs the deterministic
  *     rails and remembers eligible deferrals. No I/O, and the loop still
  *     `continue`s exactly as before.
  *  2. `scheduleClaimHoldShadow`: registers the decisions with `after()`, so
@@ -214,33 +214,6 @@ export class ClaimHoldCollector {
     if (candidate.risk && candidate.risk.route !== 'ask_model') return note;
     if (this.candidates.length < CLAIM_HOLD_MAX_NOTES) this.candidates.push(note);
     return note;
-  }
-
-  /** The mission's scope-undeclared serialization deferred this task behind `peerTaskId`. */
-  noteAdvisoryManifest(ctx: ClaimHoldTaskContext, peerTaskId: string): ClaimHoldNote | null {
-    try {
-      return this.advisoryManifest(ctx, peerTaskId);
-    } catch (err) {
-      console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
-      return this.skip('error');
-    }
-  }
-
-  private advisoryManifest(ctx: ClaimHoldTaskContext, peerTaskId: string): ClaimHoldNote | null {
-    const holder: ClaimHoldHolder = { taskId: peerTaskId, prNumber: null, workerStatus: null, prLifecycle: null };
-    const verdict = classifyClaimHoldEligibility({
-      gate: 'advisory_manifest',
-      forced: ctx.forced,
-      leaseReadFailed: ctx.leaseReadFailed,
-      concretePaths: [],
-      overlapPaths: [],
-      overlapsLiveLease: false,
-      serializedSurfaces: [],
-      holder,
-    });
-    if (!verdict.eligible) return this.skip(verdict.rail);
-    const c = this.candidate(ctx, 'advisory_manifest', 'undeclared', [], [], holder);
-    return this.keep({ ...c, risk: assessClaimOverlapRisk({ gate: 'advisory_manifest', rail: null, candidatePaths: [], overlapPaths: [], holderState: null, now: ctx.now }) });
   }
 
   /**
@@ -630,7 +603,7 @@ export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: Cla
 
 // ── 3. Gated START ───────────────────────────────────────────────────────────
 
-const GATES: readonly ClaimHoldCandidate['gate'][] = ['advisory_manifest', 'open_pr_overlap', 'soft_overlap'];
+const GATES: readonly ClaimHoldCandidate['gate'][] = ['open_pr_overlap', 'soft_overlap'];
 
 /**
  * Cheap reachability ceiling, clamped to [0, 1]; the persisted cell is checked

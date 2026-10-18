@@ -2,7 +2,7 @@
 title: Claim Gate Legibility
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 summary: Every condition withholding a pending task MUST have an observable claim-gate reason.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/claim/route.ts, packages/core/db/schema.ts]
@@ -126,21 +126,23 @@ strands the whole queue), and Claude is `implicitlyConfigured`, so the common
 case reports nothing.
 
 Soft deferrals are counted in `ClaimDiagnostics.deferrals` and MUST all
-self-clear: `path_overlap`, `advisory_manifest`, `mission_concurrent`,
-`mission_paced`, `budget_paused`, `provider_unavailable`. They are not
+self-clear: `path_overlap`, `mission_concurrent`, `mission_paced`,
+`budget_paused`, `provider_unavailable`. (`advisory_manifest`, the old
+one-scope-undeclared-task-per-mission deferral, is retired: undeclared scope
+starts by default, `claim-overlap-scheduling` I-39. Its counter stays at 0.) They are not
 `gateReason` values — `/start` does not reject on them, because by the time an
 operator reads the response the deferral has usually already cleared.
 
 They are still reportable: `/api/cron/queue-stall` names a soft deferral once a
 task has been held by one for longer than the stall threshold, since "transient"
-stops being an excuse at that point. `advisory_manifest` is the case that
-matters — its blocking peer may be parked in `waiting_input`, holding the slot
-until a human answers, which never self-clears in practice.
+stops being an excuse at that point. Rows of the retired `advisory_manifest`
+deferral written before it was retired are still read, and age out of the
+window.
 
 A workspace whose `gitConfig.claimPlanner` is `apply` claims in the batch
 planner's order instead (`apps/web/src/app/api/workers/claim/claim-plan-input.ts`).
 A task the plan orders behind a blocker reports the soft deferral
-`ordered_behind` in place of `path_overlap` / `advisory_manifest`, written once
+`ordered_behind` in place of `path_overlap`, written once
 per (task, blocker) pair, so repeated polls add no rows. The default `off` MUST
 leave the claim exactly as described above. Explicit `taskId` claims never plan.
 
@@ -216,17 +218,9 @@ hold:
   an unmerged PR for the owner (`ownerUnmergedPrs`, read by the card and by
   `explain` alike). A green PR with nobody on it is still the owner's merge,
   and that merge is the action the card offers.
-- **LX-10**: the per-mission advisory-manifest serialization (soft deferral
-  `advisory_manifest`, above) is also exempted for the same `localMissionClaim`
-  predicate as LX-2's role-gate exemption: a verified interactive session's
-  explicit `claim_task {taskId}` against a task whose mission has
-  `executor: 'local'`. The person driving that session is the one choosing
-  what to claim next, in its own isolated worktree, so the one-slot mutex that
-  guards against two *unsupervised* scope-undeclared claimants buys nothing
-  there. This is narrower than force: a plain admin `claim_task force: true`
-  on a non-local mission still does **not** lift this gate (deliberate — see
-  the force-claim comment block in `claim/route.ts`), and a runner poll or
-  unverified caller against a local mission's task is still deferred by it.
+- **LX-10**: retired with the per-mission scope-undeclared serialization it
+  exempted: no claimant, local or runner, is deferred for declaring no files
+  (`claim-overlap-scheduling` I-39).
 - **LX-11**: an open question is the person's move (any executor). A worker
   parked on a question (`waiting_input`: a runner agent's AskUserQuestion or a
   local session's `ask_human`) still counts as live, so `missionOpenQuestions`
