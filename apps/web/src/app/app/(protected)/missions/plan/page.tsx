@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { missions } from '@buildd/core/db/schema';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { loadMissionPlan } from '@/lib/mission-plan-source';
@@ -13,7 +14,7 @@ export const dynamic = 'force-dynamic';
 /**
  * Plan: when open missions should land, for someone who needs the update and
  * not the controls. Reached from the Missions list ("Plan ›"), behind the
- * team's task-estimates switch.
+ * calibrated estimator and the team's estimate availability.
  */
 export default async function MissionPlanPage({ searchParams }: { searchParams: Promise<{ workspace?: string }> }) {
   const { workspace: wsFilter } = await searchParams;
@@ -25,7 +26,7 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
   const cookieStore = await cookies();
   const activeTeamId = (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
 
-  if (!(await taskEstimatesEnabled(activeTeamId))) {
+  if (!taskEstimatesDefaultOn() || !(await taskEstimatesEnabled(activeTeamId))) {
     return <PlanShell><PlanOff /></PlanShell>;
   }
 

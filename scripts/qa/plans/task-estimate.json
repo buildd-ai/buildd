@@ -5,12 +5,36 @@
       {
         "key": "estimate-breakdown",
         "steps": [
-          { "action": "click", "selector": "css:[data-testid=estimate-no-comparable] button" },
-          { "action": "waitFor", "selector": "text:1.64M–7M tokens" },
-          { "action": "assertLayout", "selector": "css:body" }
+          {
+            "action": "click",
+            "selector": "css:[data-testid=estimate-no-comparable] button"
+          },
+          {
+            "action": "waitFor",
+            "selector": "text:1.64M\u20137M tokens"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "css:body"
+          }
         ]
       }
     ]
   },
-  { "route": "/app/health/estimates?state=enabled-limited-history", "states": [] }
+  {
+    "route": "/app/health/estimates?state=enabled-limited-history",
+    "states": []
+  },
+  {
+    "route": "/app/health/estimates?state=enabled-few",
+    "states": []
+  },
+  {
+    "route": "/app/health/estimates?state=enabled-overrun",
+    "states": []
+  },
+  {
+    "route": "/app/settings",
+    "states": []
+  }
 ]
