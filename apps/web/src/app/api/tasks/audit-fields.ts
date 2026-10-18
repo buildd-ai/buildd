@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { artifacts, tasks, workers } from '@buildd/core/db/schema';
+import { TASKS_TABLE_REF, taskPrNumberSql } from '@/lib/workflow/task-pr';
 
 /**
  * Deliverable-attribution columns for the terminal-status audit list
@@ -16,7 +17,10 @@ export const terminalAuditFields = {
   // cast throws and kills the whole query the moment one historical
   // row has a non-numeric value here, so guard it instead of trusting
   // the shape.
-  prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
+  // The task's PR derived on read (workflow/task-pr.ts): its delivery, its attempt's worker row,
+  // else the stored result, whose non-numeric values the fragment already reads as none. The
+  // literal "tasks" alias for the same reason as hasArtifact below.
+  prNumber: taskPrNumberSql(TASKS_TABLE_REF),
   // Literal "tasks"."id", not ${tasks.id}: a single-table select renders its
   // select-list columns unqualified, and a bare "id" here is ambiguous against
   // w.id / a.id — which 500'd every audit list.

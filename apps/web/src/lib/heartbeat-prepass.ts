@@ -7,6 +7,7 @@ import { extractResetTime, SESSION_WINDOW_MS, WEEKLY_WINDOW_MS } from '@buildd/c
 import { CLAUDE_WEEKLY_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
 import { NON_TERMINAL_STATUSES, classifySingleTaskWait, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrsFor } from './workflow/task-pr';
 
 export { QUEUED_ATTEMPT_GRACE_MS, classifyMissionWait, type WaitClassifiableTask, type MissionWaitResult } from './mission-wait';
 
@@ -129,7 +130,7 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
     db.query.tasks.findMany({
       where: sqlWhere(eq(tasks.missionId, missionId)),
       columns: {
-        status: true, title: true, mode: true, result: true,
+        id: true, status: true, title: true, mode: true, result: true,
         taskClass: true, context: true, startAt: true, loopConfig: true, loopState: true,
         createdAt: true,
       },
@@ -150,9 +151,12 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
     t => t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled'
   ).length;
 
+  // A task's PR is derived on read (workflow/task-pr.ts): its delivery, its attempt's worker row,
+  // else what its result stored.
+  const prs = await taskPrsFor(allTasks.map(t => t.id));
   const prCount = allTasks.filter(t => {
     const result = t.result as Record<string, unknown> | null;
-    return result?.prUrl != null;
+    return prs.has(t.id) ? !!prs.get(t.id)!.prUrl : result?.prUrl != null;
   }).length;
 
   return {
