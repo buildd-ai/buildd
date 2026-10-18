@@ -4,6 +4,7 @@ import { isActionableChip } from './action-queue';
 import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
 import type { ActionQueueItem } from './action-queue';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from './escalation-note-title';
 const pr = (key: string, workspaceId = 'workspace-a', chip: ActionQueueItem['chip'] = 'MERGE'): ActionQueueItem => ({ subjectKey: key, chip, workspaceId, prNumber: 42, taskTitle: 'Improve navigation', prUrl: 'https://example.test/o/r/pull/42', taskId: 'task-a' });
 const one = (q: Partial<ActionQueueItem>) => deriveHomeAttention({ queue: [{ subjectKey: 's', chip: 'MERGE', taskTitle: 'Improve navigation', taskId: 'task-a', ...q } as ActionQueueItem], missions: [], questions: [], held: [] });
 const FORBIDDEN = ['Work needs a decision', 'Open decision', 'The checks are clear. Nothing else is blocking it.', '/app/health'];
@@ -133,6 +134,26 @@ describe('Needs You card contract', () => {
       expect(item.sentence.length).toBeGreaterThan(0);
       expect(item.primary?.href.startsWith('/') || item.primary?.href.startsWith('http')).toBe(true);
       for (const bad of FORBIDDEN) expect(JSON.stringify(item)).not.toContain(bad);
+    }
+  });
+  it('names the mission on each criteria-escalation decision, so two escalations are never one duplicated ask', () => {
+    const esc = (id: string, title: string): Partial<ActionQueueItem> => ({ subjectKey: `decide:${id}`, chip: 'DECIDE', missionId: id, missionTitle: title, taskTitle: undefined, taskId: undefined, noteTitle: CRITERIA_ESCALATION_NOTE_TITLE, recommendation: 'The same prose criterion has failed unchanged across every retry.' });
+    const items = deriveHomeAttention({ queue: [esc('m1', 'Ship billing') as ActionQueueItem, esc('m2', 'Ship search') as ActionQueueItem], missions: [], questions: [], held: [] });
+    expect(items.map(i => i.title).sort()).toEqual(['Ship billing', 'Ship search']);
+    for (const i of items) {
+      expect(i.title).not.toContain('owner decision needed');
+      expect(i.primary?.href).toMatch(/^\/app\/missions\/m[12]$/);
+      expect(i.primary?.label).toBe('Review criteria');
+    }
+  });
+  it('a mixed fixture yields only actionable cards: machine-owned work never lists, every card names a destination', () => {
+    const queue = [pr('fix', undefined, 'FIXING_CI'), pr('ci', 'workspace-b', 'CI_RUNNING'), { ...pr('review', 'workspace-c', 'REVIEW'), prNumber: 7, prUrl: 'https://example.test/o/r/pull/7', verdictSummary: 'Protected migration paths changed.' } as ActionQueueItem, { subjectKey: 'q', chip: 'QUESTION', question: 'Override the merge?', taskTitle: 'Open the PR', taskId: 't-q' } as ActionQueueItem];
+    const items = deriveHomeAttention({ queue, missions: [], questions: [], held: [] });
+    expect(items.map(i => i.actionType).sort()).toEqual(['answer', 'review']);
+    for (const i of items) {
+      expect(i.primary?.label?.trim()).toBeTruthy();
+      expect(i.primary?.href?.trim()).toBeTruthy();
+      expect(`${i.title} ${i.sentence}`).not.toMatch(/heartbeat|lineage|dispatch|wake|worker|retry attempt|CI run/i);
     }
   });
   it('uses the real decision and question as the title', () => {

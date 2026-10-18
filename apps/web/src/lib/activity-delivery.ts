@@ -53,6 +53,13 @@ export interface ActivityTaskInput {
   waitingPrompt?: string | null;
 }
 
+/**
+ * What Activity reads of a mission: its header (chip, landed n/m, next step)
+ * and its tasks' deliveries. A `MissionDelivery` is one; the page builds it
+ * from the stored summary and the projection over the rows in view.
+ */
+export type ActivityMission = Pick<MissionDelivery, 'id' | 'title' | 'kind' | 'landed' | 'total' | 'next' | 'tasks'>;
+
 // ── Shared shapes ───────────────────────────────────────────────────────────
 
 export type RepairReason = 'ci' | 'conflict' | 'review';
@@ -446,7 +453,7 @@ function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
 export function buildActivityNow(input: {
   tasks: readonly ActivityTaskInput[];
   /** The projection Missions and Home read, for every mission in view. */
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
   now: number;
 }): ActivityNow {
@@ -631,7 +638,7 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
 
 export function buildActivityHistory(input: {
   tasks: readonly ActivityTaskInput[];
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
 }): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));

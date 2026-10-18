@@ -9,7 +9,7 @@ import type { LivePr } from '../commands';
 import type {
   Decide, DecideAnswer, Escalate, Evidence, ExhaustionNotice, GithubFacts, GithubWrites, Ingest, IngestFact, GithubFactReader, KernelPolicy, Lifecycle,
   MergeAnswer, Notify, Policy, TeamNotice, Trunk, TrunkIncident, Work, WorkFiled, WorkRequest,
-  BranchUpdate, Conflicts, HandOff, MechanicalRefresh, MigrationRenumber, PostedReview, RailReading, Rails, ReviewOutput, Reviews,
+  BranchUpdate, CheckRunsRead, Conflicts, HandOff, MechanicalRefresh, MigrationRenumber, PostedReview, RailReading, Rails, ReviewOutput, Reviews,
 } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 
@@ -148,11 +148,11 @@ export class FakeGithub implements GithubFacts {
   /** Branch heads, keyed `repo:ref`. */
   readonly heads = new Map<string, string>();
   /** Check runs, keyed `repo@sha`. */
-  readonly runs = new Map<string, { complete: boolean; failing: string[] }>();
+  readonly runs = new Map<string, CheckRunsRead>();
 
   async ciGreen(repoFullName: string, headSha: string): Promise<boolean | null> { return this.green.get(`${repoFullName}@${headSha}`) ?? null; }
   async branchHead(repoFullName: string, ref: string): Promise<string | null> { return this.heads.get(`${repoFullName}:${ref}`) ?? null; }
-  async checkRuns(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null> {
+  async checkRuns(repoFullName: string, sha: string): Promise<CheckRunsRead | null> {
     const r = this.runs.get(`${repoFullName}@${sha}`);
     return r ? structuredClone(r) : null;
   }
