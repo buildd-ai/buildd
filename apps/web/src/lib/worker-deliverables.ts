@@ -108,6 +108,19 @@ export async function getWorkerArtifactCount(workerId: string): Promise<number> 
   }
 }
 
+const BYPRODUCT_TYPES = ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'];
+
+/**
+ * {@link getWorkerDeliverableArtifactCount}'s rule over rows a caller already
+ * loaded: a non-byproduct type, or a keyed byproduct that is not a
+ * cloud-run-report; never salvaged completion prose.
+ */
+export function isDeliverableArtifact(a: { type: string; key: string | null; metadata: unknown }): boolean {
+  const deliverable = !BYPRODUCT_TYPES.includes(a.type)
+    || (a.key != null && !a.key.startsWith('cloud-run-report:'));
+  return deliverable && !(a.metadata as Record<string, unknown> | null)?.salvaged;
+}
+
 /**
  * Query count of deliverable artifacts for a worker (excluding machine/telemetry artifacts).
  * Filters out byproduct types (screenshot, diff, file, data, link, recording, calendar_event)
@@ -120,8 +133,6 @@ export async function getWorkerDeliverableArtifactCount(workerId: string): Promi
     const { db } = await import('@buildd/core/db');
     const { artifacts } = await import('@buildd/core/db/schema');
     const { eq, and, notLike, or, isNotNull, not, inArray } = await import('drizzle-orm');
-
-    const BYPRODUCT_TYPES = ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'];
 
     // Deliverable artifacts are either:
     // 1. Non-byproduct types (review types like report, analysis, summary, etc.)
