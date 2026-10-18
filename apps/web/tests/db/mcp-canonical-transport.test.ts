@@ -33,6 +33,20 @@ process.env.OAUTH_ISSUER = 'https://issuer.example';
 process.env.NEXTAUTH_URL = 'http://self.example';
 delete process.env.VERCEL_URL;
 
+// MCP reads of routes in the composition root's table run in-process
+// (lib/mcp-local-reads.ts, spec 3ef37387 R-22); record the binding they carry
+// exactly as the fetch shim below does for self-calls that still go over HTTP.
+const realLocalReads = await import('../../src/lib/mcp-local-reads');
+// Held before mocking: the namespace's binding is the mock once it is installed.
+const realRunLocalRead = realLocalReads.runLocalRead;
+mock.module('../../src/lib/mcp-local-reads', () => ({
+  ...realLocalReads,
+  runLocalRead: async (url: string, headers: Record<string, string>, deps?: Parameters<typeof realRunLocalRead>[2]) => {
+    const res = await realRunLocalRead(url, headers, deps);
+    if (res) selfCalls.push({ path: new URL(url).pathname, bound: new Headers(headers).get(GRANT_WORKSPACE_HEADER) });
+    return res;
+  },
+}));
 const grants = await import('../../src/lib/mcp-grants');
 const tokens = await import('../../src/lib/oauth/tokens');
 const storage = await import('../../src/lib/oauth/storage');

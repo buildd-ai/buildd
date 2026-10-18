@@ -88,7 +88,10 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     const pathWorkspace = /^\/api\/workspaces\/([^/]+)/.exec(url.pathname)?.[1];
     const queryWorkspace = url.searchParams.get('workspaceId') ?? url.searchParams.get('workspace');
     const queryWorkspaces = url.searchParams.get('workspaceIds')?.split(',').filter(Boolean);
-    if (pathWorkspace && !['by-repo', 'match-repos'].includes(pathWorkspace) && !token.workspaceIds.includes(pathWorkspace)) return false;
+    // `across` names no workspace: GET /api/workspaces/across/* lists only the
+    // token's own workspaces (listReachableWorkspaceIds), so it is a read here.
+    const acrossRead = pathWorkspace === 'across' && (request.method === 'GET' || request.method === 'HEAD');
+    if (pathWorkspace && !acrossRead && !['by-repo', 'match-repos'].includes(pathWorkspace) && !token.workspaceIds.includes(pathWorkspace)) return false;
     if (queryWorkspace && !token.workspaceIds.includes(queryWorkspace)) return false;
     if (queryWorkspaces?.some(id => !token.workspaceIds!.includes(id))) return false;
     // Only accept filters the endpoint actually applies. A decorative query
