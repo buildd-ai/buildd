@@ -759,8 +759,10 @@ const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false)
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
 const mockLegacyRepairGate = mock(async (_p: any, _d: any): Promise<any> => null);
+const mockLegacyReviewFixGate = mock(async (_p: any, _d: any): Promise<any> => null);
 mock.module('@/lib/repair-completion', () => ({
   legacyRepairCompletionGate: mockLegacyRepairGate,
+  legacyReviewFixCompletionGate: mockLegacyReviewFixGate,
 }));
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
@@ -779,6 +781,7 @@ mock.module('@/lib/workflow/seam', () => ({
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
+  legacyDiffTouchesFindings: () => null,
   recordReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s recordReviewVerdict, not the kernel client\'s'); }),
   adoptReviewVerdict: mock(async () => { throw new Error('the worker PATCH called the seam\'s adoptReviewVerdict, not the kernel client\'s'); }),
   noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
@@ -3937,6 +3940,43 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body).toMatchObject({ code: 'repair_still_conflicted', gate: 'output_requirement', boundHeadSha: 'h1' });
       expect(mockLegacyRepairGate.mock.calls[0][0]).toMatchObject({ task: { conflictRetryPrNumber: 42 } });
       expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('a legacy review fix with no relevant diff is refused repair_unrelated_diff, and nothing is written', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({ set: mock(() => { taskUpdateCalled = true; return { where: mock(() => Promise.resolve()) }; }) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'review-fix-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'review-fix-1', outputRequirement: 'auto', category: 'bug', deliveryId: null, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1',
+        context: { failureContext: { errorType: 'reviewer_request_changes', summary: 'fix it' } },
+      });
+      mockLegacyReviewFixGate.mockReset();
+      mockLegacyReviewFixGate.mockResolvedValue({
+        code: 'repair_unrelated_diff', error: 'changes nothing near the files', hint: 'fix it', boundHeadSha: 'h1', liveHeadSha: 'h2',
+      });
+
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', structuredOutput: { fixedElsewhere: { files: ['a.ts'], reason: 'moved' } } } }), { params: mockParams });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body).toMatchObject({ code: 'repair_unrelated_diff', gate: 'output_requirement', boundHeadSha: 'h1', liveHeadSha: 'h2' });
+      expect(mockLegacyReviewFixGate.mock.calls[0][0]).toMatchObject({ task: { reviewerRetryPrNumber: 42 }, fixedElsewhere: { files: ['a.ts'], reason: 'moved' } });
+      expect(taskUpdateCalled).toBe(false);
+    });
+
+    it('the legacy review-fix gate is not reached by a kernel-delivery task or a task with no review round', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue({ ...fixTaskRow, reviewerRetryPrNumber: 42, reviewerRetryHeadSha: 'h1' });
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockLegacyReviewFixGate.mockReset();
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      mockWorkersFindFirst.mockResolvedValue({ ...fixWorker, taskId: 'task-1' });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'pr_required' });
+      await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed' } }), { params: mockParams });
+      expect(mockLegacyReviewFixGate).not.toHaveBeenCalled();
     });
 
     it('the legacy repair gate is not consulted for a task that is not a conflict retry', async () => {
@@ -9271,6 +9311,8 @@ describe('PATCH /api/workers/[id]', () => {
             summary: 'Test summary',
             feedback: verdict === 'request-changes' ? 'Fix the missing handler' : undefined,
             escalationReason: verdict === 'escalate' ? 'PR touches schema' : undefined,
+            // The reviewer read the head it was asked about (the fixture's context.headSha).
+            checkoutSha: 'abc123',
             ...extra,
           },
         },
@@ -11231,15 +11273,79 @@ describe('PATCH /api/workers/[id]', () => {
         // The body says what happened without claiming the file list did it.
         expect(note.body).not.toContain('the file list requires a human');
         expect(note.body).toContain('below workspace threshold');
-        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql');
+        const persisted = taskSetCalls.find((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'));
         expect(persisted).toBeDefined();
-        expect(persisted.result.values).toContain('escalate');
       });
 
       it('approve at a confident score still runs the bounded merge', async () => {
         setupReviewerTaskCompletion('approve');
         await PATCH(makeReviewerPatchRequest('approve', { confidence: 0.9 }), { params: mockParams });
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('0230612e: the reviewer\'s checkout is the verdict\'s evidence', () => {
+      function captureTaskSets() {
+        const sets: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            sets.push(updates);
+            return { where: mock(() => ({ catch: () => Promise.resolve() })) };
+          }),
+        });
+        return sets;
+      }
+
+      for (const [label, extra, read] of [
+        ['at the base, not the head', { checkoutSha: 'FFF999' }, 'fff999'],
+        ['with no checkout reported', { checkoutSha: undefined }, null],
+      ] as const) {
+        it(`an approval read ${label} is inconclusive: no APPROVE, no merge, a person's, the evidence recorded`, async () => {
+          setupReviewerTaskCompletion('approve');
+          const sets = captureTaskSets();
+
+          const res = await PATCH(makeReviewerPatchRequest('approve', extra), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+          expect(mockLandPr).not.toHaveBeenCalled();
+          expect(mockPostPrReview.mock.calls.some((c: any) => c[0]?.event === 'APPROVE')).toBe(false);
+          expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+          const note = missionNoteInserts.find((n) => n.type === 'reviewer_escalated');
+          expect(note.title).toContain('inconclusive');
+          expect(note.body).toContain('another commit than this PR\'s head');
+          // Recorded with the verdict: the commit it read, and that it was not the head.
+          const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(false));
+          expect(evidence).toBeDefined();
+          expect(evidence.result.values).toContain(read);
+          expect(sets.some((u: any) => u.result?.type === 'sql' && u.result.values.includes('escalate'))).toBe(true);
+        });
+      }
+
+      it('a request for changes read at another commit dispatches no fix', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        mockAnnounceTaskCreated.mockClear();
+        await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(missionNoteInserts.some((n) => n.type === 'reviewer_request_changes')).toBe(false);
+        expect(missionNoteInserts.find((n) => n.type === 'reviewer_escalated')?.title).toContain('inconclusive');
+      });
+
+      it('read at the head, the approval counts and records its evidence as the head', async () => {
+        setupReviewerTaskCompletion('approve');
+        const sets = captureTaskSets();
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'ABC123' }), { params: mockParams });
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+        const evidence = sets.find((u: any) => u.result?.type === 'sql' && u.result.values.includes(true));
+        expect(evidence.result.values).toContain('abc123');
+      });
+
+      it('a kernel round gets the evidence commit with its verdict, so the reducer can refuse to decide on it', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'AWAITING_REVIEW' } }, toState: 'AWAITING_REVIEW' });
+        await PATCH(makeReviewerPatchRequest('approve', { checkoutSha: 'fff999' }), { params: mockParams });
+        expect(mockRecordReviewVerdict.mock.calls[0][0]).toMatchObject({ verdict: 'approve', headSha: 'abc123', evidenceSha: 'fff999' });
+        expect(mockPostPrReview).not.toHaveBeenCalled();
       });
     });
 
@@ -11609,7 +11715,7 @@ describe('PATCH /api/workers/[id]', () => {
         pathManifest: null,
       });
 
-      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+      const res = await PATCH(makeReviewerPatchRequest('request-changes', { checkoutSha: 'def456' }), { params: mockParams });
 
       expect(res.status).toBe(200);
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);

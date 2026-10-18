@@ -7,7 +7,7 @@ import { db } from '@buildd/core/db';
 import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
@@ -63,7 +63,7 @@ import {
   type DispatchProposal,
   type SubjectEvent,
 } from '@/lib/supersession';
-import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -79,8 +79,8 @@ import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
-import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -1912,7 +1912,7 @@ async function patchWorker(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, reviewerRetryHeadSha: tasks.reviewerRetryHeadSha, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, conflictRetryHeadSha: tasks.conflictRetryHeadSha, subjectHeadSha: tasks.subjectHeadSha, dependsOn: tasks.dependsOn, deliveryId: tasks.deliveryId, deliveryRole: tasks.deliveryRole })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -2148,6 +2148,40 @@ async function patchWorker(
           frictionSignature,
           boundHeadSha: refusal.boundHeadSha,
           liveHeadSha: refusal.liveHeadSha,
+        }, { status: 400 });
+      }
+    }
+
+    // §13.13 rule 4 for a LEGACY review fix (a PR with no delivery): the head has to move, and the
+    // push has to change something near what the review names. Without this a no-op repair on a PR
+    // the kernel does not own still read as "Fix n of m finished".
+    if (worker.taskId && terminalTaskRow[0] && !terminalTaskRow[0].deliveryId && terminalTaskRow[0].reviewerRetryPrNumber != null) {
+      const refusal = await legacyReviewFixCompletionGate({
+        task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+        localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+        noopClaimed: noopEvidenceOf(body.structuredOutput) != null,
+        fixedElsewhere: legacyFixedElsewhereOf(body.structuredOutput),
+      }, legacyReviewFixGateDeps()).catch((err) => {
+        console.error(`[review-fix] legacy completion gate failed for worker ${worker.id} (allowing):`, err);
+        return null;
+      });
+      if (refusal) {
+        await applyMetricsOnlyPatch(id, worker, body, reportedBasis).catch(() => null);
+        const frictionSignature = fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: ${refusal.code}`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: { code: refusal.code, boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha },
+        });
+        return NextResponse.json({
+          error: refusal.error, hint: refusal.hint, code: refusal.code, gate: GATE_SLUGS.OUTPUT_REQUIREMENT, frictionSignature,
+          boundHeadSha: refusal.boundHeadSha, liveHeadSha: refusal.liveHeadSha,
         }, { status: 400 });
       }
     }
@@ -6010,7 +6044,7 @@ async function handleReviewerOutcomeIfNeeded(
   // escalationReason, which is downstream of an untrusted diff.
   let effectiveVerdict = output.verdict;
   let serverOverrideReason: string | null = null;
-  let serverOverrideSource: 'files' | 'confidence' | null = null;
+  let serverOverrideSource: 'files' | 'confidence' | 'evidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
     // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
     let currentFiles: Array<{ filename: string }> | null = null;
@@ -6114,9 +6148,33 @@ async function handleReviewerOutcomeIfNeeded(
     }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
   }
 
+  // The reviewer's evidence: the commit its checkout was at when it judged. It is
+  // recorded with the verdict, and a verdict read at any other commit than the
+  // round's head (or with none reported) is inconclusive: it never approves.
+  // Checked last, so it wins over every other reason: no gate above judged the
+  // head the reviewer actually read. A kernel round's reducer applies the same
+  // rule to `evidenceSha` and asks a reviewer again at the head (T6 → T27).
+  const evidenceSha = reviewerEvidenceSha(output);
+  const evidenceGate = applyEvidenceGate({ verdict: effectiveVerdict, evidenceSha, headSha });
+  await db
+    .update(tasks)
+    .set({
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('evidenceSha', ${evidenceSha}::text, 'evidenceAtHead', ${evidenceGate.overrideReason === null}::boolean)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, reviewerTaskId))
+    .catch((err: unknown) =>
+      console.error(`[reviewer] could not record the evidence commit for PR #${prNumber}:`, err),
+    );
+  if (evidenceGate.overrideReason) {
+    effectiveVerdict = evidenceGate.verdict;
+    serverOverrideReason = evidenceGate.overrideReason;
+    serverOverrideSource = 'evidence';
+  }
+
   if (serverOverrideReason) {
     console.warn(
-      `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
+      `[reviewer] PR #${prNumber}: model said ${output.verdict}, server escalated — ${serverOverrideReason}`,
     );
     // Persist the verdict that ACTUALLY applies, alongside (never over) the
     // agent's own output. Without this the stored review still reads
@@ -6154,6 +6212,7 @@ async function handleReviewerOutcomeIfNeeded(
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
+      evidenceSha,
       output,
     }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
@@ -6185,7 +6244,7 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, evidenceSha, output,
       }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
@@ -6245,7 +6304,9 @@ async function handleReviewerOutcomeIfNeeded(
       // A server override says so explicitly: the reviewer's own summary would
       // otherwise read as an approval on a card that escalated.
       body: (serverOverrideReason
-        ? `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+        ? serverOverrideSource === 'evidence'
+          ? `The reviewer's verdict (${output.verdict}) was read at another commit than this PR's head, so it counts for nothing and the server escalated the PR to a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+          : `The reviewer approved this PR, but the server escalated it to a human (${serverOverrideSource === 'confidence' ? 'the approval is below the confidence bar' : 'the file list requires a human'}): ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
         : (output.feedback ?? output.escalationReason ?? output.summary))
         + ledeNote
         + (effectiveVerdict === 'escalate' && output.recommendation
@@ -6704,6 +6765,32 @@ async function handleReviewerOutcomeIfNeeded(
  * a live PR read, and the migration inspector, ignoring the PR's own recorded
  * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
  */
+/** A legacy PR has no finding ids, so a claim needs only the files and the reason. */
+function legacyFixedElsewhereOf(output: unknown): { files: string[]; reason: string } | null {
+  const o = (output && typeof output === 'object' ? (output as Record<string, unknown>).fixedElsewhere : null) as Record<string, unknown> | null | undefined;
+  if (!o || typeof o !== 'object') return null;
+  const files = Array.isArray(o.files) ? o.files.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
+  return files.length && reason ? { files, reason } : null;
+}
+
+function legacyReviewFixGateDeps(): LegacyReviewFixGateDeps {
+  const base = legacyRepairGateDeps();
+  return {
+    diffTouches: legacyDiffTouchesFindings,
+    repoFor: base.repoFor,
+    readPr: base.readPr,
+    changedPaths: async (p) => (await import('@/lib/workflow/github-facts')).githubReader(p.installationId).changedPaths?.(p.repoFullName, p.fromSha, p.toSha) ?? null,
+    findingPaths: async (p) => {
+      const rows = await db.select({ path: reviewFeedback.path }).from(reviewFeedback).where(and(
+        eq(reviewFeedback.workspaceId, p.workspaceId), eq(reviewFeedback.repoFullName, p.repoFullName),
+        eq(reviewFeedback.prNumber, p.prNumber), eq(reviewFeedback.kind, 'inline_comment'), eq(reviewFeedback.headSha, p.headSha),
+      ));
+      return [...new Set(rows.map((r) => r.path).filter((x): x is string => !!x))];
+    },
+  };
+}
+
 function legacyRepairGateDeps(): LegacyRepairGateDeps {
   return {
     repoFor: async (workspaceId) => (await import('@/lib/workflow/github-facts')).workspaceRepo(workspaceId),

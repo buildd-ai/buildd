@@ -413,3 +413,77 @@ describe('isReviewBudgetSpent', () => {
     expect(isReviewBudgetSpent({ verdict: 'approve', iteration: 3, maxIterations: 3 })).toBe(false);
   });
 });
+
+// ── Delivery-owned PRs (§7): state comes from the kernel, not reviewer tasks ───
+
+describe('derivePrReviewStatus with a delivery', () => {
+  const round = (o: Record<string, unknown> = {}) => ({
+    round: 1, status: 'decided', headSha: 'sha1', reviewerTaskId: 'rt-1', verdict: 'approve', effectiveVerdict: null, ...o,
+  });
+  const delivery = (o: Record<string, unknown> = {}) => ({
+    state: 'IN_REVIEW', stateReason: null, headSha: 'sha1', rounds: [], attempts: { review_fix: { n: 1, m: 3 } },
+    approvedCurrentHead: false, openFindings: 0, prNumber: 42, ...o,
+  }) as any;
+  const derive = (d: any) => derivePrReviewStatus({ delivery: d, reviewTask: null, worker: { taskId: 't1' } as any });
+
+  it('is not_requested with no rounds and nothing awaiting review, even with no reviewer task', () => {
+    const s = derive(delivery());
+    expect(s.state).toBe('not_requested');
+    expect(s.verdict).toBeNull();
+    expect(s.openFindings).toBe(0);
+  });
+
+  it('is queued with no rounds when the delivery awaits review', () => {
+    expect(derive(delivery({ state: 'AWAITING_REVIEW' })).state).toBe('queued');
+  });
+
+  it('maps a queued round to queued and a reviewing round to reviewing', () => {
+    expect(derive(delivery({ rounds: [round({ status: 'queued' })] })).state).toBe('queued');
+    const s = derive(delivery({ rounds: [round({ status: 'reviewing' })] }));
+    expect(s.state).toBe('reviewing');
+    expect(s.reviewTaskId).toBe('rt-1');
+  });
+
+  it('maps a failed round to review_failed', () => {
+    expect(derive(delivery({ rounds: [round({ status: 'failed', verdict: null })] })).state).toBe('review_failed');
+  });
+
+  it('reads a decided approve, with the round, max rounds and head from the delivery', () => {
+    const s = derive(delivery({ rounds: [round({ round: 2 })] }));
+    expect(s.state).toBe('approved');
+    expect(s.verdict).toBe('approve');
+    expect(s.iteration).toBe(2);
+    expect(s.maxIterations).toBe(3);
+    expect(s.reviewHeadSha).toBe('sha1');
+  });
+
+  it('reads request-changes with its open findings; effectiveVerdict wins over verdict', () => {
+    const s = derive(delivery({ openFindings: 2, rounds: [round({ verdict: 'request_changes' })] }));
+    expect(s.state).toBe('changes_requested');
+    expect(s.verdict).toBe('request-changes');
+    expect(s.openFindings).toBe(2);
+    const e = derive(delivery({ rounds: [round({ verdict: 'approve', effectiveVerdict: 'escalate' })] }));
+    expect(e.verdict).toBe('escalate');
+  });
+
+  it('ignores superseded rounds', () => {
+    const s = derive(delivery({ rounds: [round({ round: 1 }), round({ round: 2, status: 'superseded' })] }));
+    expect(s.iteration).toBe(1);
+  });
+
+  it('is escalated whatever the last round said', () => {
+    const s = derive(delivery({ state: 'ESCALATED', rounds: [round({ verdict: 'approve' })] }));
+    expect(s.state).toBe('escalated');
+    expect(s.verdict).toBe('approve');
+    expect(derive(delivery({ state: 'ESCALATED' })).verdict).toBe('escalate');
+  });
+
+  it('reads a MERGED delivery as a merged PR', () => {
+    const s = derive(delivery({ state: 'MERGED', rounds: [round()] }));
+    expect(s.prState).toBe('merged');
+  });
+
+  it('keeps openFindings null on the legacy path', () => {
+    expect(derivePrReviewStatus({ reviewTask: null }).openFindings).toBeNull();
+  });
+});

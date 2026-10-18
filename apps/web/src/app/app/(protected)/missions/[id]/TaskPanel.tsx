@@ -95,6 +95,8 @@ export interface TaskPanelData {
   blockedByCount: number;
   /** `classifyTaskFailure`: null unless the task failed. */
   failureKind?: TaskFailureKind | null;
+  /** For a `dependency` failure: the failed task it waits on. */
+  failureWaitingOn?: { taskId: string; title: string | null } | null;
   /** What the task produced (W4 "Records"); absent from older responses. */
   records?: Array<{ id: string; type: string; title: string | null; href: string }>;
   /** Provenance from `deriveTaskOrigin` (U6); null when nothing is stored. */
@@ -356,6 +358,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         deliveryReading={deliveryPillLabel(data.delivery)}
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
+        waitingOn={data.failureWaitingOn ?? null}
         auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
         // The live run view asks a live worker's question, as on the page.
         worker={w && !data.live ? { id: w.id, waitingFor: w.waitingFor, questionNote: data.questionNote ?? null } : null}

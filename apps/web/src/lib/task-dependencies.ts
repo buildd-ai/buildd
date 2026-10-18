@@ -17,6 +17,8 @@ import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
+import { dependencyFailedResult, dependencyFailureOf, RECOVERED_DEPENDENCY_STATUSES } from '@buildd/core/dependency-failure';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -329,6 +331,10 @@ export async function resolveCompletedTask(
   } else if (completedTaskFull?.status !== 'cancelled') {
     // Don't unblock dependents for cancelled tasks — cascading cancellation would be too aggressive
     await checkDependsOnResolved(completedTaskId);
+    await reopenChecksFailedBy(completedTaskId);
+  } else {
+    // A cancelled dependency satisfies the claim gate, so a check it failed earlier can run.
+    await reopenChecksFailedBy(completedTaskId);
   }
 }
 
@@ -802,12 +808,13 @@ export async function cascadeDependencyFailure(
       continue;
     }
 
-    // Auto-fail the dependent task
+    // Auto-fail the dependent task. `errorType` and `blockedBy` say it never
+    // ran: no surface offers it a retry of its own (dependency-failure.ts).
     await db
       .update(tasks)
       .set({
         status: 'failed',
-        result: { error: `Blocked: dependency "${failedTitle}" (${failedTaskId}) failed` } as any,
+        result: dependencyFailedResult({ id: failedTaskId, title: failedTask?.title ?? null }) as any,
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, task.id));
@@ -826,4 +833,88 @@ export async function cascadeDependencyFailure(
     // Recursively resolve — triggers further cascades, mission loop updates, etc.
     await resolveCompletedTask(task.id, task.workspaceId);
   }
+}
+
+/**
+ * A check the cascade failed before it ever ran goes back to the queue once the
+ * dependency that failed it completes (spec 072de598 I-14). Today that is the
+ * visual audit: one per mission, so nothing else would run it, and it never
+ * ran, so no attempt is lost. A builder failed the same way is left alone: a
+ * replacement may already be filed for it.
+ *
+ * Only a task with no worker row: one that ran has a real failure of its own.
+ * When another of its dependencies has failed meanwhile, it stays failed and
+ * names that one instead. The claim gate still decides when it runs.
+ */
+export async function reopenChecksFailedBy(completedTaskId: string): Promise<void> {
+  const candidates = await db
+    .select({ id: tasks.id, workspaceId: tasks.workspaceId, dependsOn: tasks.dependsOn, result: tasks.result })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.status, 'failed'),
+        eq(tasks.roleSlug, VISUAL_AUDITOR_ROLE_SLUG),
+        sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([completedTaskId])}::jsonb`,
+        sql`NOT EXISTS (SELECT 1 FROM ${workers} WHERE ${workers.taskId} = ${tasks.id})`,
+      )
+    );
+
+  for (const check of candidates) {
+    if (dependencyFailureOf(check.result)?.taskId !== completedTaskId) continue;
+    const others = ((check.dependsOn as string[] | null) ?? []).filter((id) => id !== completedTaskId);
+    const [stillFailed] = others.length > 0
+      ? await db
+          .select({ id: tasks.id, title: tasks.title })
+          .from(tasks)
+          .where(and(inArray(tasks.id, others), eq(tasks.status, 'failed')))
+      : [];
+    // Guarded on `failed`: a person who retried or cancelled it meanwhile wins.
+    const stillThis = and(eq(tasks.id, check.id), eq(tasks.status, 'failed'));
+    if (stillFailed) {
+      await db
+        .update(tasks)
+        .set({ result: dependencyFailedResult(stillFailed) as any, updatedAt: new Date() })
+        .where(stillThis);
+      continue;
+    }
+    await db
+      .update(tasks)
+      .set({ status: 'pending', result: null, claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
+      .where(stillThis);
+    await triggerEvent(channels.workspace(check.workspaceId), events.TASK_UNBLOCKED, {
+      taskId: check.id,
+      resolvedDependency: completedTaskId,
+    });
+    await wakeTask(check.id, 'dependency.satisfied');
+  }
+}
+
+/**
+ * The same reopen for a check whose blocking task already completed or was
+ * cancelled before `reopenChecksFailedBy` ran on it: rows from before it
+ * existed, or a missed completion. Bounded; run by the visual-review cron.
+ * Returns how many blocking tasks it reopened checks for.
+ */
+export async function sweepChecksFailedByRecoveredDeps(limit = 50): Promise<number> {
+  const rows = await db
+    .select({ result: tasks.result })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.status, 'failed'),
+        eq(tasks.roleSlug, VISUAL_AUDITOR_ROLE_SLUG),
+        sql`(${tasks.result}->>'errorType' = 'dependency_failed' OR ${tasks.result}->>'error' LIKE 'Blocked: dependency %')`,
+        sql`NOT EXISTS (SELECT 1 FROM ${workers} WHERE ${workers.taskId} = ${tasks.id})`,
+      )
+    )
+    .orderBy(desc(tasks.updatedAt))
+    .limit(limit);
+  const blockers = [...new Set(rows.map((r) => dependencyFailureOf(r.result)?.taskId).filter((id): id is string => !!id))];
+  if (blockers.length === 0) return 0;
+  const recovered = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(inArray(tasks.id, blockers), inArray(tasks.status, [...RECOVERED_DEPENDENCY_STATUSES])));
+  for (const r of recovered) await reopenChecksFailedBy(r.id);
+  return recovered.length;
 }
