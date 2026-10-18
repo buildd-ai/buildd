@@ -99,6 +99,7 @@ import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
 import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
+import { missionPrStateStale, unseenMergeCandidates, type PrStateRow } from '@/lib/mission-pr-staleness';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -139,6 +140,8 @@ export default async function MissionDetailPage({
   if (!user) redirect('/app/auth/signin');
 
   const teamIds = await getUserTeamIds(user.id);
+  // Only the layout on screen is built (spec 3ef37387 R-18), with the reads only it shows.
+  const layout = parseMissionLayout(layoutParam, listViewParam);
 
   // S7 / AC-18: the shared shape selects no artifact `content`, task `result`
   // or task `context`; the few fields the page reads from those two JSON
@@ -156,33 +159,6 @@ export default async function MissionDetailPage({
 
   if (!mission || !teamIds.includes(mission.teamId)) {
     notFound();
-  }
-
-  // Read-through PR fact import: any completed worker whose PR merge webhook
-  // was missed is re-checked against GitHub after this response.
-  if (mission.workspaceId) {
-    const staleWorkers = (mission.tasks ?? []).flatMap(t => {
-      if (t.status !== 'completed') return [];
-      const w = (t.workers as any[])?.[0];
-      if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
-      // Each worker's own workspace: a mission's tasks can live in several.
-      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string, workspaceId: (w.workspaceId as string | undefined) ?? mission.workspaceId! }];
-    });
-    if (staleWorkers.length > 0) {
-      const wsWithInstall = await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
-        columns: {},
-        with: { githubInstallation: { columns: { installationId: true } } },
-      });
-      const installId = wsWithInstall?.githubInstallation?.installationId;
-      if (installId) {
-        // Enqueued after the response, never written during the render (spec
-        // workflow-state-kernel §11): this render shows what is stored.
-        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
-        after(() => observeMergeStateOnRender(staleWorkers, installId)
-          .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
-      }
-    }
   }
 
   // Everything from here to the merge-policy chip reads off the mission row
@@ -233,7 +209,7 @@ export default async function MissionDetailPage({
     })(),
     // The Flow tab's expected task sizes (newest prediction per task).
     // Best-effort: without one, a task's bar uses the fixed default.
-    allMissionTaskIds.length > 0
+    layout === 'flow' && allMissionTaskIds.length > 0
       ? db.select({ taskId: orchestrationManifestPredictions.taskId, expectedSize: orchestrationManifestPredictions.expectedSize })
           .from(orchestrationManifestPredictions)
           .where(and(inArray(orchestrationManifestPredictions.taskId, allMissionTaskIds), isNotNull(orchestrationManifestPredictions.expectedSize)))
@@ -307,6 +283,35 @@ export default async function MissionDetailPage({
   // so progress, "awaiting merge", blockers and the feed agree with the kernel.
   // A task with no delivery keeps its worker rows.
   (mission as { tasks?: unknown }).tasks = overlayDeliveryLifecycle(mission.tasks ?? [], deliveryViews);
+
+  // Read-through PR fact import: a completed task whose PR merge webhook may
+  // have been missed is re-checked against GitHub after this response, a few
+  // at a time (observeMergeStateOnRender caps it), the installation looked up
+  // there too. Enqueued after the response, never written during the render
+  // (spec workflow-state-kernel §11): this render shows what is stored.
+  // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+  const prCheckedAt = Date.now();
+  const unseenMerges = mission.workspaceId
+    ? unseenMergeCandidates((mission.tasks ?? []) as unknown as PrStateRow[], prCheckedAt, mission.workspaceId)
+    : [];
+  if (unseenMerges.length > 0) {
+    const workspaceId = mission.workspaceId!;
+    after(async () => {
+      try {
+        const ws = await db.query.workspaces.findFirst({
+          where: sqlWhere(eq(workspaces.id, workspaceId)),
+          columns: {},
+          with: { githubInstallation: { columns: { installationId: true } } },
+        });
+        const installId = ws?.githubInstallation?.installationId;
+        if (installId) await observeMergeStateOnRender(unseenMerges, installId);
+      } catch (err) {
+        console.error('[mission-page] PR fact import failed (non-fatal):', err);
+      }
+    });
+  }
+  // Opening the page reconciles PR state only when some PR could be wrong (R-12).
+  const reconcileOnOpen = missionPrStateStale((mission.tasks ?? []) as unknown as PrStateRow[], prCheckedAt);
 
   const { roles, teamWorkspaces } = scopeResult;
 
@@ -692,7 +697,7 @@ export default async function MissionDetailPage({
           name: releaseWorkspace.name,
           gitConfig: releaseWorkspace.gitConfig,
           releaseConfig: releaseWorkspace.releaseConfig,
-        })
+        }, { render: true })
       : Promise.resolve(null),
     // D3: the completion summary reads the mission's own completion record,
     // never the latest task's summary.
@@ -708,7 +713,7 @@ export default async function MissionDetailPage({
     shouldQueryRelease(releaseArchetype) ? loadMissionCarryingReleaseId(id) : Promise.resolve(null),
     // The Feed's escalations and answers: agent questions and human replies,
     // on the mission or on any of its tasks (task-scoped notes carry no missionId).
-    db.query.missionNotes.findMany({
+    layout !== 'feed' ? Promise.resolve([]) : db.query.missionNotes.findMany({
       where: sqlWhere(and(
         allMissionTaskIds.length > 0 ? or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)) : eq(missionNotes.missionId, id),
         or(eq(missionNotes.type, 'question' as any), eq(missionNotes.authorType, 'user')),
@@ -731,11 +736,11 @@ export default async function MissionDetailPage({
     visualReviewLoad,
     // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
     // Only for a team with the task-estimates switch on, the Plan page's gate.
-    loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
+    layout !== 'board' ? Promise.resolve([]) : loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
       console.error('[mission-page] estimate load failed', err);
       return [];
     }),
-    outcomeSpecIds.length > 0 && mission.workspaceId
+    layout === 'board' && outcomeSpecIds.length > 0 && mission.workspaceId
       ? db.select({ id: specs.id, title: specs.title }).from(specs)
           .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
           .then(rows => Object.fromEntries(rows.map(r => [r.id, r.title])) as Record<string, string>, () => ({} as Record<string, string>))
@@ -1355,15 +1360,15 @@ export default async function MissionDetailPage({
         workerStatuses={renderedWorkerStatuses}
         renderedAt={renderedAt}
       >
-      <MissionReconcileOnOpen missionId={id} />
+      {reconcileOnOpen && <MissionReconcileOnOpen missionId={id} />}
 
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
-        initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
-        flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
-        feed={boardHeader(
+        initial={layout}
+        board={layout !== 'board' ? null : boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
+        flow={layout !== 'flow' ? null : boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
+        feed={layout !== 'feed' ? null : boardHeader(
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
