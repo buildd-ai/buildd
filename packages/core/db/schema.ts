@@ -1489,6 +1489,29 @@ export const missions = pgTable('missions', {
   conversationIdx: index('missions_conversation_idx').on(t.conversationId),
 }));
 
+// A mission's stored summary (spec 3ef37387 R-13): stage, progress, health,
+// task counts, current delivery and last activity, written by
+// `refreshMissionSummary` (apps/web/src/lib/mission-summary-store.ts) when a
+// write changes the mission's work, so list surfaces read one row instead of
+// every task and worker. Its own table, not columns on `missions`: the
+// frequent summary write never touches a mission row other writers fence on.
+// No row, or a row of another `version`, reads as missing: the reader derives
+// live and the reconcile cron (oldest `computed_at` first) writes it. That is
+// also the backfill: nothing to copy, every mission starts missing.
+export const missionSummaries = pgTable('mission_summaries', {
+  missionId: uuid('mission_id').primaryKey().references(() => missions.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  summary: jsonb('summary').$type<import('@buildd/shared').MissionSummary>().notNull(),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+  // When the inputs were read, not when the row was written: a write only
+  // replaces a row computed from older reads (the optimistic fence).
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  workspaceIdx: index('mission_summaries_workspace_idx').on(t.workspaceId),
+  computedAtIdx: index('mission_summaries_computed_at_idx').on(t.computedAt),
+}));
+
 // Denormalized initiative rollup. Shape mirrors InitiativeProgress in
 // mission-helpers.ts (kept as a local interface to avoid a schema→helpers import).
 export interface InitiativeProgressCache {
@@ -6335,9 +6358,12 @@ export const deploymentAuditEvents = pgTable('deployment_audit_events', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The signed-in person, for principal 'user'.
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   // 'operator': an agent role acting under its workspace grant.
   // 'admin': a human's admin API key, the escape hatch.
-  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  // 'user': a team owner or admin signed in (the Settings Deploy button).
+  principal: text('principal').notNull().$type<'operator' | 'admin' | 'user'>(),
   roleSlug: text('role_slug'),
   operation: text('operation').notNull(),
   capabilities: jsonb('capabilities').$type<string[]>().notNull(),

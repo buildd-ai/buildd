@@ -55,7 +55,7 @@ describe('FleetOverview', () => {
 
   it('headlines busy of capacity, and counts offline runners', () => {
     const f = fleet([runner('a', 'runner-1', 3, 4), runner('b', 'runner-2', 0, 4, false)]);
-    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('3 of 4 slots busy. 1 offline.');
+    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('3 of 4 slots in use. 1 offline.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 5)])).map(p => p.text).join('')).toBe('No agents working. 5 slots free.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 2, false)])).map(p => p.text).join('')).toBe('All runners offline.');
     expect(fleetOverviewHeadline(fleet([])).map(p => p.text).join('')).toBe('No runners online.');
@@ -85,7 +85,7 @@ describe('FleetOverview', () => {
     const one = fleet([runner('a', 'runner-1', 1, 4, false), runner('b', 'runner-2', 0, 4, false)]);
     expect(fleetOverviewHeadline(one).map(p => p.text).join('')).toBe('All runners offline. 1 agent was working at the last check-in.');
     const mixed = fleet([runner('a', 'runner-1', 1, 4), runner('b', 'runner-2', 2, 4, false)]);
-    expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots busy. 1 offline, with 2 agents working at the last check-in.');
+    expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots in use. 1 offline, with 2 agents working at the last check-in.');
   });
 
   it('drops the second link to the same slots (Home and Health already show them)', () => {
@@ -140,18 +140,19 @@ describe('Settings → Runners page order', () => {
     expect(page).toContain("import { loadFleetSnapshot } from '@/lib/home-fleet'");
   });
 
-  it('a held runner says on hold, since when and when it resumes, instead of idle (R-35)', () => {
+  it('a held runner says Paused, since when and when it resumes, instead of idle (R-35)', () => {
     const held = { ...runner('a', 'runner-1', 1, 4), hold: { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' } };
     const html = renderToStaticMarkup(
       <DisplayTimezoneProvider teamTimezone="UTC"><FleetOverview fleet={fleet([held, runner('b', 'runner-2', 0, 4)])} /></DisplayTimezoneProvider>,
     );
     const t = text(html);
-    expect(t).toContain('runner-1 On hold');
+    expect(t).toContain('runner-1 Paused');
     expect(t).toContain('Nothing new starts here; running agents finish.');
-    expect(t).toContain('On hold since 9:12 AM');
+    expect(t).toContain('Paused since 9:12 AM');
     expect(t).toContain('resumes at 11:12 AM');
     expect(t).toContain('runner-2 Online');
-    expect(t).toContain('1 on hold.');
+    expect(t).toContain('1 paused.');
+    expect(t).not.toMatch(/on hold/i);
     expect(html).toContain('data-held="true"');
   });
 });

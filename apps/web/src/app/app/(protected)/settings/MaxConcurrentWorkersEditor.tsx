@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-const SAVE_FAILED = 'Could not save the worker limit.';
+const SAVE_FAILED = 'Could not save the slot limit.';
 
 interface MaxConcurrentWorkersEditorProps {
   accountId: string;

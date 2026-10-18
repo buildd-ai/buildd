@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   claimTaskCommand,
+  getGateReasonTitle,
   requestTaskRetry,
   requestTaskStart,
   taskActionPhase,
@@ -125,5 +126,13 @@ describe('requests', () => {
     ]);
     stub(409, { error: 'nope' });
     expect(await requestTaskRetry('t1')).toEqual({ ok: false, error: 'nope' });
+  });
+});
+
+describe('getGateReasonTitle copy (terms catalog)', () => {
+  it('a coordination hold names the cause, never Held', () => {
+    const r = { gateReason: 'coordination_hold' } as Parameters<typeof getGateReasonTitle>[0];
+    expect(getGateReasonTitle(r)).toBe('Waiting for files');
+    expect(getGateReasonTitle({ ...r, reasonsChanged: true } as typeof r)).toBe('What it waits on changed');
   });
 });

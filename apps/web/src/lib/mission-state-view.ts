@@ -92,6 +92,7 @@
  * plain-language line built from `kind` + the highest-ranked outstanding fact,
  * with the action that clears it. One derivation, two surfaces.
  */
+import { TERMS } from '@buildd/shared';
 import type { CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
@@ -1106,7 +1107,7 @@ function strandFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'warning',
-      label: `Stranded: ${n === 1 ? '1 claimable task' : `${n} claimable tasks`} and no local session for ${quietLabel(s.quietMs)}`,
+      label: `Stranded: ${n === 1 ? '1 claimable task' : `${n} claimable tasks`} and no session for ${quietLabel(s.quietMs)}`,
       count: n,
       taskIds: s.claimableTaskIds,
       byStatus: { pending: n },
@@ -1490,7 +1491,13 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       acc[t.status] = (acc[t.status] ?? 0) + 1;
       return acc;
     }, {});
-  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ')}`).join(', ');
+  // Two statuses can read one catalog word (assigned and in_progress are both working): merge them.
+  const byWord = new Map<string, number>();
+  for (const [s, n] of Object.entries(byStatus)) {
+    const word = OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ');
+    byWord.set(word, (byWord.get(word) ?? 0) + n);
+  }
+  const breakdown = [...byWord].map(([word, n]) => `${n} ${word}`).join(', ');
   const tasksWord = pendingCount === 1 ? '1 task' : `${pendingCount} tasks`;
 
   // Never cite a row that is only waiting on its dependency: it cannot be
@@ -1605,9 +1612,9 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
 }
 
 const OPEN_STATUS_LABEL: Record<string, string> = {
-  pending: 'queued',
-  assigned: 'picked up',
-  in_progress: 'running',
+  pending: TERMS['work.ready'].short,
+  assigned: TERMS['work.working'].short,
+  in_progress: TERMS['work.working'].short,
 };
 
 /**
@@ -1924,7 +1931,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, waiting for a runner)`;
       }
       if (d.stranded) {
-        return `stranded: no local session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
+        return `stranded: no session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
       }
       if (d.blockedBy) {
         return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
@@ -2115,15 +2122,15 @@ function inProgressCount(input: MissionStateInput): number {
 
 /**
  * The lead of a running mission's headline. "1 task in progress" (in a local
- * session, when the mission runs there); "Ready to start from a local session"
+ * session, when the mission runs there); "Ready to start from your session"
  * when a local mission's session has claimed nothing yet. That is the honest
  * answer for a queued task, never "stalled" or "dispatch a worker".
  */
 function runningLead(input: MissionStateInput): string {
-  const where = isLocal(input) ? ' in a local session' : '';
+  const where = isLocal(input) ? ' in your session' : '';
   if (isLocal(input) && localAwaitingClaim(input)) {
     const n = (input.openTasks ?? []).length;
-    return n === 1 ? 'Ready to start from a local session' : `${n} tasks ready to start from a local session`;
+    return n === 1 ? 'Ready to start from your session' : `${n} tasks ready to start from your session`;
   }
   const n = inProgressCount(input);
   if (n === 0) return `In progress${where}`;
@@ -2170,7 +2177,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       if (waitingOn.stranded) {
         return waitingOn.stranded.flipBlockedReason
-          ? `Can't continue on a runner: ${waitingOn.stranded.flipBlockedReason} Claim the open task(s) from a local session with claim_task {taskId}, or cancel them if you no longer want the work.`
+          ? `Can't continue on a runner: ${waitingOn.stranded.flipBlockedReason} Claim the open task(s) from your session with claim_task {taskId}, or cancel them if you no longer want the work.`
           : 'Continue on a runner: switch the mission to runners and its open task(s) are dispatched to them. Or keep it local and claim them from a session with claim_task {taskId}.';
       }
       if (waitingOn.blockedBy) {
@@ -2188,33 +2195,33 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {
         return waitingOn.count === 1
-          ? 'Start it from a local session with claim_task {taskId}, or cancel it if you no longer want the work.'
-          : 'Start them from a local session with claim_task {taskId}, or cancel the ones you no longer want.';
+          ? 'Start it from your session with claim_task {taskId}, or cancel it if you no longer want the work.'
+          : 'Start them from your session with claim_task {taskId}, or cancel the ones you no longer want.';
       }
-      return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
+      return 'Start an agent on the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
       return waitingOn.infra
         ? 'Retries are exhausted. Investigate the infrastructure failure and re-run the task.'
         : 'Read the failure and either retry the task or change its scope.';
     case 'merge':
       if (waitingOn.missionPr && waitingOn.missionPrState === 'closed') {
-        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
+        return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or merge the work another way.';
       }
       if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
-        return 'The mission PR opens once every task PR has landed on the integration branch. If it doesn’t open, the opener is stuck.';
+        return 'The mission PR opens once every task PR has merged into the integration branch. If it doesn’t open, the opener is stuck.';
       }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
-        : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
+        : 'Resolve and merge the open PR(s). A finished task is not done until its PR merges.';
     case 'ci_red':
       return 'The automatic fix attempts are used up and CI is still red, so this is not ready to review. Open the failing check, fix it or take the branch over, then push.';
     case 'landing_blocked':
       return waitingOn.nextAction;
     case 'pr_closed_unmerged':
       if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
-        return 'GitHub will not let this PR merge. Confirm the suggested PR if the work shipped there, or mark the PR abandoned with a reason if the work is not shipping.';
+        return 'GitHub will not let this PR merge. Confirm the suggested PR if the work merged there, or mark the PR abandoned with a reason if the work will not merge.';
       }
-      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work is not shipping.';
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work merged under a different PR, or have the owner mark the PR abandoned with a reason (POST /api/tasks/[id]/closed-pr, or Abandon on the mission page) if the work will not merge.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';

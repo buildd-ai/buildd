@@ -87,6 +87,13 @@ describe('GET /api/fleet/occupancy', () => {
     expect((await GET(req())).status).toBe(404);
   });
 
+  it('scopes named member rows to the viewed team', async () => {
+    await GET(req('?team=team-2'));
+    const args = mockLoadOccupancy.mock.calls[0] as unknown[];
+    expect(args[4]).toBe('user-1');
+    expect(args[5]).toBe('team-2');
+  });
+
   it('passes ?tzOffset= through as milliseconds, and 0 when absent or junk', async () => {
     await GET(req('?window=30d&tzOffset=-240'));
     expect(mockLoadOccupancy.mock.calls.at(-1)![3]).toBe(-240 * 60_000);

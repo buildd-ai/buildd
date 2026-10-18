@@ -219,8 +219,8 @@ function openTaskLinks(
     if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
-          ? `${name(t)} is ready to start. Claim it from a local session.`
-          : `A local session claimed ${name(t)}, but it is not running now.`,
+          ? `${name(t)} is ready to start. Claim it from your session.`
+          : `A session claimed ${name(t)}, but it is not running now.`,
         'mission.executor',
         { ...base, taskId: t.id },
       );
@@ -246,7 +246,7 @@ function openTaskLinks(
           ? `${name(t)} is next in line for a runner.`
           : `${name(t)} was started, but nothing is running it now.`
         : t.live
-          ? `${name(t)} is in progress${w.local ? ' in a local session' : ''}.`
+          ? `${name(t)} is in progress${w.local ? ' in your session' : ''}.`
           : `${name(t)} is not finished yet.`,
       'tasks.status + workers.status',
       { ...base, taskId: t.id },

@@ -83,6 +83,11 @@ export interface ClaimedEffect extends EffectSnapshot {
   dedupeKey: string;
   payload: Record<string, unknown>;
   attemptCount: number;
+  /**
+   * How long ago the row was written, by the store's own clock (ms). The merge effect
+   * bounds a merge hold by it; absent (a store that does not say) never ends a hold by age.
+   */
+  ageMs?: number;
 }
 
 export interface FollowupEffect {
@@ -168,6 +173,11 @@ export interface Store {
   releaseSettledLanes(deliveryId: string): Promise<LaneKey[]>;
   /** Make the oldest parked refresh on this lane due now; returns its delivery. */
   wakeNextLaneWaiter(k: LaneKey): Promise<string | null>;
+  /**
+   * §4 merge holds: make this delivery's held `merge_call` for `headSha` (a pending row
+   * whose outcome is `held:…`) due now. Returns how many rows it woke.
+   */
+  wakeHeldMerges(deliveryId: string, headSha: string): Promise<number>;
 }
 
 // ── GitHub ──────────────────────────────────────────────────────────────────
@@ -244,6 +254,8 @@ export interface MergeAnswer {
   detail?: string;
   /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO); null or absent = no wait asked. */
   retryAt?: string | null;
+  /** `held`: the required check GitHub named as not passed yet; null when it gave only a count. */
+  check?: string | null;
 }
 
 export interface PostedReview {
@@ -258,7 +270,8 @@ export interface GithubWrites {
   /**
    * Merge only if the PR's head is still `headSha`. The host reads GitHub's
    * answer into the outcome (a moved head or a rate limit is `not_merged`, a
-   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`); the
+   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`, a
+   * required check that has not passed yet `held` with the check); the
    * kernel verifies anything but a definite refusal with a live read.
    */
   mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }): Promise<MergeAnswer>;

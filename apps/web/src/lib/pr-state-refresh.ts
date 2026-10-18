@@ -267,11 +267,19 @@ async function recordObservedClosure(p: { workspaceId: string; repo: string; prN
  * with no delivery runs `refreshWorkerMergeStateIfStale` as before; a
  * delivery-owned row is read and, if GitHub says it closed, recorded as a fact
  * only (AC-3).
+ *
+ * Bounded (spec 3ef37387 R-12): each PR once, and at most
+ * {@link RENDER_OBSERVE_MAX} per render, in the caller's order. The rest wait
+ * for the next render or the hourly sweep.
  */
+export const RENDER_OBSERVE_MAX = 5;
+
 export async function observeMergeStateOnRender(
-  stale: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  rows: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
   installationId: number,
 ): Promise<void> {
+  const seen = new Set<string>();
+  const stale = rows.filter(w => !seen.has(w.prUrl) && !!seen.add(w.prUrl)).slice(0, RENDER_OBSERVE_MAX);
   if (stale.length === 0) return;
   const ownerOf = await deliveryOwnership(stale.map((w) => w.id));
   for (const w of stale) {
@@ -419,8 +427,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         await db.update(workers).set({ ...bookkeeping, updatedAt: now }).where(eq(workers.id, worker.id));
         if (pr.state === 'closed' && worker.prNumber != null) {
           // §11: a kernel-owned delivery imports the same close/merge from its own live read.
-          await import('@/lib/workflow/seam')
-            .then(({ observePrState }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }))
+          await import('@/lib/workflow/kernel-client')
+            .then(({ observePrState, systemPrincipal }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }, { principal: systemPrincipal('system:sweep:pr-state-refresh') }))
             .catch((err) => console.error(`[pr-state-refresh] kernel close import failed for PR #${worker.prNumber}:`, err));
         }
         failedAt.delete(worker.id);

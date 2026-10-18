@@ -22,4 +22,22 @@ describe('BookkeepingAttemptRow', () => {
     expect(html).toContain('Branch: buildd/abc');
     expect(html).toContain('The runner took this attempt but never started it.');
   });
+  it('says nothing ran once the task is settled, and still draws no failure', () => {
+    const settled = renderToStaticMarkup(
+      <BookkeepingAttemptRow workerId="w2" retry={{ kind: 'settled' }}><p>x</p></BookkeepingAttemptRow>,
+    );
+    expect(settled).toContain('nothing ran');
+    expect(settled).not.toContain('not counted as a failure');
+    expect(settled).not.toContain('status-error');
+  });
+  it('one line for a run of lost claims: counted, in plain words', () => {
+    const grouped = renderToStaticMarkup(
+      <BookkeepingAttemptRow workerId="w3" retry={{ kind: 'queued' }} count={4} undelivered attemptLabel="Attempt 4"><p>x</p></BookkeepingAttemptRow>,
+    );
+    expect(grouped).toContain('Claim didn&#x27;t reach the runner 4 times');
+    expect(grouped).toContain('Runner never received this attempt. Released.');
+    // A per-row label would name only one of the four.
+    expect(grouped).not.toContain('Attempt 4');
+  });
 });
+

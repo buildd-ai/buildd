@@ -2,15 +2,17 @@
 
 /**
  * Overview · Flow · History. The shell mounts one layout at a time and switches on
- * the client: the tab writes `?layout=` with `replaceState` (never the router,
- * so the `force-dynamic` render does not re-run and the task sheet's own
- * history entries are left alone).
+ * the client: the tab writes `?layout=` with `replaceState` (never a router
+ * navigation, so the task sheet's own history entries are left alone). The
+ * server builds only the layout the URL names; a tab it has not built yet is
+ * fetched with one `router.refresh()`, and one shown before switches back at once.
  *
  * Board and Flow share `MissionBoardHeader`; the Feed keeps its masthead and
  * carries the same tabs in it.
  */
 import Link from 'next/link';
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { MISSION_LAYOUT_TABS, MISSION_LAYOUT_LABEL, missionLayoutHref, type MissionLayout } from '@/lib/mission-layout';
 import type { MastheadChip } from '@/components/missions/MissionMasthead';
 import { formatClock } from '@/lib/mission-board';
@@ -71,6 +73,7 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
 
 export interface MissionLayoutShellProps {
   initial: MissionLayout;
+  /** Only the layout on screen is built by the server (spec 3ef37387 R-18); the others are null. */
   board: ReactNode;
   flow: ReactNode;
   feed: ReactNode;
@@ -78,6 +81,11 @@ export interface MissionLayoutShellProps {
 
 export default function MissionLayoutShell({ initial, board, flow, feed }: MissionLayoutShellProps) {
   const [layout, set] = useState<MissionLayout>(initial);
+  // The last render of each layout the server sent, so a tab shown before
+  // switches back at once; the live refresh brings it up to date.
+  const shown = useRef<Partial<Record<MissionLayout, ReactNode>>>({});
+  const sent: Record<MissionLayout, ReactNode> = { board, flow, feed };
+  for (const l of MISSION_LAYOUT_TABS) if (sent[l] != null) shown.current[l] = sent[l];
   const setLayout = useCallback((l: MissionLayout) => {
     set(l);
     try {
@@ -87,12 +95,28 @@ export default function MissionLayoutShell({ initial, board, flow, feed }: Missi
     }
   }, []);
   const value = useMemo(() => ({ layout, setLayout }), [layout, setLayout]);
+  const content = shown.current[layout];
   return (
     <LayoutContext.Provider value={value}>
       <div data-testid="mission-layout" data-layout={layout}>
-        {layout === 'board' ? board : layout === 'flow' ? flow : feed}
+        {content ?? <LayoutLoading layout={layout} />}
       </div>
     </LayoutContext.Provider>
+  );
+}
+
+/**
+ * A layout the server has not built: it builds it for the URL that now names
+ * it (one refresh when this mounts), and the tabs stay usable meanwhile.
+ */
+function LayoutLoading({ layout }: { layout: MissionLayout }) {
+  const router = useRouter();
+  useEffect(() => { router.refresh(); }, [router, layout]);
+  return (
+    <div data-testid="mission-layout-loading" className="py-10">
+      <MissionLayoutTabs />
+      <p className="mt-6 text-body text-text-muted">Loading {MISSION_LAYOUT_LABEL[layout]}…</p>
+    </div>
   );
 }
 

@@ -103,11 +103,14 @@ mock.module('@buildd/core/pr-facts', () => ({
 }));
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
-const mockObservePrState = mock(async (_input: any) => false);
+const mockObservePrState = mock(async (_input: any, _call?: any) => false);
+// T17 to T19 go through the kernel client (AC-9).
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 // No row here has a workflow delivery: these cases pin the legacy read-through
 // (delivery-owned rows: pr-state-refresh-delivery-owned.test.ts).
 mock.module('@/lib/workflow/seam', () => ({
-  observePrState: mockObservePrState,
+  observePrState: mock(async () => { throw new Error('called the seam\'s observePrState, not the kernel client\'s'); }),
   deliveryOwnedWorkers: async () => new Set<string>(),
   recordPrStateObserved: async () => false,
 }));
@@ -280,7 +283,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     // A kernel-owned delivery imports the same close from its own live read.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', prNumber: 99, installationId: 123, source: 'sweep:pr-state-refresh',
-    }));
+    }), { principal: { kind: 'system', id: 'system:sweep:pr-state-refresh' } });
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
   });
 

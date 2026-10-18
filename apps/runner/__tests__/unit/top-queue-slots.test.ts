@@ -133,7 +133,7 @@ describe('a refused row says why, never "now" (AC-30)', () => {
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0002', outcome: { at: NOW - 5_000, reason: 'all_candidates_deferred', exclusion: 'mission_concurrent', detail: 'Its mission is at its concurrency cap (3/3 tasks in flight).' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0003', outcome: { at: NOW - 5_000, reason: 'refused', status: 429, refusal: 'max_concurrent_workers' } });
     s = reduce(s, { type: 'claim_outcome', taskId: 'a0a0a0a0-0006', outcome: { at: NOW - 5_000, reason: 'no_pending_tasks', exclusion: 'deps_blocked', detail: 'It waits on a dependency.' } });
-    expect(starts(s)).toEqual([[1, 'now'], [2, 'mission is at its task limit'], [3, 'account is at its worker limit'], [4, 'now'], [5, 'after its dependency'], [6, 'after its dependency']]);
+    expect(starts(s)).toEqual([[1, 'now'], [2, 'mission is at its task limit'], [3, 'account has no free slot'], [4, 'now'], [5, 'after its dependency'], [6, 'after its dependency']]);
   });
 
   test('a claim outcome that only says the task moved does not hold it', () => {
@@ -141,10 +141,10 @@ describe('a refused row says why, never "now" (AC-30)', () => {
     expect(starts(s)[0]).toEqual([1, 'now']);
   });
 
-  test('held: every row reads "on hold", and the slot count says so', () => {
+  test('runner paused: every row reads "paused", and the slot count says so', () => {
     const s = reduce(stateWith(9, 1), { type: 'runner_hold', hold: { since: iso(NOW - 10 * MIN), until: null } });
-    expect(starts(s).every(([, w]) => w === 'on hold')).toBe(true);
-    expect(slotsSummary(s, NOW)).toBe('9 slots · 1 running · on hold');
+    expect(starts(s).every(([, w]) => w === 'paused')).toBe(true);
+    expect(slotsSummary(s, NOW)).toBe('9 slots · 1 running · paused');
   });
 });
 
@@ -198,7 +198,7 @@ describe('what the claim loop did (task 9e12f377 part 3)', () => {
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'claimed', started: 2 } });
     expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · started 2');
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'all_candidates_deferred', deferrals: { soft_overlap: 3 } } });
-    expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: every waiting task is held (waits for work on the same files)');
+    expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: every waiting task: waits for work on the same files');
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'no_pending_tasks' } });
     expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: nothing is waiting for this runner');
     s = reduce(s, { type: 'claim_loop', looking: true });
@@ -210,9 +210,9 @@ describe('what the claim loop did (task 9e12f377 part 3)', () => {
 
   test('a refused claim and an account limit, in words', () => {
     let s = reduce(stateWith(9, 1), { type: 'claim_outcome', outcome: { at, reason: 'refused', status: 429, refusal: 'max_concurrent_workers' } });
-    expect(claimLoopLine(s, NOW)).toBe("Looked for work 14:02 · nothing to start: the account's worker limit is reached");
+    expect(claimLoopLine(s, NOW)).toBe("Looked for work 14:02 · nothing to start: every slot the account may use is in use");
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'no_slots' } });
-    expect(claimLoopLine(s, NOW)).toContain("the account's worker limit is reached");
+    expect(claimLoopLine(s, NOW)).toContain("every slot the account may use is in use");
   });
 
   test('not while held, nor with every slot busy (the header says so)', () => {
@@ -244,7 +244,7 @@ describe('frames (R-7)', () => {
       for (const l of lines) expect(textWidth(stripAnsi(l))).toBe(cols);
       const t = text(lines);
       expect(t).toMatch(/9 slots · (1 running · )?8 free/);
-      expect(t).toContain('1 of 9 busy');
+      expect(t).toContain('1 of 9 slots in use');
       expect(t).toContain('Looked for work 14:58 · started 3');
       expect(t).toContain('when #1 ends (same files)');
       expect(t).not.toMatch(/\bnext\s*$/m);

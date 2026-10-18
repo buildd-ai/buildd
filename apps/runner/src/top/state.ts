@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -698,11 +698,11 @@ export interface MissionRow {
   held: boolean;
   /** Delivered: when, in ms; it is listed for 7 days after. */
   deliveredAt?: number;
-  /** Set on a team's "Delivered this week" row (R-24): how many it holds, and whether they are listed under it. */
+  /** Set on a team's "Done this week" row (R-24): how many it holds, and whether they are listed under it. */
   fold?: { count: number; open: boolean };
 }
 
-/** The key of a team's "Delivered this week" row. */
+/** The key of a team's "Done this week" row. */
 export function foldKey(team: string | null): string {
   return `fold:${team ?? ''}`;
 }
@@ -721,21 +721,31 @@ export function deliveredDay(ms: number): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
 }
 
-/** What a mission row says besides its title and stage: its delivered day. */
+/** What a mission row says besides its title and stage: the day it was done. */
 export function missionMeta(row: Pick<MissionRow, 'deliveredAt'>): string | null {
-  if (row.deliveredAt !== undefined) return `delivered ${deliveredDay(row.deliveredAt)}`;
+  if (row.deliveredAt !== undefined) return `${TERMS['mission.done'].short} ${deliveredDay(row.deliveredAt)}`;
   return null;
 }
 
-/** The sidebar's stage words: `building`, or `building locally` for a mission managed from a local session. */
+/** The sidebar's stage words: `building`, or `building in your session` for a mission run from your session. */
 export function missionRowStage(row: Pick<MissionRow, 'stage' | 'local'>): string | null {
   const word = missionStageWord(row);
-  if (!word) return row.local ? 'local' : null;
-  return row.local ? `${word} locally` : word;
+  const session = TERMS['mission.your_session'].short;
+  if (!word) return row.local ? session : null;
+  return row.local ? `${word} in ${session}` : word;
 }
 
+/**
+ * The terms catalog's word per stage. top's mission data carries no armedAt,
+ * so `on_hold` reads the catalog default, paused (never "on hold").
+ */
 const STAGE_WORD: Record<MissionStageStep, string> = {
-  building: 'building', verifying: 'verifying', delivering: 'delivering', delivered: 'delivered', on_hold: 'on hold', planning: 'planning',
+  building: TERMS['mission.building'].short,
+  verifying: TERMS['mission.verifying'].short,
+  delivering: TERMS['pr.merging'].short,
+  delivered: TERMS['mission.done'].short,
+  on_hold: TERMS['mission.paused'].short,
+  planning: TERMS['mission.planning'].short,
 };
 
 /** The stage in one word or two, for the mission row; null without a stage. */
@@ -752,7 +762,8 @@ function waitingOnWords(waitingOn: string | null): string | null {
   if (!waitingOn) return null;
   if (waitingOn === 'see the mission page') return 'visual review finished, results on buildd';
   if (waitingOn === 'a question for you') return 'the visual review asks you a question';
-  return waitingOn;
+  // An older server counts merged tasks as "N of M landed".
+  return waitingOn.replace(/\b(\d+ of \d+) landed\b/g, `$1 ${TERMS['pr.merged'].short}`);
 }
 
 /** The stage and what it waits on: `verifying: 2 checks left`. */
@@ -767,15 +778,15 @@ const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
  * The selected mission's status line, under its title: the stage, how far it
- * got, and who runs it. `Building · 5 of 6 landed`, `Verifying · visual review
- * finished, results on buildd`, `Building · 1 of 2 landed · Managed from a
- * local session`, `Delivered Oct 14`. "Landed" is the server's word and means
- * merged. Null for the fold row, and for loose tasks when there are none.
+ * got, and who runs it. `Building · 5 of 6 merged`, `Verifying · visual review
+ * finished, results on buildd`, `Building · 1 of 2 merged · Managed from a
+ * local session`, `Done Oct 14`. Null for the fold row, and for loose tasks
+ * when there are none.
  */
 export function missionStatusLine(row: MissionRow): string | null {
   if (row.fold) return null;
   if (isLooseKey(row.key)) return row.total > 0 ? `Tasks outside any mission · ${row.total - row.done} open` : null;
-  if (row.deliveredAt !== undefined) return `Delivered ${deliveredDay(row.deliveredAt)}`;
+  if (row.deliveredAt !== undefined) return `${TERMS['mission.done'].word} ${deliveredDay(row.deliveredAt)}`;
   const parts: string[] = [];
   const word = missionStageWord(row);
   if (word) {
@@ -785,10 +796,10 @@ export function missionStatusLine(row: MissionRow): string | null {
   } else if (row.planning) {
     parts.push('Planning');
   } else if (row.held) {
-    parts.push('On hold');
+    parts.push(TERMS['mission.paused'].word);
   }
   if (!word && row.total > 0) parts.push(`${row.done} of ${row.total} tasks done`);
-  if (row.local) parts.push('Managed from a local session');
+  if (row.local) parts.push(TERMS['mission.your_session'].word);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
@@ -913,7 +924,7 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
 
 /**
  * The rows the missions pane lists (R-24): each team's open missions, then one
- * "Delivered this week" row folding the ones delivered in the last 7 days.
+ * "Done this week" row folding the ones delivered in the last 7 days.
  * An opened fold lists them under it, newest first; so does a fold holding the
  * selected mission (`--mission`, or the cursor). While `/` filters, missions
  * whose title or a task's title matches are listed, delivered ones on their
@@ -940,7 +951,7 @@ export function missionList(state: TopState, now: number = Date.now()): MissionR
     if (done.length > 0) {
       const key = foldKey(team);
       const open = state.unfolded.includes(key) || done.some(isSelected);
-      out.push({ ...emptyRow(key, 'Delivered this week'), team, fold: { count: done.length, open } });
+      out.push({ ...emptyRow(key, TERMS['total.done_this_week'].word), team, fold: { count: done.length, open } });
       if (open) out.push(...done);
     }
     while (i < rows.length && rows[i].team === team && isLooseKey(rows[i].key)) out.push(rows[i++]);
@@ -1214,7 +1225,7 @@ export function holdRunningWords(running: number): string {
 /**
  * The line under the header while held (R-33): since when, what still runs,
  * that h resumes, and when it resumes on its own (`--for`). Null when not held.
- * "On hold since 09:12: nothing new starts, 3 running finish. h resumes."
+ * "Paused since 09:12: nothing new starts, 3 running finish. h resumes."
  */
 export function holdLine(state: TopState, now: number): string | null {
   const h = heldNow(state, now);
@@ -1223,7 +1234,7 @@ export function holdLine(state: TopState, now: number): string | null {
   // R-33: what still runs, and what `buildd stop` paused.
   const paused = Object.values(state.workers).filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause').length;
   const pausedWords = paused > 0 ? `, ${paused} paused` : '';
-  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
+  return `${TERMS['runner.paused'].word} since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
 }
 
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
@@ -1242,10 +1253,10 @@ export function providerHoldLine(h: ProviderHold, now: number): string {
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
 export const EXCLUSION_WORDS: Record<string, string> = {
-  mission_local: 'local session',
-  mission_held: 'mission is on hold',
-  task_held: 'held by a person',
-  task_reserved: 'reserved by a local session',
+  mission_local: TERMS['mission.your_session'].short,
+  mission_held: `mission is ${TERMS['mission.paused'].short}`,
+  task_held: `${TERMS['work.paused'].short} by a person`,
+  task_reserved: 'taken by your session',
   already_claimed: 'another runner has it',
   active_worker: 'another runner has it',
   workspace_cap: 'workspace is at its task limit',
@@ -1265,7 +1276,7 @@ export const EXCLUSION_WORDS: Record<string, string> = {
   connector_mismatch: 'needs a connector this runner lacks',
   provider_unavailable: 'its model provider is off',
   routing_paused: 'routing is paused',
-  account_cap: 'account is at its worker limit',
+  account_cap: 'account has no free slot',
   rate_limited: 'claimed too recently, retry soon',
   delegation_unmet: 'needs access a person has not granted',
 };
@@ -1285,7 +1296,7 @@ function dependencyWords(task: TopTask, state: TopState): string | null {
     .filter((t): t is TopTask => !!t && !TERMINAL.has(t.status));
   if (deps.length === 0) return null;
   const more = deps.length > 1 ? ` and ${deps.length - 1} more` : '';
-  return `waits on: ${deps[0].title}${more}`;
+  return `waits on: ${titleWithAttempt(deps[0].title)}${more}`;
 }
 
 /** A plan or rate limit on this task's provider, short when the header says it already. */
@@ -1324,7 +1335,7 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
     if (code === 'workspace_paused') {
       return o.until && (isoMs(o.until) ?? 0) > now ? `workspace paused until ${localLiftTime(o.until, now)}` : 'workspace paused';
     }
-    if (code === 'budget_paused') return 'held by a usage limit';
+    if (code === 'budget_paused') return TERMS['wait.usage_limit'].short;
     if (EXCLUSION_WORDS[code]) return EXCLUSION_WORDS[code];
     return o.detail ? firstSentence(o.detail) : codeWords(code);
   }
@@ -1338,9 +1349,9 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
 /** Deferral reasons the server counts on a broad claim, in words. */
 export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
-  budget_paused: 'held by a usage limit',
+  budget_paused: TERMS['wait.usage_limit'].short,
   oauth_parallelism: 'the plan allows only a few sessions at once',
-  duplicate_worker: 'a worker already has it',
+  duplicate_worker: 'an agent already has it',
   sibling_retry_open: 'a retry of it is already open',
   fix_not_needed: 'its fix is no longer needed',
   kernel_unavailable: 'the workflow control plane did not answer',
@@ -1358,7 +1369,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
 
 /** Words for a deferral or exclusion code; a code this view has no words for never prints raw. */
 function codeWords(code: string): string {
-  return DEFERRAL_WORDS[code] ?? 'held by the server';
+  return DEFERRAL_WORDS[code] ?? TERMS['wait.unknown'].short;
 }
 
 /**
@@ -1369,8 +1380,8 @@ function codeWords(code: string): string {
 function broadDeferralWords(o: ClaimOutcome): string | null {
   const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0);
   if (entries.length === 0) return null;
-  if (entries.length === 1) return `held at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
-  return 'held at the last claim, for reasons it did not tie to this task';
+  if (entries.length === 1) return `skipped at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
+  return 'skipped at the last claim, for reasons it did not tie to this task';
 }
 
 /**
@@ -1394,8 +1405,8 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
     if (words) return words;
   }
-  if (heldNow(state, now)) return 'runner is on hold';
-  if (task.mission?.isHeld) return 'mission is on hold';
+  if (heldNow(state, now)) return `runner is ${TERMS['runner.paused'].short}`;
+  if (task.mission?.isHeld) return EXCLUSION_WORDS.mission_held;
   const deps = dependencyWords(task, state);
   if (deps) return deps;
   if (task.startAt) {
@@ -1403,7 +1414,7 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     if (!Number.isNaN(at) && at > now) return `starts in ${untilWords(at - now)}`;
   }
   const busy = busySlots(state);
-  if (busy >= state.runner.maxConcurrent) return `runner is full (${busy} of ${state.runner.maxConcurrent} busy)`;
+  if (busy >= state.runner.maxConcurrent) return `runner is full (${slotsInUse(busy, state.runner.maxConcurrent)})`;
   if (broad && broadSawIt && broad.reason !== 'claimed') {
     if (broad.reason === 'all_candidates_deferred') {
       const words = broadDeferralWords(broad);
@@ -1450,7 +1461,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     if (!missionHit && !matchesFilter(t.title, state.filter)) continue;
     const w = workers.get(t.id);
     const role = roleLabel(t.roleSlug);
-    const base = { taskId: t.id, title: t.title || w?.taskTitle || t.id.slice(0, 8), role };
+    const base = { taskId: t.id, title: titleWithAttempt(t.title || w?.taskTitle) || t.id.slice(0, 8), role };
 
     if (w && (BUSY.includes(w.status) || w.status === 'waiting' || w.status === 'idle')) {
       const elapsedMs = now - (w.startedAt || now);
@@ -1492,12 +1503,12 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     // Running somewhere else: listed as running, so the mission shows all its live work.
     const local = t.mission?.executor === 'local';
     if (!w && (t.status === 'assigned' || t.status === 'in_progress' || t.status === 'waiting_input')) {
-      const where = local ? 'in a local session' : 'on another runner';
+      const where = local ? 'in your session' : 'on another runner';
       running.push({ ...base, group: 'running', kind: 'running', elsewhere: local ? 'local' : 'runner', action: t.status === 'waiting_input' ? `asks a question ${where}, o opens it` : `running ${where}` });
       continue;
     }
     if (local && !w) {
-      waiting.push({ ...base, group: 'waiting', kind: 'waiting', elsewhere: 'local', reason: 'for the local session to pick up' });
+      waiting.push({ ...base, group: 'waiting', kind: 'waiting', elsewhere: 'local', reason: 'for your session to pick up' });
       continue;
     }
     waiting.push({ ...base, group: 'waiting', kind: 'waiting', reason: waitingReason(t, state, now, holds) });
@@ -1512,7 +1523,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
     listed.add(q.taskId);
     const role = roleLabel(q.roleSlug);
     const base = { taskId: q.taskId, title: q.title, ...(role ? { role } : {}), group: 'waiting' as const, kind: 'waiting' as const };
-    if (q.exclusion === 'local_session') waiting.push({ ...base, elsewhere: 'local', reason: 'for the local session to pick up' });
+    if (q.exclusion === 'local_session') waiting.push({ ...base, elsewhere: 'local', reason: 'for your session to pick up' });
     else waiting.push({ ...base, reason: queueRowReason(q) });
   }
 
@@ -1620,18 +1631,18 @@ function clockAt(ms: number, now: number): string {
 
 const BROAD_REASON_WORDS: Record<string, string> = {
   no_pending_tasks: 'nothing is waiting for this runner',
-  no_slots: "the account's worker limit is reached",
+  no_slots: "every slot the account may use is in use",
   budget_exhausted: 'a plan or rate limit holds the work',
   context_paused: 'claims are paused after repeated failures',
   race_lost: 'another runner took the work first',
-  runner_held: 'this runner is on hold',
+  runner_held: `this runner is ${TERMS['runner.paused'].short}`,
 };
 
 /** Why the last broad claim started nothing, in words. */
 export function broadNothingWords(o: ClaimOutcome): string {
   if (o.reason === 'refused') {
     const why = (o.refusal ?? '').replace(/\s+/g, ' ').trim();
-    return o.status === 429 ? "the account's worker limit is reached" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
+    return o.status === 429 ? "every slot the account may use is in use" : why ? `the server refused the claim (${why.slice(0, 60)})` : 'the server refused the claim';
   }
   if (o.reason === 'budget_exhausted' && o.summary) return o.summary.replace(/\.$/, '');
   if (o.reason === 'all_candidates_deferred' || o.reason === 'budget_exhausted_partial') {
@@ -1639,9 +1650,9 @@ export function broadNothingWords(o: ClaimOutcome): string {
     if (top) {
       const words = EXCLUSION_WORDS[top[0]] ?? top[0].replace(/_/g, ' ');
       const total = Object.values(o.deferrals ?? {}).reduce((n, v) => n + v, 0);
-      return total === top[1] ? `every waiting task is held (${words})` : `every waiting task is held (most: ${words})`;
+      return total === top[1] ? `every waiting task: ${words}` : `most waiting tasks: ${words}`;
     }
-    return 'every waiting task is held';
+    return 'no waiting task can start yet';
   }
   return BROAD_REASON_WORDS[o.reason] ?? o.reason.replace(/_/g, ' ');
 }

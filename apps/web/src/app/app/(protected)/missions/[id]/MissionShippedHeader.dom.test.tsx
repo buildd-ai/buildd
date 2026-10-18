@@ -61,6 +61,7 @@ describe('record present', () => {
   it('is the #what-shipped anchor, with the lede and the change-type chip', () => {
     mount();
     expect(container.querySelector('#what-shipped')).not.toBeNull();
+    expect(container.querySelector('#what-shipped-label')!.textContent).toBe('What changed');
     expect(q('shipped-lede')!.textContent).toContain('home screen now opens');
     expect(q('shipped-change-type')!.textContent).toBe('Frontend');
     expect(q('mission-shipped-header')!.dataset.variant).toBe('lede');

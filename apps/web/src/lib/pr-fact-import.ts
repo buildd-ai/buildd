@@ -61,8 +61,8 @@ export interface PrFactImportDeps {
 }
 
 async function defaultImportToKernel(p: { workspaceId: string; repoFullName: string; prNumber: number; installationId: number }): Promise<unknown> {
-  const { observePrState } = await import('@/lib/workflow/seam');
-  return observePrState({ ...p, source: 'sweep:pr-fact-import' });
+  const { observePrState, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+  return observePrState({ ...p, source: 'sweep:pr-fact-import' }, { principal: systemPrincipal('system:sweep:pr-fact-import') });
 }
 
 export async function importWorkerPrFacts(workerRows: WorkerPrRow[], opts: PrFactImportDeps = {}): Promise<PrFactImportResult> {

@@ -1,9 +1,9 @@
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from './open-ask';
 /**
- * Home's fleet queries: the runner snapshot (heartbeats × live workers), each
- * slot's day history, the ticker's events and the stat strip's counts.
- * Shaping lives in the pure modules (`fleet-view.ts`, `home-ticker.ts`);
+ * Home's fleet queries: the runner snapshot (heartbeats × live workers) and
+ * each slot's day history for the Agents panel, and the questions workers are
+ * parked on for Needs you. Shaping lives in the pure module (`fleet-view.ts`);
  * this file only reads.
  *
  * Runner ↔ worker join: a runner claims with `runner = <its localUiUrl>` and
@@ -12,32 +12,17 @@ import { isOpenAsk } from './open-ask';
  * reads, scoped here to the team's accounts and workspaces in one query.
  */
 import { db } from '@buildd/core/db';
-import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, gt, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, questionSessionEnded, type FleetSnapshot } from '@buildd/shared';
 import { fleetHeartbeatScope } from './fleet-heartbeat-scope';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
-import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveRunEvidence } from '@buildd/core/run-evidence';
-import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
-import { loadSupersededQuestionTaskIds } from './incident-recovery-load';
-import { getDeliveryViewsForTasks } from './workflow/delivery-view';
-import { prLifecycleFor } from './delivery-overlay';
-import type { DeliveryView } from './workflow/projections';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
-
-export interface HomeFleetStats {
-  mergedToday: number;
-  mergedPrNumbers: number[];
-  /** Open PRs still waiting on CI — the platform's, not the owner's. */
-  prsInCi: Array<{ prNumber: number; label: string }>;
-  /** Fix attempts (CI / review) that completed today. */
-  selfHealed: number;
-}
 
 /** A worker parked on a question — the Needs-you stack answers it inline. */
 export interface HomeFleetQuestion {
@@ -52,22 +37,19 @@ export interface HomeFleetQuestion {
 
 export interface HomeFleetData {
   fleet: FleetSnapshot;
-  ticker: TickerEvent[];
-  stats: HomeFleetStats;
-  questions: HomeFleetQuestion[];
 }
 
 /** How far back a slot's lane reaches. */
 export const FLEET_WINDOW_MS = 8 * 3_600_000;
-/** Most worker rows one Home render reads for the lanes and the ticker. */
+/** Most worker rows one Home render reads for the lanes. */
 export const FLEET_WORKER_ROW_CAP = 400;
 
 const EMPTY: HomeFleetData = {
   fleet: { runners: [], live: 0, capacity: 0, window: { from: 0, to: 0 } },
-  ticker: [],
-  stats: { mergedToday: 0, mergedPrNumbers: [], prsInCi: [], selfHealed: 0 },
-  questions: [],
 };
+
+/** Most parked questions Home reads for Needs you. */
+export const HOME_QUESTION_ROW_CAP = 50;
 
 /**
  * The runners a team's fleet is made of: fresh heartbeats of the team's own
@@ -76,10 +58,16 @@ const EMPTY: HomeFleetData = {
  * Lanes band all read this (then `fleetCapacity`), so their capacity is one number.
  */
 export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<FleetHeartbeatRow[]> {
+  const query = fleetHeartbeatsQuery(input);
+  return query ? (await query) as FleetHeartbeatRow[] : [];
+}
+
+/** `loadFleetHeartbeats`' one statement, for a caller's batch; null when there is no scope. */
+export function fleetHeartbeatsQuery(input: { teamId: string | null; wsIds: string[]; now: number }) {
   const { teamId, wsIds, now } = input;
   const scope = fleetHeartbeatScope({ teamId, wsIds });
-  if (!scope) return [];
-  const rows = await db
+  if (!scope) return null;
+  return db
     .select({
       id: workerHeartbeats.id,
       accountId: workerHeartbeats.accountId,
@@ -95,7 +83,6 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
       gt(workerHeartbeats.lastHeartbeatAt, new Date(now - RUNNER_STALE_CUTOFF_MS)),
       scope,
     ));
-  return rows as FleetHeartbeatRow[];
 }
 
 /** `fleetCapacity` over `loadFleetHeartbeats`, with Home's online threshold. */
@@ -149,6 +136,82 @@ async function loadSessionsOnline(wsIds: string[], now: number): Promise<number 
   }
 }
 
+/**
+ * Every worker parked on a question in these workspaces, with its task: one
+ * statement for Home's batch. `homeQuestionsFrom` keeps the ones Needs you
+ * admits and names each one's runner.
+ */
+export function homeQuestionWorkersQuery(wsIds: string[]) {
+  return db
+    .select({
+      id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+      status: workers.status, startedAt: workers.startedAt, updatedAt: workers.updatedAt, waitingFor: workers.waitingFor,
+      // The context fallback for a card whose brief was lost.
+      error: workers.error,
+      taskId: tasks.id, taskStatus: tasks.status, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+      roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+    })
+    .from(workers)
+    .leftJoin(tasks, eq(workers.taskId, tasks.id))
+    .where(and(inArray(workers.workspaceId, wsIds), eq(workers.status, 'waiting_input'), isNotNull(workers.waitingFor)))
+    .orderBy(workers.updatedAt)
+    .limit(HOME_QUESTION_ROW_CAP);
+}
+
+export type HomeQuestionWorkerRow = Awaited<ReturnType<typeof homeQuestionWorkersQuery>>[number];
+
+/** The parked workers Needs you admits: an open ask whose park a disposition hands to a person. */
+export function admittedQuestionRows(rows: readonly HomeQuestionWorkerRow[], now: number): HomeQuestionWorkerRow[] {
+  return rows.filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now));
+}
+
+/**
+ * Needs you's questions, oldest first, each named with the runner it waits on
+ * (the fleet snapshot's own runner ↔ worker match), and whether any runner is
+ * connected. `superseded`: tasks whose question recovery superseded.
+ */
+export function homeQuestionsFrom(input: {
+  heartbeats: readonly FleetHeartbeatRow[];
+  rows: readonly HomeQuestionWorkerRow[];
+  superseded: ReadonlySet<string>;
+  now: number;
+}): { questions: HomeFleetQuestion[]; runnerConnected: boolean } {
+  const { heartbeats, now } = input;
+  const asking = admittedQuestionRows(input.rows, now).filter(r => !(r.taskId && input.superseded.has(r.taskId)));
+  const lanes: FleetWorkerRow[] = asking.map(r => ({
+    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    startedAt: r.startedAt, completedAt: null, updatedAt: r.updatedAt, prNumber: null,
+    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error, phase: 'Claimed',
+    task: r.taskId ? { id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode, roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass } : null,
+  }));
+  const fleet = buildFleetSnapshot(heartbeats as FleetHeartbeatRow[], lanes, {
+    now, roles: new Map(), onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, sessionsOnline: null,
+  });
+  const runnerNameById = new Map<string, string>();
+  for (const runner of fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners) {
+    for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
+  }
+  const questions = asking
+    .slice()
+    .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
+    .flatMap(r => {
+      const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.waitingFor ? r.error : null, taskTitle: r.taskTitle });
+      if (!question) return [];
+      return [{
+        workerId: r.id, taskId: r.taskId, missionId: r.missionId,
+        label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode }).label,
+        runnerName: runnerNameById.get(r.id) ?? null,
+        askedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+        question,
+      }];
+    });
+  return { questions, runnerConnected: fleet.runners.length > 0 };
+}
+
+/**
+ * The Agents panel's fleet: fresh heartbeats × the workers live on them, and
+ * each slot's lane over the window. Home streams it in after the page shows.
+ */
 export async function loadHomeFleet(input: {
   teamId: string | null;
   wsIds: string[];
@@ -159,9 +222,8 @@ export async function loadHomeFleet(input: {
   const { teamId, wsIds, now, dayStart, roles } = input;
   if (wsIds.length === 0) return EMPTY;
   const windowStart = new Date(Math.max(now - FLEET_WINDOW_MS, Math.min(dayStart, now - 30 * 60_000)));
-  const dayStartDate = new Date(dayStart);
 
-  const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions, sessionsOnline] = await Promise.all([
+  const [heartbeatRows, workerRows, sessionsOnline] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }),
     // No cap on live workers (every one is a slot); the history half is windowed.
     db
@@ -171,7 +233,6 @@ export async function loadHomeFleet(input: {
         mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor,
         // Only beside a question: the context fallback for a card whose brief was lost.
         error: sql<string | null>`case when ${workers.waitingFor} is not null then ${workers.error} end`,
-        linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
         createdAt: workers.createdAt, milestones: workers.milestones, dirtyWorktree: workers.dirtyWorktree,
         observedTouches: workers.observedTouches, lastCommitSha: workers.lastCommitSha, commitCount: workers.commitCount,
         prUrl: workers.prUrl, prIsDraft: workers.prIsDraft, prLifecycleStatus: workers.prLifecycleStatus,
@@ -186,52 +247,14 @@ export async function loadHomeFleet(input: {
         or(
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
           gte(workers.startedAt, windowStart),
-          gte(workers.mergedAt, dayStartDate),
         ),
       ))
       .orderBy(desc(workers.startedAt))
       .limit(FLEET_WORKER_ROW_CAP),
-    db
-      .select({ taskId: workers.taskId, prUrl: workers.prUrl, prNumber: workers.prNumber, taskTitle: tasks.title, taskLabel: tasks.label })
-      .from(workers)
-      .leftJoin(tasks, eq(workers.taskId, tasks.id))
-      .where(and(
-        inArray(workers.workspaceId, wsIds),
-        isNotNull(workers.prNumber),
-        isNull(workers.mergedAt),
-        // A retry row that adopted a PR another row saw merge is not "in CI".
-        noRowOfPrMerged(),
-        inArray(workers.prLifecycleStatus, ['pr_open', 'ci_running']),
-        gte(workers.updatedAt, new Date(now - 7 * 86_400_000)),
-      ))
-      .orderBy(desc(workers.updatedAt))
-      .limit(20),
-    db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(tasks)
-      .where(and(
-        inArray(tasks.workspaceId, wsIds),
-        eq(tasks.taskClass, 'attempt'),
-        eq(tasks.status, 'completed'),
-        gte(tasks.updatedAt, dayStartDate),
-      )),
-    teamId
-      ? db
-          .select({ id: missions.id, title: missions.title, completedAt: missions.completedAt })
-          .from(missions)
-          .where(and(eq(missions.teamId, teamId), eq(missions.status, 'completed'), gte(missions.completedAt, windowStart)))
-          .limit(10)
-      : Promise.resolve([] as Array<{ id: string; title: string; completedAt: Date | null }>),
     // The sessions lane's "N online" caption. Best effort: the lane still
     // draws its live claims without it.
     loadSessionsOnline(wsIds, now),
   ]);
-
-  // §7: a kernel-owned delivery's merged/closed reading replaces its PR worker's columns for the
-  // ticker, "merged today" and "in CI". One batched read, run beside the superseded-question
-  // read below, so it adds no serial await to the page.
-  const deliveryTaskIds = [...new Set([...workerRows, ...ciRows].flatMap(r => (r.taskId && r.prNumber != null ? [r.taskId] : [])))];
-  const deliveryViewsPromise = getDeliveryViewsForTasks(deliveryTaskIds).catch(() => new Map<string, DeliveryView>());
 
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
@@ -243,75 +266,12 @@ export async function loadHomeFleet(input: {
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
     } : null,
   }));
-  // Lanes: runs inside the window (plus every live one). A PR merged today
-  // from an older run feeds the counts, not the lanes.
+  // Lanes: runs inside the window (plus every live one).
   const laneRows = rows.filter(r => r.startedAt && new Date(r.startedAt).getTime() >= windowStart.getTime() || (LIVE_WORKER_STATUSES as readonly string[]).includes(r.status));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], laneRows, {
     now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, sessionsOnline,
   });
-
-  const runnerNameById = new Map<string, string>();
-  for (const runner of fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners) {
-    for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
-  }
-  const asking0 = workerRows.filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now));
-  // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
-  const [deliveryViews, superseded] = await Promise.all([
-    deliveryViewsPromise,
-    asking0.length ? loadSupersededQuestionTaskIds(asking0.map(r => r.taskId ?? '')) : Promise.resolve(new Set<string>()),
-  ]);
-  for (const r of workerRows) {
-    if (!r.taskId) continue;
-    const life = prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId);
-    r.mergedAt = life.mergedAt as Date | null;
-    r.prLifecycleStatus = life.prLifecycleStatus as typeof r.prLifecycleStatus;
-  }
-  const ticker = buildTickerEvents(
-    workerRows.map(r => ({
-      id: r.id, status: r.status, startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt,
-      mergedAt: r.mergedAt, prNumber: r.prNumber, linesAdded: r.linesAdded, linesRemoved: r.linesRemoved,
-      runnerName: runnerNameById.get(r.id) ?? null,
-      task: r.taskId ? { id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode, missionId: r.missionId } : null,
-    })),
-    doneMissions,
-    { since: windowStart.getTime(), limit: 12 },
-  );
-
-  const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
-  const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
-  const asking = asking0;
-  const questions: HomeFleetQuestion[] = asking
-    // Needs You admission: an open ask whose park a disposition hands to a person.
-    .filter(r => !(r.taskId && superseded.has(r.taskId)))
-    .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
-    .flatMap(r => {
-      const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.error, taskTitle: r.taskTitle });
-      if (!question) return [];
-      return [{
-        workerId: r.id, taskId: r.taskId, missionId: r.missionId,
-        label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode }).label,
-        runnerName: runnerNameById.get(r.id) ?? null,
-        askedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
-        question,
-      }];
-    });
-
-  return {
-    fleet,
-    ticker,
-    questions,
-    stats: {
-      mergedToday: mergedPrNumbers.length,
-      mergedPrNumbers,
-      prsInCi: ciRows
-        // A delivery that merged or closed its PR is not "in CI", whatever the row says.
-        .filter(r => !r.taskId || !deliveryViews.has(r.taskId) || prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId).prLifecycleStatus === 'pr_open' || prLifecycleFor(r, deliveryViews.get(r.taskId), r.taskId).prLifecycleStatus === 'ci_running')
-        // One entry per PR, however many rows carry it.
-        .filter((r, i, all) => r.prNumber != null && all.findIndex(o => o.prNumber === r.prNumber) === i)
-        .map(r => ({ prNumber: r.prNumber!, label: taskShortLabel({ title: r.taskTitle ?? '', label: r.taskLabel }).label })),
-      selfHealed: healedRows[0]?.n ?? 0,
-    },
-  };
+  return { fleet };
 }
 
 /**
@@ -371,15 +331,15 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
  * ones) and the stretches every slot sat idle while work waited. Lean on
  * purpose: no ticker, counts or questions, and only the runners page calls it.
  */
-export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
-  const { teamId, wsIds, now } = input;
+export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number; viewerId?: string | null }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
+  const { teamId, wsIds, now, viewerId } = input;
   if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
   const windowStart = now - FLEET_WINDOW_MS;
   const [heartbeatRows, workerRows, history] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }),
     db
       .select({
-        id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
         prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
@@ -404,7 +364,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
   const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
-    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    id: r.id, accountId: r.accountId, ownerId: r.ownerId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
@@ -414,7 +374,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     } : null,
   }));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], rows, {
-    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, viewerId,
   });
   const from = Math.max(fleet.window.from, windowStart);
   return { fleet, idle: idleWhileQueued({ ...history, from, to: now }) };

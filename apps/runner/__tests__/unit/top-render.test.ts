@@ -85,7 +85,7 @@ describe('list view', () => {
     s = reduce(s, { type: 'connection', online: false });
     expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ loading');
     s = reduce(s, { type: 'init', workers: [], config: { maxConcurrent: 4 } });
-    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('0 of 4 busy · ● online');
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('0 of 4 slots in use · ● online');
     // Only a connection that was up and dropped reads reconnecting.
     s = reduce(s, { type: 'connection', online: false });
     expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ reconnecting');
@@ -228,7 +228,7 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
   test('without a stage the row shows done/total only', () => {
     const lines = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(lines.find(l => l.includes('▸'))!).toContain('2/8');
-    expect(lines[3]).not.toMatch(/building|verifying|delivering|delivered|on hold/i);
+    expect(lines[3]).not.toMatch(/building|verifying|merging|done|paused|delivering|delivered|on hold/i);
     // Without a stage, the status line counts the tasks in words.
     expect(lines[4]).toContain('│ 2 of 8 tasks done');
   });

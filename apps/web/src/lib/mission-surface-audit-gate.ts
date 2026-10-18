@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq } from 'drizzle-orm';
@@ -19,7 +20,7 @@ import {
   type VisualImpactAssessment,
 } from './workflow/visual-review-impact';
 import { resolveVisualReviewPolicy } from './workflow/visual-review-policy';
-import { loadPrSurfaceFiles, persistMergedSurfaceEvidence } from '@/lib/pr-surface-evidence';
+import { loadMergedSurfaceEvidence, loadPrSurfaceFiles, persistMergedSurfaceEvidence } from '@/lib/pr-surface-evidence';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -137,6 +138,9 @@ export async function loadSurfaceAuditWaiver(
   return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
 }
 
+/** `repoFor`, read once per request: a page's render asks the gate more than once. */
+const repoForRequest = cache((workspaceId: string) => repoFor(workspaceId));
+
 export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {
   const ws = await db.query.workspaces.findFirst({
     where: sqlWhere(eq(workspaces.id, workspaceId)),
@@ -168,7 +172,10 @@ export async function repoFor(workspaceId: string): Promise<{ installationId: nu
  * mission makes no GitHub file-list call. A merged PR without that evidence
  * (merged before it was recorded) falls back to its declared manifest, unless
  * the caller is a completion decision (`fillMergedEvidence`), which records it
- * first. Rendering callers never pass it.
+ * first. Rendering callers never pass it; they pass `render`, which never
+ * calls GitHub (spec 3ef37387 R-12): a merged PR's durable evidence is read
+ * for every PR in one query, and an open PR (whose head only GitHub knows)
+ * answers by its declared manifest.
  * The rendered-surface files are then handed to the visual impact classifier
  * (`assessVisualImpact`, deterministic rules only, see `NO_MODEL`): a change it
  * proves cannot render (comments, types, server-only code) owes nothing, and
@@ -181,11 +188,19 @@ export async function repoFor(workspaceId: string): Promise<{ installationId: nu
 export async function evaluateSurfaceAuditGate(
   mission: { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null },
   tasks: SurfaceAuditGateTask[],
-  opts: { fillMergedEvidence?: boolean } = {},
+  opts: {
+    fillMergedEvidence?: boolean;
+    render?: boolean;
+    /** The workspace's policy override (`visualReviewPolicyOf`) when the caller already read it; absent reads it. */
+    workspacePolicy?: VisualReviewPolicyMode | null;
+    /** Whether a person waived it (`loadSurfaceAuditWaiver` found one) when the caller already read it. */
+    waived?: boolean;
+  } = {},
 ): Promise<SurfaceAuditGate> {
   // Without a workspace there is nothing to read: the legacy opt-out alone decides, at no cost.
   const policy = resolveVisualReviewPolicy({
-    workspace: mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
+    workspace: opts.workspacePolicy !== undefined ? opts.workspacePolicy
+      : mission.workspaceId ? await workspacePolicy(mission.workspaceId) : null,
     mission: { autoSurfaceAudit: mission.autoSurfaceAudit },
   });
   if (policy.mode === 'off') return { required: false, why: 'opted_out' };
@@ -196,7 +211,7 @@ export async function evaluateSurfaceAuditGate(
   if (builders.length === 0) return { required: false, why: 'no_ui_change' };
 
   // Strict forbids waiving, so a recorded waiver does not count there.
-  if (policy.waiverAllowed && await hasWaiver(mission.id)) return { required: false, why: 'waived' };
+  if (policy.waiverAllowed && (opts.waived ?? await hasWaiver(mission.id))) return { required: false, why: 'waived' };
 
   const prs = new Map<number, { workspaceId: string; merged: boolean }>();
   for (const t of builders) {
@@ -207,13 +222,34 @@ export async function evaluateSurfaceAuditGate(
 
   const repos = new Map<string, Promise<{ installationId: number; fullName: string } | null>>();
   const repoOf = (workspaceId: string) => {
-    if (!repos.has(workspaceId)) repos.set(workspaceId, repoFor(workspaceId));
+    if (!repos.has(workspaceId)) repos.set(workspaceId, repoForRequest(workspaceId));
     return repos.get(workspaceId)!;
   };
   const read = new Set<number>();
   const diffFiles: ImpactFile[] = [];
   let unreadable = false;
-  await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
+  const take = (prNumber: number, files: ImpactFile[]) => {
+    for (const f of files) if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
+    read.add(prNumber);
+  };
+  if (opts.render) {
+    const byWorkspace = new Map<string, number[]>();
+    for (const [prNumber, { workspaceId, merged }] of [...prs].slice(0, MAX_PRS_CHECKED)) {
+      if (!merged) { unreadable = true; continue; }
+      byWorkspace.set(workspaceId, [...(byWorkspace.get(workspaceId) ?? []), prNumber]);
+    }
+    await Promise.all([...byWorkspace].map(async ([workspaceId, numbers]) => {
+      const repo = await repoOf(workspaceId).catch(() => null);
+      if (!repo) { unreadable = true; return; }
+      const evidence = await loadMergedSurfaceEvidence(repo, numbers);
+      for (const n of numbers) {
+        const files = evidence.get(n);
+        if (files) take(n, files);
+        else unreadable = true;
+      }
+    }));
+  }
+  if (!opts.render) await forEachBounded([...prs].slice(0, MAX_PRS_CHECKED), PR_READ_CONCURRENCY, async ([prNumber, { workspaceId, merged }]) => {
     try {
       const repo = await repoOf(workspaceId);
       if (!repo) { unreadable = true; return; }
@@ -225,8 +261,7 @@ export async function evaluateSurfaceAuditGate(
       // No evidence (a merged PR never recorded, a capped list, a head that moved mid-read):
       // its declared manifest answers for it, and the result says it could not be checked.
       if (!files) { unreadable = true; return; }
-      for (const f of files) if (isRenderedSurfaceChange(f.path)) diffFiles.push(f);
-      read.add(prNumber);
+      take(prNumber, files);
     } catch (err) {
       unreadable = true;
       console.error(`[surface-audit-gate] could not read PR #${prNumber} files (not blocking on it):`, err);

@@ -136,3 +136,45 @@ it('runs every lookup in one bounded pass: a slow PR never holds back the rest',
   expect(done.length).toBe(20);
   expect(peak).toBe(8);
 });
+
+// ── Home reads the cache only; a miss is refreshed after the response ────────
+import { peekGithubApproval, refreshGithubApprovals } from './github-approval';
+
+it('peek reads the cache and never GitHub: a miss or another head is null', async () => {
+  const cache = memoryCache();
+  expect(await peekGithubApproval('example/project', 7, 'sha1', cache)).toBeNull();
+  const { api } = approvingApi('new');
+  await readGithubApprovalCached(1, 'example/project', 7, { workerSha: 'sha1', api, cache });
+  expect(await peekGithubApproval('example/project', 7, 'sha1', cache)).toEqual({ reviewDecision: 'APPROVED', humanApproved: true });
+  expect(await peekGithubApproval('example/project', 7, 'sha2', cache)).toBeNull();
+});
+
+it('refresh fills the cache for at most `limit` PRs and skips one without an installation', async () => {
+  const cache = memoryCache();
+  const { api, calls } = approvingApi('new');
+  const item = (n: number, installation: number | null) => ({ repoFullName: 'example/project', prNumber: n, workerSha: 's', installationId: async () => installation });
+  const done = await refreshGithubApprovals([item(1, 9), item(2, null), item(3, 9), item(4, 9)], { limit: 3, api, cache });
+  expect(done).toBe(2);
+  expect(calls).toHaveLength(2);
+  expect(await peekGithubApproval('example/project', 1, 's', cache)).not.toBeNull();
+  expect(await peekGithubApproval('example/project', 4, 's', cache)).toBeNull();
+});
+
+it('two refreshes of one PR at once ask GitHub once', async () => {
+  const cache = memoryCache();
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  let calls = 0;
+  const api = (async () => {
+    calls++;
+    await gate;
+    return { data: { repository: { pullRequest: { headRefOid: 'h', reviewDecision: null, reviews: { nodes: [] } } } } };
+  }) as never;
+  const item = { repoFullName: 'example/project', prNumber: 5, workerSha: null, installationId: async () => 9 };
+  const first = refreshGithubApprovals([item], { api, cache });
+  const second = await refreshGithubApprovals([item], { api, cache });
+  release();
+  await first;
+  expect(second).toBe(0);
+  expect(calls).toBe(1);
+});

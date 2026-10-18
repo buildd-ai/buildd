@@ -21,6 +21,16 @@ export function cardReadsVisualReview(m: CardMission): boolean {
   return (m.tasks ?? []).some(t => OPEN.has(t.status) && (isSurfaceAuditTask(t.title ?? '') || isSurfaceFixTask(t.title)));
 }
 
+/**
+ * Does the stored mission summary read the review? When the card does, and
+ * for an open mission with an integration branch: its mission PR's merge gate
+ * reads the review state from the summary rather than while a page renders.
+ */
+export function summaryReadsVisualReview(m: CardMission & { integrationBranchEnabled?: boolean | null }): boolean {
+  if (m.status === 'completed' || m.status === 'archived') return false;
+  return m.integrationBranchEnabled === true || cardReadsVisualReview(m);
+}
+
 /** One summary per mission that needs it; the rest are absent (read as no review state). */
 export async function loadCardVisualReviews(
   missions: readonly CardMission[],

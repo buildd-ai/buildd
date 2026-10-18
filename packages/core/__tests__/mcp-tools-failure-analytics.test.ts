@@ -336,6 +336,14 @@ describe('get_failure_analytics lookup mode', () => {
   let mockApi: ReturnType<typeof mock>;
   beforeEach(() => { mockApi = mock(); });
 
+  it('a pattern seen only on replaced workers says when the error occurred, not "landed"', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), lookup: lookup({ supersededOnly: true }) });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { error: 'Stale worker expired (no update for 15+ minutes)' }, ctx())).content[0].text;
+    expect(out).toContain('Known, but only on worker(s) already `superseded` when the error occurred — 12 occurrence(s) in the last 7d.');
+    expect(out).toContain('the worker(s) had already been answered/replaced when this happened.');
+    expect(out).not.toMatch(/\blanded\b/);
+  });
+
   it('sends the raw error upstream so the shared normalizer resolves it', async () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics(), lookup: lookup() });
     const raw = 'Stale worker expired (no update for 15+ minutes)';
@@ -567,11 +575,12 @@ describe('get_failure_analytics family="gate" landing metrics', () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(4), landing: landing() });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx());
     const out = res.content[0].text;
-    expect(out).toContain('PR landing');
+    expect(out).toContain('PR merges — last 7d');
+    expect(out).not.toMatch(/\bland(ed|ing)?\b/i);
     expect(out).toContain('p50 5m');
     expect(out).toContain('p90 1h35m');
-    expect(out).toContain('10 measured of 12 landed');
-    expect(out).toContain('2 landed with no derivable start');
+    expect(out).toContain('10 measured of 12 merged');
+    expect(out).toContain('2 merged with no derivable start');
     expect(out).toContain('stuck: 3 PR(s)');
     expect(out).toContain('oldest 2h05m');
   });
@@ -580,21 +589,21 @@ describe('get_failure_analytics family="gate" landing metrics', () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(0), landing: landing({ stuck: { thresholdMs: 30 * 60_000, count: 0, oldestMs: null } }) });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
     expect(out).toContain('No gate events');
-    expect(out).toContain('time to land');
+    expect(out).toContain('time to merge (approved + green → merged)');
     expect(out).toContain('stuck: none past 30m');
   });
 
   it('says there are no measured landings instead of printing zero percentiles', async () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(1), landing: landing({ landed: 0, unmeasured: 0, timeToLand: null }) });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
-    expect(out).toContain('no measured landings');
+    expect(out).toContain('time to merge: none measured (0 merged, 0 unmeasured)');
     expect(out).not.toContain('p50');
   });
 
   it('omits the landing block when the server sent none', async () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics(), gates: gates(1) });
     const out = (await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { family: 'gate' }, ctx())).content[0].text;
-    expect(out).not.toContain('PR landing');
+    expect(out).not.toContain('PR merges');
   });
 });
 

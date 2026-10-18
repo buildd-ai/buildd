@@ -147,7 +147,7 @@ export function buildLineage({
       steps.push({
         kind: 'merged',
         title: 'Merged',
-        sub: 'PR landed',
+        sub: 'into its target branch',
         at: pr.mergedAt != null && lastDone != null ? `+${formatOffset(pr.mergedAt - lastDone)}` : null,
       });
     }

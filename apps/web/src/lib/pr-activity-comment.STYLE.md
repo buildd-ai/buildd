@@ -28,11 +28,11 @@ deciding whether to step in, so every rule below comes down to two things:
 
 | Phase | Kind | Header | Motion |
 |---|---|---|---|
-| reviewer filed, not claimed | `review_queued` | ○ Review queued / Re-review queued · after fix N of M · waiting for a worker | none |
+| reviewer filed, not claimed | `review_queued` | ○ Review queued / Re-review queued · after fix N of M · waiting for an agent | none |
 | worker claimed the reviewer | `reviewing` | Reviewing / Re-reviewing · after fix N of M | spinner |
-| changes requested, fix not claimed | `review_changes_requested` | ○ Fix N of M queued · waiting for a worker | none |
-| CI red, fix not claimed | `ci_fixing` | ○ CI fix N of M queued · waiting for a worker | none |
-| migration-number collision, fix not claimed | `migration_collision_fixing` | ○ Migration slot conflict · fix N of M queued · waiting for a worker | none |
+| changes requested, fix not claimed | `review_changes_requested` | ○ Fix N of M queued · waiting for an agent | none |
+| CI red, fix not claimed | `ci_fixing` | ○ CI fix N of M queued · waiting for an agent | none |
+| migration-number collision, fix not claimed | `migration_collision_fixing` | ○ Migration slot conflict · fix N of M queued · waiting for an agent | none |
 | worker claimed the fix | `fix_started` | Fixing · fix N of M | spinner |
 | fix pushed | `changes_pushed` | ○ Pushed `abc1234` · waiting on checks | none |
 | fix task finished | `fix_ended` | ○ Fix N of M finished · waiting on checks (or `ended · failed`) | none |
@@ -88,8 +88,12 @@ Use these words and no synonyms. They match the dashboard (`CondensedTimeline`,
 
 review queued · re-review queued · reviewing · re-reviewing · changes requested · queued · fixing · finished ·
 ended · pushed ·
-waiting for a worker · waiting on checks · approved · ready to merge ·
+waiting for an agent · waiting on checks · approved · ready to merge ·
 needs a human · merged · closed without merging
+
+A PR's end states are the terms catalog's words (`packages/shared/src/terms.ts`,
+`docs/design/terms.md`): Merging, Merged, Merged in #N, Closed without merging.
+Never "landed", "landing", "shipped", "delivered" or "held" as a state.
 
 Avoid: "buildd is on it", "working on", "applying", "attempt" (say "fix"),
 exclamation marks, and anything that narrates intent instead of state.
@@ -125,7 +129,7 @@ Four, each with one meaning. Rows only carry the outcome glyphs.
 | `○` | nothing running: queued, or waiting on checks | yes | no |
 | `✓` | good outcome: approved, merged | yes | yes |
 | `⚑` | a human has to act | yes | yes |
-| `✕` | ended without landing | yes | yes |
+| `✕` | closed without merging | yes | yes |
 
 No emoji. They render inconsistently across GitHub clients and turn a
 timeline into decoration.

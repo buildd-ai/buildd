@@ -47,8 +47,8 @@ import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-t
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
-import type { ConflictSeen } from '@/lib/workflow/seam';
-import { observeConflict, systemPrincipal } from '@/lib/workflow/kernel-client';
+import { isRepairRole, projectRequeue, type ConflictSeen } from '@/lib/workflow/seam';
+import { attemptRequeued, observeConflict, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -872,20 +872,25 @@ export async function recoverStalledConflictFix(row: {
   const last = (ctx.conflictRecovery as { at?: string } | undefined)?.at ?? null;
   let workerStatus: string | null = null;
   let workerUpdatedAt: Date | null = null;
+  let workerId: string | null = null;
   if (row.status !== 'pending') {
     const w = await db.query.workers.findFirst({
       where: sqlWhere(eq(workers.taskId, row.id)),
-      columns: { status: true, updatedAt: true },
+      columns: { id: true, status: true, updatedAt: true },
       orderBy: sqlOrderByFn((wk, { desc }) => [desc(wk.createdAt)]),
     }).catch(() => null);
     workerStatus = (w?.status as string | undefined) ?? null;
     workerUpdatedAt = (w?.updatedAt as Date | undefined) ?? null;
+    workerId = (w?.id as string | undefined) ?? null;
   }
   const verdict = classifyConflictFix({ status: row.status, createdAt: row.createdAt ?? null, claimedAt: row.claimedAt, workerStatus, workerUpdatedAt, lastRecoveryAt: last }, now);
   if (!verdict.stalled || verdict.action === 'none') return { stalled: verdict.stalled, action: 'none' };
+  // AC-1 slice 6 (workflow-kernel-library.md §9): a kernel repair's stalled attempt goes back to
+  // the queue through the kernel (AttemptRequeued, bound to its open ledger row), not this write.
+  const kernelRepair = verdict.action === 'repair' && workerId ? await kernelRepairTaskOf(row.id) : null;
   const nextCtx = { ...ctx, conflictRecovery: { at: new Date(now).toISOString(), action: verdict.action, reason: verdict.reason } };
   const set: Record<string, unknown> = { context: nextCtx, updatedAt: new Date(now) };
-  if (verdict.action === 'repair') { set.status = 'pending'; set.claimedAt = null; }
+  if (verdict.action === 'repair' && !kernelRepair) { set.status = 'pending'; set.claimedAt = null; }
   const won = await db.update(tasks).set(set as never)
     // CAS on the recovery marker itself (not updated_at: Postgres keeps
     // microseconds a JS Date drops), so exactly one concurrent caller wins.
@@ -893,8 +898,39 @@ export async function recoverStalledConflictFix(row: {
       sql`coalesce(${tasks.context}->'conflictRecovery'->>'at', '') = ${last ?? ''}`))
     .returning({ id: tasks.id });
   if (!won || won.length === 0) return { stalled: true, action: 'none' };
+  if (kernelRepair && !(await requeueKernelRepair(kernelRepair, workerId!))) return { stalled: true, action: 'none' };
   await wakeTask(row.id, 'conflict.retry');
   return { stalled: true, action: verdict.action };
+}
+
+/** The task as AttemptRequeued names it, when it is a kernel repair with its ledger row; else null. */
+async function kernelRepairTaskOf(taskId: string): Promise<{ id: string; workspaceId: string; deliveryId: string; deliveryRole: string; context: unknown } | null> {
+  const t = await db.query.tasks.findFirst({
+    where: sqlWhere(eq(tasks.id, taskId)),
+    columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+  });
+  const attemptId = ((t?.context ?? {}) as Record<string, unknown>).workflowAttemptId;
+  if (!t?.deliveryId || !isRepairRole(t.deliveryRole) || typeof attemptId !== 'string') return null;
+  return { id: t.id, workspaceId: t.workspaceId, deliveryId: t.deliveryId, deliveryRole: t.deliveryRole!, context: t.context };
+}
+
+/**
+ * The stalled repair's requeue: submitted where the kernel is hosted, then projected here too for
+ * a control plane that is down or too old. Both move the task only while `workerId` is its current
+ * attempt and its ledger row is still open. Answers whether the task is back in the queue.
+ */
+async function requeueKernelRepair(task: NonNullable<Awaited<ReturnType<typeof kernelRepairTaskOf>>>, workerId: string): Promise<boolean> {
+  try {
+    const r = await attemptRequeued({ task, workerId, reason: 'conflict_recovery', source: 'sweep:conflict-recovery' }, { principal: systemPrincipal('system:conflict-recovery') });
+    if (r.requeued) return true;
+  } catch (err) {
+    console.error(`[conflict-retry] AttemptRequeued for stalled repair ${task.id} did not reach the kernel; projecting it here:`, err);
+  }
+  const attemptId = ((task.context ?? {}) as Record<string, unknown>).workflowAttemptId as string;
+  return projectRequeue({ deliveryId: task.deliveryId, taskId: task.id, workerId, attemptId }).catch((err) => {
+    console.error(`[conflict-retry] requeue projection failed for stalled repair ${task.id}:`, err);
+    return false;
+  });
 }
 
 /**

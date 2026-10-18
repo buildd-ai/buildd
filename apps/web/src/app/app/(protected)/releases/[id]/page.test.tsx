@@ -86,6 +86,13 @@ describe('ReleaseDetailPage', () => {
     expect(html.replace(/<[^>]+>/g, ' ')).not.toContain(SUCCESSOR_ID);
   });
 
+  it('an empty commit range says nothing merged, never shipped', async () => {
+    release = { ...baseRelease, commitsAheadAtDispatch: 0 as unknown as null };
+    const html = await renderPage();
+    expect(html).toContain('Nothing merged in this range');
+    expect(html).not.toMatch(/shipped/i);
+  });
+
   it('keeps an ordinary failure red, shown once', async () => {
     release = { ...baseRelease, state: 'failed', failureReason: 'Deployment failed' };
     const html = await renderPage();

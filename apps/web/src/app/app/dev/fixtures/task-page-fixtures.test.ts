@@ -26,7 +26,7 @@ describe('task page regression cases', () => {
     expect(f.verdict?.label).toBe('Review approved');
     expect(f.track).toEqual({ state: 'landing', phrase: 'awaiting merge' });
     expect(f.shipped?.eyebrow).toBe('Review of PR #1234');
-    expect(all).not.toMatch(/What shipped|Merged|Repair|\bDone\b/);
+    expect(all).not.toMatch(/What shipped|What changed|Merged|Repair|\bDone\b/);
   });
 
   it('branch refresh reads Updating branch, never Repairing', () => {
@@ -42,9 +42,9 @@ describe('task page regression cases', () => {
     expect(f.checks.current.find(r => r.key === 'tests')?.repair?.status).toBe('running');
   });
 
-  it('merged: What shipped, Merged, earlier round in history', () => {
+  it('merged: What changed, Merged, earlier round in history', () => {
     const { f } = text('merged');
-    expect(f.shipped?.eyebrow).toMatch(/^What shipped/);
+    expect(f.shipped?.eyebrow).toMatch(/^What changed/);
     expect(f.checks.current.find(r => r.key === 'merge')?.result).toBe('Merged');
     expect(f.checks.history.map(h => h.result)).toEqual(['Changes requested']);
   });

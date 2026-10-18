@@ -76,7 +76,7 @@ describe('LandingActionConfirm after a retry that is now waiting on checks', () 
 
     const done = q('landing-action-done')!;
     expect(done.getAttribute('data-progressing')).toBe('true');
-    expect(container.querySelector('h1')?.textContent).toBe('Landing is under way');
+    expect(container.querySelector('h1')?.textContent).toBe('Merging is under way');
     expect(done.textContent).toContain('Nothing failed');
     expect(done.textContent).not.toContain("Won't land");
 

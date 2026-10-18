@@ -252,7 +252,7 @@ function diagnosticBody(input: DiagnosticInput): string {
     case 'state_unreadable':
       return `The semantic merge check (enforce) could not read its refresh state, so it holds merges rather than assume nothing is outstanding. Every PR in this workspace under enforce waits the same way until reads succeed.\n\nLast failure: ${input.reason}\n\nCheck the database connection, or switch the semantic check to shadow to stop holding.\n\nPR: ${prUrl}`;
     case 'semantic_conflict':
-      return `Base commits that landed between the semantic check and the branch update were merged in, and they edit the same symbols as this PR. Auto-merge is held.\n\nEvidence: ${input.reason}\n\nReconcile the named symbols on the branch, or review and merge by hand.\n\nPR: ${prUrl}`;
+      return `Base commits that merged between the semantic check and the branch update were merged in, and they edit the same symbols as this PR. Auto-merge is held.\n\nEvidence: ${input.reason}\n\nReconcile the named symbols on the branch, or review and merge by hand.\n\nPR: ${prUrl}`;
   }
 }
 

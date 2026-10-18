@@ -297,6 +297,7 @@ DELETE FROM mcp_oauth_grants;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
+DELETE FROM mission_summaries;     -- derived (PR urls, rail wording); the reconcile cron rebuilds it from scrubbed rows
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
 -- Failure incident ledger: titles and evidence refs echo task/PR titles and

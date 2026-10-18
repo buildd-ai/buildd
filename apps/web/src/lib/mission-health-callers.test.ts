@@ -51,11 +51,15 @@ describe('deriveMissionHealth call sites', () => {
     expect(callers.some(f => f.endsWith('mission-card-view.ts'))).toBe(true);
   });
 
-  it('Home and the missions list build their cards with the shared builder', () => {
-    const home = readFileSync(join(APP_ROOT, 'app', '(protected)', 'home', 'page.tsx'), 'utf8');
-    const list = readFileSync(join(APP_ROOT, 'app', '(protected)', 'missions', 'page.tsx'), 'utf8');
-    expect(home).toContain('summarizeMissionForCard(');
-    expect(list).toContain('summarizeMissionForCard(');
+  it('Home and the missions list build their cards with the shared builder, through the stored summary', () => {
+    const summary = readFileSync(join(import.meta.dir, 'mission-summary.ts'), 'utf8');
+    const live = readFileSync(join(import.meta.dir, 'mission-summary-home.ts'), 'utf8');
+    const list = readFileSync(join(import.meta.dir, 'mission-list-load.ts'), 'utf8');
+    expect(summary).toContain('summarizeMissionForCard(');
+    // The list reads the stored summary, and derives a missing one the way the store does.
+    expect(list).toContain('missionSummaries.summary');
+    expect(list).toContain('deriveHomeReadings(');
+    expect(live).toContain('computeMissionSummary(');
   });
 
   for (const file of files) {

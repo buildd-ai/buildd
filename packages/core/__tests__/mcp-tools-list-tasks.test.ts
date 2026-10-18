@@ -187,3 +187,21 @@ describe('list_tasks — missionId filter and ignored-param safety', () => {
     expect(api).not.toHaveBeenCalled();
   });
 });
+
+describe('list_tasks — retry titles (terms catalog §2.10)', () => {
+  const RETRY = { id: 't2', title: '[builder · after CI #1] fix(top): words', status: 'pending', descriptionPreview: 'd' };
+
+  it('an active row reads the title then the attempt, never the machine key', async () => {
+    const api = mock(async () => ({ tasks: [RETRY], total: 1, pendingCount: 1, hasMore: false })) as unknown as ApiFn;
+    const out = await handleBuilddAction(api, 'list_tasks', {}, ctx());
+    expect(out.content[0].text).toContain('- fix(top): words · Fix 1 · CI failed (id: t2)');
+    expect(out.content[0].text).not.toContain('[builder');
+  });
+
+  it('a terminal-audit row does too', async () => {
+    const api = mock(async () => ({ tasks: [{ ...RETRY, status: 'completed' }], total: 1, pendingCount: 0, hasMore: false })) as unknown as ApiFn;
+    const out = await handleBuilddAction(api, 'list_tasks', { status: 'completed' }, ctx());
+    expect(out.content[0].text).toContain('fix(top): words · Fix 1 · CI failed [completed]');
+    expect(out.content[0].text).not.toContain('[builder');
+  });
+});

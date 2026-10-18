@@ -184,3 +184,13 @@ describe('group filter', () => {
     expect(filterPortfolio(rows, {})).toHaveLength(4);
   });
 });
+
+describe('portfolio words', () => {
+  it('say Done and merging, never Landed, landing or held', async () => {
+    const { PORTFOLIO_SORTS, PORTFOLIO_STATUS_FILTERS } = await import('./mission-portfolio');
+    expect(PORTFOLIO_STATUS_FILTERS.find(f => f.key === 'landed')!.label).toBe('Done');
+    expect(PORTFOLIO_SORTS.find(s => s.key === 'closest')!.title).toBe('Closest to merging');
+    const words = [...PORTFOLIO_SORTS, ...PORTFOLIO_STATUS_FILTERS].map(x => `${x.label} ${x.title}`).join(' ');
+    expect(words).not.toMatch(/\b(landed|landing|held)\b/i);
+  });
+});

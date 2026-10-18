@@ -1,13 +1,13 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`list view 80x24 1`] = `
-" buildd · laptop-1234                         2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                 2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
  ▸ Runner TUI     2/8 │ 2 of 8 tasks done                                       
-   Local o… local 0/1 │─────────────────────────────────────────────────────────
-   Specs import   1/2 │ Running now                                             
+   Local only     0/1 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ Working now                                             
    Other tasks 1 open │›● name override    Builder     12m Edit config.ts       
                       │ ? installer hint   Builder      9m asks: "Print the URL…
                       │ ● single instance  Builder      4m bun run test __tests…
@@ -28,13 +28,13 @@ exports[`list view 80x24 1`] = `
 `;
 
 exports[`list view 120x40 1`] = `
-" buildd · laptop-1234                                                                 2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                                                         2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
  ▸ Runner TUI           2/8 │ 2 of 8 tasks done                                                                         
-   Local only     local 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
-   Specs import         1/2 │ Running now                                                                               
+   Local … your session 0/1 │───────────────────────────────────────────────────────────────────────────────────────────
+   Specs import         1/2 │ Working now                                                                               
    Other tasks       1 open │›● name override               Builder     12m Edit config.ts                       41k tok
                             │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
                             │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
@@ -71,13 +71,13 @@ exports[`list view 120x40 1`] = `
 `;
 
 exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = `
-" \x1B[38;2;245;155;78mbuildd\x1B[39m\x1B[38;2;168;159;150m · laptop-1234\x1B[39m                         \x1B[38;2;168;159;150m2 of 3 busy · \x1B[39m\x1B[38;2;245;155;78m● online\x1B[39m\x1B[38;2;168;159;150m · v0.340.0 \x1B[39m
+" \x1B[38;2;245;155;78mbuildd\x1B[39m\x1B[38;2;168;159;150m · laptop-1234\x1B[39m                 \x1B[38;2;168;159;150m2 of 3 slots in use · \x1B[39m\x1B[38;2;245;155;78m● online\x1B[39m\x1B[38;2;168;159;150m · v0.340.0 \x1B[39m
  \x1B[38;2;245;155;78m[ Missions ]\x1B[39m  \x1B[38;2;168;159;150mQueue\x1B[39m\x1B[38;2;168;159;150m   t team: all · w workspace: all                           \x1B[39m
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
 \x1B[38;2;168;159;150m MISSIONS             \x1B[39m\x1B[38;2;122;114;105m│\x1B[39m \x1B[39mRunner TUI                       \x1B[39m \x1B[38;2;245;155;78m4 running · 2 waiting \x1B[39m
  \x1B[38;2;245;155;78m▸\x1B[39m \x1B[39mRunner TUI    \x1B[39m \x1B[38;2;245;155;78m2/8\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m 2 of 8 tasks done                                       \x1B[39m
- \x1B[38;2;122;114;105m \x1B[39m \x1B[39mLocal o…\x1B[39m \x1B[38;2;168;159;150mlocal 0/1\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
- \x1B[38;2;122;114;105m \x1B[39m \x1B[39mSpecs import  \x1B[39m \x1B[38;2;168;159;150m1/2\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m Running now                                             \x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[39mLocal only    \x1B[39m \x1B[38;2;168;159;150m0/1\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[39mSpecs import  \x1B[39m \x1B[38;2;168;159;150m1/2\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m Working now                                             \x1B[39m
  \x1B[38;2;122;114;105m \x1B[39m \x1B[39mOther tasks\x1B[39m \x1B[38;2;168;159;150m1 open\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[48;2;47;44;40m\x1B[38;2;245;155;78m›\x1B[39m\x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226mname override    \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m  12m \x1B[39m\x1B[38;2;237;232;226mEdit config.ts       \x1B[39m\x1B[38;2;168;159;150m\x1B[39m\x1B[49m
                       \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m?\x1B[39m \x1B[39minstaller hint   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   9m \x1B[39m\x1B[39masks: "Print the URL…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
                       \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m●\x1B[39m \x1B[39msingle instance  \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   4m \x1B[39m\x1B[39mbun run test __tests…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
@@ -98,7 +98,7 @@ exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = 
 `;
 
 exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1`] = `
-" buildd · laptop-1234                         2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                 2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  ● name override                                      Builder · 12m · Runner TUI
@@ -125,14 +125,14 @@ exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1
 `;
 
 exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`] = `
-" buildd · laptop-1234                         2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                 2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        4 running · 2 waiting 
- ▸ Runn… building 2/8 │ Building · 8 of 13 landed                               
-   Local o… local 0/1 │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
+ ▸ Runn… building 2/8 │ Building · 8 of 13 merged                               
+   Local only     0/1 │ ■ 8 done · ▶ 2 in progress · ▢ 3 ready · ◐ 2 checks     
    Specs import   1/2 │─────────────────────────────────────────────────────────
-   Other tasks 1 open │ Running now                                             
+   Other tasks 1 open │ Working now                                             
                       │›● name override    Builder     12m Edit config.ts       
                       │ ? installer hint   Builder      9m asks: "Print the URL…
                       │ ● single instance  Builder      4m bun run test __tests…
@@ -152,14 +152,14 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`]
 `;
 
 exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`] = `
-" buildd · laptop-1234                                                                 2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234                                                         2 of 3 slots in use · ● online · v0.340.0 
  [ Missions ]  Queue   t team: all · w workspace: all                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          4 running · 2 waiting 
- ▸ Runner TUI  building 2/8 │ Building · 8 of 13 landed                                                                 
-   Local only     local 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                          
+ ▸ Runner TUI  building 2/8 │ Building · 8 of 13 merged                                                                 
+   Local … your session 0/1 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks                          
    Specs import         1/2 │───────────────────────────────────────────────────────────────────────────────────────────
-   Other tasks       1 open │ Running now                                                                               
+   Other tasks       1 open │ Working now                                                                               
                             │›● name override               Builder     12m Edit config.ts                       41k tok
                             │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
                             │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
