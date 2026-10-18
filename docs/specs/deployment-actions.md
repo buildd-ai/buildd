@@ -3,12 +3,12 @@ title: Deployment Actions
 status: active
 owner: max
 last_verified: 2026-10-05
-summary: A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant or an admin key, audited before use, never returning the credential.
+summary: A deploy MUST run server-side with a credential named by reference, authorized against the task role's workspace grant, an admin key, or a signed-in team owner/admin, audited before use, never returning the credential.
 domain: auth
-surfaces: [apps/web/src/lib/deployments/action.ts, apps/web/src/lib/deployments/cloudflare.ts, apps/web/src/app/api/workers/[id]/deployments/route.ts, apps/web/src/app/api/deployments/route.ts]
+surfaces: [apps/web/src/lib/deployments/action.ts, apps/web/src/lib/deployments/cloudflare.ts, apps/web/src/app/api/workers/[id]/deployments/route.ts, apps/web/src/app/api/deployments/route.ts, apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts, apps/web/src/lib/deployments/cloud-runner-deploy.ts]
 related: [agent-capabilities]
-keywords: [deploy action, platform operator, credential ref, deployment audit, deployment_audit_events, secrets:reveal, cloudflare deploy, model-policy deploy, upload_worker, put_secret]
-verified_by: [apps/web/src/lib/deployments/action.test.ts, apps/web/src/app/api/workers/[id]/deployments/route.test.ts, apps/web/src/app/api/deployments/route.test.ts, apps/web/src/app/api/cloudflare/credential/reveal/route.test.ts, apps/model-policy/scripts/deploy-request.test.ts]
+keywords: [deploy action, platform operator, credential ref, deployment audit, deployment_audit_events, secrets:reveal, cloudflare deploy, model-policy deploy, upload_worker, put_secret, deploy_worker_script, deploy_containers, cloud runner deploy, settings deploy button]
+verified_by: [apps/web/src/lib/deployments/action.test.ts, apps/web/src/app/api/workers/[id]/deployments/route.test.ts, apps/web/src/app/api/deployments/route.test.ts, apps/web/src/app/api/cloudflare/credential/reveal/route.test.ts, apps/model-policy/scripts/deploy-request.test.ts, apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.test.ts]
 supersedes: []
 assertions:
   - id: run-deployment-action
@@ -44,6 +44,23 @@ assertions:
   - id: deployment-action-test
     type: test_file
     path: apps/web/src/lib/deployments/action.test.ts
+  - id: cloud-runner-deploy-route-get
+    type: route
+    method: GET
+    path: /api/cloudflare/cloud-runner/deploy
+    file: apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts
+  - id: cloud-runner-deploy-route-post
+    type: route
+    method: POST
+    path: /api/cloudflare/cloud-runner/deploy
+    file: apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts
+  - id: cloud-runner-deploy-step
+    type: symbol
+    name: runCloudRunnerDeployStep
+    path: apps/web/src/lib/deployments/cloud-runner-deploy.ts
+  - id: cloud-runner-deploy-route-test
+    type: test_file
+    path: apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.test.ts
 ---
 # Deployment Actions
 
@@ -61,7 +78,8 @@ credential and call the provider itself, returning only a redacted result.
 **Invariants**:
 - Operations and the capabilities each needs (`DEPLOYMENT_OPERATIONS`):
   `status` needs `deployments:read`; `put_secret`, `upload_worker`,
-  `ensure_bucket` need `deployments:write`. Every operation also needs
+  `ensure_bucket`, `deploy_worker_script`, `deploy_containers` need
+  `deployments:write`. Every operation also needs
   `deployment_secrets:use`, because every one uses the credential. None
   needs `secrets:reveal` or `deployment_secrets:manage`.
 - A credential reference is the stored row's label, lower-cased, or the
@@ -80,9 +98,9 @@ credential and call the provider itself, returning only a redacted result.
 
 ## Principals
 
-**Capability statement**: A deployment action MUST run as either an
-Operator task, authorized by its role's grant in its own workspace, or a
-human admin API key, and nothing else.
+**Capability statement**: A deployment action MUST run as an Operator task
+(authorized by its role's grant), a human admin API key, or a signed-in team
+owner/admin (the Settings Deploy button), and nothing else.
 
 **Invariants**:
 - Operator: `POST /api/workers/[id]/deployments` (MCP action `deploy`).
@@ -94,6 +112,16 @@ human admin API key, and nothing else.
 - Admin: `POST /api/deployments`. `bld_` keys at admin level only, the
   workspace must be in the key's team, not grant-checked. This is the
   escape hatch for people; it is audited the same way.
+- User: `POST /api/cloudflare/cloud-runner/deploy`. A session cookie only
+  (any `Authorization` header is rejected). The workspace must be in a
+  team the person belongs to, and the person's team role must hold all of
+  `manage_team_model_keys`, `manage_workspace_settings` and
+  `manage_team_keys` (owner/admin). Runs the cloud runner deploy
+  (`runCloudRunnerDeployStep`) step by step, each step through
+  `runDeploymentAction` as principal `user`, audited the same way as
+  `operator` and `admin`. The server mints the runner key and the
+  DISPATCH_TOKEN and puts them on the Worker — neither appears in
+  any response or audit row.
 - Creating, rotating and deleting a credential stay on the existing admin
   paths (`POST`/`DELETE /api/secrets`, owner/admin only). No deployment
   operation can change a stored credential.
@@ -112,9 +140,10 @@ credential reference, and never a credential value.
 - An allowed action writes a `started` row before the credential is read; if
   that write fails, nothing runs (503). The row is then settled `succeeded`
   (with the redacted result) or `failed` (with the scrubbed reason).
-- Columns: team, workspace, task, worker, account, principal, role slug,
-  operation, capabilities, elevated, provider, project, environment,
-  credential ref, outcome, reason, result. None holds a credential.
+- Columns: team, workspace, task, worker, account, user, principal,
+  role slug, operation, capabilities, elevated, provider, project,
+  environment, credential ref, outcome, reason, result. None holds a
+  credential. `userId` is non-null only for principal `user`.
 
 **Acceptance criteria**:
 - AC-1: GIVEN an Operator task in a workspace whose grant covers
@@ -157,5 +186,13 @@ credential reference, and never a credential value.
   `parseCloudflareParams`, `cloudflareScriptName`, `scrubProviderText`.
 - `apps/web/src/lib/deployments/store.ts`: `recordDeploymentAudit`,
   `settleDeploymentAudit`, `resolveDeploymentCredential`, `credentialRefOf`.
+- `apps/web/src/lib/deployments/cloud-runner-deploy.ts`:
+  `runCloudRunnerDeployStep`, `CLOUD_RUNNER_DEPLOY_STEPS`.
+- `apps/web/src/lib/deployments/cloud-runner-store.ts`:
+  `cloudRunnerDeployStore`, `saveWebhook`, runner key CRUD.
+- `apps/web/src/lib/deployments/cloud-runner-release.ts`:
+  `releaseBundleLoader`, `currentCloudRunnerRelease`.
+- `apps/web/src/app/api/cloudflare/cloud-runner/deploy/route.ts`:
+  the Settings Deploy route (GET workspaces, POST step).
 - `packages/core/db/schema.ts`: `deploymentAuditEvents`.
 - `packages/core/mcp-tools.ts`: the `deploy` action.
