@@ -156,7 +156,7 @@ function ImportPanel({ specId, c }: { specId: string; c: NonNullable<Ok['importC
         {c.canConfirm ? ' Confirming approves it as the baseline.' : ' A person who approves specs here confirms it.'}
       </p>
       <p className="text-body text-text-secondary" data-testid="spec-page-import-no-changes">
-        No proposed changes yet. A change is a new revision after confirming, reviewed against this one.
+        No proposed changes. A change is a new revision after confirming, reviewed against this one.
       </p>
       <p className="flex flex-wrap gap-x-4 text-meta">
         {c.previous ? (

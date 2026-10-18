@@ -576,7 +576,7 @@ describe('an imported spec: confirm the repo baseline first, then amendments are
     importConfirmation,
   };
 
-  it('unconfirmed: Confirm import is the one action, with no Approve or Review, the rendered spec, and "No proposed changes yet"', () => {
+  it('unconfirmed: Confirm import is the one action, with no Approve or Review, the rendered spec, and "No proposed changes"', () => {
     act(() => root.render(<SpecPage view={imported} />));
     expect(q('spec-page-confirm-import')!.textContent).toBe('Confirm import');
     expect(q('spec-page-approve')).toBeNull();
@@ -586,7 +586,7 @@ describe('an imported spec: confirm the repo baseline first, then amendments are
     // The path and commit are said once, in the panel, not again in the header.
     expect(q('spec-page-source')).toBeNull();
     expect(q('spec-page-import')!.textContent).toContain('Revision 2 is docs/specs/mission-flow-timeline.md at 87ee184');
-    expect(q('spec-page-import-no-changes')!.textContent).toMatch(/^No proposed changes yet\./);
+    expect(q('spec-page-import-no-changes')!.textContent).toMatch(/^No proposed changes\./);
     // The repo's own change between the two imports, labelled as that, not as an amendment.
     expect(q('spec-page-import-repo-change')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?from=1&to=2`);
     expect(q('spec-page-import-batch')!.getAttribute('href')).toBe(`/app/workspaces/${W}/specs#imported`);
