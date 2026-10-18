@@ -8,7 +8,9 @@
  * A Redis due-queue (`buildd:due:kernel-heal`, lib/redis.ts) holds the delivery ids, scored by
  * when to look. The per-minute `/api/cron/dispatch-drain?gate=due` tick asks Redis whether any
  * are due (no Postgres touched when none are) and runs `reconcileKernelDeliveries` for exactly
- * those, with no quiet window: the same floor pass, narrowed to one delivery. A dropped ZADD
+ * those, with no quiet window: the same floor pass, narrowed to one delivery. The pass runs where
+ * the kernel is hosted: in own mode the web host's tick only reads the queue and asks the control
+ * plane to heal each id (the `heal` op), so no transition is applied on the web host (AC-9). A dropped ZADD
  * costs one floor interval, never the heal: the floor puts a delivery with an unapplied
  * terminal fact first (reconcile.ts `floorCandidatesSql`).
  */
@@ -77,8 +79,11 @@ WHERE d.id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(id
 }
 
 export interface KernelHealDeps {
-  /** One delivery's floor pass. Default: `reconcileKernelDeliveries` with a reader whose every GitHub call times out. */
-  reconcile?: (only: string[]) => Promise<FloorSummary>;
+  /**
+   * One delivery's floor pass, given what is left of the tick's budget. Default: `healHere` where the
+   * kernel is hosted, else the control plane's `heal` op (null when it did not confirm).
+   */
+  reconcile?: (only: string[], budgetMs: number) => Promise<FloorSummary | null>;
   exec?: Exec;
   /** Wall clock for due times. */
   now?: () => number;
@@ -114,12 +119,30 @@ async function bumpAttempts(id: string): Promise<number> {
   return n;
 }
 
-async function defaultReconcile(only: string[]): Promise<FloorSummary> {
+/**
+ * The heal's floor pass, on this process. Only where the kernel is hosted: the control plane's `heal`
+ * op (command-api.ts) and, in shadow, the web host's own tick. It applies T17 to T19, so it is never
+ * run on a web host in own mode (AC-9).
+ */
+export async function healHere(only: string[]): Promise<FloorSummary> {
   const [{ reconcileKernelDeliveries }, { githubReader }] = await Promise.all([import('./seam'), import('./github-facts')]);
   return reconcileKernelDeliveries(
     { reader: (installationId) => githubReader(installationId, undefined, { timeoutMs: KERNEL_HEAL_READ_TIMEOUT_MS }) },
     { only, minQuietMs: 0, limit: only.length },
   );
+}
+
+/**
+ * Where the kernel is hosted here, the heal runs here; otherwise (the web host in own mode) the
+ * control plane is asked to heal the delivery (`heal`, as `drainDelivery` asks it to drain). An
+ * unconfirmed answer is null: `stillOwedHeal` then re-marks the delivery, and the floor backs it.
+ */
+async function defaultReconcile(only: string[], budgetMs: number): Promise<FloorSummary | null> {
+  const { hostsKernelHere, healOnControlPlane } = await import('./kernel-client');
+  if (await hostsKernelHere()) return healHere(only);
+  let last: FloorSummary | null = null;
+  for (const id of only) last = await healOnControlPlane(id, budgetMs);
+  return last;
 }
 
 /**
@@ -153,7 +176,7 @@ export async function runDueKernelHeals(deps: KernelHealDeps = {}): Promise<Kern
     // Claimed before any work: from here on only the re-mark below brings it back.
     await clearDue(KERNEL_HEAL_QUEUE, id);
     const attempt = await bumpAttempts(id);
-    const r = await within(reconcile([id]).catch((err) => { console.error(`[workflow] kernel heal of ${id} failed:`, err); return null; }), left);
+    const r = await within(reconcile([id], left).catch((err) => { console.error(`[workflow] kernel heal of ${id} failed:`, err); return null; }), left);
     if (r === TIMED_OUT) out.timedOut++;
     else out.healed++;
     const owed = r === TIMED_OUT ? [id] : await stillOwedHeal([id], exec, now).catch(() => [id]);

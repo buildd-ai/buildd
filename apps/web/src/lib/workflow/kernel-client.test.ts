@@ -1312,13 +1312,51 @@ describe('T17 to T19, T3 and T29 from the webhook and the sweeps are doors too (
     expect(recorded).toEqual([]);
   });
 
-  it('a refusal or the command\'s own failure is not an outage: it is the answer, nothing is recorded here', async () => {
-    const { observePrState, KernelCommandFailedError } = await import('./kernel-client');
-    const recorded: unknown[] = [];
-    const failing = (async () => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 })) as unknown as typeof fetch;
-    const err = await observePrState(closed, { principal: webhook, deps: { ...local().deps, env: OWN, fetch: failing, kernelDeliveryOf: async () => DELIVERY, recordUnapplied: async (...a) => { recorded.push(a); } } }).catch((e) => e);
-    expect(err).toBeInstanceOf(KernelCommandFailedError);
-    expect(recorded).toEqual([]);
+  /** Answers that are not an outage: a refused installation (4xx) and the command's own failure (500). */
+  const refusing = (async () => Response.json({ v: 1, code: 'installation_unresolved', error: 'no installation' }, { status: 422 })) as unknown as typeof fetch;
+  const failing = (async () => Response.json({ v: 1, code: 'command_failed', error: 'boom' }, { status: 500 })) as unknown as typeof fetch;
+
+  it('regression: a refused or failed door on a kernel-owned close is never read as "not the kernel\'s PR": recorded unapplied and healed, KernelObservationFailed', async () => {
+    const { observePrState, KernelObservationFailed } = await import('./kernel-client');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      for (const fetch of [refusing, failing]) {
+        const recorded: Array<[string, unknown]> = [];
+        const err = await observePrState({ ...closed, pull }, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => DELIVERY, recordUnapplied: async (id, p) => { recorded.push([id, p]); } } }).catch((e) => e);
+        expect(err).toBeInstanceOf(KernelObservationFailed);
+        expect(err.deliveryId).toBe(DELIVERY);
+        expect(recorded.map(([id]) => id)).toEqual([DELIVERY]);
+      }
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it('a refused or failed door on a PR the kernel does not own: false, so legacy decides, nothing recorded', async () => {
+    const { observePrState } = await import('./kernel-client');
+    for (const fetch of [refusing, failing]) {
+      const recorded: unknown[] = [];
+      expect(await observePrState(closed, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => null, recordUnapplied: async (...a) => { recorded.push(a); } } })).toBe(false);
+      expect(recorded).toEqual([]);
+    }
+  });
+
+  it('regression: a refused or failed push or retarget reads ownership here, so legacy never re-reviews a kernel PR', async () => {
+    const { observeHead, observeBase } = await import('./kernel-client');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      for (const [fn, p] of [[observeHead, pushed], [observeBase, retargeted]] as const) {
+        for (const fetch of [refusing, failing]) {
+          const call = fn as (p: unknown, c: unknown) => Promise<boolean>;
+          expect(await call(p, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => DELIVERY } })).toBe(true);
+          expect(await call(p, { principal: webhook, deps: { ...local().deps, env: OWN, fetch, kernelDeliveryOf: async () => null } })).toBe(false);
+        }
+      }
+    } finally {
+      console.error = realError;
+    }
   });
 
   it('in shadow the web host runs all three itself, as before', async () => {

@@ -81,6 +81,11 @@ export interface KernelOps {
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
+  /**
+   * The fast heal of one delivery (kernel-heal.ts): its floor pass, run where the kernel is hosted.
+   * What the web host's heal tick asks for instead of reconciling (and so applying T17 to T19) itself.
+   */
+  heal: { input: { deliveryId: string }; result: Awaited<ReturnType<Seam['reconcileKernelDeliveries']>> };
   /** A mission delivery epoch transition (§6): merged, ensure_writable, bind_pr, reconcile. */
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
@@ -131,6 +136,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   abandon: (s, i) => s.abandonDelivery(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
+  heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
   attempt_ended: (s, { workspaceId, ...p }) => {
@@ -164,6 +170,9 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
+
+/** `drain` and `heal`: buildd's own upkeep of one delivery, by id, with no workspace on the input and only a `system` principal. */
+const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drain' || op === 'heal';
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
 
 /** The ops whose input names a GitHub App installation (`installationId`). */
@@ -203,7 +212,7 @@ export async function deliveryAfter(op: KernelOp, input: unknown, result: unknow
     const d = (await loadView({ deliveryId })).delivery;
     return d ? { id: d.id, version: d.version } : null;
   };
-  if (op === 'drain' && typeof i.deliveryId === 'string') return byId(i.deliveryId);
+  if (isSystemDeliveryOp(op) && typeof i.deliveryId === 'string') return byId(i.deliveryId);
   if (op === 'open_delivery') {
     const id = (result as { deliveryId?: unknown } | null)?.deliveryId;
     if (typeof id === 'string') return byId(id);
@@ -270,7 +279,7 @@ export function commandProblem(body: unknown): string | null {
   if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account|grant (uuid id) | system, id }';
   const input = b.input as Record<string, unknown> | null;
   if (!input || typeof input !== 'object') return 'input must be an object';
-  if (b.op === 'drain') return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : 'drain needs input.deliveryId (uuid)';
+  if (isSystemDeliveryOp(b.op)) return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : `${b.op} needs input.deliveryId (uuid)`;
   if (typeof input.workspaceId !== 'string' || !UUID.test(input.workspaceId)) return 'input.workspaceId must be a uuid';
   if ('prNumber' in input && !(Number.isInteger(input.prNumber) && (input.prNumber as number) > 0)) return 'input.prNumber must be a positive integer';
   if (INSTALLATION_OPS.has(b.op) && !(typeof input.repoFullName === 'string' && REPO.test(input.repoFullName))) return 'input.repoFullName must be owner/name';
@@ -414,8 +423,8 @@ export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServ
   if (host !== 'control-plane' || executionModeOf((deps.env ?? process.env).EXECUTION_MODE) !== 'own') {
     return refuse(409, 'not_host', 'This host does not apply kernel commands in the current mode; the web host runs them.', { host });
   }
-  const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
-  if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
+  const workspaceId = isSystemDeliveryOp(cmd.op) ? null : String((cmd.input as { workspaceId: string }).workspaceId);
+  if (isSystemDeliveryOp(cmd.op) && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', `${cmd.op} is a system operation`);
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
   // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
   // adds no round trip of its own.

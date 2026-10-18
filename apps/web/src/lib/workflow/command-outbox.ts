@@ -51,6 +51,8 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   // The floor imports a PR it does not know (reconcile.ts), and re-drains effects on its own.
   open_delivery: false,
   drain: false,
+  // The heal tick re-marks a delivery still owed its heal, and the floor reconciles it anyway.
+  heal: false,
   mission_epoch: false,
   mission_scope: false,
   // The runner reports an attempt's end once; the floor re-sends an owner's end, never a repair's or a review's.

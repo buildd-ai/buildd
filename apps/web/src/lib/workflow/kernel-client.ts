@@ -489,6 +489,21 @@ export async function drainOnControlPlane(deliveryId: string, deps: ClientDeps =
   }
 }
 
+/**
+ * The web host's fast heal in own mode (kernel-heal.ts): one `heal` command, so the delivery's floor
+ * pass (and any T17 to T19 it applies) runs on the control plane. Null when it was not confirmed in
+ * `budgetMs`; the heal tick then re-marks the delivery while it is still owed, and the floor backs it.
+ */
+export async function healOnControlPlane(deliveryId: string, budgetMs: number, deps: ClientDeps = {}): Promise<KernelOps['heal']['result'] | null> {
+  try {
+    const answer = await submitKernelCommand('heal', { deliveryId }, { principal: { kind: 'system', id: 'kernel-heal' }, budgetMs, withDelivery: false, deps });
+    return answer.result;
+  } catch (err) {
+    console.warn(`[workflow] control-plane heal for delivery ${deliveryId} not confirmed; it is re-marked while still owed and the floor backs it:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 // ── The doors' functions ────────────────────────────────────────────────────
 //
 // The seam's door functions, same names and inputs, run where the kernel is
@@ -693,14 +708,22 @@ export async function observePrState(p: KernelOps['observe_pr_state']['input'], 
   try {
     seen = await doorOrHereOnSkew('observe_pr_state', input, c, `the close or reopen of ${p.repoFullName}#${p.prNumber}`);
   } catch (err) {
-    if (!(err instanceof ControlPlaneUnavailableError)) throw err;
+    if (err instanceof KernelObservationFailed) throw err;
+    // Unanswered, refused (an installation that did not resolve) or failed (500): nothing was applied,
+    // and that says nothing about who owns the PR. Ownership is read here, so a kernel PR is never
+    // handed to the legacy close: its observation is recorded unapplied and healed where the kernel is hosted.
     const deliveryId = await kernelDeliveryHere(p, c.deps);
     if (!deliveryId) return false;
     await (c.deps?.recordUnapplied ?? recordCloseUnapplied)(deliveryId, input);
-    throw new KernelObservationFailed(deliveryId, `the control plane did not answer (${err.why})`);
+    throw new KernelObservationFailed(deliveryId, `the control plane did not apply it (${doorErrorWhy(err)})`);
   }
   if (seen.observationFailed) throw new KernelObservationFailed(seen.observationFailed.deliveryId, seen.observationFailed.reason);
   return seen.owned;
+}
+
+function doorErrorWhy(err: unknown): string {
+  if (err instanceof ControlPlaneUnavailableError) return `the control plane did not answer: ${err.why}`;
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function recordCloseUnapplied(deliveryId: string, p: KernelOps['observe_pr_state']['input']): Promise<void> {
@@ -724,8 +747,11 @@ export async function observeHead(p: KernelOps['observe_head']['input'], c: Door
   try {
     return await doorOrHereOnSkew('observe_head', p, c, `the push to ${p.repoFullName}#${p.prNumber}`);
   } catch (err) {
-    if (!(err instanceof ControlPlaneUnavailableError)) throw err;
-    return (await kernelDeliveryHere(p, c.deps)) !== null;
+    // Unanswered (parked for the floor), refused or failed: ownership is read here either way, so
+    // legacy never acts beside the kernel on its PR.
+    const owned = (await kernelDeliveryHere(p, c.deps)) !== null;
+    if (owned && !(err instanceof ControlPlaneUnavailableError)) console.error(`[workflow] observe_head for ${p.repoFullName}#${p.prNumber} was not applied (${doorErrorWhy(err)}); the kernel owns the PR, so legacy stays out and the floor reads it again`);
+    return owned;
   }
 }
 
@@ -734,8 +760,11 @@ export async function observeBase(p: KernelOps['observe_base']['input'], c: Door
   try {
     return await doorOrHereOnSkew('observe_base', p, c, `the retarget of ${p.repoFullName}#${p.prNumber}`);
   } catch (err) {
-    if (!(err instanceof ControlPlaneUnavailableError)) throw err;
-    return (await kernelDeliveryHere(p, c.deps)) !== null;
+    // Unanswered (parked for the floor), refused or failed: ownership is read here either way, so
+    // legacy never acts beside the kernel on its PR.
+    const owned = (await kernelDeliveryHere(p, c.deps)) !== null;
+    if (owned && !(err instanceof ControlPlaneUnavailableError)) console.error(`[workflow] observe_base for ${p.repoFullName}#${p.prNumber} was not applied (${doorErrorWhy(err)}); the kernel owns the PR, so legacy stays out and the floor reads it again`);
+    return owned;
   }
 }
 

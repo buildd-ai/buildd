@@ -9,10 +9,22 @@
  * host set to `control-plane` while it runs. The door side is the real client
  * (kernel-client.ts) with the web host's own-mode setting.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
+
+// The fast heal's due-queue in memory (no Redis here); everything else in lib/redis stays real.
+const dueQueues = new Map<string, Map<string, number>>();
+const queue = (job: string) => dueQueues.get(job) ?? dueQueues.set(job, new Map()).get(job)!;
+const realRedis = await import('../../src/lib/redis');
+mock.module('@/lib/redis', () => ({
+  ...realRedis,
+  markDueEarliest: async (job: string, member: string, at: number) => { const p = queue(job).get(member); if (p === undefined || at < p) queue(job).set(member, at); },
+  clearDue: async (job: string, members: string | string[]) => { for (const m of [members].flat()) queue(job).delete(m); },
+  countDue: async (job: string, now: number) => [...queue(job).values()].filter((t) => t <= now).length,
+  listDue: async (job: string, now: number, limit: number) => [...queue(job).entries()].filter(([, t]) => t <= now).sort((a, b) => a[1] - b[1]).slice(0, limit).map(([m]) => m),
+}));
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
 const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, observePrState, observeHead, observeBase, KernelObservationFailed, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
@@ -21,6 +33,7 @@ const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
 const { postgresCommandLedger, COMMAND_LEASE_MS, COMMAND_HEARTBEAT_MS } = await import('../../src/lib/workflow/command-ledger');
 const { applyCommand } = await import('../../src/lib/workflow/kernel');
+const { runDueKernelHeals, KERNEL_HEAL_QUEUE, KERNEL_HEAL_DELAY_MS } = await import('../../src/lib/workflow/kernel-heal');
 
 const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS', 'KERNEL_DOOR_BUDGET_MS'] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -284,13 +297,14 @@ describe('AC-9 met: GitHub\'s PR facts (T17 to T19, T3, T29) are applied by the 
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
   });
 
-  test('a merge webhook while the control plane is down: recorded unapplied on the web host, KernelObservationFailed, nothing applied; the control plane\'s floor applies it once it is back', async () => {
+  test('regression: a merge webhook while the control plane is down is recorded unapplied on the web host; the web host\'s own heal tick then asks the control plane, which applies T17, and no transition is tagged web', async () => {
     const pr = await handedOn('feat/down-merge');
     w!.gh.mergePr(w!.repo, pr.prNumber, { by: 'a-person' });
     w!.gh.discardWebhooks();
     const before = (await w!.delivery(pr)).version;
     cp = installControlPlane();
     cp.down = true;
+    dueQueues.clear();
 
     const err = await observePrState({ ...ref(pr), source: 'webhook:closed', pull: await githubPull(pr) }, { principal: systemPrincipal('system:webhook:closed') }).catch((e) => e);
 
@@ -300,20 +314,36 @@ describe('AC-9 met: GitHub\'s PR facts (T17 to T19, T3, T29) are applied by the 
     expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
     // Never parked: the unapplied fact is its re-sender.
     expect(await q(sql`SELECT 1 FROM workflow_command_outbox WHERE op = 'observe_pr_state' AND command_input->>'repoFullName' = ${w!.repo}`)).toEqual([]);
+    expect([...queue(KERNEL_HEAL_QUEUE).keys()]).toEqual([pr.deliveryId]);
 
-    // Back: the control plane's floor (the heal is the same pass, narrowed) reads GitHub and applies T17 there.
+    // Back. The heal tick runs where production runs it: the web host's per-minute dispatch-drain,
+    // in own mode. It must not reconcile here; it asks the control plane to.
     cp.down = false;
-    setKernelHost('control-plane');
-    try {
-      await seam.reconcileKernelDeliveries({}, { only: [pr.deliveryId], minQuietMs: 0 });
-    } finally {
-      setKernelHost('web');
-    }
+    const tick = await runDueKernelHeals({ now: () => Date.now() + KERNEL_HEAL_DELAY_MS });
+    expect(tick).toMatchObject({ due: 1, healed: 1 });
+    expect(cp.calls.map((c) => c.op)).toContain('heal');
     expect((await w!.delivery(pr)).state).toBe('MERGED');
     expect(await unappliedCloses(pr)).toEqual([]);
     const written = await hostsSince(pr.deliveryId, before);
     expect(written.map((t) => t.command)).toContain('PrMerged');
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  }, AC35_TIMEOUT_MS);
+
+  test('the heal tick with the control plane still down applies nothing on the web host and keeps the delivery due', async () => {
+    const pr = await handedOn('feat/down-heal');
+    w!.gh.mergePr(w!.repo, pr.prNumber, { by: 'a-person' });
+    w!.gh.discardWebhooks();
+    const before = (await w!.delivery(pr)).version;
+    cp = installControlPlane();
+    cp.down = true;
+    dueQueues.clear();
+    await observePrState({ ...ref(pr), source: 'webhook:closed', pull: await githubPull(pr) }, { principal: systemPrincipal('system:webhook:closed') }).catch(() => {});
+
+    const tick = await runDueKernelHeals({ now: () => Date.now() + KERNEL_HEAL_DELAY_MS });
+    expect(tick).toMatchObject({ due: 1, rescheduled: 1 });
+    expect(await hostsSince(pr.deliveryId, before)).toEqual([]);
+    expect((await w!.delivery(pr)).state).not.toBe('MERGED');
+    expect([...queue(KERNEL_HEAL_QUEUE).keys()]).toEqual([pr.deliveryId]);
   }, AC35_TIMEOUT_MS);
 
   test('a push while the control plane is down is parked under its key and still read as the kernel\'s; once it answers, the floor applies it once', async () => {

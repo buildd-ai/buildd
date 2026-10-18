@@ -343,7 +343,9 @@ the control plane, authenticated as the caller).
   - Operations are the seam's door functions, unchanged: `land`,
     `apply_recommendation`, `policy_merge`, `request_review`,
     `request_ci_retry`, `record_supersession`, `abandon`, `open_delivery`, and
-    `drain` (one delivery's due effects, `system` principals only), and
+    `drain` (one delivery's due effects, `system` principals only), `heal`
+    (one delivery's fast heal, the floor pass narrowed to it, `system`
+    principals only), and
     `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
     its PR, reconcile what is owed; re-checked against the mission's repo
     workspace), and `attempt_ended` (T4: an attempt's end as the worker
@@ -498,13 +500,19 @@ the control plane, authenticated as the caller).
   fields the kernel reads) as an unapplied fact, schedules the fast heal, and
   answers `observationFailed`, which the door throws as
   `KernelObservationFailed`, so the caller neither takes a legacy path nor
-  reports success. A control plane that does not answer is the same failed
-  read: the web host records the observation unapplied itself (a fact, as a
-  render does, AC-3) and the heal applies it where the kernel is hosted. It
-  is never parked: the unapplied fact and the sweeps are its re-senders. GitHub
-  sends `synchronize` and a retarget once, so an unanswered `observe_head` or
-  `observe_base` is parked (AC-35), and ownership is read on the web host so
-  legacy never acts beside the kernel. `recordLocalHead` is one provenance
+  reports success. A control plane that does not answer, refuses the
+  command or fails it is the same failed read: the web host reads ownership
+  itself and, for a kernel PR, records the observation unapplied (a fact, as
+  a render does, AC-3) and schedules the heal; only a PR the kernel does not
+  own goes to legacy. It is never parked: the unapplied fact and the sweeps
+  are its re-senders. The heal queue is read by the web host's per-minute
+  tick, but in own mode that tick only asks the control plane to heal each
+  due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
+  there. An unconfirmed heal is re-marked while the delivery is still owed,
+  and the floor backs it. GitHub sends `synchronize` and a retarget once, so
+  an unanswered `observe_head` or `observe_base` is parked (AC-35); unanswered,
+  refused or failed, ownership is read on the web host so legacy never acts
+  beside the kernel. `recordLocalHead` is one provenance
   statement on an attempt row, not a command. `cancelSkippedTask` writes a
   task row the claim route owns.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
