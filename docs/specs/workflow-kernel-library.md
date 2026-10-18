@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1453,9 +1453,28 @@ column outside the kernel; S3 and S4 remove or route each one.
   evidence record and the attach guard. No write statement dropped with it:
   each still writes `status` or other `result` keys, so the attempt ceiling
   is unchanged until the reaper, requeue and claim families move.
+  The reaper is the second family behind it (`stale-workers.ts`). When it
+  gives up on a kernel owner attempt (the silent-start, retry and infra caps,
+  now one statement) it writes the task's `result` but not its status and
+  submits AttemptEnded(lost) through the kernel client, then runs
+  `projectOwnerEnd` itself, so the task settles even when no control plane
+  projected it. The unanswered-question sweep does the same and writes
+  nothing to the task, except a question superseded by recovery, which is no
+  attempt end and still fails the task itself. Both act only when the
+  reaped worker is the open task's current attempt
+  (`reapedOwnerAttemptIsCurrent`: an attempt row, not a placeholder that no
+  runner executed, such as an `external`, `system` or `openclaw` row, and
+  current by the `endingWorkerIsCurrentSql` rule). The fail write repeats
+  that check in its own WHERE, and the end is sent only if the write matched.
+  A late reap, after the task was requeued and claimed again, therefore does
+  nothing: no status, no result, no end in the ledger, and no requeue of the
+  new attempt's task. An infra requeue to `pending` is still no attempt end
+  and still the reaper's own write. The reaper's attempt ceiling drops from
+  11 statements to 9.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the other attempt writers (the worker PATCH's requeues and failure
-  overrides, claim, cleanup, the reaper, interactive detach, credential and
+  overrides, claim, cleanup, the reaper's requeues, expired loop waits and
+  reviewer rounds, interactive detach, credential and
   repo-access recovery, the recovery hold, conflict and CI retries, loop
   exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
