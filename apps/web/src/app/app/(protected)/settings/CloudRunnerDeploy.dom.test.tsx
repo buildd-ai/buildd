@@ -107,6 +107,82 @@ describe('CloudRunnerDeploy', () => {
     expect(host.querySelector('[data-testid="cloud-deploy-retry"]')).not.toBeNull();
   });
 
+  it('Retry resumes at the failed step and does not re-request finished steps', async () => {
+    const calls: Array<{ step: string; workspaceId: string }> = [];
+    let failWorker = true;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ workspaces: [{ id: WS1, name: 'Alpha' }] }), { status: 200 });
+      }
+      const body = JSON.parse(String(init!.body));
+      calls.push(body);
+      if (body.step === 'worker' && failWorker) {
+        failWorker = false;
+        return new Response(JSON.stringify({ error: 'Upload failed', step: 'worker' }), { status: 502 });
+      }
+      const steps = ['check', 'bucket', 'worker', 'containers', 'connect'];
+      const next = steps[steps.indexOf(body.step) + 1] ?? null;
+      return new Response(JSON.stringify({
+        ok: true, step: body.step, next,
+        detail: { workerUrl: 'https://test.workers.dev', ...(body.step === 'bucket' ? { notes: ['bucket note'] } : {}) },
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.click(); });
+    for (let i = 0; i < 10; i++) await flush();
+    expect(calls.map((c) => c.step)).toEqual(['check', 'bucket', 'worker']);
+    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toContain('Upload failed');
+
+    calls.length = 0;
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-retry"]')!.click(); });
+    // While the retry is in flight, the finished steps already read as done.
+    const items = [...host.querySelectorAll('[data-testid="cloud-deploy-steps"] li')].map((li) => li.textContent);
+    expect(items[0]).toStartWith('✓');
+    expect(items[1]).toStartWith('✓');
+    for (let i = 0; i < 10; i++) await flush();
+
+    expect(calls.map((c) => c.step)).toEqual(['worker', 'containers', 'connect']);
+    expect(calls.every((c) => c.workspaceId === WS1)).toBe(true);
+    expect(host.querySelector('[data-testid="cloud-deploy-url"]')?.textContent).toContain('test.workers.dev');
+    // Notes from the steps that finished before the failure survive the resume.
+    expect(host.textContent).toContain('bucket note');
+  });
+
+  it('Retry resumes at the failed step when its request throws', async () => {
+    const calls: Array<{ step: string; workspaceId: string }> = [];
+    let failContainers = true;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ workspaces: [{ id: WS1, name: 'Alpha' }] }), { status: 200 });
+      }
+      const body = JSON.parse(String(init!.body));
+      calls.push(body);
+      if (body.step === 'containers' && failContainers) {
+        failContainers = false;
+        throw new TypeError('Network request failed');
+      }
+      const steps = ['check', 'bucket', 'worker', 'containers', 'connect'];
+      const next = steps[steps.indexOf(body.step) + 1] ?? null;
+      return new Response(JSON.stringify({
+        ok: true, step: body.step, next, detail: { workerUrl: 'https://test.workers.dev' },
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-btn"]')!.click(); });
+    for (let i = 0; i < 10; i++) await flush();
+    expect(calls.map((c) => c.step)).toEqual(['check', 'bucket', 'worker', 'containers']);
+    expect(host.querySelector('[data-testid="cloud-deploy-error"]')?.textContent).toContain('Network request failed');
+
+    calls.length = 0;
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="cloud-deploy-retry"]')!.click(); });
+    for (let i = 0; i < 10; i++) await flush();
+
+    expect(calls.map((c) => c.step)).toEqual(['containers', 'connect']);
+    expect(host.querySelector('[data-testid="cloud-deploy-url"]')?.textContent).toContain('test.workers.dev');
+  });
+
   it('no credential value in any step request or response', async () => {
     const calls = installFetch();
     await mount();

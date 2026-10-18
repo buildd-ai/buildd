@@ -6,6 +6,7 @@ import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { capturePostgresErrorOnSpan } from './error-span';
 import { wrapNeonQuery } from './query-wrapper';
+import { installNeonQueryLabels } from './query-label';
 import { assertTestDatabaseSafe } from './test-guard';
 
 // Lazy initialization to avoid errors during build
@@ -22,6 +23,8 @@ function getSql() {
     // Opt-in local Postgres via a Neon HTTP proxy (scripts/demo). No-op unless
     // NEON_LOCAL_FETCH_ENDPOINT is set; throws if DATABASE_URL is not loopback.
     applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });
+    // Name the loader and statement on every query's fetch span (query-label.ts).
+    installNeonQueryLabels();
     const baseSql = neon(config.databaseUrl);
     // Capture DB errors on the active span without forcing the lazy query to
     // run early — see query-wrapper.ts for why that broke every db.batch.
