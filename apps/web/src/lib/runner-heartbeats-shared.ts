@@ -71,9 +71,6 @@ export interface RunnerHeartbeat {
   codexAuthSource?: RunnerCodexAuthSource | null;
   /** Authoritative ownership (managed / team host / personal / unknown); see runner-ownership.ts. */
   runnerClass?: RunnerClass;
-  /** Model login the runner reports (a label, never a credential); null = not reported. */
-  modelAuthSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none' | null;
-  codexAuthSource?: 'machine_login' | 'api_key' | 'none' | null;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */
