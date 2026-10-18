@@ -1842,6 +1842,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'an approval kept while the owner works applies only at the head it was given for: approve at H1, the owner pushes H2 and ends, and H2 is reviewed, not landed',
+    async run(host) {
+      const s = await new Delivery(host, 79).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept while the owner works');
+      applied(await s.push('H2'), 'WORKING', 'the owner pushed on past the approved head');
+      applied(await s.ownerPushed('H2'), 'AWAITING_REVIEW', 'the end at H2: the kept approval does not cover it');
+      eq((await s.d()).approvedHeads, [], 'nothing approved at H2');
+      notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'H2 does not land on the strength of H1\'s approval');
+    },
+  },
+  {
+    name: 'an approval kept while the owner works lets the delivery land the moment the owner ends at the same head',
+    async run(host) {
+      const s = await new Delivery(host, 80).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'not landable while the owner still works');
+      applied(await s.ownerPushed('H1'), 'APPROVED', 'the end applies the kept approval');
+      applied(await s.land('H1'), 'LANDING', 'and the landing gate now passes');
+      eq(await s.count('merge_call'), 1, 'one merge call');
+    },
+  },
+  {
     name: '00d288fd: a request for changes from outside the rounds while the owner works raises its findings, and the hand-off owes the fix, not a second review; the kernel\'s own open round is never answered from outside',
     async run(host) {
       const s = await new Delivery(host, 71).open();
