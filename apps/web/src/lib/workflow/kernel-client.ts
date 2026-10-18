@@ -33,6 +33,10 @@ import {
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
+import { noteWorkChanged, workChangeOfKernelInput } from '@/lib/work-changed';
+import { KernelObservationFailed } from './kernel-observation';
+
+export { KernelObservationFailed } from './kernel-observation';
 
 export type { KernelOp, KernelOps, KernelPrincipal, DeliveryVersion } from './command-api';
 
@@ -133,6 +137,10 @@ export interface ClientDeps {
   newKey?: () => string;
   /** Keeps an unanswered door command for the floor (command-outbox.ts). */
   park?: CommandOutbox['park'];
+  /** The kernel delivery of a PR, read on this host (an unanswered observation's ownership). */
+  kernelDeliveryOf?: (p: { workspaceId: string; repoFullName: string; prNumber: number }) => Promise<string | null>;
+  /** Records a close the control plane did not answer, unapplied, and schedules its heal. */
+  recordUnapplied?: (deliveryId: string, p: KernelOps['observe_pr_state']['input']) => Promise<void>;
 }
 
 // ── The mode ────────────────────────────────────────────────────────────────
@@ -323,9 +331,19 @@ export async function submitKernelCommand<K extends KernelOp>(op: K, input: Kern
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
       throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
     }
-    return runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false);
+    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false));
   }
-  return submitRemote(op, input, { ...opts, idempotencyKey }, deps);
+  return noted(input, await submitRemote(op, input, { ...opts, idempotencyKey }, deps));
+}
+
+/**
+ * A command that ran changed the delivery, review or task it names: its
+ * mission's summary is refreshed after the response (lib/work-changed.ts).
+ * Here, not in the kernel, so it holds wherever the kernel is hosted.
+ */
+function noted<T>(input: unknown, answer: T): T {
+  noteWorkChanged(workChangeOfKernelInput(input));
+  return answer;
 }
 
 async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery = true): Promise<KernelAnswer<K>> {
@@ -377,6 +395,9 @@ async function submitUntil<K extends KernelOp>(
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
+  // A retry never sleeps past the deadline: a short budget (a claim's start) is not overrun by the backoff.
+  const backoff = (attempt: number) => Math.max(0, Math.min(250 * 2 ** attempt, 2_000, deadline - now()));
+
   for (let attempt = 0; ; attempt++) {
     const left = deadline - now();
     if (left <= 0) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
@@ -397,7 +418,7 @@ async function submitUntil<K extends KernelOp>(
       if (!preConnect) mayHaveApplied = true;
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
       why = timedOut ? 'timed out' : `${preConnect ? 'unreachable' : 'connection lost'}: ${err instanceof Error ? err.message : String(err)}`;
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     const answer = (await res.json().catch(() => null)) as Record<string, unknown> | null;
@@ -424,14 +445,14 @@ async function submitUntil<K extends KernelOp>(
       // One more try, then the answer: a database that is down now is not back within a door's budget.
       why = `answered 503 ${String(answer.code)}`;
       if (attempt >= 1) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     if (RETRYABLE_STATUS.has(res.status) || (res.status === 409 && answer?.code === 'in_progress')) {
       why = `answered ${res.status}${answer?.code ? ` ${String(answer.code)}` : ''}`;
       // in_progress: it is running there. Any other 5xx: it may have run. Only a 429 refused before running.
       if (res.status !== 429) mayHaveApplied = true;
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     throw new KernelCommandRefusedError(res.status, answer ?? {});
@@ -467,6 +488,21 @@ export async function drainOnControlPlane(deliveryId: string, deps: ClientDeps =
     return answer.result;
   } catch (err) {
     console.warn(`[workflow] control-plane drain for delivery ${deliveryId} not confirmed; the control plane finishes it or its floor drains it:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * The web host's fast heal in own mode (kernel-heal.ts): one `heal` command, so the delivery's floor
+ * pass (and any T17 to T19 it applies) runs on the control plane. Null when it was not confirmed in
+ * `budgetMs`; the heal tick then re-marks the delivery while it is still owed, and the floor backs it.
+ */
+export async function healOnControlPlane(deliveryId: string, budgetMs: number, deps: ClientDeps = {}): Promise<KernelOps['heal']['result'] | null> {
+  try {
+    const answer = await submitKernelCommand('heal', { deliveryId }, { principal: { kind: 'system', id: 'kernel-heal' }, budgetMs, withDelivery: false, deps });
+    return answer.result;
+  } catch (err) {
+    console.warn(`[workflow] control-plane heal for delivery ${deliveryId} not confirmed; it is re-marked while still owed and the floor backs it:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -587,6 +623,80 @@ export async function attemptEnded(p: Omit<KernelOps['attempt_ended']['input'], 
 }
 
 /**
+ * AttemptRequeued from the web host (AC-1 slice 6): an attempt's task goes back to the queue,
+ * applied where the kernel is hosted. The caller also projects the requeue on its own host
+ * (`projectRequeue`) for a control plane that is down or too old; during release skew it is
+ * applied here (`doorOrHereOnSkew`).
+ */
+export async function attemptRequeued(p: Omit<KernelOps['attempt_requeued']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_requeued']['result']> {
+  return doorOrHereOnSkew('attempt_requeued', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s requeue`);
+}
+
+/** AttemptStarted's own control-plane budget: a claim waits at most this long on the door (KERNEL_START_BUDGET_MS overrides). */
+export const ATTEMPT_START_BUDGET_MS = 750;
+/** After a start the control plane left unanswered, how long every start skips the door and the claim projects it at once. */
+export const ATTEMPT_START_SKIP_MS = 45_000;
+/** Process-level: until when starts skip the door (0: the door is tried). */
+let attemptStartSkipUntil = 0;
+/** Close the start breaker (tests). */
+export function resetAttemptStartBreaker(): void {
+  attemptStartSkipUntil = 0;
+}
+
+/**
+ * AttemptStarted from the claim route (AC-1 slice 7): a claim of a kernel owner task starts its
+ * attempt, applied where the kernel is hosted. Never run on the web host in own mode, not even
+ * during release skew: the claim projects the start on its own host (`projectAttemptStart`) on any
+ * door error, so an older control plane's refusal is just one more error. The door gets its own
+ * small budget (`ATTEMPT_START_BUDGET_MS`, apart from the fix claims'), and a start left
+ * unanswered opens a short breaker (`ATTEMPT_START_SKIP_MS`): the starts after it fail at once
+ * without a request, so an outage costs one claim the budget, not every claim.
+ */
+export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_started']['result']> {
+  const now = c.deps?.now ?? Date.now;
+  if (now() < attemptStartSkipUntil) {
+    throw new ControlPlaneUnavailableError(`a start went unanswered within the last ${ATTEMPT_START_SKIP_MS / 1000}s; the door is skipped until then`);
+  }
+  const env = c.deps?.env ?? process.env;
+  const budgetMs = Number(env.KERNEL_START_BUDGET_MS) || ATTEMPT_START_BUDGET_MS;
+  try {
+    const { value } = await withControlPlaneBudget('claim_start', budgetMs, () => door('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c), { now });
+    return value;
+  } catch (err) {
+    if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
+    throw err;
+  }
+}
+
+/**
+ * The command key of a claim's start: one per claim, so the door's submission and a later replay from
+ * the outbox are the same command to the ledger. (The transition's own key, `start:<task>:<claimedAt>`,
+ * is the kernel's second guard; this one only has to be a valid command key.)
+ */
+export const attemptStartKey = (taskId: string, claimedAt: string): string =>
+  `attempt_started:${taskId}:${claimedAt.replace(/[^A-Za-z0-9._-]/g, '_')}`.slice(0, 200);
+
+/**
+ * A start projected on the web host without a kernel answer (an interactive claim, the breaker open, an
+ * outage) is parked once for the floor to replay on the control plane, so the kernel's log is complete.
+ * Never on the claim's critical path: the caller runs it after the response. The replay records the
+ * transition (or a duplicate) and the guarded projection is a no-op, because the task is already assigned.
+ */
+export async function parkAttemptStart(
+  p: { input: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>; principal: KernelPrincipal | null; priorUnknown?: boolean; why: string },
+  deps: { park?: NonNullable<ClientDeps['park']> } = {},
+): Promise<boolean> {
+  if (!p.principal) return false;
+  const key = attemptStartKey(p.input.task.id, p.input.claimedAt);
+  return (deps.park ?? ((x) => postgresCommandOutbox().park(x)))({
+    key, op: 'attempt_started', input: { ...p.input, workspaceId: p.input.task.workspaceId }, principal: p.principal, priorUnknown: p.priorUnknown === true, why: p.why,
+  }).catch((err: unknown) => {
+    console.error(`[workflow] attempt_started ${key}: could not be parked; the kernel's log misses this start:`, err);
+    return false;
+  });
+}
+
+/**
  * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
  * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it
  * is applied here, so a red PR is never left without its repair (`doorOrHereOnSkew`).
@@ -635,6 +745,104 @@ export async function adoptReviewVerdict(p: KernelOps['adopt_review_verdict']['i
  */
 export async function claimFix(task: KernelOps['claim_fix']['input']['task'], c: DoorCall): Promise<KernelOps['claim_fix']['result']> {
   return doorOrHereOnSkew('claim_fix', { task, workspaceId: task.workspaceId }, c, `fix task ${task.id}'s claim`);
+}
+
+/** GitHub's pull object cut to what the kernel's reading of it uses (github-facts.ts `toLivePr`). */
+function pullForKernel(pull: unknown): unknown {
+  if (!pull || typeof pull !== 'object') return pull;
+  const p = pull as Record<string, any>;
+  return {
+    state: p.state, merged: p.merged, merged_at: p.merged_at ?? null, merge_commit_sha: p.merge_commit_sha ?? null,
+    updated_at: p.updated_at ?? null, mergeable_state: p.mergeable_state ?? null, draft: p.draft,
+    ...(p.merged_by?.login ? { merged_by: { login: p.merged_by.login } } : {}),
+    head: { sha: p.head?.sha, ref: p.head?.ref, repo: p.head?.repo ? { full_name: p.head.repo.full_name } : null },
+    base: { ref: p.base?.ref },
+  };
+}
+
+type PrRef = { workspaceId: string; repoFullName: string; prNumber: number };
+
+/** The kernel delivery of a PR by a plain read on this host: ownership, when the control plane did not answer. */
+async function kernelDeliveryHere(p: PrRef, deps?: ClientDeps): Promise<string | null> {
+  if (deps?.kernelDeliveryOf) return deps.kernelDeliveryOf(p);
+  return (await import('./kernel-heal')).kernelDeliveryIdOfPr(p);
+}
+
+/**
+ * T17 to T19 from the GitHub webhook, the reconcile and refresh sweeps and the dependency gate: a PR
+ * closed, merged or reopened, applied where the kernel is hosted (AC-9). The seam's contract, unchanged:
+ * false = the kernel does not own the PR; throws `KernelObservationFailed` when it does but its live read
+ * failed, the caller's `pull` recorded unapplied and the fast heal scheduled.
+ *
+ * A control plane that does not answer is that same failed read: this host records the caller's
+ * observation unapplied (a fact, as a render does: AC-3) and schedules the heal, which applies it where
+ * the kernel is hosted. So a close GitHub sends once is never lost, and legacy never acts on a kernel PR.
+ * During release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function observePrState(p: KernelOps['observe_pr_state']['input'], c: DoorCall): Promise<boolean> {
+  const input = p.pull === undefined ? p : { ...p, pull: pullForKernel(p.pull) };
+  let seen: KernelOps['observe_pr_state']['result'];
+  try {
+    seen = await doorOrHereOnSkew('observe_pr_state', input, c, `the close or reopen of ${p.repoFullName}#${p.prNumber}`);
+  } catch (err) {
+    if (err instanceof KernelObservationFailed) throw err;
+    // Unanswered, refused (an installation that did not resolve) or failed (500): nothing was applied,
+    // and that says nothing about who owns the PR. Ownership is read here, so a kernel PR is never
+    // handed to the legacy close: its observation is recorded unapplied and healed where the kernel is hosted.
+    const deliveryId = await kernelDeliveryHere(p, c.deps);
+    if (!deliveryId) return false;
+    await (c.deps?.recordUnapplied ?? recordCloseUnapplied)(deliveryId, input);
+    throw new KernelObservationFailed(deliveryId, `the control plane did not apply it (${doorErrorWhy(err)})`);
+  }
+  if (seen.observationFailed) throw new KernelObservationFailed(seen.observationFailed.deliveryId, seen.observationFailed.reason);
+  return seen.owned;
+}
+
+function doorErrorWhy(err: unknown): string {
+  if (err instanceof ControlPlaneUnavailableError) return `the control plane did not answer: ${err.why}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function recordCloseUnapplied(deliveryId: string, p: KernelOps['observe_pr_state']['input']): Promise<void> {
+  if (p.pull) {
+    // Records the fact and schedules the heal (render-observation.ts); an open PR records nothing.
+    const { recordPrStateObserved } = await import('./render-observation');
+    const recorded = await recordPrStateObserved({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, pull: p.pull, source: p.source })
+      .catch((err) => { console.error(`[workflow] could not record the observed close of ${p.repoFullName}#${p.prNumber}:`, err); return false; });
+    if (recorded) return;
+  }
+  // No observation of its own (a sweep): the heal and the floor read the PR again.
+  await (await import('./kernel-heal')).scheduleKernelHeal(deliveryId);
+}
+
+/**
+ * T3 from the `synchronize` webhook: the PR head moved, applied where the kernel is hosted (AC-9).
+ * True = the kernel owns the PR and the legacy re-review must not run. A control plane that does not
+ * answer has the push parked for the floor (GitHub sends it once), and ownership is read here.
+ */
+export async function observeHead(p: KernelOps['observe_head']['input'], c: DoorCall): Promise<boolean> {
+  try {
+    return await doorOrHereOnSkew('observe_head', p, c, `the push to ${p.repoFullName}#${p.prNumber}`);
+  } catch (err) {
+    // Unanswered (parked for the floor), refused or failed: ownership is read here either way, so
+    // legacy never acts beside the kernel on its PR.
+    const owned = (await kernelDeliveryHere(p, c.deps)) !== null;
+    if (owned && !(err instanceof ControlPlaneUnavailableError)) console.error(`[workflow] observe_head for ${p.repoFullName}#${p.prNumber} was not applied (${doorErrorWhy(err)}); the kernel owns the PR, so legacy stays out and the floor reads it again`);
+    return owned;
+  }
+}
+
+/** T29 from the `edited` webhook (a retarget), applied where the kernel is hosted (AC-9). As `observeHead`. */
+export async function observeBase(p: KernelOps['observe_base']['input'], c: DoorCall): Promise<boolean> {
+  try {
+    return await doorOrHereOnSkew('observe_base', p, c, `the retarget of ${p.repoFullName}#${p.prNumber}`);
+  } catch (err) {
+    // Unanswered (parked for the floor), refused or failed: ownership is read here either way, so
+    // legacy never acts beside the kernel on its PR.
+    const owned = (await kernelDeliveryHere(p, c.deps)) !== null;
+    if (owned && !(err instanceof ControlPlaneUnavailableError)) console.error(`[workflow] observe_base for ${p.repoFullName}#${p.prNumber} was not applied (${doorErrorWhy(err)}); the kernel owns the PR, so legacy stays out and the floor reads it again`);
+    return owned;
+  }
 }
 
 /** A door's caller-supplied idempotency key, when the request carries one. */

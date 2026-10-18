@@ -54,7 +54,7 @@ export function missionInsight(s: MissionSheetState): MissionInsight | null {
     return { text: `Marked complete, but ${unchecked(s)} of ${s.goal.total} goal ${plural(s.goal.total, 'criterion is', 'criteria are')} unchecked.`, disagrees: true };
   }
   if (!s.complete && allLanded(s) && s.live === 0) {
-    return { text: 'Everything landed. Not marked complete.', disagrees: true };
+    return { text: 'Every task is done. Not marked complete.', disagrees: true };
   }
   if (s.needsYou > 0) {
     return { text: `${s.needsYou} ${plural(s.needsYou, 'task needs', 'tasks need')} you.`, disagrees: true };
@@ -63,7 +63,7 @@ export function missionInsight(s: MissionSheetState): MissionInsight | null {
     return { text: s.goal.total > 0 ? 'Done, and every goal criterion checks out.' : 'Done.', disagrees: false };
   }
   if (s.planning && s.landed.total === 0) return { text: 'Planning. No tasks.', disagrees: false };
-  const landed = `${s.landed.done} of ${s.landed.total} landed.`;
+  const landed = `${s.landed.done} of ${s.landed.total} done.`;
   if (s.live > 0) return { text: `${s.live} ${plural(s.live, 'agent', 'agents')} at work, ${landed}`, disagrees: false };
   return { text: `Nothing running right now. ${landed}`, disagrees: false };
 }
@@ -73,6 +73,7 @@ const ask = (label: string, text: string, tone?: 'needs'): CanvasSuggestion => (
 const HOW = ask('How is it going?', 'How is this mission going?');
 const HOLDING = ask("What's holding it up?", "What's holding this mission up?");
 const LEFT = ask("What's left?", "What's left before this mission is done?");
+const DONE_SO_FAR = ask('What got done?', 'What did this mission get done?');
 
 /** ASK ABOUT: two or three rows (the plain three before the mission loads); row 1 is copper when it addresses the disagreement. */
 export function missionAskRows(s: MissionSheetState | null): CanvasSuggestion[] {
@@ -82,20 +83,20 @@ export function missionAskRows(s: MissionSheetState | null): CanvasSuggestion[] 
     const n = unchecked(s);
     return [
       ask(`Why ${plural(n, 'is 1 criterion', `are ${n} criteria`)} unchecked?`, `This mission is marked complete, but ${n} of ${s.goal.total} goal criteria are unchecked. Why, and what would check them?`, 'needs'),
-      ask('What shipped?', 'What did this mission ship?'),
+      DONE_SO_FAR,
     ];
   }
   if (!s.complete && allLanded(s) && s.live === 0) {
     return [
-      ask("Why isn't it complete?", 'Everything on this mission landed. Why isn\'t it complete?', 'needs'),
-      ask('What shipped?', 'What did this mission ship?'),
+      ask("Why isn't it complete?", 'Every task on this mission is done. Why isn\'t it complete?', 'needs'),
+      DONE_SO_FAR,
       LEFT,
     ];
   }
   if (s.needsYou > 0) {
     return [ask('What does it need from me?', 'What does this mission need from me?', 'needs'), HOW, LEFT];
   }
-  if (s.complete) return [ask('What shipped?', 'What did this mission ship?'), ask('Anything to follow up?', 'Is there anything to follow up on this mission?')];
+  if (s.complete) return [DONE_SO_FAR, ask('Anything to follow up?', 'Is there anything to follow up on this mission?')];
   if (s.planning && s.landed.total === 0) return [ask("What's the plan so far?", "What's the plan for this mission so far?"), HOW];
   return [HOW, HOLDING, LEFT];
 }

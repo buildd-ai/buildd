@@ -352,5 +352,5 @@ both, and visibility never depends on `tools/list_changed`.
 - Authority: `apps/web/src/lib/capability-grants-auth.ts`
 - Tables: `capabilityPolicies`, `capabilityGrants` in `packages/core/db/schema.ts`
 - MCP: `request_capability` in `packages/core/mcp-tools.ts`
-- Gate and Home: `apps/web/src/lib/capability-grants-needs-you.ts` (`accessEscalationRule`, `loadAccessNeedsYou`, `notifyAccessRequest`), wired through `apps/web/src/modules.ts`
+- Gate and Home: `apps/web/src/lib/capability-grants-needs-you.ts` (`accessEscalationRule`, `accessNeedsYouRead`, `notifyAccessRequest`), wired through `apps/web/src/modules.ts`
 - UI: `apps/web/src/lib/capability-grants-view.ts`, `apps/web/src/app/app/(protected)/settings/connections/connectors/AgentAccessSection.tsx`, `TeamAppsSection.tsx`

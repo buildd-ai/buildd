@@ -333,7 +333,7 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
     case 'mission_held':
       return missionStartCopyOf(refusal).taskTitle;
     case 'mission_local':
-      return 'Runs from a local session';
+      return 'Runs from your session';
     case 'subject_dead':
       return 'Blocked: subject PR is closed';
     case 'connector_routing_mismatch':
@@ -347,7 +347,7 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
     case 'entitlement_blocked':
       return 'Queued: plan limit reached';
     case 'coordination_hold':
-      return refusal.reasonsChanged ? 'What holds it changed' : 'Held';
+      return refusal.reasonsChanged ? 'What it waits on changed' : 'Waiting for files';
     default:
       return 'Blocked';
   }
@@ -364,7 +364,7 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
     case 'mission_held':
       return missionStartCopyOf(refusal).taskReason;
     case 'mission_local':
-      return 'This mission runs in a local session, so runners leave its tasks for that session to claim. "Force start" hands this task to a runner instead.';
+      return 'This mission runs from your session, so runners leave its tasks for a session to claim. "Force start" hands this task to a runner instead.';
     case 'mission_budget_exhausted':
       return 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.';
     case 'connector_routing_mismatch': {

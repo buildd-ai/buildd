@@ -72,11 +72,26 @@ describe('queue sections (R-26)', () => {
     expect(one.held[0].held).toBe(true);
   });
 
+  test('a task or mission a person paused reads paused, never held or on hold', () => {
+    const t = QUEUE.teams[0];
+    const queue = { ...QUEUE, teams: [{ ...t, queue: [
+      { ...t.queue[0], holds: ['task_held' as const] },
+      { ...t.queue[1], holds: ['mission_held' as const] },
+      t.queue[2],
+    ] }, QUEUE.teams[1]] };
+    const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
+    const [one] = queueSections(s, NOW);
+    expect(one.held.map(r => [r.reason, r.starts])).toEqual([
+      ['paused by a person', 'paused · by a person'],
+      ['mission is paused', 'paused · mission is paused'],
+    ]);
+  });
+
   test('"Not for this runner" names why: a local session, another runner, a role it lacks', () => {
     const [one] = queueSections(queueState(), NOW);
     // The why goes in the starts column; the mission column always names the mission.
     expect(one.notFor.map(r => [r.position, r.title, r.starts, r.exclusion])).toEqual([
-      [null, 'Runner terminal: round 3 audit', 'runs in a local session', 'local_session'],
+      [null, 'Runner terminal: round 3 audit', 'runs from your session', 'local_session'],
       [null, 'fix(supersession): close the old PR', 'another runner takes it', 'another_runner'],
       [null, 'design: the queue tab', 'needs Designer', 'role_missing'],
     ]);

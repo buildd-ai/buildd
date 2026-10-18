@@ -8,12 +8,12 @@
  * nothing here derives state.
  */
 import Link from 'next/link';
-import type { MissionDelivery } from '@/lib/delivery-projection';
+import type { MissionDeliveryRow } from '@/lib/delivery-projection';
 import { DELIVERY_KIND, STATE_OF_KIND, deliveryKindLabel } from '@/lib/delivery-projection';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import MissionRow from '@/components/ui/MissionRow';
 
-export function DeliveryMilestones({ missions, openMissions }: { missions: readonly MissionDelivery[]; openMissions: number }) {
+export function DeliveryMilestones({ missions, openMissions }: { missions: readonly MissionDeliveryRow[]; openMissions: number }) {
   if (missions.length === 0) return null;
   return (
     <section data-testid="home-delivery-milestones" aria-labelledby="home-delivery-heading" className="mb-8">
@@ -24,14 +24,14 @@ export function DeliveryMilestones({ missions, openMissions }: { missions: reado
       <ul className="border-b border-border-default">
         {missions.map(m => {
           const state = STATE_OF_KIND[m.kind] ?? undefined;
-          const stat = m.total > 0 ? `${m.landed} of ${m.total} landed` : undefined;
+          const stat = m.total > 0 ? `${m.landed} of ${m.total} done` : undefined;
           const kind = { ...DELIVERY_KIND[m.kind], label: deliveryKindLabel(m) };
           return (
             <li key={m.id} data-testid="home-delivery-row" data-kind={m.kind}>
               <MissionRow
                 href={m.href}
                 title={m.title}
-                strip={m.tasks.map(t => lifecycleState(t.delivery.kind))}
+                strip={m.strip.map(lifecycleState)}
                 state={state}
                 stat={stat}
                 meta={state ? undefined : `${kind.glyph} ${kind.label}${stat ? ` · ${stat}` : ''}`}

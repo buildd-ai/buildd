@@ -3,7 +3,8 @@
  * §3): the outbox floor drain (workflow-state-kernel.md §10.3), the trunk
  * circuit breaker's recovery (§6.10), the reconciliation floor (§11), the S15
  * treadmill restart, re-submitting the door commands the control plane never
- * answered (command-outbox.ts), and pruning the command ledger. Each step is isolated: one
+ * answered (command-outbox.ts), pruning the command ledger, and `Buildd / Review approval`
+ * on every open PR head in a linked repo with its coverage (open-pr-status.ts). Each step is isolated: one
  * failing never discards the others.
  *
  * Hosted by exactly one process per mode: the control plane's cron trigger in
@@ -22,6 +23,7 @@ import { postgresCommandLedger } from './command-ledger';
 import { drainParkedCommands, type ParkedDrainSummary } from './command-outbox';
 import { kernelHost } from './kernel-host';
 import { commandsConfigured, executionModeOf } from './command-api';
+import { publishOpenPrStatuses, type OpenPrStatusSummary } from './open-pr-status';
 
 type Isolated<T> = T | { error: string };
 
@@ -39,6 +41,7 @@ export interface KernelFloorResult {
   treadmillCycles: Isolated<TreadmillCycleSummary>;
   commandsPruned: Isolated<number>;
   parkedCommands: Isolated<ParkedDrainSummary>;
+  openPrStatuses: Isolated<OpenPrStatusSummary>;
 }
 
 export interface KernelFloorDeps {
@@ -48,21 +51,23 @@ export interface KernelFloorDeps {
   restartTreadmillCycles?: typeof restartTreadmillCycles;
   pruneCommands?: () => Promise<number>;
   drainParkedCommands?: () => Promise<ParkedDrainSummary>;
+  publishOpenPrStatuses?: () => Promise<OpenPrStatusSummary>;
 }
 
 const isolate = <T>(p: () => Promise<T>): Promise<Isolated<T>> =>
   Promise.resolve().then(p).catch((err): { error: string } => ({ error: err instanceof Error ? err.message : String(err) }));
 
 export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<KernelFloorResult> {
-  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands] = await Promise.all([
+  const [kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses] = await Promise.all([
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
     isolate(() => (deps.reconcileKernelDeliveries ?? (() => reconcileKernelDeliveries()))()),
     isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: TREADMILL_COOLDOWN_MS })),
     isolate(() => (deps.pruneCommands ?? (() => postgresCommandLedger().prune()))()),
     isolate(() => (deps.drainParkedCommands ?? (() => drainParkedCommands()))()),
+    isolate(() => (deps.publishOpenPrStatuses ?? (() => publishOpenPrStatuses()))()),
   ]);
-  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands };
+  return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned, parkedCommands, openPrStatuses };
 }
 
 const ok = <T>(v: Isolated<T>): v is T => !(v && typeof v === 'object' && 'error' in (v as object));
@@ -75,10 +80,14 @@ export function kernelFloorOutcome(r: KernelFloorResult): { processed: number; c
   const tread = ok(r.treadmillCycles) ? r.treadmillCycles : null;
   // A parked command given up is an error: a verdict or an end that never landed.
   const parked = ok(r.parkedCommands) ? r.parkedCommands : null;
+  // AC-37: an open head still without Buildd / Review approval is an error of the run, so the coverage can fail.
+  const open = ok(r.openPrStatuses) ? r.openPrStatuses : null;
   return {
-    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0),
-    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0),
-    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1),
+    processed: (outbox?.claimed ?? 0) + (floor?.checked ?? 0) + (trunk?.checked ?? 0) + (tread?.checked ?? 0) + (parked?.claimed ?? 0) + (open?.checked ?? 0),
+    changed: (outbox?.done ?? 0) + (floor ? floor.imported + floor.enqueued : 0) + (trunk?.resolved ?? 0) + (tread?.restarted ?? 0) + (parked?.done ?? 0)
+      + (open ? open.published + open.republished : 0),
+    errors: (outbox ? outbox.failed : 1) + (floor ? floor.errors : 1) + (trunk ? trunk.errors : 1) + (tread ? tread.errors : 1) + (ok(r.commandsPruned) ? 0 : 1) + (parked ? parked.dead : 1)
+      + (open ? open.errors + open.coverage.missing.length : 1),
   };
 }
 
@@ -91,6 +100,7 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
   line('TreadmillCycles', r.treadmillCycles);
   line('KernelCommandsPruned', r.commandsPruned);
   line('KernelParkedCommands', r.parkedCommands);
+  line('OpenPrStatuses', r.openPrStatuses);
 }
 
 export const KERNEL_FLOOR_JOB = 'kernel-floor';

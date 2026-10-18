@@ -5,6 +5,7 @@ import {
   overrideForAction,
   FIX_PICKUP_BOUND_MS,
   INVARIANT_ALARM_MS,
+  LANDING_ACTION_LABELS,
   type LandingAlertDeps,
   type LandingAlertInput,
 } from './pr-landing-alert';
@@ -12,6 +13,15 @@ import { verifyLandingActionToken } from './landing-action-token';
 import type { LandingOutcome } from './pr-landing';
 
 const MIN = 60_000;
+
+describe('LANDING_ACTION_LABELS (R-43 plain terms)', () => {
+  it('uses plain merge terms and never says landing', () => {
+    expect(LANDING_ACTION_LABELS.retry_landing).toBe('Retry merge');
+    Object.values(LANDING_ACTION_LABELS).forEach((label) => {
+      expect(label).not.toMatch(/\bland/i);
+    });
+  });
+});
 
 /** In-memory stand-ins for the task-context CAS writes, so concurrency is exercised for real. */
 function makeDeps(start = 1_000_000_000_000) {
@@ -143,7 +153,7 @@ describe('alertOnLanding: when to page', () => {
     await alertOnLanding(input, deps);
     await alertOnLanding(input, deps);
     expect(state.sent).toHaveLength(1);
-    expect(state.sent[0].payload.title).toContain("won't land");
+    expect(state.sent[0].payload.title).toContain("won't merge");
   });
 
   it('a push (new head) restarts the needs_fix clock', async () => {
@@ -215,12 +225,12 @@ describe('alertOnLanding: copy and tap URL', () => {
       deps,
     );
     const { title, message, urlTitle } = state.sent[0].payload;
-    expect(title).toBe("PR #42 won't land: it lost the race to the base branch (retrying next cycle)");
+    expect(title).toBe("PR #42 won't merge: it lost the race to the base branch (retrying next cycle)");
     expect(message).toContain('Add the thing');
     expect(message).toContain('Approved 1h 30m ago');
     expect(message).toContain('stuck 50m');
     expect(message).toContain('the base kept moving after 3 refreshes');
-    expect(urlTitle).toBe('Retry landing');
+    expect(urlTitle).toBe('Retry merge');
   });
 
   it('says checks are green only when landing saw them green, and omits the stuck clause when nothing has been stuck yet', async () => {
@@ -294,7 +304,7 @@ describe('alertOnLanding: a protected-path page links straight to the diff', () 
     const { url, urlTitle, title } = state.sent[0].payload;
     expect(url).toBe('https://github.com/org/repo/pull/42/files');
     expect(urlTitle).toBe('Review on GitHub');
-    expect(title).toBe("PR #42 won't land: it touches a protected path");
+    expect(title).toBe("PR #42 won't merge: it touches a protected path");
   });
 });
 
@@ -384,7 +394,7 @@ describe('alertOnLanding: the invariant alarm follows progress, not total held a
 
     const { title, message, priority, url } = state.sent[0].payload;
     expect(priority).toBe(1);
-    expect(title).toBe("PR #42 won't land: landing has stopped making progress");
+    expect(title).toBe("PR #42 won't merge: merge has stopped making progress");
     expect(message).toContain('checks pending');
     expect(message).not.toContain('checks green');
     expect(message).toContain('no progress for 46m');

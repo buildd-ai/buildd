@@ -213,6 +213,65 @@ describe('setupWorktree', () => {
     });
   });
 
+  for (const mode of ['fresh', 'local-resume', 'cloud'] as const) {
+    test(`${mode} checkout can finish beyond the metadata command timeout`, async () => {
+      const previous = process.env.BUILDD_EXECUTOR;
+      if (mode === 'cloud') process.env.BUILDD_EXECUTOR = 'cloud';
+      else delete process.env.BUILDD_EXECUTOR;
+      if (mode === 'local-resume') revListBehavior = 'missing';
+      __setGitOpsDeps({
+        execSync: mockExecSync as any,
+        execFile: mockExecFile as any,
+        existsSync: (p: string) => existsSyncMap[p] ?? false,
+        mkdirSync: () => {},
+        readFileSync: () => '# exclude\n' as any,
+        appendFileSync: () => {},
+        rmSync: () => {},
+        execAsync: async (cmd: string, opts: Record<string, unknown>) => {
+          if (mode === 'local-resume' && cmd === 'git rev-list --count "origin/main..buildd/test-branch"') return '1';
+          if (cmd.startsWith('git worktree add ') || cmd.startsWith('git checkout ')) {
+            // Model a healthy checkout that takes a minute, without sleeping.
+            if (Number(opts.timeout) <= 60_000) throw new Error('checkout timed out while updating files');
+          }
+          return mockExecSync(cmd, opts);
+        },
+      });
+      try {
+        const result = await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-1',
+          mode === 'local-resume' ? { resumeBranch: 'buildd/test-branch' } : {});
+        expect(result).not.toBeNull();
+        const checkout = syncCalls.find(c => /git (worktree add|checkout) /.test(c.cmd));
+        expect(checkout).toBeDefined();
+        expect(Number(checkout!.opts.timeout)).toBeLessThanOrEqual(180_000);
+        if (mode === 'local-resume') expect(checkout!.cmd).toBe(`git worktree add "${WORKTREE_PATH}" "buildd/test-branch"`);
+        if (mode !== 'cloud') expect(syncCalls.find(c => c.cmd === 'git fetch origin')?.opts.timeout).toBe(30_000);
+      } finally {
+        if (previous === undefined) delete process.env.BUILDD_EXECUTOR;
+        else process.env.BUILDD_EXECUTOR = previous;
+      }
+    });
+  }
+
+  test('checkout failures still block startup and retain the git error', async () => {
+    __setGitOpsDeps({
+      execSync: mockExecSync as any,
+      execFile: mockExecFile as any,
+      existsSync: (p: string) => existsSyncMap[p] ?? false,
+      mkdirSync: () => {},
+      readFileSync: () => '# exclude\n' as any,
+      appendFileSync: () => {},
+      rmSync: () => {},
+      execAsync: async (cmd: string, opts: Record<string, unknown>) => {
+        if (cmd.startsWith('git worktree add ')) throw new Error('fatal: cannot create directory: disk full');
+        return mockExecSync(cmd, opts);
+      },
+    });
+    expect(await setupWorktree('/repo', 'buildd/test-branch', 'main', 'worker-fail')).toBeNull();
+    const { takeSetupWorktreeError } = require('../../src/git-operations');
+    expect(takeSetupWorktreeError('worker-fail')).toContain('disk full');
+    expect(fileCalls).toHaveLength(0);
+  });
+
   test('cloud checks out and installs in the clone, emitting materialization and install phases', async () => {
     const prev = process.env.BUILDD_EXECUTOR;
     const origLog = console.log;

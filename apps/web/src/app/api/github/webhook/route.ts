@@ -26,7 +26,7 @@ import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
-import { PR_OPENED_POLICY } from '@/modules';
+import { PR_OPENED_POLICY, republishPrHeads } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -47,11 +47,12 @@ import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAd
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observeBase, observePrState } from '@/lib/workflow/seam';
 // A green head is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { observeCiGreen, systemPrincipal } from '@/lib/workflow/kernel-client';
+import { observeBase, observeCiGreen, observePrState, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
+import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
+import { LANDING_STATUS_CONTEXTS } from '@buildd/workflow-kernel/landing-gate';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -90,6 +91,18 @@ export async function POST(req: NextRequest) {
 
       case 'check_suite':
         await handleCheckSuiteEvent(data as GitHubCheckSuiteEvent);
+        break;
+
+      case 'check_run':
+        // A required candidate check re-ran or finished: its head's approval status follows now (AC-39).
+        // Only a release candidate's answer reads checks, so any other PR is skipped unread.
+        if (data?.installation?.id && ['completed', 'rerequested'].includes(data.action)) {
+          await republishPrHeads(data.installation.id, data.repository?.full_name, checkEventHeads(data.check_run?.pull_requests, data.check_run?.head_sha), { candidatesOnly: true });
+        }
+        break;
+
+      case 'status':
+        await handleStatusEvent(data);
         break;
 
       case 'pull_request':
@@ -390,12 +403,45 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
   }
 }
 
+/**
+ * §4 merge holds (workflow-kernel-library.md): a commit status reported success on a head. A merge
+ * GitHub is holding on a required check there (the delivery LANDING, its merge effect parked) is
+ * woken where the kernel is hosted, through the same op a green check suite uses. buildd's own
+ * review status is skipped: the kernel publishes it, and it already published before the merge.
+ */
+async function handleStatusEvent(event: {
+  sha?: string; state?: string; context?: string; repository?: { full_name?: string }; installation?: { id?: number };
+}): Promise<void> {
+  const sha = event.sha;
+  const repo = event.repository?.full_name;
+  const installationId = event.installation?.id;
+  if (!sha || !repo || !installationId || event.state !== 'success') return;
+  if (event.context && LANDING_STATUS_CONTEXTS.includes(event.context)) return;
+  for (const d of await kernelDeliveriesLandingAt(repo, sha)) {
+    await observeCiGreen({
+      workspaceId: d.workspaceId, repoFullName: repo, prNumber: d.prNumber, installationId, headSha: sha, source: 'webhook:status',
+    }, { principal: systemPrincipal('system:webhook:status') }).catch((err) => console.error(`[workflow] status wake ${repo}#${d.prNumber} failed:`, err));
+  }
+}
+
+/** A check event's PRs at its head, with the branches the payload names, so a non-candidate is skipped before any GitHub read. */
+function checkEventHeads(
+  prs: ReadonlyArray<{ number: number; head?: { ref?: string | null } | null; base?: { ref?: string | null } | null }> | null | undefined,
+  headSha: string | null | undefined,
+): Array<{ number: number; sha: string | null; headRef: string | null; baseRef: string | null }> {
+  return (prs ?? []).map((pr) => ({ number: pr.number, sha: headSha ?? null, headRef: pr.head?.ref ?? null, baseRef: pr.base?.ref ?? null }));
+}
+
 async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   const { action, check_suite, repository, installation } = event;
 
   if (!installation) {
     return;
   }
+
+  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-39).
+  // Only a release candidate's answer reads checks, so any other PR is skipped unread.
+  await republishPrHeads(installation.id, repository.full_name, checkEventHeads(check_suite.pull_requests, check_suite.head_sha), { candidatesOnly: true });
 
   // CI started: mark worker PRs as ci_running so the Timeline shows live CI state.
   if (action === 'requested' || action === 'rerequested') {
@@ -689,6 +735,9 @@ async function handlePullRequestEvent(event: {
   // Home caches GitHub's approval state per PR (lib/github-approval.ts); any
   // PR action may move its head or base, so the cached answer goes first.
   if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
+  if ((action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') && event.installation?.id) {
+    await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
+  }
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
@@ -836,7 +885,7 @@ async function handlePullRequestEvent(event: {
         await observeBase({
           workspaceId: intentWorkspaceId, repoFullName: repository.full_name, prNumber: pr.number,
           installationId: event.installation.id, hintedFromBase: retargetFrom, source: 'webhook:edited',
-        }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
+        }, { principal: systemPrincipal('system:webhook:edited') }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
@@ -909,7 +958,7 @@ async function handlePullRequestEvent(event: {
       await observePrState({
         workspaceId: openWorker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
         installationId: event.installation.id, source: 'webhook:reopened', pull: pr,
-      }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
+      }, { principal: systemPrincipal('system:webhook:reopened') }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
     }
 
     // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
@@ -1044,7 +1093,7 @@ async function handlePullRequestEvent(event: {
     kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
       installationId: event.installation.id, source: 'webhook:closed', pull: pr,
-    }).catch((err) => {
+    }, { principal: systemPrincipal('system:webhook:closed') }).catch((err) => {
       // S4a: the kernel owns the PR but its live read failed. This payload is recorded as an
       // unapplied fact and a fast heal applies it within minutes (kernel-heal.ts); the legacy
       // path must not run for a PR the kernel owns (it would race the kernel's own merge work).
@@ -1434,7 +1483,7 @@ async function handleReleasePrCiFailure(
 
       void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release CI failed in ${repoFullName}`,
-        message: `CI is red on release PR #${pr.number}. Prod has not shipped.`,
+        message: `CI is red on release PR #${pr.number}. Production is unchanged.`,
         priority: 1,
         url: prUrl || `https://github.com/${repoFullName}/pull/${pr.number}`,
         urlTitle: `PR #${pr.number}`,

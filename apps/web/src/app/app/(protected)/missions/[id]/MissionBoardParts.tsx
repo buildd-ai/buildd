@@ -201,7 +201,7 @@ export const TONE_TEXT: Record<StripTone, string> = {
 };
 
 const STATUS_WORDS: Record<StripState, string> = {
-  landed: 'landed', review: 'in review', running: 'running', waiting: 'has a question',
+  landed: 'merged', review: 'in review', running: 'running', waiting: 'has a question',
   ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'ready', blocked: 'blocked', queued: 'queued behind',
 };
 
@@ -307,7 +307,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
                 state={s.state}
                 selected={i === sel}
                 tall={!compact}
-                label={`${s.taskIds.length} ${s.state === 'landed' ? 'landed' : 'queued'} tasks`}
+                label={`${s.taskIds.length} ${s.state === 'landed' ? 'merged' : 'queued'} tasks`}
                 onSelect={onSelect}
               />
             );

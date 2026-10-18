@@ -36,7 +36,7 @@ describe('human approval is independent of merge readiness', () => {
   });
   it('attention query does not exclude registered interactive/local workers', () => {
     const source = readFileSync(new URL('../app/app/(protected)/home/page.tsx', import.meta.url), 'utf8');
-    const query = source.slice(source.indexOf('const openPrWorkers ='), source.indexOf('if (openPrWorkers.length'));
+    const query = source.slice(source.indexOf('function openPrWorkersQuery('), source.indexOf('type OpenPrWorker ='));
     expect(query).toContain('isNotNull(workers.prUrl)');
     expect(query).not.toMatch(/workers\.(runner|executor)|tasks\.executor/);
   });
@@ -81,7 +81,7 @@ it('a human-approved escalation reaches manual merge after CI, never auto merge'
 it('Home feeds human approval into manual readiness without enabling automatic merging', () => {
   const source = readFileSync(new URL('../app/app/(protected)/home/page.tsx', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('if (!humanReview && isCurrentReviewApproved'), source.indexOf('const reviewInFlight ='));
-  expect(block).toContain('github: githubApprovalByWorkerId.get(w.id)');
+  expect(block).toContain('github: githubFacts');
   const automatic = block.slice(block.indexOf('reviewApprovedTaskIds.add'));
   expect(automatic).toContain('if (isCurrentReviewApproved({');
   expect(automatic).not.toContain('github:');

@@ -425,16 +425,16 @@ describe('explainMission', () => {
 describe('explainTask', () => {
   // executor='local' (task 09ed6675): a queued task in a local mission is the
   // person's session's to claim — never "stalled, dispatch a worker".
-  it('a pending task in a local mission is waiting for a local session to claim it', async () => {
+  it('a pending task in a local mission is waiting for your session to claim it', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: false };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).toBe('LOCAL');
-    expect(answer.situation.headline).toBe('Ready to start from a local session.');
+    expect(answer.situation.headline).toBe('Ready to start from your session.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
     expect(answer.situation.nextAction ?? '').toContain('claim_task');
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from a local session.');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from your session.');
     expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
   });
 

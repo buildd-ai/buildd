@@ -69,8 +69,8 @@ describe('deriveMissionStateView — blocked by task', () => {
     const waiting = gated(view);
     if (waiting.kind !== 'task') throw new Error('unreachable');
     expect(waiting.count).toBe(2);
-    // Plain words, not raw statuses: "2 queued", never "2 pending" or "task(s)".
-    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 queued');
+    // Plain words, not raw statuses: "2 ready", never "2 pending" or "task(s)".
+    expect(waiting.label).toBe('No agent is working on 2 open tasks: 2 ready');
   });
 
   // Regression (owner report): "2 deliverable task(s) still open (1 pending, 1 assigned)".
@@ -81,7 +81,7 @@ describe('deriveMissionStateView — blocked by task', () => {
       completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 2, pendingByStatus: { pending: 1, assigned: 1 } },
     });
     const waiting = view.outstanding.find(f => f.kind === 'task') ?? gated(view);
-    expect(waiting.label).toBe('2 tasks still open: 1 queued, 1 picked up');
+    expect(waiting.label).toBe('2 tasks still open: 1 ready, 1 working');
   });
 
   it('consumes deriveTaskHealthSignal, not a reimplementation of it', () => {
@@ -669,6 +669,15 @@ describe('MissionStateView invariants', () => {
       expect(nextActionFor(d), `${d.kind} must have a next action`).toBeTruthy();
     }
   });
+
+  it('merge next actions say merged, never landed or shipped', () => {
+    const merge = (over: Record<string, unknown>) => nextActionFor({ kind: 'merge', tone: 'warning', label: 'l', count: 1, prNumbers: [], taskIds: [], missionPr: false, ...over } as WaitingOnDescriptor);
+    expect(merge({})).toBe('Resolve and merge the open PR(s). A finished task is not done until its PR merges.');
+    expect(merge({ missionPr: true, missionPrState: 'not_opened' })).toContain('every task PR has merged into the integration branch');
+    for (const text of [merge({}), merge({ missionPr: true, missionPrState: 'not_opened' }), merge({ missionPr: true, missionPrState: 'closed' })]) {
+      expect(text).not.toMatch(/\b(landed|shipped|shipping)\b/i);
+    }
+  });
 });
 
 // ── Visual review hold (docs/design/visual-qa-human-review.md, part 5) ────────
@@ -814,7 +823,7 @@ describe('deriveMissionStateView — local executor', () => {
     expect(view.displayState).toBe('local');
     expect(view.chip.label).toBe('LOCAL');
     expect(view.waitingOn).toBeNull();
-    expect(view.situation.headline).toBe('2 tasks ready to start from a local session.');
+    expect(view.situation.headline).toBe('2 tasks ready to start from your session.');
     expect(view.situation.headline).not.toMatch(/no live worker/);
     expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     // The same input on runners is the genuine stall.
@@ -825,12 +834,12 @@ describe('deriveMissionStateView — local executor', () => {
   it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [{ id: 't1', status: 'in_progress' }, { id: 't2', status: 'pending' }] });
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
+    expect(view.situation.headline).toBe('1 task in progress in your session, 1 more to do.');
   });
 
-  it('a single queued task: waiting for a local session to claim it', () => {
+  it('a single queued task: waiting for your session to claim it', () => {
     const view = deriveMissionStateView({ ...local, openTasks: [open[0]] });
-    expect(view.situation.headline).toBe('Ready to start from a local session.');
+    expect(view.situation.headline).toBe('Ready to start from your session.');
   });
 
   it('a task fact on a local mission advises claiming, not dispatching', () => {
@@ -844,7 +853,7 @@ describe('deriveMissionStateView — local executor', () => {
   it('the session\'s own claimed worker keeps the LOCAL chip', () => {
     const view = deriveMissionStateView({ ...local, activeAgents: 1, health: 'NOMINAL' });
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toBe('1 task in progress in a local session, 1 more to do.');
+    expect(view.situation.headline).toBe('1 task in progress in your session, 1 more to do.');
   });
 
   it('held beats local', () => {

@@ -82,8 +82,9 @@ describe('MissionReleaseSection', () => {
   it('renders one line: the step, this mission\'s status, and a link to the release', () => {
     const html = renderToStaticMarkup(<MissionReleaseSection step={released} releaseId="rel-1" workspaceId="ws-1" />);
     expect(html).toContain('data-testid="mission-shipped-status"');
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Release');
     expect(html).toContain('Released');
+    expect(html).not.toContain('Shipped');
     expect(html).toContain('href="/app/releases/rel-1"');
     // One link, one row, a 44px tap target.
     expect(html.split('<a ').length - 1).toBe(1);
@@ -126,7 +127,7 @@ describe('missionReleaseRow: the release status beside the Shipped step (spec f7
 
   it('shows a deploy in flight even though the Shipped step is hidden', () => {
     const row = missionReleaseRow(null, 'deploying')!;
-    expect(row.text).toBe('Deploying');
+    expect(row.text).toBe('Releasing');
     expect(row.state).toBe('partial');
   });
 
@@ -139,6 +140,7 @@ describe('missionReleaseRow: the release status beside the Shipped step (spec f7
   it('shows a failed deploy as a hold', () => {
     const row = missionReleaseRow(null, 'failed')!;
     expect(row.text).toBe('Deploy failed');
+    expect(row.detail).toBe('Not released until a deploy is healthy.');
     expect(row.state).toBe('blocked');
   });
 

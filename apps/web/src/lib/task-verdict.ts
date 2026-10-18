@@ -186,7 +186,7 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
     return {
       ...base,
       state: 'shipped',
-      headline: input.inRelease ? `Shipped · PR #${pr.number} merged and released` : `Shipped · PR #${pr.number} merged`,
+      headline: input.inRelease ? `Released · PR #${pr.number} merged` : `Merged · PR #${pr.number}`,
       cause: input.claimToMerge ? `${input.claimToMerge} from claim to merge.` : null,
       actions: [link(`View PR #${pr.number}`, pr.url)],
       causeKey: 'shipped',

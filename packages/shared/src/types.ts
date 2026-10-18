@@ -3303,6 +3303,105 @@ export interface MissionProgressCell {
 }
 
 /**
+ * Bumped whenever `computeMissionSummary` (apps/web/src/lib/mission-summary.ts)
+ * changes what it derives. A stored summary of another version is read as
+ * missing: readers derive live, and the reconcile job rewrites it first.
+ */
+export const MISSION_SUMMARY_VERSION = 3;
+
+/** The mission's current delivery: its mission PR, else the newest deliverable task PR. */
+export interface MissionSummaryDelivery {
+  source: 'mission_pr' | 'task_pr';
+  prNumber: number | null;
+  prUrl: string | null;
+  state: 'not_opened' | 'open' | 'merged' | 'closed';
+}
+
+/**
+ * A mission's state as every list surface shows it, stored when its work
+ * changes (`mission_summaries`, spec 3ef37387 R-13, R-24) rather than worked
+ * out from its tasks and workers on every read. One derivation writes it:
+ * `computeMissionSummary`. Time-dependent readings (a schedule gone stale, an
+ * auto-merge grace) are as of `computedAt`; the reconcile job refreshes them.
+ */
+export interface MissionSummary {
+  v: number;
+  /** The Build / Verify / Deliver rail's step and progress cells (`missionStage`, `taskRowsProgress`). */
+  stage: MissionStage;
+  /** Build deliverables landed of those counted: the card's `n/N` (`missionCardProgress`). */
+  progress: { done: number; total: number; percent: number };
+  /** `deriveMissionHealth`: active, on-schedule, stalled, shipped, paused, idle, budget-exhausted, held, escalated. */
+  health: string;
+  /** `deriveTaskHealthSignal`: NOMINAL, BLOCKED, FAILING, STALLED. */
+  healthSignal: string;
+  /** The card's state kind (`deriveMissionStateView`) and whether its next step is the owner's. */
+  stateKind: string;
+  needsYou: boolean;
+  /** The list section (`missionCardGroup`): running, attention, review, scheduled, paused, completed. */
+  group: string;
+  liveWorkers: number;
+  hasPendingDeliverableWork: boolean;
+  /** Every task of the mission by `tasks.status`, attempts and bookkeeping included. */
+  taskCounts: Record<string, number>;
+  delivery: MissionSummaryDelivery | null;
+  /** The latest task start or task update, else the mission's own update. ISO. */
+  lastActivityAt: string | null;
+  /** What Home shows of the mission: its delivery row, quiet cause and card facts. */
+  home: MissionSummaryHome;
+  /** What the missions list shows beside Home's reading: the row's strip, last advance and next run. */
+  list: MissionSummaryList;
+  /**
+   * The visual review state (`getMissionVisualReviewState`), read only while
+   * the review can still say something: an open audit or fix, or an open
+   * mission with an integration branch. Null otherwise.
+   */
+  visualReview: Record<string, unknown> | null;
+  /**
+   * An open mission with an integration branch: why its mission PR may not
+   * merge yet because of its work (`missionWorkHolder`), else null.
+   */
+  missionPrWorkHolder: string | null;
+}
+
+/**
+ * The missions list's reading of one mission, beside Home's (spec 3ef37387
+ * R-13): the row's delivery is `home.delivery`, the same card Home shows.
+ */
+export interface MissionSummaryList {
+  /** One display state per task in strip order (`taskRowsStripProjection`, a `StateKey` each). */
+  strip: string[];
+  /** The latest task update or task start; null when the mission has neither. ISO. */
+  lastAdvancedAt: string | null;
+  /** A recurring open mission (a schedule that is not the check-in): its next run, ISO. Null otherwise. */
+  nextRunAt: string | null;
+}
+
+/**
+ * Home's reading of one mission (spec 3ef37387 R-13). The precise shapes live
+ * with their derivations in apps/web (`MissionDeliveryRow` in
+ * lib/delivery-projection.ts, the list card in lib/mission-list-card.ts).
+ */
+export interface MissionSummaryHome {
+  /** The delivery projection without its per-task rows, plus each task's kind for the strip. */
+  delivery: { kind: string; open: boolean; [key: string]: unknown };
+  /** Open and not moving (waiting, held, planning): what it waits on. Null otherwise. */
+  quietCause: string | null;
+  card: {
+    /** The list card's kind: active, recurring, held, scheduled, paused, done. */
+    kind: string;
+    /** Recurring, live or held: Home lists it (a mission done in the last 12h is listed too). */
+    listed: boolean;
+    done: number;
+    total: number;
+    /** Merged PRs of a done mission, else null. */
+    donePrs: number | null;
+    held: { ready: number; roles: string[]; since: string | null; startState: string } | null;
+    /** A stranded local mission's call to action; `quietMs` as of `computedAt`. */
+    strand: { missionId: string; quietMs: number; taskId: string | null; claimable: number; blockedReason: string | null; order: string } | null;
+  };
+}
+
+/**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
  * reachable workspaces. All open missions are included; only recent deliveries
@@ -4088,6 +4187,8 @@ export interface FleetSlotWorker {
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
+  /** Whether the viewer owns this run: true/false, or null when its owner is unknown. Absent when no viewer was given. */
+  mine?: boolean | null;
 }
 
 export interface FleetSlot {
@@ -4098,7 +4199,7 @@ export interface FleetSlot {
    * is the task's own short label (null when it has none worth showing);
    * `scope` the one-word chip; `at` when it ended (epoch ms).
    */
-  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null } | null;
+  last: { label: string | null; scope: string | null; prNumber: number | null; fix: boolean; failed?: boolean; at?: number | null; mine?: boolean | null } | null;
   lane: Lane;
 }
 

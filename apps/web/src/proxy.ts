@@ -1,4 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  classifyApiRead,
+  gateApiRead,
+  rateLimitedResponse,
+  readSubjectForKey,
+  readSubjectForUser,
+  type ReadVerdict,
+} from "./lib/read-rate-limit";
 
 const INSTALL_REDIRECTS: Record<string, string> = {
   "/install.sh":
@@ -62,8 +70,54 @@ function toMarketing(request: NextRequest, status: 307 | 308) {
   return NextResponse.redirect(dest, status);
 }
 
+/**
+ * The signed-in user of a browser session, from the Auth.js JWT cookie: no
+ * database. The cookie's name follows auth.ts (the `__Secure-` prefix only
+ * when AUTH_COOKIE_DOMAIN does not pin the plain name).
+ */
+async function sessionUserIdFromCookie(request: NextRequest): Promise<string | null> {
+  const secret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+  if (!secret) return null;
+  try {
+    const { getToken } = await import("next-auth/jwt");
+    const secureCookie = request.cookies.getAll().some((c) => c.name.startsWith("__Secure-authjs.session-token"));
+    const token = await getToken({ req: request, secret, secureCookie });
+    const id = token?.userId ?? token?.sub;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ApiReadDeps {
+  gate?: (req: { method: string; pathname: string }, subject: string | null) => Promise<ReadVerdict>;
+  sessionUserId?: (request: NextRequest) => Promise<string | null>;
+}
+
+/**
+ * The read rate limit (lib/read-rate-limit.ts): GET/HEAD under /api, per API
+ * key or per signed-in user. Writes and exempt routes pass untouched, without
+ * a Redis call; a refusal is a 429 with Retry-After.
+ */
+export async function apiReadProxy(request: NextRequest, deps: ApiReadDeps = {}): Promise<Response> {
+  const req = { method: request.method, pathname: request.nextUrl.pathname };
+  if (!classifyApiRead(req.method, req.pathname)) return NextResponse.next();
+  // Same extraction as the routes, so the subject matches what the server records the plan under.
+  const bearer = request.headers.get("authorization")?.replace("Bearer ", "") || null;
+  let subject: string | null = null;
+  if (bearer) subject = readSubjectForKey(bearer);
+  else if (hasSessionCookie(request)) {
+    const userId = await (deps.sessionUserId ?? sessionUserIdFromCookie)(request);
+    subject = userId ? readSubjectForUser(userId) : null;
+  }
+  const verdict = await (deps.gate ?? ((r, s) => gateApiRead(r, s)))(req, subject);
+  return verdict.allowed ? NextResponse.next() : rateLimitedResponse(verdict);
+}
+
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  if (pathname.startsWith("/api/")) return apiReadProxy(request);
 
   const install = INSTALL_REDIRECTS[pathname];
   if (install) {
@@ -92,9 +146,11 @@ export function proxy(request: NextRequest) {
 }
 
 // Must stay a literal: Next statically analyses the matcher. Keep in sync
-// with MARKETING_PATHS (proxy.test.ts enforces it).
+// with MARKETING_PATHS (proxy.test.ts enforces it). /api is matched only for
+// the read rate limit; nothing under it is ever redirected.
 export const config = {
   matcher: [
+    "/api/:path*",
     "/",
     "/install.sh",
     "/install.ps1",

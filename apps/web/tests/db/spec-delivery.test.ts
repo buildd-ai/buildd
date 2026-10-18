@@ -127,7 +127,7 @@ describe('delivery and standing are kept apart (R-63, AC-46)', () => {
     }
     let e = (await read(specId))!.entries[0];
     expect(e.standing).toEqual({ tone: 'success', text: 'Verified against revision 1.' });
-    expect(e.deliveredText).toBe('Built to revision 1 and delivered.');
+    expect(e.deliveredText).toBe('Built to revision 1. Done.');
     expect(e.criteria.map((c) => [c.criterionId, c.mark])).toEqual([['R-1', 'pass'], ['AC-1', 'pass']]);
     expect(e.criteria[0].evidence).toEqual([{ label: 'ci', href: 'https://example.test/run/1' }]);
 
@@ -147,7 +147,7 @@ describe('delivery and standing are kept apart (R-63, AC-46)', () => {
     const silent = await pinnedTask(specId);
     const by = new Map((await read(specId))!.entries.map((e) => [e.id, e]));
     expect(by.get(failing.taskId)!.standing).toEqual({ tone: 'error', text: 'AC-1 fails against revision 1.' });
-    expect(by.get(open.taskId)!.deliveredText).toBe('Built to revision 1 and not delivered.');
+    expect(by.get(open.taskId)!.deliveredText).toBe('Built to revision 1. Not done.');
     expect(by.get(silent.taskId)!.delivered).toBe(true);
     expect(by.get(silent.taskId)!.standing.text).toBe('Not verified against revision 1.');
   });
@@ -240,7 +240,7 @@ describe('missions that selected the spec (R-61, R-62, AC-45, AC-46)', () => {
     const ids = await Promise.all(['R-1', 'AC-1'].map((c) => missionVerdict(m.missionId, m.criterion.specRevisionId, c, 'pass')));
     await evaluated(m.missionId, specId, 1, 'pass', [{ criterionId: 'R-1', standing: 'pass', verdictId: ids[0] }, { criterionId: 'AC-1', standing: 'pass', verdictId: ids[1] }]);
     let e = (await read(specId))!.entries.find((x) => x.id === m.missionId)!;
-    expect(e.deliveredText).toBe('Built to revision 1 and delivered.');
+    expect(e.deliveredText).toBe('Built to revision 1. Done.');
     expect(e.standing).toEqual({ tone: 'success', text: 'Verified against revision 1.' });
     expect(e.criteria[0]).toMatchObject({ criterionId: 'R-1', mark: 'pass', evidence: [{ label: 'report', href: 'https://example.test/audit/1' }] });
 

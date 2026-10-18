@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
@@ -130,6 +131,10 @@ export async function resolveCompletedTask(
   completedTaskId: string,
   _workspaceId: string
 ): Promise<void> {
+  // Every terminal path passes here, the reaper's and a person's included:
+  // the task's mission summary changed (lib/work-changed.ts).
+  noteWorkChanged({ taskIds: [completedTaskId] });
+
   // Check if the completed task's parent has all children done
   const completedTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, completedTaskId)),

@@ -125,6 +125,22 @@ export type Command =
       delta?: DeltaReading | null;
     })
   | (Base & {
+      /**
+       * AC-1 slice 7 (workflow-kernel-library.md §9): a claim starts the owner attempt of a
+       * delivery's task. The claim route's own compare-and-set already decided the race (only a
+       * pending task, only one claimer: it stamped claimed_by / claimed_at and nothing else); the
+       * kernel moves the task to `assigned` in the transition's own statement, only while the task
+       * still carries that exact claim. Not an end and no state change: the delivery keeps its state.
+       */
+      type: 'AttemptStarted';
+      /** The owner task being started. */
+      taskId: string;
+      /** The account whose claim won (tasks.claimed_by). */
+      claimedBy: string;
+      /** The claim's stamp, tasks.claimed_at as Postgres renders it (microseconds kept): the claim's identity and key. */
+      claimedAt: string;
+    })
+  | (Base & {
       type: 'AttemptEnded';
       /** The worker row whose exit this is: one task can run several workers (retries). */
       workerId: string;
@@ -164,6 +180,23 @@ export type Command =
        * verification round at the same head decides.
        */
       noopEvidence?: { findingIds: string[]; evidence: string } | null;
+    })
+  | (Base & {
+      /**
+       * AC-1 slice 6 (workflow-kernel-library.md §9): an attempt's task goes back to the queue
+       * (a retry, a loop hold, a budget or credential wall, a stalled repair recovered). Not an
+       * end: the attempt's work is retried on the same task, and the delivery does not move. The
+       * kernel records it and moves the task to `pending` in the transition's own statement, only
+       * while the requeuing worker is the task's current attempt. Named like AttemptEnded: an
+       * owner attempt by task id, a repair attempt by its workflow_attempts id.
+       */
+      type: 'AttemptRequeued';
+      /** The worker row whose attempt is requeued: its current-attempt check, and the idempotency key. */
+      workerId: string;
+      taskId?: string;
+      attemptId?: string;
+      /** Why (a short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `conflict_recovery`, ...). */
+      reason: string;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -408,8 +441,16 @@ export type Command =
        * and unmerged at the head (or the head moved under the call), so nothing
        * landed and landing may be requested again.
        */
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'gate_refused';
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'gate_refused' | 'held';
       detail?: string;
+      /**
+       * `held`: GitHub would not merge yet because a required check has not passed
+       * (§4, merge holds). The merge effect waits on it itself; this is applied only
+       * when it stops waiting: `lasting` (the hold outlived its bound, or the check is
+       * one only a person can now pass) escalates naming `check`, otherwise the
+       * approval stands and a door or the sweep asks again.
+       */
+      hold?: { check: string | null; heldForMs?: number | null; lasting?: boolean };
       /**
        * `gate_refused`: the landing gate, asked again when the merge effect ran,
        * refused before any merge call (§4): which half refused and why. The

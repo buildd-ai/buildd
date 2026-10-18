@@ -23,7 +23,9 @@ import {
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
 import { deliveryPrState, deriveDeliveryView, repairLabelOf } from '../projections';
-import { landingStatusOf, reviewGate } from '../landing-gate';
+import { LANDING_STATUS_CONTEXT, landingStatusOf, reviewGate } from '../landing-gate';
+import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '../merge-hold';
+import { openHeadStatus } from '../open-pr-status';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
@@ -776,6 +778,91 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.ingest.facts.map((x) => x.kind), ['base_changed'], 'the retarget through the funnel');
       eq(await outcomesOf(host, s, 'merge_call'), ['skipped:base_moved:applied'], 'recorded');
       ok((await s.d()).state !== 'LANDING' && !(await s.d()).approvedHeads.includes('H1'), 'the approval of the old diff is dropped');
+    },
+  },
+  // ── §4 merge holds: a required check GitHub waits on ───────────────────────
+  {
+    name: 'merge holds: a required check not passed yet holds the merge in LANDING with the approval standing, never a person\'s; a check reporting on that head wakes it and it merges',
+    async run(host) {
+      const s = await (await new Delivery(host, 42).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'pr_closed' ? (await s.merged('H1')).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.github.mergeAnswer = { outcome: 'held', check: 'build', detail: 'Required status check "build" is expected.' };
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'asked once, pinned to H1');
+      eq(await outcomesOf(host, s, 'merge_call'), ['held:required_check:build'], 'the merge effect parked itself, naming the check');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.status), ['pending'], 'still owed');
+      eq(pick(await s.d(), ['state', 'stateReason', 'approvedHeads']), { state: 'LANDING', stateReason: null, approvedHeads: ['H1'] }, 'still landing, the approval standing');
+      ok(!(await host.transitions(s.deliveryId)).some((t) => t.toState === 'ESCALATED'), 'nobody was asked');
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.length, 1, 'not called again before its wait');
+      eq(await wakeHeldMergesOn(host.store, s.deliveryId, 'H0'), 0, 'a check on another head wakes nothing');
+      f.github.mergeAnswer = { outcome: 'merged', detail: 'Pull Request successfully merged' };
+      eq(await wakeHeldMergesOn(host.store, s.deliveryId, 'H1'), 1, 'a check on H1 wakes the held merge');
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.map((m) => m.headSha), ['H1', 'H1'], 'called again, pinned to H1');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:merged:applied'], 'the same row merged');
+      eq((await s.d()).state, 'MERGED', 'merged');
+    },
+  },
+  {
+    name: 'merge holds: the head\'s own Buildd / Review approval success is published and read back before the merge call; one GitHub does not show yet holds the call',
+    async run(host) {
+      const s = await (await new Delivery(host, 43).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      let atMerge: string[] | null = null;
+      f.github.onMerge = () => {
+        atMerge = f.github.written.filter((w) => w.op === 'publishStatus' && !w.dropped && w.sha === 'H1' && w.context === LANDING_STATUS_CONTEXT).map((w) => String(w.state));
+      };
+      // The merge effect alone, before any status effect has run: it publishes the success itself.
+      eq(await kernelEffectHandlers(f.ports).merge_call!(await direct(host, s, 'merge_call')), { outcome: 'ok:merged:applied' }, 'merged');
+      eq(atMerge, ['success'], 'GitHub showed the success before the merge call');
+
+      const t = await (await new Delivery(host, 44).open()).approvedAt('H1');
+      applied(await t.land('H1'), 'LANDING', 'landing');
+      const g = fakePorts(host);
+      g.github.setPr(t.repo, t.prNumber, t.live('H1'));
+      g.github.dropStatuses = true;
+      eq(await kernelEffectHandlers(g.ports).merge_call!(await direct(host, t, 'merge_call')), {
+        outcome: `held:own_status:${LANDING_STATUS_CONTEXT}`, park: { delayMs: MERGE_HOLD_MIN_DELAY_MS },
+      }, 'a success GitHub does not show yet holds the call');
+      eq(g.github.merges, [], 'no merge call ahead of its own status');
+      eq((await t.d()).state, 'LANDING', 'still landing');
+    },
+  },
+  {
+    name: 'merge holds: a hold past its bound escalates to a person naming the check; the review check on a head buildd has not approved escalates at once',
+    async run(host) {
+      const s = await (await new Delivery(host, 45).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.github.mergeAnswer = { outcome: 'held', check: 'build', detail: 'Required status check "build" is expected.' };
+      const r = await kernelEffectHandlers(f.ports).merge_call!({ ...(await direct(host, s, 'merge_call')), ageMs: MERGE_HOLD_MAX_MS });
+      eq(r, { outcome: 'ok:held:lasting:applied' }, 'the hold outlived its bound');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person is asked');
+      ok((await s.count('notify')) >= 1, 'and notified');
+      await drainKernel(host, s, f.ports);
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq(last.state, 'failure', 'the review status says it is blocked');
+      ok(String(last.description).includes('required check "build"'), `names the check: ${String(last.description)}`);
+
+      // A person's override past an open request for changes: GitHub requires the review check,
+      // which buildd will never show as success on this head. No wait passes it.
+      const o = await new Delivery(host, 46).open();
+      await o.ownerPushed('H1');
+      applied(await o.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
+      applied(await o.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H1', live: o.live('H1'), override: { reason: 'owner call' } }), 'LANDING', 'override landing');
+      const g = fakePorts(host);
+      g.github.setPr(o.repo, o.prNumber, o.live('H1'));
+      g.github.mergeAnswer = { outcome: 'held', check: LANDING_STATUS_CONTEXT, detail: `Required status check "${LANDING_STATUS_CONTEXT}" is expected.` };
+      await drainKernel(host, o, g.ports);
+      eq(g.github.merges.length, 1, 'asked once');
+      eq(pick(await o.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'escalated at once, not after a wait');
+      ok(!g.github.written.some((w) => w.op === 'publishStatus' && w.state === 'success'), 'the review status was never set to success to get it through');
     },
   },
   {
@@ -1842,6 +1929,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'an approval kept while the owner works applies only at the head it was given for: approve at H1, the owner pushes H2 and ends, and H2 is reviewed, not landed',
+    async run(host) {
+      const s = await new Delivery(host, 79).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept while the owner works');
+      applied(await s.push('H2'), 'WORKING', 'the owner pushed on past the approved head');
+      applied(await s.ownerPushed('H2'), 'AWAITING_REVIEW', 'the end at H2: the kept approval does not cover it');
+      eq((await s.d()).approvedHeads, [], 'nothing approved at H2');
+      notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'H2 does not land on the strength of H1\'s approval');
+    },
+  },
+  {
+    name: 'an approval kept while the owner works lets the delivery land the moment the owner ends at the same head',
+    async run(host) {
+      const s = await new Delivery(host, 80).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'not landable while the owner still works');
+      applied(await s.ownerPushed('H1'), 'APPROVED', 'the end applies the kept approval');
+      applied(await s.land('H1'), 'LANDING', 'and the landing gate now passes');
+      eq(await s.count('merge_call'), 1, 'one merge call');
+    },
+  },
+  {
     name: '00d288fd: a request for changes from outside the rounds while the owner works raises its findings, and the hand-off owes the fix, not a second review; the kernel\'s own open round is never answered from outside',
     async run(host) {
       const s = await new Delivery(host, 71).open();
@@ -2568,6 +2681,118 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const r3 = await s.latestRound();
       eq(pick(r3, ['round', 'kind']), { round: 3, kind: 'full' }, 'a full review once the chain is over the cap');
       eq(pick((r3.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'fromHeadSha']), { eligible: false, fromHeadSha: 'H1' }, 'measured from H1');
+    },
+  },
+  {
+    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    async run(host) {
+      const s = await new Delivery(host, 81).open();
+      const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;
+      const stateOf = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).status.state;
+      eq([await of('H1'), await stateOf('H1')], ['host', 'pending'], 'work running, no head reported yet: pending');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'pending'], 'review owed at H1: the kernel answers, pending');
+      applied(await s.verdict('approve'), 'APPROVED', 'approve');
+      eq([await of('H1'), await stateOf('H1')], ['kernel', 'success'], 'approved at H1: the kernel says success at H1');
+      // H2 pushed, not yet imported: the approval of H1 never carries over to H2.
+      eq([await of('H2'), await stateOf('H2')], ['host', 'pending'], 'a head the delivery has not seen is pending, never the old success');
+      eq(openHeadStatus({ sha: 'H2', view: await s.view() }).status.description.startsWith('Review in progress'), true, 'in plain words');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'H2 observed');
+      eq([await of('H2'), await stateOf('H2')], ['kernel', 'pending'], 'once seen, the kernel answers H2: review owed');
+      // A merged delivery's PR still showing open (a stale read): the kernel no longer answers; pending, not its last word.
+      const m = await new Delivery(host, 82).open();
+      await m.approvedAt('H1');
+      applied(await m.land('H1'), 'LANDING', 'landing');
+      applied(await m.merged('H1'), 'MERGED', 'merged');
+      eq(openHeadStatus({ sha: 'H1', view: await m.view() }).status.state, 'pending', 'a delivery that is over answers nothing; the head is pending');
+      // No delivery at all.
+      eq(pick(openHeadStatus({ sha: 'R1', view: null }).status, ['state', 'description']), { state: 'pending', description: 'Review not requested: no buildd review covers R1 yet' }, 'a PR with no delivery');
+      // A release candidate: the release gate's answer at its own SHA.
+      const checks = [{ name: 'build', state: 'passing' as const }, { name: 'release candidate verified', state: 'passing' as const }];
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks, review: { verdict: 'pass' } } }).status.state, 'success', 'verified, review passes');
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks: [checks[0]!, { name: 'release candidate verified', state: 'pending' }], review: { verdict: 'pass' } } }).status.state, 'pending', 'not verified yet');
+      eq(openHeadStatus({ sha: 'C1', candidate: { checks, review: { verdict: 'changes_requested', reason: 'x' } } }).status.state, 'failure', 'review stands against it');
+    },
+  },
+  {
+    name: 'AC-1 slice 6: a requeued owner attempt records the requeue in place, a re-send is a duplicate, and its later end still hands on',
+    async run(host) {
+      const s = await new Delivery(host, 83).open();
+      const before = await s.d();
+      const requeue = (o: Partial<Extract<Command, { type: 'AttemptRequeued' }>> = {}) =>
+        s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-r1', taskId: s.ownerTaskId, reason: 'retry', ...o });
+      applied(await requeue(), 'WORKING', 'the requeue applies in place');
+      eq(pick(await s.d(), ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), pick(before, ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), 'the delivery itself does not move');
+      eq((await s.d()).version, before.version + 1, 'one version for the requeue');
+      const after = { version: (await s.d()).version, effects: await s.effectKinds() };
+      notApplied(await requeue(), 'duplicate', 'idempotency_key_seen', 'the same requeue re-sent (a parked re-submit)');
+      notApplied(await requeue({ reason: 'loop_hold' }), 'duplicate', 'idempotency_key_seen', 'the same worker, whatever the reason');
+      eq({ version: (await s.d()).version, effects: await s.effectKinds() }, after, 'nothing more written');
+      eq((await host.transitions(s.deliveryId)).at(-1)?.command, 'AttemptRequeued', 'the requeue is in the log');
+      // The retry's own attempt ends later and hands the head on as usual.
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the next attempt\'s end hands on');
+      eq((await s.view()).rounds.length, 1, 'one round, nothing doubled by the requeue');
+    },
+  },
+  {
+    name: 'AC-1 slice 6: a requeue that arrives after the delivery moved on, or for a task that is not the owner, records nothing',
+    async run(host) {
+      const s = await new Delivery(host, 84).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-late', taskId: s.ownerTaskId, reason: 'loop_hold' }), 'stale', 'attempt_not_bound', 'a late requeue after the hand-off');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-other', taskId: host.newId(), reason: 'retry' }), 'stale', 'attempt_not_bound', 'not the owner task');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-none', reason: 'retry' }), 'rejected', 'attempt_not_named', 'no attempt named');
+      eq((await s.d()).version, v, 'nothing applied');
+      eq((await s.d()).state, 'AWAITING_REVIEW', 'the delivery is where it was');
+      applied(await s.merged('H1'), 'MERGED', 'merged');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'runner', workerId: 'wk-after', taskId: s.ownerTaskId, reason: 'retry' }), 'stale', 'attempt_not_bound', 'terminal: a requeue after the merge');
+    },
+  },
+  {
+    name: 'AC-1 slice 6: a stalled repair requeued binds to the open attempt the delivery is bound to, and only that one',
+    async run(host) {
+      const s = await (await new Delivery(host, 85).open()).approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red: a repair');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: ci.id, revalidation: { live: s.live('H1'), approved: false } }), 'REPAIRING', 'the repair is claimed');
+      applied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-fix', attemptId: ci.id, reason: 'stalled' }), 'REPAIRING', 'the stalled repair is requeued in place');
+      eq(pick((await s.view()).attempts.find((a) => a.id === ci.id), ['status']), { status: 'running' }, 'its ledger row is untouched');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-fix', attemptId: ci.id, reason: 'stalled' }), 'duplicate', 'idempotency_key_seen', 'the same requeue twice');
+      notApplied(await s.submit({ type: 'AttemptRequeued', actor: 'sweep:recovery', workerId: 'wk-x', attemptId: host.newId(), reason: 'stalled' }), 'stale', 'attempt_not_bound', 'an attempt the delivery is not bound to');
+      notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: ci.id, revalidation: { live: s.live('H1'), approved: false } }), 'duplicate', 'idempotency_key_seen', 'the re-claim of the requeued repair is answered by its first claim: still running, nothing re-allocated');
+    },
+  },
+  {
+    name: 'AC-1 slice 7: a claim of the owner task starts its attempt in place; a re-send is a duplicate, the next claim is its own start',
+    async run(host) {
+      const s = await new Delivery(host, 130).open();
+      const before = await s.d();
+      const start = (claimedAt: string, o: Partial<Extract<Command, { type: 'AttemptStarted' }>> = {}) =>
+        s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt, ...o });
+      applied(await start('2026-10-18 08:00:00.000001+00'), 'WORKING', 'the start applies in place');
+      eq(pick(await s.d(), ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), pick(before, ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), 'the delivery itself does not move');
+      eq((await s.d()).version, before.version + 1, 'one version for the start');
+      const after = (await s.d()).version;
+      notApplied(await start('2026-10-18 08:00:00.000001+00'), 'duplicate', 'idempotency_key_seen', 'the same claim re-sent');
+      eq((await s.d()).version, after, 'nothing more written');
+      applied(await start('2026-10-18 08:00:00.000002+00'), 'WORKING', 'a later claim (a microsecond apart) is a start of its own');
+      notApplied(await start('2026-10-18 08:00:00.000003+00', { claimedBy: '' }), 'rejected', 'claim_not_named', 'a start with no claim');
+      eq((await host.transitions(s.deliveryId)).at(-1)?.command, 'AttemptStarted', 'the start is in the log');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the started attempt\'s end hands on as usual');
+    },
+  },
+  {
+    name: 'AC-1 slice 7: a start after the delivery moved on, or of a task that is not the owner, records nothing',
+    async run(host) {
+      const s = await new Delivery(host, 131).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:00+00' }), 'stale', 'attempt_not_bound', 'a loop task\'s next iteration claimed after the hand-off');
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: host.newId(), claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:01+00' }), 'stale', 'attempt_not_bound', 'not the owner task');
+      eq((await s.d()).version, v, 'nothing applied');
+      applied(await s.merged('H1'), 'MERGED', 'merged');
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:02+00' }), 'stale', 'attempt_not_bound', 'terminal: a start after the merge');
     },
   },
 ];

@@ -12,6 +12,7 @@ import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
+import { ReadBackoff, heldRefusalBody } from './read-backoff';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
 import type { CodexAuthSource, ModelAuthReport } from './host-seat';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
@@ -68,6 +69,8 @@ export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
   private transport: BuilddTransport;
+  /** Endpoints the server's read rate limit told us to leave alone until Retry-After (read-backoff.ts). */
+  private readBackoff = new ReadBackoff();
 
   constructor(config: LocalUIConfig) {
     this.config = config;
@@ -86,6 +89,11 @@ export class BuilddClient {
 
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
     const method = options.method || 'GET';
+    const isRead = method === 'GET' || method === 'HEAD';
+    if (isRead) {
+      const held = this.readBackoff.remainingSec(endpoint);
+      if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method, endpoint });
+    }
 
     try {
       const res = await this.transport.request(endpoint, {
@@ -99,6 +107,8 @@ export class BuilddClient {
 
       // Got an HTTP response → the server is reachable (even a 4xx counts).
       lastServerContactAt = Date.now();
+
+      if (res.status === 429 && isRead) this.readBackoff.note(endpoint, res.headers?.get?.('retry-after'));
 
       if (!res.ok && !allowedErrors.includes(res.status)) {
         // Queue server errors (5xx) via outbox before throwing

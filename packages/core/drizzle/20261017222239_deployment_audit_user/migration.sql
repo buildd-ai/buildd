@@ -1,0 +1,2 @@
+ALTER TABLE "deployment_audit_events" ADD COLUMN "user_id" uuid;--> statement-breakpoint
+ALTER TABLE "deployment_audit_events" ADD CONSTRAINT "deployment_audit_events_user_id_users_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE SET NULL;

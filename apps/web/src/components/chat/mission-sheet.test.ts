@@ -32,7 +32,7 @@ describe('missionInsight', () => {
   it('everything landed but not complete: disagrees', () => {
     const i = missionInsight(state({ landed: { done: 4, total: 4 }, goal: { passed: 3, total: 3 }, live: 0 }));
     expect(i?.disagrees).toBe(true);
-    expect(i?.text).toBe('Everything landed. Not marked complete.');
+    expect(i?.text).toBe('Every task is done. Not marked complete.');
   });
 
   it('something waits on the viewer: disagrees (copper), counts it', () => {
@@ -41,11 +41,11 @@ describe('missionInsight', () => {
   });
 
   it('agreeing states: a plain line, no copper square', () => {
-    expect(missionInsight(state())).toEqual({ text: '1 agent at work, 1 of 4 landed.', disagrees: false });
+    expect(missionInsight(state())).toEqual({ text: '1 agent at work, 1 of 4 done.', disagrees: false });
     expect(missionInsight(state({ planning: true, landed: { done: 0, total: 0 } }))).toEqual({ text: 'Planning. No tasks.', disagrees: false });
     expect(missionInsight(state({ complete: true, landed: { done: 4, total: 4 }, goal: { passed: 3, total: 3 }, live: 0 })))
       .toEqual({ text: 'Done, and every goal criterion checks out.', disagrees: false });
-    expect(missionInsight(state({ live: 0 }))).toEqual({ text: 'Nothing running right now. 1 of 4 landed.', disagrees: false });
+    expect(missionInsight(state({ live: 0 }))).toEqual({ text: 'Nothing running right now. 1 of 4 done.', disagrees: false });
   });
 
   it('never uses an em dash', () => {
@@ -91,7 +91,7 @@ describe('missionAskRows', () => {
 
   it('rows follow the state: planning asks about the plan, complete asks what shipped', () => {
     expect(missionAskRows(state({ planning: true, landed: { done: 0, total: 0 } }))[0].label).toBe("What's the plan so far?");
-    expect(missionAskRows(state({ complete: true, goal: { passed: 3, total: 3 }, landed: { done: 4, total: 4 } }))[0].label).toBe('What shipped?');
+    expect(missionAskRows(state({ complete: true, goal: { passed: 3, total: 3 }, landed: { done: 4, total: 4 } }))[0].label).toBe('What got done?');
     expect(missionAskRows(state())[0].label).toBe('How is it going?');
   });
 });

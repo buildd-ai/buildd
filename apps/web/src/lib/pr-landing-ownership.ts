@@ -26,7 +26,7 @@ export function parseLandingHandoff(raw: unknown, prNumber: number): LandingHand
     prNumber,
     headSha: raw.headSha,
     cause: typeof raw.cause === 'string' ? raw.cause : 'unknown',
-    reason: typeof raw.reason === 'string' && raw.reason ? raw.reason : 'Landing needs a person',
+    reason: typeof raw.reason === 'string' && raw.reason ? raw.reason : 'Merging needs a person',
     at: typeof raw.at === 'string' ? raw.at : null,
   };
 }

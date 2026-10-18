@@ -5,7 +5,7 @@ const { HomeBody, quietMissionsLine } = await import('./HomeBody');
 const { deriveHomeAttention: derive } = await import('@/lib/home-attention');
 const { isActionableChip } = await import('@/lib/action-queue');
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
-const { projectMissionDelivery: project, selectHomeMilestones } = await import('@/lib/delivery-projection');
+const { projectMissionDelivery: project, selectHomeMilestones, toDeliveryRow } = await import('@/lib/delivery-projection');
 const missionHelpers = await import('@buildd/core/mission-helpers');
 const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 const PR = 'https://github.com/example/project/pull/1';
@@ -20,7 +20,7 @@ const deliveries = [
   projectMissionDelivery({ id: 'm-wait', title: 'Runner on arm64', status: 'active', href: '/app/missions/m-wait', tasks: [{ id: 'e1', title: 'Arm build', status: 'pending', workers: [] }] }),
 ];
 const counts = { openMissions: 11, executingMissions: 1, liveAgents: 1, slots: { used: 1, total: 4 } };
-const render = (items = deriveHomeAttention({ queue: [], questions: [], held: [], missions: [] })) => renderToStaticMarkup(<HomeBody items={items} ask={<form data-testid="ask" />} counts={counts} milestones={selectHomeMilestones(deliveries)} quietMissions={2} />);
+const render = (items = deriveHomeAttention({ queue: [], questions: [], held: [], missions: [] })) => renderToStaticMarkup(<HomeBody items={items} ask={<form data-testid="ask" />} counts={counts} milestones={selectHomeMilestones(deliveries).map(toDeliveryRow)} quietMissions={2} />);
 describe('Home inbox', () => {
   it('zero Needs you is one quiet line, then 3 missions moving toward delivery', () => {
     const html = render();
@@ -36,7 +36,7 @@ describe('Home inbox', () => {
     expect(html.indexOf('First-run checklist')).toBeLessThan(html.indexOf('Typo-tolerant search'));
     expect(html.indexOf('Typo-tolerant search')).toBeLessThan(html.indexOf('Quarantine flaky tests'));
     expect(html).not.toContain('Runner on arm64');
-    expect(html).toContain('1 of 2 landed');
+    expect(html).toContain('1 of 2 done');
     expect(html).toContain('not yet on trunk');
     expect(html).toContain('11 open missions');
   });

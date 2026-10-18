@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export interface ReviewSummaryTask {
   id: string;
@@ -68,7 +69,7 @@ export default function MissionReviewSummary({ tasks, missionId }: MissionReview
                   {t.prMerged ? '✓' : t.prClosed ? '×' : '○'}
                 </span>
                 <Link href={`/app/tasks/${t.id}`} className="min-w-0 truncate text-[12px] text-text-secondary hover:text-accent-text">
-                  {t.title}
+                  <TaskTitle title={t.title} />
                 </Link>
                 {t.prUrl && t.prNumber && (
                   <a

@@ -75,7 +75,7 @@ const GATE_ORDER: Array<[ExplicitTaskGateName, ClaimTaskExclusionCode, string]> 
   ['taskHeld', 'task_held', 'The task is held by a person. Resume it before claiming.'],
   ['taskReserved', 'task_reserved', 'Another interactive session has reserved this task to run it locally; the reservation lapses on its own if that session goes quiet, or its owner releases it.'],
   ['missionHeld', 'mission_held', `Its mission is held. Arm the mission. ${FORCE_HINT}`],
-  ['missionLocal', 'mission_local', `This mission runs in a local session: runners never pick up its tasks. Claim it from an interactive session with claim_task {taskId}, or set the mission's executor to 'runner'. ${FORCE_HINT}`],
+  ['missionLocal', 'mission_local', `This mission runs from your session: runners never pick up its tasks. Claim it from your own Claude Code session with claim_task {taskId}, or set the mission's executor to 'runner'. ${FORCE_HINT}`],
   ['deps', 'deps_blocked', `A dependency is not satisfied yet (not completed with its PR merged, and not cancelled). ${FORCE_HINT}`],
   ['subject', 'subject_dead', `Its subject PR is closed or merged with no live successor. ${FORCE_HINT}`],
   ['runnerPreference', 'runner_preference', 'The task is restricted to a different runner type.'],

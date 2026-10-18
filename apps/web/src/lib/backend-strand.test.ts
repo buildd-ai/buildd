@@ -61,6 +61,7 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
   notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
 }));
 
+mock.module('@/lib/claim-blocker-projection', () => ({ loadClaimBlockers: async () => new Map() }));
 mock.module('@/lib/backend-failover', () => ({
   isBackendConfigured: mockIsBackendConfigured,
   teamEnabledBackends: mockTeamEnabledBackends,
@@ -120,7 +121,7 @@ describe('getBackendStrandSummary — counting stranded work', () => {
       { workspaceId: 'ws-2', backend: 'codex', count: 4 },
     ];
     sampleRowsByCall = [[
-      { id: 't-1', title: 'Codex thing', workspaceName: 'alpha' },
+      { id: 't-1', title: 'Codex thing', workspaceName: 'alpha', backend: 'codex' },
     ]];
 
     const summary = await getBackendStrandSummary({ teamId: 'team-1', workspaceIds: ['ws-1', 'ws-2'] });
@@ -132,8 +133,8 @@ describe('getBackendStrandSummary — counting stranded work', () => {
       enabledForTeam: true,
       strandedPending: 7,
     });
-    expect(stat(summary, 'codex').sampleTasks).toEqual([
-      { id: 't-1', title: 'Codex thing', workspaceName: 'alpha' },
+    expect(stat(summary, 'codex').sampleTasks).toMatchObject([
+      { id: 't-1', title: 'Codex thing', workspaceName: 'alpha', route: { requested: 'codex', effective: 'codex' } },
     ]);
     expect(stat(summary, 'claude').strandedPending).toBe(0);
     expect(summary.totalStranded).toBe(7);

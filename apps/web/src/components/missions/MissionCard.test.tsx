@@ -86,7 +86,7 @@ describe('MissionCard (compact, D7)', () => {
     const html = renderToStaticMarkup(<MissionCard view={view} />);
     expect(html).toContain('data-testid="mission-card-compact"');
     expect(html).toContain('Retire the legacy lock');
-    expect(html).toContain('Completed 2d ago · 2/2');
+    expect(html).toContain('Done 2d ago · 2/2');
     expect(html).not.toContain('mission-pulse');
     expect(html).not.toContain('mission-masthead-primary');
     expect(html).toContain('href="/app/missions/m2?from=missions"');

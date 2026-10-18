@@ -367,6 +367,7 @@ export function summarizeMissionForCard(
   const healthState = deriveTaskHealthSignal(
     { dependsOnMissionId: row.dependsOnMissionId, dependencyMetAt: row.dependencyMetAt, heartbeatWaitingUntil },
     (replaced.size > 0 ? tasks.map(t => (replaced.has(t.id) ? { ...t, superseded: true } : t)) : tasks) as any,
+    { now: new Date(now) },
   );
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
@@ -384,6 +385,7 @@ export function summarizeMissionForCard(
     pendingUserScheduledAt,
     criteriaEscalatedAt: row.criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork: pending,
+    now,
   });
 
   const effectiveNext = nextRunAt ?? pendingUserScheduledAt;
@@ -772,8 +774,8 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
   };
 }
 
-/** `Completed 3d ago · 6/6` — the whole of a compact card's body (D7). */
+/** `Done 3d ago · 6/6` — the whole of a compact card's body (D7). */
 export function compactCardLine(view: Pick<MissionCardView, 'completedAt' | 'done' | 'total'>, timeAgo: (d: string) => string): string {
-  const when = view.completedAt ? `Completed ${timeAgo(view.completedAt)}` : 'Completed';
+  const when = view.completedAt ? `Done ${timeAgo(view.completedAt)}` : 'Done';
   return view.total > 0 ? `${when} · ${view.done}/${view.total}` : when;
 }

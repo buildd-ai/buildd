@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   DELIVERY_KIND,
+  STATE_OF_KIND,
   bindVerdict,
   deliveryCounts,
   deliveryStageIndex,
@@ -13,6 +14,7 @@ import {
   type MissionTaskRow,
 } from './delivery-projection';
 import * as missionHelpers from '@buildd/core/mission-helpers';
+import { STATES } from '@/components/ui/states';
 
 const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 
@@ -222,11 +224,34 @@ describe('stage track and repair badge', () => {
     expect(repairBadge(0)).toBe('');
     expect(repairBadge(2)).toBe('↻2');
   });
+  it('the PR kinds read the catalog words: Merged, Merging, Closed without merging', () => {
+    expect(DELIVERY_KIND.landed.label).toBe('Merged');
+    expect(DELIVERY_KIND.landing.label).toBe('Merging');
+    expect(DELIVERY_KIND.notlanded.label).toBe('Closed without merging');
+    expect(DELIVERY_KIND.held.label).toBe('Not started');
+  });
   it('every kind carries a glyph and a word', () => {
     for (const k of Object.values(DELIVERY_KIND)) {
       expect(k.glyph.length).toBeGreaterThan(0);
       expect(k.label.length).toBeGreaterThan(0);
     }
+  });
+  it('delivery pills use R-43 plain terms and never say landing/landed', () => {
+    expect(DELIVERY_KIND.landing.label).toBe('Merging');
+    expect(DELIVERY_KIND.landed.label).toBe('Merged');
+    expect(DELIVERY_KIND.notlanded.label).toBe('Closed without merging');
+    // No pill says land, landing or landed (internal kind keys stay).
+    Object.values(DELIVERY_KIND).forEach(({ label }) => {
+      expect(label).not.toMatch(/\bland/i);
+    });
+  });
+  it('the state pill a mission row draws (STATE_OF_KIND → STATES) says merge too', () => {
+    for (const key of Object.values(STATE_OF_KIND)) {
+      if (key) expect(STATES[key].word).not.toMatch(/\bland/i);
+    }
+    expect(STATES[STATE_OF_KIND.landing!].word).toBe('Merging');
+    expect(STATES[STATE_OF_KIND.landed!].word).toBe('Merged');
+    expect(STATES[STATE_OF_KIND.notlanded!].word).toBe('Closed without merging');
   });
 });
 

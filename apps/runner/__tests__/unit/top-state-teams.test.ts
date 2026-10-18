@@ -156,11 +156,11 @@ describe('missions pane (R-24)', () => {
     const rows = missionRows(state(), NOW);
     const done = rows.find(r => r.key === 'm-done')!;
     expect(done.deliveredAt).toBe(NOW - 2 * DAY);
-    expect(missionMeta(done)).toMatch(/^delivered [A-Z][a-z]{2} \d{1,2}$/);
+    expect(missionMeta(done)).toMatch(/^done [A-Z][a-z]{2} \d{1,2}$/);
     const local = rows.find(r => r.key === 'm-local')!;
     expect(local.local).toBe(true);
     expect(missionMeta(local)).toBeNull();
-    expect(missionRowStage(local)).toMatch(/locally$|^local$/);
+    expect(missionRowStage(local)).toMatch(/ in your session$|^your session$/);
     expect(missionMeta(rows.find(r => r.key === 'm-build')!)).toBeNull();
   });
 

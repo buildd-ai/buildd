@@ -279,4 +279,14 @@ export interface ConstituentEvidence {
   effectiveVerdict: Verdict | null;
   /** That delivery's own approved_heads (verdict + carry-forward), never its composition heads. */
   deliveryApprovedHeads: string[];
+  /**
+   * §13.13 rule 1, resolved by the caller: the verdict of that delivery's LATEST decided
+   * round at `roundHeadSha` (a later request-changes round supersedes an earlier approve),
+   * the delivery's state and head, and how many required findings of it are open.
+   * Absent = not read.
+   */
+  latestDecidedVerdictAtHead?: Verdict | null;
+  deliveryState?: DeliveryState | null;
+  deliveryHeadSha?: string | null;
+  openFindings?: number;
 }

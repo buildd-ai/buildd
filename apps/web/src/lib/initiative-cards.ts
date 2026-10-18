@@ -4,7 +4,7 @@ import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
 import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { buildMissionCardView, failedDeliverableTaskIds, summarizeMissionForCard, type BlockingTask, type MissionCardRow } from './mission-card-view';
 import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
-import { MISSION_BASE_COLUMNS, MISSION_TASK_BASE_COLUMNS, MISSION_WORKER_BASE_COLUMNS } from './missions-query';
+import { MISSION_BASE_COLUMNS, MISSION_TASK_BASE_COLUMNS, MISSION_TASK_RESULT_SUMMARY_EXTRAS, MISSION_WORKER_BASE_COLUMNS } from './missions-query';
 import { loadRunnerOnlineByWorkspace } from './runner-heartbeats';
 import { buildMissionWithInitiativeUrl } from './initiative-breadcrumb';
 import {
@@ -68,6 +68,8 @@ export async function loadInitiativeCards(opts: {
       schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
       tasks: {
         columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
+        // A recurring mission's card shows its last run's summary, nothing else of the result.
+        extras: MISSION_TASK_RESULT_SUMMARY_EXTRAS,
         orderBy: sqlOrderByFn((t: any, { desc: d }: any) => [d(t.updatedAt)]),
         with: {
           workers: {

@@ -25,7 +25,7 @@ import { displayTaskTitle } from '@/lib/task-title';
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
-import type { VisualReviewModel } from '@buildd/shared';
+import { TERMS, type VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
 import { BOARD_LANDED, boardNeedsYouCount, concurrencyBins, formatAge, formatClock, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
@@ -50,6 +50,7 @@ import CriteriaCheckNow from './CriteriaCheckNow';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
 import { repairBadge } from '@/lib/delivery-projection';
+import { TaskTitle } from '@/components/tasks/TaskTitle';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -298,7 +299,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
           />
         ) : (
           <>
-            <SectionLabel>Landed</SectionLabel>
+            <SectionLabel>{TERMS['pr.merged'].word}</SectionLabel>
             {model.landed.total > 0 ? (
               <>
                 <Big n={model.landed.done} small={`of ${model.landed.total}`} />
@@ -693,7 +694,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
         <ScopeChip scope={t.scope} />
         {t.roleName && <SectionLabel className="ml-auto">{t.roleName}</SectionLabel>}
       </div>
-      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary" title={t.title}>{displayTaskTitle(t.title)}</p>
+      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary" title={t.title}><TaskTitle short title={t.title} /></p>
       <div className="grid grid-cols-[70px_1fr] gap-x-2.5 gap-y-1 font-mono text-[12px] md:text-[11.5px]">
         {t.runner && <><span className="text-text-muted">runner</span><span className="text-text-secondary">{`${t.runner}${t.slot != null ? ` · slot ${t.slot + 1}` : ''}`}</span></>}
         {running && <><span className="text-text-muted">{t.endedAt ? 'ran' : 'running'}</span><span className="tabular-nums text-text-secondary">{`${running} · ${t.milestones.length} milestone${t.milestones.length === 1 ? '' : 's'}`}</span></>}

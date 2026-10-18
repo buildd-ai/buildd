@@ -45,7 +45,7 @@ function WorkerStatePill({ status, count }: { status: string; count: number }) {
   const trailing = count > 1 ? <span className="font-mono">{count}</span> : undefined;
   return status === 'waiting_input'
     ? <StatePill state="waiting" label="Has a question" trailing={trailing} />
-    : <StatePill state="running" label="Running" trailing={trailing} />;
+    : <StatePill state="running" label="Working" trailing={trailing} />;
 }
 
 /** "All workspaces" for a team default, the workspace name for a workspace-only role. */

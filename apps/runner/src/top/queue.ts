@@ -21,7 +21,7 @@
  * time ahead, e.g. a retry floor after failures, or a person's hold) is listed
  * after the queue, not in it, with its reason.
  */
-import type { RunnerQueueExclusion, RunnerQueueTask } from '@buildd/shared';
+import { TERMS, titleWithAttempt, type RunnerQueueExclusion, type RunnerQueueTask } from '@buildd/shared';
 import { taskIdInSentence } from '../claim-outcomes';
 import {
   EXCLUSION_WORDS as CLAIM_EXCLUSION_WORDS, MOVED_CODES, RUNNER_COOLDOWN_MS, busySlots, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor,
@@ -43,7 +43,7 @@ export interface QueueRow {
   est: string | null;
   /**
    * When it starts: "now", what holds it ("when #4 ends (same files)", a local
-   * time), "in ~15m (next free slot)", "on hold"; on a held row the time then
+   * time), "in ~15m (next free slot)", "paused"; on a held row the time then
    * why ("18:26 · retries after failures"); on a "Not for this runner" row, why.
    */
   starts: string;
@@ -69,7 +69,7 @@ export interface QueueSection {
 }
 
 const EXCLUSION_WORDS: Record<RunnerQueueExclusion, string> = {
-  local_session: 'runs in a local session',
+  local_session: 'runs from your session',
   another_runner: 'another runner takes it',
   role_missing: 'needs a role this runner lacks',
   runner_type: 'for another kind of runner',
@@ -131,8 +131,9 @@ function heldOnItsOwn(t: RunnerQueueTask, now: number): boolean {
  * 14:07"), and its starts column: the time first, so a narrow column keeps it.
  */
 function heldWords(t: RunnerQueueTask, now: number): { reason: string; starts: string } {
-  if (t.holds.includes('task_held')) return { reason: 'held by a person', starts: 'on hold · held by a person' };
-  if (t.holds.includes('mission_held')) return { reason: 'mission is on hold', starts: 'on hold · mission is on hold' };
+  const paused = TERMS['work.paused'].short;
+  if (t.holds.includes('task_held')) return { reason: CLAIM_EXCLUSION_WORDS.task_held, starts: `${paused} · by a person` };
+  if (t.holds.includes('mission_held')) return { reason: CLAIM_EXCLUSION_WORDS.mission_held, starts: `${paused} · ${CLAIM_EXCLUSION_WORDS.mission_held}` };
   const at = localLiftTime(t.holdUntil!, now);
   const cause = t.holdCause === 'retry_after_failures' ? 'retries after failures'
     : t.holdCause === 'usage_limit_reset' ? 'after the usage limit resets'
@@ -159,8 +160,13 @@ function alongsideWords(a: NonNullable<RunnerQueueTask['alongside']>, state: Top
   return startsAlongsideWords(title ? `"${clip(title, 24)}"` : a.holderTaskId ? `task ${a.holderTaskId.slice(0, 8)}` : 'other work');
 }
 
-/** The title of a task top knows of: the task list, its workers, or the queue. */
+/** The title of a task top knows of: the task list, its workers, or the queue. Never its retry key. */
 function titleOf(taskId: string, state: TopState): string | null {
+  const raw = rawTitleOf(taskId, state);
+  return raw == null ? null : titleWithAttempt(raw);
+}
+
+function rawTitleOf(taskId: string, state: TopState): string | null {
   const t = state.tasks.find(x => x.id === taskId);
   if (t) return t.title;
   const w = Object.values(state.workers).find(x => x.taskId === taskId);
@@ -190,9 +196,9 @@ function refusalWords(o: ClaimOutcome, positions: Map<string, number>, state: To
   }
   if (code === 'deps_blocked') return 'after its dependency';
   if (code && CLAIM_EXCLUSION_WORDS[code]) return CLAIM_EXCLUSION_WORDS[code];
-  if (o.reason === 'refused') return o.status === 429 ? 'account is at its worker limit' : 'the server refused its claim';
-  if (o.reason === 'no_slots') return 'account is at its worker limit';
-  if (code) return o.detail ? clip(o.detail.replace(/\.\s.*$/s, ''), 40) : 'held by the server';
+  if (o.reason === 'refused') return o.status === 429 ? 'account has no free slot' : 'the server refused its claim';
+  if (o.reason === 'no_slots') return 'account has no free slot';
+  if (code) return o.detail ? clip(o.detail.replace(/\.\s.*$/s, ''), 40) : TERMS['wait.unknown'].short;
   return null;
 }
 
@@ -223,11 +229,11 @@ function runningRemaining(state: TopState, now: number): number[] {
   return out.sort((a, b) => a - b);
 }
 
-/** "6 slots · 1 running · 5 free" (R-26), or "on hold" in place of free while held. */
+/** "6 slots · 1 running · 5 free" (R-26), or "paused" in place of free while the runner is paused. */
 export function slotsSummary(state: TopState, now: number): string {
   const n = state.runner.maxConcurrent;
   const running = busySlots(state);
-  const tail = heldNow(state, now) ? 'on hold' : `${Math.max(0, n - running)} free`;
+  const tail = heldNow(state, now) ? TERMS['runner.paused'].short : `${Math.max(0, n - running)} free`;
   return `${n} slot${n === 1 ? '' : 's'} · ${running} running · ${tail}`;
 }
 
@@ -255,8 +261,8 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
     const positions = new Map(queued.map((t, i) => [t.id, i + 1]));
     const waits: boolean[] = [];
     const starts = queued.map(t => {
-      // R-33: held, the order stays and nothing has a start time.
-      if (held) { waits.push(true); return 'on hold'; }
+      // R-33: runner paused, the order stays and nothing has a start time.
+      if (held) { waits.push(true); return TERMS['runner.paused'].short; }
       const w = waitWords(t, positions, state, holds, now);
       waits.push(!!w);
       if (w) return w;
@@ -271,7 +277,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
       rows: queued.map((t, i) => ({
         taskId: t.id,
         position: i + 1,
-        title: t.title,
+        title: titleWithAttempt(t.title),
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,
@@ -286,7 +292,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         return {
           taskId: t.id,
           position: null,
-          title: t.title,
+          title: titleWithAttempt(t.title),
           missionId: t.missionId,
           roleSlug: t.roleSlug,
           workspace: t.workspaceName,
@@ -300,7 +306,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
       notFor: notFor.map(t => ({
         taskId: t.id,
         position: null,
-        title: t.title,
+        title: titleWithAttempt(t.title),
         missionId: t.missionId,
         roleSlug: t.roleSlug,
         workspace: t.workspaceName,

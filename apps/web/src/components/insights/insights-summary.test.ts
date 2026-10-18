@@ -31,17 +31,17 @@ function series(over: { shipped?: number; prev?: number | null; median?: number 
 describe('shippingSentence', () => {
   it('leads with the count, the change on the span before, and the median to production', () => {
     expect(shippingSentence(series({ shipped: 12, prev: 10, median: 5 * H }), '7d'))
-      .toBe('Shipped 12 tasks in the last 7 days, up 20% on the 7 days before (10); median 5.0h from first agent start to production.');
+      .toBe('12 tasks done in the last 7 days, up 20% on the 7 days before (10); median 5.0h from first agent start to production.');
     expect(shippingSentence(series({ shipped: 8, prev: 10, median: 30 * H }), '7d'))
-      .toBe('Shipped 8 tasks in the last 7 days, down 20% on the 7 days before (10); median 30h from first agent start to production.');
+      .toBe('8 tasks done in the last 7 days, down 20% on the 7 days before (10); median 30h from first agent start to production.');
   });
 
   it('says the same, none, or nothing to compare plainly', () => {
-    expect(shippingSentence(series({ shipped: 3, prev: 3 }), '7d')).toBe('Shipped 3 tasks in the last 7 days, the same as the 7 days before.');
-    expect(shippingSentence(series({ shipped: 1, prev: 0 }), '7d')).toBe('Shipped 1 task in the last 7 days, none the 7 days before.');
-    expect(shippingSentence(series({ shipped: 4, prev: null }), '7d')).toBe('Shipped 4 tasks in the last 7 days.');
-    expect(shippingSentence(series({ shipped: 0, prev: 5 }), '7d')).toBe('No tasks shipped in the last 7 days, 5 tasks the 7 days before.');
-    expect(shippingSentence(series({ shipped: 0, prev: 0 }), '7d')).toBe('No tasks shipped in the last 7 days.');
+    expect(shippingSentence(series({ shipped: 3, prev: 3 }), '7d')).toBe('3 tasks done in the last 7 days, the same as the 7 days before.');
+    expect(shippingSentence(series({ shipped: 1, prev: 0 }), '7d')).toBe('1 task done in the last 7 days, none the 7 days before.');
+    expect(shippingSentence(series({ shipped: 4, prev: null }), '7d')).toBe('4 tasks done in the last 7 days.');
+    expect(shippingSentence(series({ shipped: 0, prev: 5 }), '7d')).toBe('No tasks done in the last 7 days, 5 tasks the 7 days before.');
+    expect(shippingSentence(series({ shipped: 0, prev: 0 }), '7d')).toBe('No tasks done in the last 7 days.');
   });
 
   it('does not say "up 0%" for a change that rounds away', () => {
@@ -49,7 +49,7 @@ describe('shippingSentence', () => {
   });
 
   it('names the 30-day window', () => {
-    expect(shippingSentence(series({ shipped: 40, prev: 20 }), '30d')).toBe('Shipped 40 tasks in the last 30 days, up 100% on the 30 days before (20).');
+    expect(shippingSentence(series({ shipped: 40, prev: 20 }), '30d')).toBe('40 tasks done in the last 30 days, up 100% on the 30 days before (20).');
   });
 
   it('never calls a rolling window a week or a month on the calendar', () => {
@@ -81,7 +81,7 @@ describe('comparisonCaption', () => {
 describe('timeRows', () => {
   it('one row per category in display order, shares summing to 1, each linking to its tasks', () => {
     const rows = timeRows(series({ time: { needs_input: [2 * H, 1], review: [6 * H, 3], running: [8 * H, 5], release: [4 * H, 2] } }));
-    expect(rows.map(r => r.label)).toEqual(['Has a question', 'Waiting for CI', 'In review', 'Waiting for a runner', 'Running', 'Retries after failure', 'Waiting for a release']);
+    expect(rows.map(r => r.label)).toEqual(['Has a question', 'Waiting for CI', 'In review', 'Waiting for a runner', 'Working', 'Retries after failure', 'Waiting for a release']);
     expect(rows.reduce((m, r) => m + r.share, 0)).toBeCloseTo(1);
     expect(rows.find(r => r.category === 'review')!.share).toBeCloseTo(0.3);
     expect(rows[0].href).toContain('split=needs_input');

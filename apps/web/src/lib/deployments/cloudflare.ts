@@ -11,6 +11,10 @@
  * - a Worker secret value the caller supplies is sent and never echoed.
  */
 import { CLOUDFLARE_API_BASE, type CloudflareCredential, type FetchLike } from '../cloudflare-credential-shared';
+import {
+  RELEASE_TAG_RE, RELEASE_VAR, configForScript, containerAppChange, containerAppName, snapshotBucketOf, workerUploadMetadata,
+  type LiveContainerApp, type ReleaseBundle, type WranglerConfig,
+} from '../../../../cloud-runner/src/release-bundle';
 
 /** Names a Worker, R2 bucket and secret may take. Cloudflare's own rules, narrowed. */
 const SCRIPT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -23,7 +27,19 @@ const FLAG_RE = /^[a-z0-9_]{1,64}$/;
 export const MAX_BUNDLE_BYTES = 3 * 1024 * 1024;
 export const MAX_SECRET_BYTES = 64 * 1024;
 
-export type CloudflareOperation = 'status' | 'put_secret' | 'upload_worker' | 'ensure_bucket';
+export type CloudflareOperation = 'status' | 'release_state' | 'put_secret' | 'upload_worker' | 'ensure_bucket' | 'deploy_worker_script' | 'deploy_containers';
+
+export interface LifecycleRule {
+  id: string;
+  prefix: string;
+  expireDays: number;
+}
+
+/**
+ * Where the cloud runner operations get a release's Worker bundle and image
+ * (cloud-runner-bundle.ts). `tag` null = the release this server runs.
+ */
+export type LoadReleaseBundle = (tag: string | null) => Promise<{ ok: true; bundle: ReleaseBundle } | { ok: false; error: string }>;
 
 /** The Worker script a target deploys to: the project in production, `<project>-<environment>` elsewhere. */
 export function cloudflareScriptName(project: string, environment: string): string {
@@ -44,7 +60,9 @@ export type ParsedParams =
       compatibilityFlags: string[];
       vars: Record<string, string>;
     }
-  | { ok: true; op: 'ensure_bucket'; bucket: string; lifecycle: Array<{ id: string; prefix: string; expireDays: number }> }
+  | { ok: true; op: 'ensure_bucket'; bucket: string; lifecycle: LifecycleRule[] }
+  | { ok: true; op: 'deploy_worker_script' | 'deploy_containers'; release: string | null }
+  | { ok: true; op: 'release_state'; release: string | null; lifecycle: LifecycleRule[] }
   | { ok: false; error: string };
 
 /**
@@ -97,20 +115,46 @@ export function parseCloudflareParams(op: CloudflareOperation, raw: unknown, scr
       if (!bucket.startsWith(`${script}-`) || !SCRIPT_RE.test(bucket)) {
         return { ok: false, error: `params.bucket must be named "${script}-<suffix>" (lowercase letters, digits, dashes)` };
       }
-      const rules = p.lifecycle ?? [];
-      if (!Array.isArray(rules)) return { ok: false, error: 'params.lifecycle must be an array' };
-      const lifecycle: Array<{ id: string; prefix: string; expireDays: number }> = [];
-      for (const r of rules as unknown[]) {
-        const rule = r as Record<string, unknown> | null;
-        if (!rule || typeof rule.id !== 'string' || typeof rule.prefix !== 'string' || typeof rule.expireDays !== 'number'
-          || !Number.isInteger(rule.expireDays) || rule.expireDays < 1) {
-          return { ok: false, error: 'each lifecycle rule needs { id, prefix, expireDays (whole days >= 1) }' };
-        }
-        lifecycle.push({ id: rule.id, prefix: rule.prefix, expireDays: rule.expireDays });
-      }
-      return { ok: true, op, bucket, lifecycle };
+      const lifecycle = parseLifecycle(p.lifecycle);
+      if (!lifecycle.ok) return lifecycle;
+      return { ok: true, op, bucket, lifecycle: lifecycle.rules };
+    }
+    case 'deploy_worker_script':
+    case 'deploy_containers': {
+      // The code and image come from a published release, never from the caller.
+      const release = parseRelease(p.release);
+      if (!release.ok) return release;
+      return { ok: true, op, release: release.tag };
+    }
+    case 'release_state': {
+      const release = parseRelease(p.release);
+      if (!release.ok) return release;
+      const lifecycle = parseLifecycle(p.lifecycle);
+      if (!lifecycle.ok) return lifecycle;
+      return { ok: true, op, release: release.tag, lifecycle: lifecycle.rules };
     }
   }
+}
+
+function parseRelease(raw: unknown): { ok: true; tag: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, tag: null };
+  if (typeof raw !== 'string' || !RELEASE_TAG_RE.test(raw)) return { ok: false, error: 'params.release must be a release tag (vX.Y.Z)' };
+  return { ok: true, tag: raw };
+}
+
+function parseLifecycle(raw: unknown): { ok: true; rules: LifecycleRule[] } | { ok: false; error: string } {
+  const rules = raw ?? [];
+  if (!Array.isArray(rules)) return { ok: false, error: 'params.lifecycle must be an array' };
+  const out: LifecycleRule[] = [];
+  for (const r of rules as unknown[]) {
+    const rule = r as Record<string, unknown> | null;
+    if (!rule || typeof rule.id !== 'string' || typeof rule.prefix !== 'string' || typeof rule.expireDays !== 'number'
+      || !Number.isInteger(rule.expireDays) || rule.expireDays < 1) {
+      return { ok: false, error: 'each lifecycle rule needs { id, prefix, expireDays (whole days >= 1) }' };
+    }
+    out.push({ id: rule.id, prefix: rule.prefix, expireDays: rule.expireDays });
+  }
+  return { ok: true, rules: out };
 }
 
 export type AdapterResult =
@@ -165,12 +209,45 @@ function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+function list<T>(r: { body: CfEnvelope }): T[] {
+  return Array.isArray(r.body.result) ? (r.body.result as T[]) : [];
+}
+
+/** A config whose upload records its release (RELEASE_VAR), for release_state to read back. */
+function stamped(cfg: WranglerConfig, tag: string): WranglerConfig {
+  return { ...cfg, vars: { ...(cfg.vars ?? {}), [RELEASE_VAR]: tag } };
+}
+
+/** The lifecycle rules a bucket holds, as ensure_bucket writes them, in our shape. */
+function liveLifecycle(r: { body: CfEnvelope }): LifecycleRule[] {
+  type LiveRule = { id?: unknown; enabled?: unknown; conditions?: { prefix?: unknown }; deleteObjectsTransition?: { condition?: { maxAge?: unknown } } };
+  const raw = (r.body.result as { rules?: unknown } | undefined)?.rules;
+  return ((Array.isArray(raw) ? raw : []) as LiveRule[])
+    .filter(x => x && x.enabled !== false)
+    .map(x => {
+      const maxAge = x.deleteObjectsTransition?.condition?.maxAge;
+      return { id: str(x.id) ?? '', prefix: str(x.conditions?.prefix) ?? '', expireDays: typeof maxAge === 'number' ? maxAge / 86_400 : NaN };
+    });
+}
+
+function sameRules(live: LifecycleRule[], want: LifecycleRule[]): boolean {
+  return live.length === want.length
+    && want.every(w => live.some(l => l.id === w.id && l.prefix === w.prefix && l.expireDays === w.expireDays));
+}
+
+async function workersDevUrlOf(fetchImpl: FetchLike, cred: CloudflareCredential, script: string): Promise<string | null> {
+  const subdomain = await cf(fetchImpl, cred, '/workers/subdomain');
+  const sub = subdomain.ok ? str((subdomain.body.result as { subdomain?: unknown } | undefined)?.subdomain) : null;
+  return sub ? `https://${script}.${sub}.workers.dev` : null;
+}
+
 /** Run one parsed operation against `script`. */
 export async function runCloudflareOperation(
   params: Exclude<ParsedParams, { ok: false }>,
   script: string,
   cred: CloudflareCredential,
   fetchImpl: FetchLike = fetch,
+  loadRelease?: LoadReleaseBundle,
 ): Promise<AdapterResult> {
   if (!SCRIPT_RE.test(script)) return { ok: false, status: 400, error: `"${script}" is not a valid Worker name` };
   const s = encodeURIComponent(script);
@@ -275,6 +352,139 @@ export async function runCloudflareOperation(
         lifecycleSet = true;
       }
       return { ok: true, result: { bucket: params.bucket, created: created.ok, lifecycleRules: lifecycleSet ? params.lifecycle.map(r => r.id) : [] } };
+    }
+
+    case 'deploy_worker_script': {
+      // wrangler deploy's script half: the Worker with its Durable Object,
+      // container, R2 and browser bindings and DO migrations, then its
+      // workers.dev route (release-bundle.ts).
+      if (!loadRelease) return { ok: false, status: 501, error: 'cloud runner releases are not available on this server' };
+      const loaded = await loadRelease(params.release);
+      if (!loaded.ok) return { ok: false, status: 422, error: loaded.error };
+      const { bundle } = loaded;
+      const cfg = stamped(configForScript(bundle.config, script), bundle.tag);
+      const service = await cf(fetchImpl, cred, `/workers/services/${s}`);
+      if (!service.ok && !isNotFound(service)) return providerError('deploy_worker_script', service, cred);
+      const liveTag = service.ok
+        ? str((service.body.result as { default_environment?: { script?: { migration_tag?: unknown } } } | undefined)?.default_environment?.script?.migration_tag)
+        : null;
+      const form = new FormData();
+      form.set('metadata', new Blob([JSON.stringify(workerUploadMetadata(cfg, bundle.mainModule, liveTag))], { type: 'application/json' }));
+      for (const m of bundle.modules) form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
+      const upload = await cf(fetchImpl, cred, `/workers/scripts/${s}`, { method: 'PUT', body: form });
+      if (!upload.ok) return providerError('deploy_worker_script', upload, cred);
+      const route = await cf(fetchImpl, cred, `/workers/scripts/${s}/subdomain`, { method: 'POST', json: { enabled: true, previews_enabled: false } });
+      if (!route.ok) return providerError('deploy_worker_script workers.dev', route, cred);
+      const res = (upload.body.result ?? {}) as Record<string, unknown>;
+      return {
+        ok: true,
+        result: {
+          script,
+          release: bundle.tag,
+          etag: str(res.etag),
+          modifiedOn: str(res.modified_on),
+          migrationTag: cfg.migrations.at(-1)?.tag ?? null,
+          workersDevUrl: await workersDevUrlOf(fetchImpl, cred, script),
+        },
+      };
+    }
+
+    case 'release_state': {
+      // Read-only: which parts of a release are already live, so a re-run of
+      // the Settings deploy skips them. Every answer is a yes/no or a name.
+      if (!loadRelease) return { ok: false, status: 501, error: 'cloud runner releases are not available on this server' };
+      const loaded = await loadRelease(params.release);
+      if (!loaded.ok) return { ok: false, status: 422, error: loaded.error };
+      const { bundle } = loaded;
+      const cfg = configForScript(bundle.config, script);
+      const bucket = snapshotBucketOf(cfg);
+      const b = bucket ? encodeURIComponent(bucket) : '';
+      const [settings, bucketRow, lifecycle, namespaces, apps] = await Promise.all([
+        cf(fetchImpl, cred, `/workers/scripts/${s}/settings`),
+        bucket ? cf(fetchImpl, cred, `/r2/buckets/${b}`) : null,
+        bucket ? cf(fetchImpl, cred, `/r2/buckets/${b}/lifecycle`) : null,
+        cf(fetchImpl, cred, '/workers/durable_objects/namespaces?per_page=1000'),
+        cf(fetchImpl, cred, '/containers/applications'),
+      ]);
+
+      if (!settings.ok && !isNotFound(settings)) return providerError('release_state', settings, cred);
+      const rawBindings = settings.ok ? (settings.body.result as { bindings?: unknown } | undefined)?.bindings : null;
+      const bindings = (Array.isArray(rawBindings) ? rawBindings : []) as Array<{ type?: unknown; name?: unknown; text?: unknown }>;
+      const liveRelease = str(bindings.find(x => x.type === 'plain_text' && x.name === RELEASE_VAR)?.text);
+
+      let bucketCurrent = true;
+      if (bucketRow && lifecycle) {
+        if (!bucketRow.ok && !isNotFound(bucketRow)) return providerError('release_state bucket', bucketRow, cred);
+        if (!bucketRow.ok) bucketCurrent = false;
+        else if (params.lifecycle.length > 0) {
+          if (!lifecycle.ok && !isNotFound(lifecycle)) return providerError('release_state lifecycle', lifecycle, cred);
+          bucketCurrent = lifecycle.ok && sameRules(liveLifecycle(lifecycle), params.lifecycle);
+        }
+      }
+
+      if (!namespaces.ok) return providerError('release_state namespaces', namespaces, cred);
+      if (!apps.ok) return providerError('release_state containers', apps, cred);
+      const nsList = list<{ id?: unknown; script?: unknown; class?: unknown }>(namespaces);
+      const live = list<LiveContainerApp>(apps);
+      const logs = cfg.observability?.enabled === true;
+      const containersCurrent = !!bundle.image && cfg.containers.every(c => {
+        const namespaceId = str(nsList.find(n => n.script === script && n.class === c.class_name)?.id);
+        if (!namespaceId) return false;
+        return containerAppChange(script, c, bundle.image!, namespaceId, logs, live.find(a => a.name === containerAppName(script, c.class_name))).action === 'none';
+      });
+
+      return {
+        ok: true,
+        result: {
+          script,
+          release: bundle.tag,
+          worker: { current: liveRelease === bundle.tag, release: liveRelease },
+          bucket: { name: bucket, current: bucketCurrent },
+          containers: { current: containersCurrent },
+        },
+      };
+    }
+
+    case 'deploy_containers': {
+      // wrangler deploy's container half: one application per container class,
+      // bound to its Durable Object namespace, running the release's image.
+      if (!loadRelease) return { ok: false, status: 501, error: 'cloud runner releases are not available on this server' };
+      const loaded = await loadRelease(params.release);
+      if (!loaded.ok) return { ok: false, status: 422, error: loaded.error };
+      const { bundle } = loaded;
+      if (!bundle.image) {
+        return { ok: false, status: 422, error: `Release ${bundle.tag} has no runner image Cloudflare can pull (it needs a public Docker Hub copy).` };
+      }
+      const cfg = configForScript(bundle.config, script);
+      const [namespaces, apps] = await Promise.all([
+        cf(fetchImpl, cred, '/workers/durable_objects/namespaces?per_page=1000'),
+        cf(fetchImpl, cred, '/containers/applications'),
+      ]);
+      if (!namespaces.ok) return providerError('deploy_containers namespaces', namespaces, cred);
+      if (!apps.ok) return providerError('deploy_containers', apps, cred);
+      const nsList = list<{ id?: unknown; script?: unknown; class?: unknown }>(namespaces);
+      const live = list<LiveContainerApp>(apps);
+      const logs = cfg.observability?.enabled === true;
+      const applications: Array<{ name: string; action: string }> = [];
+      for (const c of cfg.containers) {
+        const namespaceId = str(nsList.find(n => n.script === script && n.class === c.class_name)?.id);
+        if (!namespaceId) return { ok: false, status: 409, error: `The Worker has no ${c.class_name} Durable Object yet. Deploy the Worker first.` };
+        const change = containerAppChange(script, c, bundle.image, namespaceId, logs, live.find(a => a.name === containerAppName(script, c.class_name)));
+        if (change.action === 'conflict') return { ok: false, status: 409, error: change.error };
+        if (change.action === 'create') {
+          const r = await cf(fetchImpl, cred, '/containers/applications', { method: 'POST', json: change.body });
+          if (!r.ok) return providerError(`deploy_containers create ${change.name}`, r, cred);
+        } else if (change.action === 'modify') {
+          const r = await cf(fetchImpl, cred, `/containers/applications/${encodeURIComponent(change.id)}`, { method: 'PATCH', json: change.body });
+          if (!r.ok) return providerError(`deploy_containers modify ${change.name}`, r, cred);
+          if (change.rollout) {
+            const ro = await cf(fetchImpl, cred, `/containers/applications/${encodeURIComponent(change.id)}/rollouts`, { method: 'POST', json: change.rollout });
+            if (!ro.ok) return providerError(`deploy_containers rollout ${change.name}`, ro, cred);
+          }
+        }
+        applications.push({ name: change.name, action: change.action === 'modify' && change.rollout ? 'rolled_out' : change.action === 'modify' ? 'updated' : change.action === 'create' ? 'created' : 'unchanged' });
+      }
+      return { ok: true, result: { script, release: bundle.tag, image: bundle.image, applications } };
     }
   }
 }

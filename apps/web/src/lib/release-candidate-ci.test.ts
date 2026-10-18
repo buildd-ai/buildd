@@ -86,6 +86,7 @@ describe('buildReleaseCandidateFixTask', () => {
     expect(built.description).toContain('amend: v1.2.3');
     expect(built.description).toContain('Integration: 4 tests failed');
     expect(built.description).toContain('/repos/acme/app/actions/jobs/9/logs');
+    expect(built.description).not.toContain('--allow-escape-sequences');
   });
 
   it('the refusal text names the source branch and the amendment', () => {
