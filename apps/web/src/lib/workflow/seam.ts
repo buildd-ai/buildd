@@ -44,7 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -661,6 +661,65 @@ export async function attemptEnded(p: {
 async function markLandingDue(member: string): Promise<void> {
   const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/landing-due-queue')]);
   await markDue(PR_LANDING_DUE_QUEUE, member, Date.now());
+}
+
+// ── AC-1 slice 6: an attempt's task goes back to the queue ─────────────────
+
+/**
+ * The guard a requeue's own write of its other fields (context, backend, start floor) carries,
+ * so it lands only where the requeue itself would: an open task whose current attempt is
+ * `workerId`. `task` names the tasks row (`tasks` inside a drizzle `update(tasks)`).
+ */
+export { requeueingAttemptIsCurrentSql };
+
+/**
+ * Project a requeue onto its task outside a transition (task-projection.ts `projectRequeueSql`):
+ * for a requeue that applied nothing, or never reached the kernel. Answers whether the task is
+ * back in the queue for this attempt now (moved here, or already by `t_requeue`).
+ */
+export async function projectRequeue(
+  p: { deliveryId: string; taskId: string; workerId: string; attemptId?: string | null },
+  exec: Exec = seamExec,
+): Promise<boolean> {
+  const moved = ((await exec(projectRequeueSql(p))).rows ?? []).length > 0;
+  if (moved) return true;
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${p.taskId}::uuid AND tk.status = 'pending' AND ${endingWorkerIsCurrentSql(p.workerId)}`);
+  return (r.rows ?? []).length > 0;
+}
+
+/**
+ * AttemptRequeued from the worker PATCH and the conflict-fix recovery: the attempt is retried on
+ * the same task, so the task goes back to `pending`, the move the kernel makes in the transition's
+ * own statement (`t_requeue`). A requeue the reducer does not bind (the delivery moved on while
+ * the task kept running, a re-send) is still projected under the same guard, so the task moves
+ * exactly when its requeuing worker is still its current attempt, kernel-owned or not.
+ * `handled` false: the task has no delivery to requeue through (the caller writes it itself).
+ */
+export async function attemptRequeued(p: {
+  task: AttemptTask;
+  workerId: string;
+  /** A short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `mount_gap`, `auth_failover`, `conflict_recovery`. */
+  reason: string;
+  source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: boolean; requeued: boolean; result?: CommandResult }> {
+  const attemptKind = p.task.deliveryRole;
+  if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind))) return { handled: false, requeued: false };
+  const attemptId = attemptKind === 'owner' ? null : ((ctxOf(p.task).workflowAttemptId as string | undefined) ?? null);
+  if (attemptKind !== 'owner' && !attemptId) return { handled: false, requeued: false };
+  const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
+  let result: CommandResult | undefined;
+  if (deliveryId) {
+    result = await applyCommand(
+      { type: 'AttemptRequeued', actor: p.source, workerId: p.workerId, reason: p.reason, ...(attemptId ? { attemptId } : { taskId: p.task.id }) },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (result.result !== 'applied' && result.result !== 'duplicate') {
+      console.log(`[workflow] AttemptRequeued(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+    }
+  }
+  const requeued = await projectRequeue({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, attemptId }, deps.exec);
+  if (deliveryId && result?.result === 'applied') await drainDelivery(deliveryId, deps);
+  return { handled: true, requeued, ...(result ? { result } : {}) };
 }
 
 // ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────

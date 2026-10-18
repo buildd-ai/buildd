@@ -57,6 +57,9 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   mission_scope: false,
   // The runner reports an attempt's end once; the floor re-sends an owner's end, never a repair's or a review's.
   attempt_ended: true,
+  // A requeue is reported once too. The door's caller projects it on the web host meanwhile, so a
+  // late re-send only records it: its guard moves nothing once the task was claimed again.
+  attempt_requeued: true,
   // The red-PR sweep reads a red head again on its own tick.
   observe_ci_failure: false,
   // The conflict door reads the live PR on every sweep, so the sweeps are its re-sender.
