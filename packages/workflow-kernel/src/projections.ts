@@ -401,7 +401,12 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
           : 'every change in it was reviewed at its own head; nothing new was added';
       } else {
         // Approved is not merged: the header says what it waits on until the merge fact.
-        headline = d.approvalBasis === 'policy' ? 'Ready to merge' : 'Approved · awaiting merge';
+        // Ready only once the required checks passed on this head; until then
+        // the approval waits on them, not on a merge.
+        const ci = deliveryPrState(d);
+        headline = ci === 'awaiting_ci' || ci === 'ci_running' ? 'Approved · checking'
+          : ci === 'ci_failed' ? 'Approved · checks failing'
+          : d.approvalBasis === 'policy' || ci === 'ci_passed' ? 'Ready to merge' : 'Approved · awaiting merge';
       }
       break;
     case 'LANDING': headline = 'Merging'; break;
