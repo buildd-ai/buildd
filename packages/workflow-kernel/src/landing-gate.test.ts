@@ -96,7 +96,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(long.description).not.toContain('abcdef1234');
   });
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
+    const terms = ['Branch update in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];
@@ -116,6 +116,25 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
   });
   test('the exhaustion answer is failure, never success, and says what to do', () => {
     expect(landingStatusUnknown('abcdef1234')).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'Merge blocked: buildd could not confirm abcdef1 is ready to merge; ask for a review again or retry the merge' });
+  });
+});
+
+describe('landingStatusOf while the PR is being repaired (review validity vs landing eligibility)', () => {
+  const rep = (o: Partial<DeliverySnapshot> = {}) => D({ state: 'REPAIRING', stateReason: 'behind', ...o });
+  test('approved at the head and behind: pending, says the review is approved, never a failure', () => {
+    const s = landingStatusOf(V(rep(), [R(1, 'approve')]))!;
+    expect(s.state).toBe('pending');
+    expect(s.description).toBe('Branch update in progress: review approved abcdef1; the PR is being repaired (behind)');
+  });
+  test('a new head with no covering review is pending review, not a rejection', () => {
+    const s = landingStatusOf(V(rep({ approvedHeads: [], approvalBasis: null }), [R(1, 'approve')]))!;
+    expect(s).toMatchObject({ state: 'pending', description: 'Review in progress: no review covers abcdef1 yet' });
+  });
+  test('a failed review stays a failure while repairing', () => {
+    expect(landingStatusOf(V(rep(), [R(1, 'request_changes')]))).toMatchObject({ state: 'failure', description: expect.stringContaining('Changes requested') });
+  });
+  test('the merge gate still refuses a repairing delivery', () => {
+    expect(reviewGate(V(rep(), [R(1, 'approve')]))).toMatchObject({ ok: false, blocker: 'not_approved' });
   });
 });
 
