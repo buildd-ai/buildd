@@ -16,6 +16,7 @@ import { loadOccupancySeries, teamWorkspaceIds } from '@/lib/fleet-occupancy-que
  * `workspace` narrows to one of that team's workspaces; any other id is ignored.
  * Each bucket and the summary also split runner slots and sessions into mine / others /
  * unattributed (`claimedByUserId` against the caller); the parts reconcile to the total.
+ * Named member rows are limited to current members of that team (scopeMembers).
  * `tzOffset` (minutes, local minus UTC) puts the 30d chart's days at the viewer's midnight.
  */
 export async function GET(req: NextRequest) {
@@ -43,6 +44,6 @@ export async function GET(req: NextRequest) {
   const ws = url.searchParams.get('workspace');
   const scope = ws && teamWs.includes(ws) ? [ws] : teamWs;
   const tz = Number(url.searchParams.get('tzOffset'));
-  const series = await loadOccupancySeries(scope, rawWindow, Date.now(), Number.isFinite(tz) ? tz * 60_000 : 0, user.id);
+  const series = await loadOccupancySeries(scope, rawWindow, Date.now(), Number.isFinite(tz) ? tz * 60_000 : 0, user.id, teamId);
   return NextResponse.json({ ...series, teamId });
 }
