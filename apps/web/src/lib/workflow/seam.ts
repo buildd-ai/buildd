@@ -44,7 +44,7 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
+import { endingWorkerIsCurrentSql, isAttemptRow, ownerAttemptEndOf, ownerClaimOpenSql, projectAttemptStartSql, projectLoopExitSql, projectOwnerEndSql, projectRequeueSql, requeueingAttemptIsCurrentSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
@@ -777,6 +777,16 @@ export async function attemptRequeued(p: {
   const requeued = await projectRequeue({ deliveryId: p.task.deliveryId, taskId: p.task.id, workerId: p.workerId, attemptId }, deps.exec);
   if (deliveryId && result?.result === 'applied') await drainDelivery(deliveryId, deps);
   return { handled: true, requeued, ...(result ? { result } : {}) };
+}
+
+/**
+ * AC-1 slice 8 (task-projection.ts `projectLoopExitSql`): a loop task's exit condition held (its
+ * PR's checks went green) while the loop parked its owner task in the queue. The loop exit sends
+ * the held attempt's end first (through the kernel client), then this moves the task to
+ * `completed` under the projection's guard. Answers whether it moved.
+ */
+export async function projectLoopExit(p: { deliveryId: string; taskId: string }, exec: Exec = seamExec): Promise<boolean> {
+  return ((await exec(projectLoopExitSql(p))).rows ?? []).length > 0;
 }
 
 // ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────

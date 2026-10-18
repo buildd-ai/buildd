@@ -14,7 +14,70 @@ import { dispatchLoopIteration } from '@/lib/loop-dispatcher';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { LoopConfig, LoopHistoryEntry } from '@buildd/shared';
-import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { NON_RUNNER_EXECUTOR_IDS } from '@/lib/executor';
+
+/**
+ * AC-1 slice 8 (docs/specs/workflow-kernel-library.md §9): the kernel delivery a loop task owns, or
+ * null. A loop's exit writes the loop fields either way; the owner task's status is the kernel's:
+ * a merge completes it in T17's own statement, and a green-checks exit settles the held attempt
+ * (`settleKernelLoopExit`). A delivery the kill switch released is legacy again.
+ */
+async function kernelOwnerDelivery(task: { deliveryId?: string | null; deliveryRole?: string | null }): Promise<string | null> {
+  if (!task.deliveryId || task.deliveryRole !== 'owner') return null;
+  const { kernelDeliveryById } = await import('@/lib/workflow/authority');
+  return kernelDeliveryById(task.deliveryId).catch(() => null);
+}
+
+/**
+ * The green-checks exit of a kernel owner's loop: the loop parked the task in the queue when its
+ * attempt ended, and the kernel recorded that end. The exit re-sends it for the task's latest
+ * attempt (AttemptEnded through the kernel client: a duplicate when recorded, the end itself when
+ * it never arrived), then completes the parked task under the projection's guard
+ * (`projectLoopExit`: still pending, the loop satisfied, no live attempt). Never throws.
+ */
+async function settleKernelLoopExit(p: { taskId: string; workspaceId: string; deliveryId: string; context: unknown }): Promise<boolean> {
+  try {
+    // The latest attempt row: a placeholder no runner executed (a second PR's sibling row) is none.
+    const rows = await db.query.workers.findMany({
+      where: sqlWhere(eq(workers.taskId, p.taskId)),
+      columns: { id: true, status: true, runner: true, lastCommitSha: true, commitCount: true },
+      orderBy: sqlOrderByFn((wk, { desc }) => [desc(wk.createdAt), desc(wk.id)]),
+      limit: 10,
+    });
+    const latest = rows.find((r) => !r.runner || !(NON_RUNNER_EXECUTOR_IDS as readonly string[]).includes(r.runner));
+    const { attemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    if (latest?.status === 'completed') {
+      await attemptEnded({
+        task: { id: p.taskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: p.context },
+        workerId: latest.id,
+        status: 'completed',
+        localHeadSha: latest.lastCommitSha ?? null,
+        commitCount: latest.commitCount ?? 0,
+        source: 'webhook:loop_exit',
+      }, { principal: systemPrincipal('system:loop-exit') }).catch((err) => console.error(`[loop-webhook] AttemptEnded for the loop exit of task ${p.taskId} failed:`, err));
+    }
+    return await completeParkedOwner(p);
+  } catch (err) {
+    console.error(`[loop-webhook] loop exit of kernel owner task ${p.taskId} not settled:`, err);
+    return false;
+  }
+}
+
+/**
+ * The parked owner task of a satisfied loop completes under the kernel's guarded projection
+ * (`projectLoopExit`: the delivery's owner, still pending with the loop satisfied, no live attempt,
+ * never over a kernel-merged completion). A no-op on a task T17 already completed. Never throws.
+ */
+async function completeParkedOwner(p: { taskId: string; deliveryId: string }): Promise<boolean> {
+  try {
+    const { projectLoopExit } = await import('@/lib/workflow/seam');
+    return await projectLoopExit({ deliveryId: p.deliveryId, taskId: p.taskId });
+  } catch (err) {
+    console.error(`[loop-webhook] parked kernel owner task ${p.taskId} not completed:`, err);
+    return false;
+  }
+}
 
 /**
  * Evaluate and advance a loop when a PR merge webhook fires.
@@ -40,6 +103,9 @@ export async function evaluateAndAdvanceLoopOnMerge(
       context: true,
       startAt: true,
       status: true,
+      workspaceId: true,
+      deliveryId: true,
+      deliveryRole: true,
     },
   });
 
@@ -80,11 +146,15 @@ export async function evaluateAndAdvanceLoopOnMerge(
     return false;
   }
 
+  // A kernel owner's merge is T17's to complete (its own statement, which already ran): the loop
+  // records only that its condition held.
+  const kernelDeliveryId = await kernelOwnerDelivery(task);
+
   // Advance the task to completed — atomic guard on loopState prevents double-fire.
   const updated = await db
     .update(tasks)
     .set({
-      status: 'completed',
+      ...(kernelDeliveryId ? {} : { status: 'completed' as const }),
       loopIteration: result.loopIteration,
       loopState: 'satisfied',
       result: {
@@ -101,6 +171,11 @@ export async function evaluateAndAdvanceLoopOnMerge(
     // Another path already advanced this loop (concurrent webhook delivery).
     return false;
   }
+
+  // T17 completed a runner's task in its own statement. One it left open because a local session
+  // ran it (that session completes its own task) has no session left to do so: the loop parked it
+  // when that attempt ended. The guarded projection completes it; a live attempt keeps its task.
+  if (kernelDeliveryId) await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
 
   await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });
   await resolveCompletedTask(taskId, workspaceId);
@@ -133,6 +208,9 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
       context: true,
       startAt: true,
       status: true,
+      workspaceId: true,
+      deliveryId: true,
+      deliveryRole: true,
     },
   });
 
@@ -177,11 +255,15 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
     return false;
   }
 
+  // A kernel owner's status is the kernel's: a merge completes it in T17's own statement, and a
+  // green-checks exit settles the attempt the loop held (below). The loop writes its own fields.
+  const kernelDeliveryId = await kernelOwnerDelivery(task);
+
   // Advance the task to completed — atomic guard on loopState prevents double-fire.
   const updated = await db
     .update(tasks)
     .set({
-      status: 'completed',
+      ...(kernelDeliveryId ? {} : { status: 'completed' as const }),
       loopIteration: result.loopIteration,
       loopState: 'satisfied',
       result: {
@@ -197,6 +279,12 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
   if (updated.length === 0) {
     // Another path already advanced this loop (concurrent webhook delivery).
     return false;
+  }
+
+  if (kernelDeliveryId && prLifecycleStatus !== 'merged') {
+    await settleKernelLoopExit({ taskId, workspaceId: task.workspaceId ?? workspaceId, deliveryId: kernelDeliveryId, context: task.context });
+  } else if (kernelDeliveryId) {
+    await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
   }
 
   await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });

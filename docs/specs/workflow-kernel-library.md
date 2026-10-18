@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1465,10 +1465,18 @@ column outside the kernel; S3 and S4 remove or route each one.
   only for the PR its delivery is bound to: another PR of the same task (a
   stacked series, a follow-up after the delivery's PR was abandoned) still
   completes it.
-  The attempt writers are ratcheted: the guard pins each ATTEMPT file's
-  count of `tasks.status` / `tasks.result` write statements
-  (`ATTEMPT_SITE_CEILING`), so a new attempt writer, or a new statement in
-  one, fails CI, and a family moved behind the projection lowers its count.
+  The attempt writers are listed statement by statement (`ATTEMPT_SITES` in
+  the guard): each `tasks.status` / `tasks.result` statement of an ATTEMPT
+  file is named by what it writes and classed as routed through a named kernel
+  command, never reaching a kernel owner (in its own WHERE, or by a named code
+  path), result or context only, or debt (it still sets a kernel owner's
+  status itself). A routed statement is checked on its own: every `status`
+  it sets must sit behind its own owner check (inside the spread an owner
+  skips, as a value that keeps an owner's status in SQL, or on a branch only
+  a non-owner reaches), so putting a direct status write back fails CI even
+  while the file still calls the command. A new attempt writer, or a new
+  statement in one, fails CI until it is classed, and the number of debt
+  statements (`ATTEMPT_SITE_CEILING`) only goes down.
   The kernel reads an owner attempt's end from its latest worker row, not
   from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
   floor): a finished worker is an end even while the task is still
@@ -1557,7 +1565,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   to `pending` with its claim released in its own statement (`t_requeue`,
   task-projection.ts), reading the delivery CTE. A requeue the reducer does not
   bind (the delivery moved on while the task kept running, as a loop task's
-  next iteration does, or a terminal delivery) records nothing. Every requeue,
+  next iteration does, or a terminal delivery) records nothing. A kernel
+  owner's requeue only ever moves an `assigned` or `in_progress` task: a task
+  already `pending`, a cancel and any settled status are kept. Every requeue,
   bound or not, projects under the same guard (`projectRequeue`): only an open
   task, only while the requeuing worker is its current attempt, never over a
   kernel-merged completion, and for a repair only while its ledger row is
@@ -1596,8 +1606,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   requeue and a new claim, or an expired claim taken over) moves nothing. It
   is a door op (`attempt_started`) with its own small budget
   (`ATTEMPT_START_BUDGET_MS`, 750 ms; `KERNEL_START_BUDGET_MS` overrides),
-  apart from the fix claims' budget. It is never parked and never run on the
-  web host in own mode, not even during release skew: an older control plane's
+  apart from the fix claims' budget (a retry's sleep is cut to what is left of
+  it, so a hang cannot overrun it). The door itself never parks it, and it is
+  never run on the web host in own mode, not even during release skew: an older control plane's
   refusal is one more door error. A start the control plane leaves unanswered
   opens a process-level breaker (`ATTEMPT_START_SKIP_MS`, 45 s): until it
   closes, starts skip the door. An interactive session's claim never asks the
@@ -1606,7 +1617,17 @@ column outside the kernel; S3 and S4 remove or route each one.
   refusing or too old never fails a claim: a runner's claim waits at most the
   start budget once per breaker window, and a person's own session not at all
   (`tests/db/claim-attempt-start.test.ts` measures a 503, a hang and refused
-  connections at the default budgets). A claim lost after its compare-and-set
+  connections at the default budgets). A start projected without a kernel
+  answer would leave no `AttemptStarted` in the log, so the route parks it once
+  in `workflow_command_outbox`, after the response and never on the claim's
+  critical path (`parkAttemptStart`), under one command key per claim
+  (`attemptStartKey`; the door submission of a runner's claim uses the same
+  key). The floor replays it on the control plane: the kernel records the
+  transition once (the `start:<taskId>:<claimedAt>` key makes a repeat a
+  duplicate), and the guarded projection moves nothing, because the task is
+  already assigned. A replay after the task moved on (requeued, claimed again)
+  is judged by the reducer and the guard and changes no task. A start the
+  kernel answered is not parked. A claim lost after its compare-and-set
   gives back only its own claim fields, with no status write. A request that
   dies between its compare-and-set and the start leaves the task `pending`
   with the claim set, and no one can claim it until the claim's `expires_at`
@@ -1621,15 +1642,63 @@ column outside the kernel; S3 and S4 remove or route each one.
   kernel deferred, a worker the account cap refused) are one helper
   (`rollBackClaim`), so the claim route's ceiling drops from four statements
   to three.
-  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
-  live, the other attempt writers (the worker PATCH's failure overrides and
-  its silent-completion retry, the claim's rollback of its own assigned claim,
-  cleanup, the reaper's requeues, expired
-  loop waits and reviewer rounds, interactive detach, credential and
-  repo-access recovery, the recovery hold, the CI retries' exhaustion, loop
-  exits) still set the owner task's status directly;
-  person writers (task PATCH, bulk, reassign, attach-PR, visual-review
-  decisions, waivers, tracker webhooks) still write it as a person's act.
+  The last attempt families go through the kernel the same way (AC-1 slice
+  8), each tested against a real Postgres late (after the task was claimed
+  again) and twice (`tests/db/attempt-writers-kernel.test.ts`):
+  - CI retries exhausted. The transition that escalates the delivery
+    (`escalate_exhaustion`, family `ci`) fails the owner task in its own
+    statement (`t_escalate`, task-projection.ts), reading the delivery CTE; an
+    owner end that escalates in the same transition is projected `failed` by
+    `t_attempt` instead, one write per row. `escalateCiRedHead`, which the
+    Escalate effect calls, keeps a delivery-owned task's status in SQL
+    (`deliveryOwnedTaskSql` for that PR) and writes only the summary and the
+    once-per-head marker. A delivery the kill switch released is legacy and
+    is failed by that write as before.
+  - Loop exits. On a merge T17 is the writer: the loop records only its own
+    fields (`loopState`, iteration, history). T17 leaves a task a local session
+    ran to that session, but a loop task's session attempt has already ended
+    (the loop parked the task), so the loop exit completes it under the
+    projection below; a session still live on the task keeps it. On green
+    checks the loop re-sends
+    the held attempt's end (`AttemptEnded` for the task's latest attempt, a
+    duplicate when the hold already sent it), then completes the parked task
+    under one guard (`projectLoopExit`): only the delivery's owner task, still
+    `pending` with the loop satisfied by the exit's own compare-and-set, no
+    live attempt on it, never over a kernel-merged completion. A claim of the
+    next iteration keeps its task.
+  - The worker PATCH's silent-completion retry is a requeue (`AttemptRequeued`)
+    and its spent retry the attempt's failed end (`AttemptEnded`, then
+    `projectOwnerEnd` on the route's host); its statement writes context and
+    result only, and only while the reporting worker is the open task's
+    current attempt. A credential hold is a requeue too: it writes the probe
+    floor and the hold under the same guard. The budget and auth-failover
+    requeues (slice 6) are covered against a real Postgres here, late reports
+    included.
+  - The reaper's infra requeue, its release of an interactive lease or an
+    undelivered claim, and "Release slot" are requeues (`AttemptRequeued`,
+    with `projectRequeue` behind them), written only while the released worker
+    is the current attempt. Its expired loop waits and reviewer rounds never
+    reach a kernel owner: their writes carry `notDeliveryOwnedTaskSql`, and
+    a kernel owner's loop wait ends with its delivery. A reviewer round's own
+    task is no delivery owner; for a kernel round the reaper's failure reaches
+    the kernel as `ReviewRoundFailed`.
+  - A stalled conflict fix with no worker row stays the recovery's own write:
+    it is a repair task, never the delivery's owner, and with no worker row
+    no attempt exists to requeue (`AttemptRequeued` names a worker). One with
+    a worker row is requeued through the kernel (slice 6).
+  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`, AC-1 slice 9, task
+  6ab39c29): twelve attempt statements still set a kernel owner task's
+  status themselves, each listed as debt in the guard: the worker PATCH's reactivation of a resumed worker,
+  the output-contract and loop-exhausted overrides in its completion
+  statement, a failed release, and a mount-gap requeue failed by its
+  mission's budget; the claim's rollback of its own assigned claim and its
+  workspace-mismatch failure; the cleanup route's retry-cap failure, requeue
+  and completed-worker promotion; the reaper's failure of an unanswered
+  question superseded by recovery; and credential and repo-access recovery,
+  which requeue a task that already failed (a new attempt, not a requeue of a
+  current one). Person writers (task PATCH, bulk, reassign, attach-PR,
+  visual-review decisions, waivers, tracker webhooks) still write it as a
+  person's act.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

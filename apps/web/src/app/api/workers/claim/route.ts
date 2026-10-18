@@ -97,7 +97,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, isRepairRole, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { attemptStarted as kernelAttemptStarted, claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { attemptStarted as kernelAttemptStarted, attemptStartKey, parkAttemptStart, claimFix as claimKernelFix, ControlPlaneUnavailableError, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 
 /**
  * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
@@ -204,7 +204,8 @@ async function rollBackClaim(taskId: string, accountId: string): Promise<void> {
  * under the same guard (`projectAttemptStart`). An interactive session's claim never waits on the
  * door: it projects the start at once. So a control plane that is down, slow, refusing or too old
  * never fails a claim, costs a runner's claim at most the start budget once per breaker window,
- * and costs a person's own session nothing. Nothing parks. Answers whether the task is now
+ * and costs a person's own session nothing. A start projected without a kernel answer is parked once,
+ * after the response, for the floor to replay (`parkAttemptStart`). Answers whether the task is now
  * assigned under exactly this claim.
  */
 async function startKernelOwnerAttempt(p: {
@@ -214,22 +215,42 @@ async function startKernelOwnerAttempt(p: {
   principal: KernelPrincipal | null;
   interactive: boolean;
 }): Promise<boolean> {
+  let why = 'an interactive claim does not ask the door';
+  let priorUnknown = false;
   if (!p.interactive) {
     const t0 = Date.now();
     try {
       const r = await kernelAttemptStarted(
         { task: p.task, claimedBy: p.claimedBy, claimedAt: p.claimedAt, source: 'claim' },
-        { principal: p.principal },
+        { principal: p.principal, idempotencyKey: attemptStartKey(p.task.id, p.claimedAt) },
       );
+      // The kernel answered: it recorded the start (or judged it), nothing is owed to its log.
       if (r.started) return true;
+      return projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }).catch(() => false);
     } catch (err) {
+      why = err instanceof Error ? err.message : String(err);
+      priorUnknown = err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown';
       console.error(`[claim] AttemptStarted for task ${p.task.id} did not reach the kernel after ${Date.now() - t0}ms; projecting it here:`, err);
     }
   }
-  return projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }).catch((err) => {
+  const started = await projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }).catch((err) => {
     console.error(`[claim] start projection failed for task ${p.task.id}:`, err);
     return false;
   });
+  // Projected without a kernel answer: park the start once, after the response, for the floor to replay
+  // so the kernel's log has the transition. A replay finds the task already assigned and moves nothing.
+  if (started) {
+    const { id, workspaceId, deliveryId, deliveryRole, context } = p.task;
+    const input = { task: { id, workspaceId, deliveryId, deliveryRole, context }, claimedBy: p.claimedBy, claimedAt: p.claimedAt, source: 'claim' };
+    const park = () => parkAttemptStart({ input, principal: p.principal, priorUnknown, why });
+    try {
+      after(park);
+    } catch {
+      // Outside a request scope (scripts, tests): run now, detached.
+      void park();
+    }
+  }
+  return started;
 }
 
 export async function POST(req: NextRequest) {

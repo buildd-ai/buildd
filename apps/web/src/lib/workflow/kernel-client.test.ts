@@ -611,7 +611,7 @@ describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner
     resetAttemptStartBreaker();
   });
 
-  it('a start the control plane never answered is not parked: the claim projects it on its own host instead', async () => {
+  it('the door itself never parks a start (the claim route parks what it projected, after its response)', async () => {
     const { attemptStarted } = await import('./kernel-client');
     const l = local();
     const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
@@ -625,6 +625,31 @@ describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner
     expect(err.parked).not.toBe(true);
     expect(parked).toEqual([]);
     expect(l.ran).toEqual([]);
+  });
+
+  it('its retry sleeps are cut to the start deadline: a hang or refusal never overruns the budget by a backoff', async () => {
+    const { attemptStarted, resetAttemptStartBreaker } = await import('./kernel-client');
+    resetAttemptStartBreaker();
+    let t = 0;
+    const slept: number[] = [];
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    const err = await attemptStarted(start, { principal: runner, deps: { ...local().deps, env: { ...OWN, KERNEL_START_BUDGET_MS: '300' }, fetch: down, now: () => t, sleep: async (ms: number) => { slept.push(ms); t += ms; } } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(t).toBeLessThanOrEqual(300);
+    expect(slept.every((ms) => ms <= 300)).toBe(true);
+    resetAttemptStartBreaker();
+  });
+
+  it('a start projected without a kernel answer is parked under one key per claim, valid as a command key', async () => {
+    const { parkAttemptStart, attemptStartKey } = await import('./kernel-client');
+    const key = attemptStartKey('t-1', '2026-10-18 08:00:00.123456+00');
+    expect(key).toMatch(/^[A-Za-z0-9:._-]{8,200}$/);
+    expect(key).toBe(attemptStartKey('t-1', '2026-10-18 08:00:00.123456+00'));
+    const parked: Array<Record<string, unknown>> = [];
+    const ok = await parkAttemptStart({ input: start, principal: runner, why: 'x' }, { park: (async (p: Record<string, unknown>) => { parked.push(p); return true; }) as never });
+    expect(ok).toBe(true);
+    expect(parked[0]).toMatchObject({ key, op: 'attempt_started', input: { ...start, workspaceId: WS }, principal: runner });
+    expect(await parkAttemptStart({ input: start, principal: null, why: 'x' })).toBe(false);
   });
 
   it('the host starts only a task of the workspace the reach check judged, and the endpoint knows the op', async () => {

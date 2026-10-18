@@ -18,7 +18,7 @@
  * see the task as it was before this statement, whatever `t_proj` writes.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { notKernelMergedTaskSql, prRowOfDeliverySql } from './pr-fact-scope';
 import { tasks } from '@buildd/core/db/schema';
@@ -285,11 +285,14 @@ const endingWorkerOf = (key: string): string | null => (key.startsWith('end:') ?
  * owner). Only for the task's current attempt (`endingWorkerIsCurrentSql`). Empty when the
  * decision projects nothing.
  */
-export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'>, d = 'd'): SQL[] {
+export function attemptEndTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'evidence' | 'idempotencyKey'> & { effects?: ApplyDecision['effects'] }, d = 'd'): SQL[] {
   if (decision.command !== 'AttemptEnded' || decision.fromState !== 'WORKING') return [];
-  const status = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
+  const ended = ownerEndTaskStatus(decision.evidence as { outcome?: unknown; requeue?: unknown });
   const workerId = endingWorkerOf(decision.idempotencyKey);
-  if (!status || !workerId) return [];
+  if (!ended || !workerId) return [];
+  // AC-1 slice 8: an end whose hand-off read red CI with the CI budget spent escalates the delivery
+  // in the same transition; the owner task fails then, as `t_escalate` would fail it (one write per row).
+  const status = escalatesCi(decision) ? 'failed' : ended;
   const a = sql.raw(d);
   return [sql`t_attempt AS (
   UPDATE tasks tk SET status = ${status}::text, updated_at = now()
@@ -402,6 +405,60 @@ UPDATE tasks tk SET ${REQUEUE_SET}
 WHERE tk.id = ${p.taskId}::uuid
   AND ${requeuedTaskSql(p.attemptId ?? null, sql`${p.deliveryId}::uuid`)}
   AND ${requeueingAttemptIsCurrentSql(p.workerId)}
+  AND ${notKernelMergedTaskSql(tkCols)}
+RETURNING tk.id`;
+}
+
+// ── AC-1 slice 8: an exhausted CI repair fails the owner task in its own statement ──────
+
+/** Whether a decision escalates the delivery because its CI repairs are spent (`escalate_exhaustion`, family `ci`). */
+export function escalatesCi(decision: { effects?: ApplyDecision['effects'] }): boolean {
+  return (decision.effects ?? []).some((e) => e.kind === 'escalate_exhaustion' && (e.payload as { family?: unknown } | null)?.family === 'ci');
+}
+
+/**
+ * The `t_escalate` CTE (workflow-kernel-library.md §9, AC-1): when the CI repairs of a delivery are
+ * spent, the transition that escalates it to a person fails the owner task in its own statement,
+ * reading the delivery CTE `d`, so a version miss writes nothing. This is the move
+ * `escalateCiRedHead` made from the Escalate effect; the effect still writes the summary, the
+ * mission note and the PR comment, and writes no status for a delivery-owned task. A cancelled or
+ * already failed task keeps what it has, and a kernel-merged completion is never failed. An owner
+ * end that escalates in the same transition is projected by `t_attempt` instead (one write per row).
+ */
+export function escalationTaskProjectionCtes(decision: Pick<ApplyDecision, 'command' | 'fromState' | 'effects'>, d = 'd'): SQL[] {
+  if (!escalatesCi(decision)) return [];
+  if (decision.command === 'AttemptEnded' && decision.fromState === 'WORKING') return [];
+  const a = sql.raw(d);
+  return [sql`t_escalate AS (
+  UPDATE tasks tk SET status = 'failed', updated_at = now()
+  FROM ${a} JOIN workflow_deliveries od ON od.id = ${a}.id
+  WHERE tk.id = od.owner_task_id
+    AND tk.status NOT IN ('failed', 'cancelled')
+    AND ${notKernelMergedTaskSql(tkCols)}
+  RETURNING tk.id
+)`];
+}
+
+// ── AC-1 slice 8: a loop's exit settles the owner task it held ──────────────────────────
+
+/**
+ * A loop task's exit condition held (its PR's checks went green, or its PR merged and T17 left the
+ * task open because a local session ran it): the owner task the loop parked in the queue
+ * (`pending`, its attempt ended and recorded) completes. Outside a transition, because
+ * no delivery state moves: the kernel already has the held attempt's end, which the loop exit
+ * re-sends (AttemptEnded, a duplicate when recorded). Moves only the delivery's owner task, only
+ * while it is still `pending` with the loop satisfied (the exit's own compare-and-set wrote that),
+ * only with no live attempt on it (a claim of the next iteration keeps its task), never over a
+ * kernel-merged completion. Returns the task id moved, or null.
+ */
+export function projectLoopExitSql(p: { deliveryId: string; taskId: string }): SQL {
+  return sql`-- workflow:project_loop_exit
+UPDATE tasks tk SET status = 'completed', updated_at = now()
+WHERE tk.id = ${p.taskId}::uuid
+  AND tk.status = 'pending' AND tk.loop_state = 'satisfied'
+  AND EXISTS (SELECT 1 FROM workflow_deliveries od WHERE od.id = ${p.deliveryId}::uuid AND od.owner_task_id = tk.id)
+  AND NOT EXISTS (SELECT 1 FROM workers lw WHERE lw.task_id = tk.id AND ${isAttemptRowSql('lw')}
+    AND lw.status NOT IN (${sql.join(TERMINAL_WORKER_STATUSES.map((s) => sql`${s}::text`), sql`, `)}))
   AND ${notKernelMergedTaskSql(tkCols)}
 RETURNING tk.id`;
 }

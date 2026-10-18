@@ -15,7 +15,7 @@ import { withoutForceClaim } from '@/lib/force-claim';
 import { requeueBranchContext } from '@/lib/integration-refresh';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById, reapedOwnerAttemptIsCurrent, reapedOwnerAttemptIsCurrentSql } from '@/lib/workflow/authority';
-import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { notDeliveryOwnedTaskSql, notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -63,6 +63,29 @@ const WAITING_INPUT_STALE_MS = PARK_MAX_MS;
 
 /** 4 hours — shorter timeout for mission tasks since missions are time-sensitive */
 const WAITING_INPUT_MISSION_STALE_MS = PARK_MISSION_MAX_MS;
+
+/**
+ * AC-1 slice 8 (workflow-kernel-library.md §9): a reaped owner attempt of a delivery goes back to
+ * the queue through the kernel (AttemptRequeued), never through the reaper's own status write. The
+ * requeue is submitted where the kernel is hosted, then projected here too (`projectRequeue`), so a
+ * control plane that is down or too old still leaves the task pending. Both move the task only
+ * while `workerId` is the open task's current attempt. Answers whether the task is back in the queue.
+ */
+async function requeueReapedOwnerAttempt(p: { taskId: string; workspaceId: string; deliveryId: string; context: unknown; workerId: string; reason: string }): Promise<boolean> {
+  const task = { id: p.taskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: p.context };
+  try {
+    const { attemptRequeued, systemPrincipal } = await import('@/lib/workflow/kernel-client');
+    const r = await attemptRequeued({ task, workerId: p.workerId, reason: p.reason, source: 'sweep:stale-workers' }, { principal: systemPrincipal('system:sweep:stale-workers') });
+    if (r.requeued) return true;
+  } catch (err) {
+    console.error(`[stale-workers] AttemptRequeued(${p.reason}) for task ${p.taskId} did not reach the kernel; projecting it here:`, err);
+  }
+  const { projectRequeue } = await import('@/lib/workflow/seam');
+  return projectRequeue({ deliveryId: p.deliveryId, taskId: p.taskId, workerId: p.workerId }).catch((err) => {
+    console.error(`[stale-workers] requeue projection failed for task ${p.taskId}:`, err);
+    return false;
+  });
+}
 
 /**
  * Decide what to do with a task whose worker just died:
@@ -168,6 +191,9 @@ async function resolveStaleTask(
       const waitReason = conditionType === 'pr_merged'
         ? `PR merge wait expired after ${waitExpiryMinutes} minutes`
         : `PR checks green wait expired after ${waitExpiryMinutes} minutes`;
+      // AC-1 slice 8: never a kernel owner. Its loop wait ends with its delivery (T17 completes it
+      // on a merge, the loop exit settles a green-checks wait), and the reaper reaches a kernel
+      // owner only as the current attempt of an open task, which a parked loop task is not.
       await db
         .update(tasks)
         .set({
@@ -175,7 +201,7 @@ async function resolveStaleTask(
           result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
-        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), notDeliveryOwnedTaskSql()));
       await resolveCompletedTask(taskId, workspaceId);
       return;
     }
@@ -229,7 +255,7 @@ async function resolveStaleTask(
             } as any,
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notDeliveryOwnedTaskSql()));
       } else {
         // Infra retries remaining — reset to pending with backoff
         const backoffMins = INFRA_BACKOFF_MINUTES[infraRetryCount] ?? 30;
@@ -250,7 +276,7 @@ async function resolveStaleTask(
             },
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notDeliveryOwnedTaskSql()));
         // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
         await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
@@ -268,7 +294,7 @@ async function resolveStaleTask(
           result: { error: 'agent review timed out' } as any,
           updatedAt: new Date(),
         })
-        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), notDeliveryOwnedTaskSql()));
     }
 
     await kernelAttemptEnded();
@@ -382,12 +408,13 @@ async function resolveStaleTask(
         // attempt doesn't race immediately (helps when the infra issue needs settling time).
         const backoffMins = INFRA_BACKOFF_MINUTES[infraRetryCount] ?? 30;
         const startAt = new Date(Date.now() + backoffMins * 60_000);
+        // AC-1 slice 8: a kernel owner's requeue is the kernel's move (AttemptRequeued): this
+        // statement writes its backoff and context under the current-attempt guard, but not its
+        // status or claim, and the requeue follows only if it still found this attempt current.
         const requeue = db
           .update(tasks)
           .set({
-            status: 'pending',
-            claimedBy: null,
-            claimedAt: null,
+            ...(ownerAttempt ? {} : { status: 'pending' as const, claimedBy: null, claimedAt: null }),
             startAt,
             context: {
               ...withoutForceClaim(existingCtx),
@@ -400,7 +427,10 @@ async function resolveStaleTask(
           .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql(), ...ownerAttemptGuard));
         // A kernel owner's requeue is guarded: wake only when it still moved the task (a re-claim
         // that raced the reap keeps it).
-        const requeued = ownerAttempt ? (await requeue.returning({ id: tasks.id })).length > 0 : (await requeue, true);
+        const requeued = ownerAttempt
+          ? (await requeue.returning({ id: tasks.id })).length > 0
+            && await requeueReapedOwnerAttempt({ taskId, workspaceId, deliveryId: currentTask!.deliveryId!, context: currentTask!.context, workerId: staleWorker!.id, reason: 'infra_retry' })
+          : (await requeue, true);
         // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
         if (requeued) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
@@ -453,12 +483,19 @@ async function resolveStaleTask(
 async function resolveUnexecutedTask(
   taskId: string,
   workspaceId: string,
-  staleWorker: { branch?: string | null; error?: string | null } | undefined,
+  staleWorker: { id?: string; branch?: string | null; error?: string | null } | undefined,
   undelivered = false,
 ) {
   noteWorkChanged({ taskIds: [taskId] });
-  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
+  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true, deliveryId: true, deliveryRole: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
+    // AC-1 slice 8: the owner task of a kernel delivery is requeued by the kernel (AttemptRequeued),
+    // and only while the released worker is still its current attempt; this statement writes the
+    // backoff and context under that guard, not the status or claim.
+    const kernelDeliveryId = current.deliveryId && current.deliveryRole === 'owner' && staleWorker?.id
+      ? await kernelDeliveryById(current.deliveryId).catch(() => null)
+      : null;
+    const ownerAttempt = !!kernelDeliveryId;
     const existingCtx = (current.context || {}) as Record<string, unknown>;
     // Lost claims back off without charging a retry budget; interactive sessions
     // can re-claim immediately. Neither release ends a kernel attempt.
@@ -467,13 +504,10 @@ async function resolveUnexecutedTask(
     const startAt = undelivered
       ? new Date(Date.now() + backoffMinutes[Math.min(claimLostCount, backoffMinutes.length) - 1] * 60_000)
       : null;
-    await db
+    const requeue = db
       .update(tasks)
       .set({
-        status: 'pending',
-        claimedBy: null,
-        claimedAt: null,
-        ...(!undelivered ? { expiresAt: null } : {}),
+        ...(ownerAttempt ? {} : { status: 'pending' as const, claimedBy: null, claimedAt: null, ...(!undelivered ? { expiresAt: null } : {}) }),
         startAt,
         context: {
           ...withoutForceClaim(existingCtx),
@@ -485,9 +519,14 @@ async function resolveUnexecutedTask(
         },
         updatedAt: new Date(),
       })
-      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
-    if (startAt) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
-    else await wakeTask(taskId, 'task.requeued');
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql(),
+        ...(ownerAttempt ? [reapedOwnerAttemptIsCurrentSql(staleWorker!.id!, 'tasks')] : [])));
+    const requeued = ownerAttempt
+      ? (await requeue.returning({ id: tasks.id })).length > 0
+        && await requeueReapedOwnerAttempt({ taskId, workspaceId, deliveryId: current.deliveryId!, context: current.context, workerId: staleWorker!.id!, reason: undelivered ? 'claim_undelivered' : 'interactive_release' })
+      : (await requeue, true);
+    if (requeued && startAt) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
+    else if (requeued) await wakeTask(taskId, 'task.requeued');
   }
   await releaseAndNotify(taskId, 'abandoned').catch(e =>
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),

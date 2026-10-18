@@ -395,6 +395,9 @@ async function submitUntil<K extends KernelOp>(
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
+  // A retry never sleeps past the deadline: a short budget (a claim's start) is not overrun by the backoff.
+  const backoff = (attempt: number) => Math.max(0, Math.min(250 * 2 ** attempt, 2_000, deadline - now()));
+
   for (let attempt = 0; ; attempt++) {
     const left = deadline - now();
     if (left <= 0) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
@@ -415,7 +418,7 @@ async function submitUntil<K extends KernelOp>(
       if (!preConnect) mayHaveApplied = true;
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
       why = timedOut ? 'timed out' : `${preConnect ? 'unreachable' : 'connection lost'}: ${err instanceof Error ? err.message : String(err)}`;
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     const answer = (await res.json().catch(() => null)) as Record<string, unknown> | null;
@@ -442,14 +445,14 @@ async function submitUntil<K extends KernelOp>(
       // One more try, then the answer: a database that is down now is not back within a door's budget.
       why = `answered 503 ${String(answer.code)}`;
       if (attempt >= 1) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     if (RETRYABLE_STATUS.has(res.status) || (res.status === 409 && answer?.code === 'in_progress')) {
       why = `answered ${res.status}${answer?.code ? ` ${String(answer.code)}` : ''}`;
       // in_progress: it is running there. Any other 5xx: it may have run. Only a 429 refused before running.
       if (res.status !== 429) mayHaveApplied = true;
-      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      await sleep(backoff(attempt));
       continue;
     }
     throw new KernelCommandRefusedError(res.status, answer ?? {});
@@ -663,6 +666,34 @@ export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input
     if (err instanceof ControlPlaneUnavailableError) attemptStartSkipUntil = now() + ATTEMPT_START_SKIP_MS;
     throw err;
   }
+}
+
+/**
+ * The command key of a claim's start: one per claim, so the door's submission and a later replay from
+ * the outbox are the same command to the ledger. (The transition's own key, `start:<task>:<claimedAt>`,
+ * is the kernel's second guard; this one only has to be a valid command key.)
+ */
+export const attemptStartKey = (taskId: string, claimedAt: string): string =>
+  `attempt_started:${taskId}:${claimedAt.replace(/[^A-Za-z0-9._-]/g, '_')}`.slice(0, 200);
+
+/**
+ * A start projected on the web host without a kernel answer (an interactive claim, the breaker open, an
+ * outage) is parked once for the floor to replay on the control plane, so the kernel's log is complete.
+ * Never on the claim's critical path: the caller runs it after the response. The replay records the
+ * transition (or a duplicate) and the guarded projection is a no-op, because the task is already assigned.
+ */
+export async function parkAttemptStart(
+  p: { input: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>; principal: KernelPrincipal | null; priorUnknown?: boolean; why: string },
+  deps: { park?: NonNullable<ClientDeps['park']> } = {},
+): Promise<boolean> {
+  if (!p.principal) return false;
+  const key = attemptStartKey(p.input.task.id, p.input.claimedAt);
+  return (deps.park ?? ((x) => postgresCommandOutbox().park(x)))({
+    key, op: 'attempt_started', input: { ...p.input, workspaceId: p.input.task.workspaceId }, principal: p.principal, priorUnknown: p.priorUnknown === true, why: p.why,
+  }).catch((err: unknown) => {
+    console.error(`[workflow] attempt_started ${key}: could not be parked; the kernel's log misses this start:`, err);
+    return false;
+  });
 }
 
 /**
