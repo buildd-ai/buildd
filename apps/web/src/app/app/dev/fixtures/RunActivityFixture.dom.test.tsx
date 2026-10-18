@@ -181,7 +181,7 @@ describe('evidence rail', () => {
     const toggle = rail.querySelector<HTMLButtonElement>('button')!;
     expect(toggle.className).toContain('min-h-11');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(text(rail)).toMatch(/· \d+ of \d+/);
+    expect(text(rail)).toMatch(/· step \d+ of \d+/);
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const listed = [...s.querySelectorAll('[data-testid="run-evidence-list"] li[data-phase]')].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);

@@ -159,6 +159,22 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: workspacesTable,
 }));
 
+// AC-1 slice 9: a delivery owner task is moved through the kernel (owner-attempt.ts, covered against a
+// real Postgres in tests/db/attempt-writers-slice9.test.ts). Here: which move the route asks for.
+let ownerAttempts = new Map<string, { currentWorkerId: string | null; claim: { claimedBy: string; claimedAt: string } | null }>();
+const ownerMoves: Array<{ kind: string; p: any }> = [];
+mock.module('@/lib/workflow/owner-attempt', () => ({
+  isOwnerTask: (t: any) => !!t?.deliveryId && t.deliveryRole === 'owner',
+  notOwnerTaskSql: () => ({ type: 'notOwner' }),
+  ownerTaskAttemptOf: async (taskId: string) => {
+    const a = ownerAttempts.get(taskId);
+    return a ? { task: { id: taskId, workspaceId: 'ws-1', deliveryId: 'dlv-1', deliveryRole: 'owner', context: null }, ...a } : null;
+  },
+  requeueOwner: async (p: any) => { ownerMoves.push({ kind: 'requeue', p }); return true; },
+  endOwner: async (p: any) => { ownerMoves.push({ kind: 'end', p }); return p.status === 'completed' ? 'completed' : 'failed'; },
+  withdrawOwner: async (p: any) => { ownerMoves.push({ kind: 'withdraw', p }); return true; },
+}));
+
 import { POST } from './route';
 
 function createMockRequest(headers: Record<string, string> = {}): NextRequest {
@@ -422,6 +438,47 @@ describe('POST /api/tasks/cleanup', () => {
     kernelOwned = new Set();
     const legacySets = await run(null);
     expect(legacySets.some((d) => d.status === 'completed' && d.result?.sha === 'L9')).toBe(true);
+  });
+
+  describe('AC-1 slice 9: a delivery owner task moves through the kernel, never this route\'s status write', () => {
+    const threeHoursAgo = () => new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const orphan = async (o: { priorFailures: number; attempt: { currentWorkerId: string | null; claim: { claimedBy: string; claimedAt: string } | null } }) => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockWorkersFindMany.mockReset();
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-old', status: 'failed' }])
+        .mockResolvedValueOnce(Array.from({ length: o.priorFailures }, (_, i) => ({ id: `w${i}`, exitCause: 'code_failure' })))
+        .mockResolvedValueOnce([]);
+      mockTasksFindMany.mockResolvedValue([{ id: 'own-task', workspaceId: 'ws-1', status: 'assigned', claimedBy: 'account-1', updatedAt: threeHoursAgo(), deliveryId: 'dlv-1', deliveryRole: 'owner' }]);
+      mockTasksFindFirst.mockResolvedValue({ context: {}, workspaceId: 'ws-1' });
+      ownerAttempts = new Map([['own-task', o.attempt]]);
+      ownerMoves.length = 0;
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((data: any) => { sets.push(data); return { where: mock(() => Promise.resolve()) }; }) });
+      expect((await POST(createMockRequest())).status).toBe(200);
+      return sets;
+    };
+
+    it('a requeue of the current attempt is AttemptRequeued; the route writes no status', async () => {
+      const sets = await orphan({ priorFailures: 1, attempt: { currentWorkerId: 'w-old', claim: null } });
+      expect(ownerMoves.map((m) => [m.kind, m.p.workerId])).toEqual([['requeue', 'w-old']]);
+      expect(sets.some((d) => 'status' in d)).toBe(false);
+    });
+
+    it('at the retry cap the current attempt ends lost; the cap reason is recorded without a status', async () => {
+      const sets = await orphan({ priorFailures: 3, attempt: { currentWorkerId: 'w-old', claim: null } });
+      expect(ownerMoves.map((m) => [m.kind, m.p.status])).toEqual([['end', 'lost']]);
+      expect(sets.some((d) => 'status' in d)).toBe(false);
+      expect(sets.some((d) => d.context?.terminalError === 'retry_cap_exceeded')).toBe(true);
+    });
+
+    it('a claim no attempt ran under is withdrawn on exactly that claim', async () => {
+      const claim = { claimedBy: 'account-1', claimedAt: '2026-10-18 08:00:00.000001+00' };
+      await orphan({ priorFailures: 0, attempt: { currentWorkerId: null, claim } });
+      expect(ownerMoves.map((m) => [m.kind, m.p.outcome, m.p.claim])).toEqual([['withdraw', 'requeued', claim]]);
+    });
   });
 
   it('clears claimedBy, claimedAt, and expiresAt when resetting orphaned tasks to pending', async () => {

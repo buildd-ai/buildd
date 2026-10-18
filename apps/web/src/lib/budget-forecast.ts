@@ -10,6 +10,7 @@ import {
 } from '@buildd/core/oauth-budget';
 import { loadOauthEpisodes, measureOauthWindow } from '@/lib/oauth-budget-window';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -245,28 +246,40 @@ export function groupOauthAccountsBySeatId(
 export async function getBudgetForecast(
   teamId: string,
   scopedWsIds: string[],
+  opts: {
+    /**
+     * Only the month's spend and the provider walls (Health › Overview): the
+     * subscription-seat forecasts and mission budgets are neither read nor
+     * computed, and come back empty.
+     */
+    summaryOnly?: boolean;
+  } = {},
 ): Promise<BudgetForecast> {
   const now = new Date();
+  const summaryOnly = opts.summaryOnly === true;
 
-  const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
+  // The first round's independent reads go in one round trip (readRound); if
+  // that batch fails, each is read alone so one failing read costs only its
+  // part of the forecast, as before.
+  const reads = {
     // Team monthly budget
-    db.query.teams.findFirst({
+    teamRow: db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, teamId)),
       columns: {
         monthlyBudgetUsd: true,
         monthlyCostUsd: true,
         monthlyCostMonth: true,
       },
-    }).catch(() => null),
+    }),
 
     // OAuth accounts for this team (seat-based)
-    db.query.accounts.findMany({
+    oauthAccounts: summaryOnly ? null : db.query.accounts.findMany({
       where: sqlWhere(and(
         eq(accounts.teamId, teamId),
         eq(accounts.authType, 'oauth'),
       )),
       columns: { id: true, name: true, seatId: true, budgetResetsAt: true },
-    }).catch(() => [] as OauthAccountRow[]),
+    }),
 
     // Active missions in scope with a cost budget. Includes:
     //   • workspace-scoped missions (workspaceId in scopedWsIds)
@@ -274,7 +287,7 @@ export async function getBudgetForecast(
     // Excludes: completed, archived, and cancelled statuses that can no longer accrue spend.
     // paused is kept because the mission can be resumed; budget_exhausted is kept because
     // the row is still informative headroom context and may transition back on budget reset.
-    db.query.missions.findMany({
+    missionRows: summaryOnly ? null : db.query.missions.findMany({
       where: sqlWhere(and(
         scopedWsIds.length > 0
           ? or(
@@ -293,20 +306,20 @@ export async function getBudgetForecast(
         teamId: true,
         workspaceId: true,
       },
-    }).catch(() => [] as MissionQueryRow[]),
+    }),
 
     // Dispatch-tenant Claude budget exhaustion (a Claude pool, not Codex)
-    db.query.tenantBudgets.findFirst({
+    tenantRow: db.query.tenantBudgets.findFirst({
       where: sqlWhere(eq(tenantBudgets.teamId, teamId)),
       orderBy: sqlOrderBy([desc(tenantBudgets.updatedAt)]),
       columns: {
         budgetExhaustedAt: true,
         budgetResetsAt: true,
       },
-    }).catch(() => null),
+    }),
 
     // Recent worker costs (last 24h) — for the pool burn rate across all scoped workspaces
-    scopedWsIds.length > 0
+    recentWorkerRows: scopedWsIds.length > 0
       ? db
           .select({ costUsd: workers.costUsd })
           .from(workers)
@@ -318,17 +331,31 @@ export async function getBudgetForecast(
             // draws on (countsTowardAgentSdkCreditPool).
             sql`${workers.costBasis} IS DISTINCT FROM ${'real'}`,
           ))
-          .catch(() => [] as { costUsd: string }[])
-      : Promise.resolve([] as { costUsd: string }[]),
+      : null,
 
     // Codex provider wall — newest codex pause for the team. Provider pools
     // are team-wide, so this is not scoped by workspace.
-    db.query.backendPauses.findFirst({
+    codexPauseRow: db.query.backendPauses.findFirst({
       where: sqlWhere(and(eq(backendPauses.teamId, teamId), eq(backendPauses.backend, 'codex'))),
       orderBy: sqlOrderBy([desc(backendPauses.resetsAt)]),
       columns: { resetsAt: true, createdAt: true, reason: true },
-    }).catch(() => null),
-  ]);
+    }),
+  };
+  const round = await readRound(reads).catch(async () => {
+    const one = async <T>(q: PromiseLike<T> | null): Promise<T | null> => (q ? await Promise.resolve(q).catch(() => null) : null);
+    const [teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow] = await Promise.all([
+      one(reads.teamRow), one(reads.oauthAccounts), one(reads.missionRows),
+      one(reads.tenantRow), one(reads.recentWorkerRows), one(reads.codexPauseRow),
+    ]);
+    return { teamRow, oauthAccounts, missionRows, tenantRow, recentWorkerRows, codexPauseRow };
+  });
+  const teamRow = round.teamRow ?? null;
+  const oauthAccounts = (round.oauthAccounts ?? []) as OauthAccountRow[];
+  const missionRows = (round.missionRows ?? []) as MissionQueryRow[];
+  const tenantRow = round.tenantRow ?? null;
+  const recentWorkerRows = (round.recentWorkerRows ?? []) as { costUsd: string }[];
+  const codexPauseRow = round.codexPauseRow ?? null;
+
 
   // ── Monthly budget ──────────────────────────────────────────────────────────
   let monthly: MonthlyBudgetForecast | null = null;
@@ -415,26 +442,28 @@ export async function getBudgetForecast(
   const missionForecasts: MissionBudgetInput[] = [];
   const activeMissionStatuses = new Set<string>(ACTIVE_MISSION_STATUSES);
 
-  for (const m of missionRows as MissionQueryRow[]) {
-    if (!m.costBudgetUsd) continue;
+  const budgeted = (missionRows as MissionQueryRow[]).filter(m =>
     // Belt-and-suspenders: SQL WHERE already applies these filters, but guard
     // here too so unit tests and any future query changes stay honest.
-    if (!activeMissionStatuses.has(m.status)) continue;
-    if (m.teamId !== teamId) continue;
-    const budgetMUsd = parseFloat(m.costBudgetUsd);
-    if (!budgetMUsd) continue;
-
+    !!m.costBudgetUsd && activeMissionStatuses.has(m.status) && m.teamId === teamId && !!parseFloat(m.costBudgetUsd));
+  if (budgeted.length > 0) {
     try {
-      // Compute mission spend inline (same as getMissionSpendUsd)
-      const result = await db
-        .select({ spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
+      // Every budgeted mission's spend in one grouped read (same sum as getMissionSpendUsd).
+      const spendRows = await db
+        .select({ missionId: tasks.missionId, spend: sql<string>`COALESCE(SUM(${workers.costUsd}), '0')` })
         .from(workers)
         .innerJoin(tasks, eq(tasks.id, workers.taskId))
-        .where(and(eq(tasks.missionId, m.id), sql`${workers.costBasis} IS DISTINCT FROM ${'virtual'}`));
-      const spentMUsd = parseFloat(result[0]?.spend ?? '0');
-      missionForecasts.push({ missionId: m.id, missionTitle: m.title, spentUsd: spentMUsd, budgetUsd: budgetMUsd, status: m.status });
+        .where(and(inArray(tasks.missionId, budgeted.map(m => m.id)), sql`${workers.costBasis} IS DISTINCT FROM ${'virtual'}`))
+        .groupBy(tasks.missionId);
+      const spendByMission = new Map(spendRows.map(r => [r.missionId as string, parseFloat(r.spend ?? '0')]));
+      for (const m of budgeted) {
+        missionForecasts.push({
+          missionId: m.id, missionTitle: m.title, spentUsd: spendByMission.get(m.id) ?? 0,
+          budgetUsd: parseFloat(m.costBudgetUsd!), status: m.status,
+        });
+      }
     } catch {
-      // Skip failing missions
+      // Mission budgets drop out rather than failing the forecast
     }
   }
 

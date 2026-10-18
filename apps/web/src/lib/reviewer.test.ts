@@ -214,7 +214,7 @@ mock.module('@/lib/github', () => ({
 let kernelOwner: string | null = null;
 const mockKernelDeliveryForPr = mock(async (..._a: unknown[]) => kernelOwner);
 mock.module('./workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
-// The open-PR status event door (AC-39), through the composition root: recorded, never run.
+// The open-PR status event door (AC-78), through the composition root: recorded, never run.
 const mockRepublishPrHeads = mock(async (..._args: unknown[]) => {});
 mock.module('@/modules', () => ({ republishPrHeads: mockRepublishPrHeads }));
 
@@ -297,7 +297,7 @@ describe('createReviewerTask — workflow kernel ownership', () => {
     }
   });
 
-  it('a stored review request republishes the head\'s approval status, candidates only (R-41, AC-39)', async () => {
+  it('a stored review request republishes the head\'s approval status, candidates only (R-41, AC-78)', async () => {
     insertedTask = undefined;
     mockRepublishPrHeads.mockClear();
     await createReviewerTask(base);

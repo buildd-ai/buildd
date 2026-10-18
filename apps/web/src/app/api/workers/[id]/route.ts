@@ -79,7 +79,8 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -1585,11 +1586,25 @@ export async function PATCH(
     // the status its merge gave it. Its own completion PATCH records the result; a failure or
     // requeue of the follow-up cannot reopen shipped work (S4b review: kept guarded, see the
     // write-site guard's ATTEMPT_MERGED_GUARD).
+    // AC-1 slice 9: a kernel delivery's owner task is reopened by the kernel (AttemptReopened to
+    // `assigned`), naming this worker and the end it resumes from, so a resume that lands after the
+    // task was claimed again moves nothing.
     if (worker.taskId) {
-      await db
-        .update(tasks)
-        .set({ status: 'assigned', updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
+      const reopenTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
+        columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+      });
+      if (isOwnerTask(reopenTask)) {
+        await reopenOwner({
+          task: { ...reopenTask, deliveryId: reopenTask.deliveryId }, workerId: id, endedAt: endedAtOf(worker.completedAt),
+          to: 'assigned', reason: 'resumed', source: 'runner', principal: kernelPrincipalOf({ account }),
+        });
+      } else {
+        await db
+          .update(tasks)
+          .set({ status: 'assigned', updatedAt: new Date() })
+          .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql(), notOwnerTaskSql()));
+      }
     }
   }
   // Enforce output requirement based on task.outputRequirement
@@ -4315,25 +4330,21 @@ export async function PATCH(
         }
       }
 
-      // AC-1 slice 3 (workflow-kernel-library.md §9): the plain end of a kernel delivery's owner
-      // attempt is the kernel's to project onto the task (`t_attempt`, task-projection.ts), so this
-      // statement writes its result, loop and context fields but not its status. Everything else
-      // keeps writing the status here: a requeue (a retry, a loop hold) is no attempt end, and a
-      // contract or loop failure overrides what the worker row says, which the floor re-sends from.
+      // AC-1 (workflow-kernel-library.md §9): a kernel delivery's owner task gets no status from this
+      // statement. Its end (slice 3), including a contract or loop failure overriding what the worker
+      // reported (slice 9: the end sent is `failed`), is the kernel's to project (`t_attempt`); its
+      // requeue (a retry, a loop hold: slice 6) is AttemptRequeued (`requeueOwnerAttempt` below), so
+      // its claim stays too, and its context, start floor and loop fields land under the requeue's
+      // own guard. Every other task keeps this statement's status.
       const terminalRow = terminalTaskRow[0];
-      const intendedTaskStatus = taskUpdate.status;
-      const ownerEndProjects = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner'
-        && !shouldAutoRetry && !contractViolation && loop?.kind !== 'fail' && loop?.kind !== 'hold';
-      if (ownerEndProjects) delete taskUpdate.status;
-      // AC-1 slice 6: a kernel owner's requeue (a retry, a loop hold) is the kernel's move
-      // (AttemptRequeued, `requeueOwnerAttempt` below): this statement writes its context, start
-      // floor and loop fields, under the requeue's own guard, but not its status or claim.
-      const ownerRequeue = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner' && intendedTaskStatus === 'pending';
+      const ownerTask = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner';
+      const { status: intendedTaskStatus, ...taskFields } = taskUpdate;
+      const ownerEndProjects = ownerTask && !shouldAutoRetry;
+      const ownerRequeue = ownerTask && intendedTaskStatus === 'pending';
       if (ownerRequeue) {
-        delete taskUpdate.status;
-        delete taskUpdate.claimedBy;
-        delete taskUpdate.claimedAt;
-        delete taskUpdate.expiresAt;
+        delete taskFields.claimedBy;
+        delete taskFields.claimedAt;
+        delete taskFields.expiresAt;
       }
 
       // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
@@ -4342,7 +4353,7 @@ export async function PATCH(
       // delivery MERGED): S4b review. A completion over it still records its result.
       await db
         .update(tasks)
-        .set(taskUpdate)
+        .set({ ...taskFields, ...(ownerTask ? {} : { status: intendedTaskStatus as typeof tasks.$inferInsert['status'] }) })
         .where(and(
           eq(tasks.id, worker.taskId),
           not(eq(tasks.status, 'cancelled')),
@@ -4396,10 +4407,12 @@ export async function PATCH(
           if (release.kind === 'fail') {
             // Release explicitly failed (CI red, merge conflict, no PR found…) —
             // flip the task to FAILED so it never shows as "completed" successfully.
+            // AC-1 slice 9: a kernel owner's attempt end below is sent `failed` (slotFailure), and
+            // the kernel projects it; this statement writes its record only.
             await db
               .update(tasks)
               .set({
-                status: 'failed',
+                ...(ownerTask ? {} : { status: 'failed' as const }),
                 releaseResult,
                 result: resultWithRelease,
                 updatedAt: new Date(),
@@ -4513,7 +4526,7 @@ export async function PATCH(
         try {
           await projectOwnerEnd({
             deliveryId: terminalRow.deliveryId, taskId: worker.taskId, workerId: id,
-            status: slotFailure || status !== 'completed' ? 'failed' : 'completed',
+            status: contractViolation || slotFailure || status !== 'completed' ? 'failed' : 'completed',
           });
         } catch (projErr) {
           console.error(`[Worker ${id}] owner end projection failed:`, projErr);
@@ -5091,10 +5104,23 @@ export async function PATCH(
       // pending row would be skipped forever by the claim loop. Preserve the
       // authoritative budget-over-requeue precedence by making the failure visible.
       if (missionBudgetExhausted && isSandboxMountGap && worker.taskId) {
-        await db
-          .update(tasks)
-          .set({ status: 'failed', updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
+        // AC-1 slice 9: a kernel owner was requeued through the kernel above, and its attempt ran no
+        // further: the queued task is refused through the kernel too (AttemptWithdrawn, no claim).
+        const gapTask = await db.query.tasks.findFirst({
+          where: sqlWhere(eq(tasks.id, worker.taskId)),
+          columns: { id: true, workspaceId: true, deliveryId: true, deliveryRole: true, context: true },
+        });
+        if (isOwnerTask(gapTask)) {
+          await withdrawOwner({
+            task: { ...gapTask, deliveryId: gapTask.deliveryId }, claim: null, outcome: 'failed',
+            reason: 'mission_budget', source: 'runner', principal: kernelPrincipalOf({ account }),
+          });
+        } else {
+          await db
+            .update(tasks)
+            .set({ status: 'failed', updatedAt: new Date() })
+            .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql(), notOwnerTaskSql()));
+        }
       }
     } catch (err) {
       console.error(`[Worker ${id}] Mission budget check failed:`, err);
@@ -6010,7 +6036,7 @@ async function handleReviewerOutcomeIfNeeded(
       );
   }
 
-  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-39).
+  // The verdict is stored: a release candidate's approval status follows it now, not at the hourly floor (AC-78).
   await republishPrHeads(installationId, repoFullName, [{ number: prNumber, sha: headSha }]);
 
   // ── Workflow kernel (docs/specs/workflow-state-kernel.md T6) ────────────
