@@ -216,6 +216,7 @@ async function resolveApiKey(apiKey: string | null, boundWorkspaceId: string | n
     known: [callerDep.keyHash(hashed)],
     depsOf: (a) => [callerDep.account(a.id)],
     valid: isCurrentShape,
+    localWithoutRedis: true,
   });
   if (!account) negativeCache.set(hashed, true);
   return account;

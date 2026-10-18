@@ -41,6 +41,8 @@ export function cachedTeamRead<T>(
     depsOf?: (value: T) => readonly CallerDep[];
     ttlSec?: number;
     valid?: (value: T) => boolean;
+    /** With no Redis configured, keep it in process (lib/caller-cache.ts rule 6). */
+    localWithoutRedis?: boolean;
   } = {},
 ): Promise<T | null> {
   const ttl = Math.min(TEAM_CACHE_MAX_TTL_SEC, opts.ttlSec ?? TEAM_CACHE_MAX_TTL_SEC);
@@ -50,6 +52,7 @@ export function cachedTeamRead<T>(
     depsOf: opts.depsOf,
     ttlSec: ttl,
     valid: opts.valid,
+    localWithoutRedis: opts.localWithoutRedis,
   });
 }
 

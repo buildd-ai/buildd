@@ -135,6 +135,66 @@ describe('cachedCaller', () => {
     expect(ops).toEqual([]);
   });
 
+  describe('no Redis configured, a read opting in with localWithoutRedis', () => {
+    const local = { localWithoutRedis: true } as const;
+    beforeEach(() => { fake.configured = false; });
+
+    it('loads once, never touching Redis', async () => {
+      const load = mock(async () => ({ id: 'a1' }));
+      expect(await cachedCaller('local-hit', load, local)).toEqual({ id: 'a1' });
+      expect(await cachedCaller('local-hit', load, local)).toEqual({ id: 'a1' });
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(ops).toEqual([]);
+    });
+
+    it('never stores a refusal', async () => {
+      const load = mock(async () => null);
+      await cachedCaller('local-null', load, local);
+      await cachedCaller('local-null', load, local);
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it('a clear on a known or a value-named dep ends the entry at once', async () => {
+      let level = 'admin';
+      const opts = { ...local, known: [callerDep.user('local-u')], depsOf: () => [callerDep.account('local-a')] };
+      await cachedCaller('local-clear', async () => ({ level }), opts);
+      level = 'worker';
+      await clearCallerCache(callerDep.user('local-u'));
+      expect(await cachedCaller('local-clear', async () => ({ level }), opts)).toEqual({ level: 'worker' });
+      level = 'admin';
+      await clearCallerCache(callerDep.account('local-a'));
+      expect(await cachedCaller('local-clear', async () => ({ level }), opts)).toEqual({ level: 'admin' });
+    });
+
+    it('no entry outlives 60 s', async () => {
+      const load = mock(async () => ({ v: 1 }));
+      const realNow = Date.now;
+      const t0 = realNow();
+      try {
+        await cachedCaller('local-ttl', load, { ...local, ttlSec: 3600 });
+        Date.now = () => t0 + CALLER_CACHE_MAX_TTL_SEC * 1000 + 1_000;
+        await cachedCaller('local-ttl', load, local);
+        expect(load).toHaveBeenCalledTimes(2);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    it('a caller mutating its answer does not change the cached copy', async () => {
+      const first = await cachedCaller('local-copy', async () => ({ ids: ['w1'] }), local);
+      first!.ids.push('w2');
+      expect(await cachedCaller('local-copy', async () => ({ ids: ['x'] }), local)).toEqual({ ids: ['w1'] });
+    });
+
+    it('dropCallerEntry removes it', async () => {
+      const load = mock(async () => ({ id: 'a1' }));
+      await cachedCaller('local-drop', load, local);
+      await dropCallerEntry('local-drop');
+      await cachedCaller('local-drop', load, local);
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('propagates a loader error and stores nothing', async () => {
     await expect(cachedCaller('k', async () => { throw new Error('db down'); })).rejects.toThrow('db down');
     expect(store.has('buildd:caller:k')).toBe(false);

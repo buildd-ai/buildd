@@ -27,6 +27,10 @@
  *     instance-local copy could not be cleared from another instance.
  *  5. Redis down or erroring: every read goes to the database (fail open to
  *     the DB, never to "allowed"), and nothing is written.
+ *  6. No Redis configured at all (local dev, CI): a read that opts in with
+ *     `localWithoutRedis` is kept in process under the same rules, as the
+ *     hottest reads were before this cache existed. No instance shares a cache
+ *     then; a clear reaches this instance at once, others within the TTL.
  */
 import { getKey, getKeys, setWithTtl, delKey, isRedisConfigured } from './redis';
 
@@ -77,6 +81,8 @@ export interface CachedCallerOptions<T> {
   ttlSec?: number | ((value: T) => number);
   /** A cached value failing this is a miss (e.g. written before a column existed). */
   valid?: (value: T) => boolean;
+  /** Rule 6: with no Redis configured, keep this read in process. */
+  localWithoutRedis?: boolean;
 }
 
 const entryKey = (key: string) => `buildd:caller:${key}`;
@@ -86,6 +92,30 @@ const genKey = (dep: CallerDep) => `buildd:caller-gen:${dep}`;
 // in it cannot be read back as a number.
 const norm = (g: unknown): string | null => (g == null ? null : String(g));
 const newGeneration = () => `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
+/** Rule 6's store. Entries are JSON, as in Redis: the same shape on a hit, and no shared object to mutate. */
+const LOCAL_MAX = 5_000;
+const localEntries = new Map<string, { json: string; expiresAt: number }>();
+// An evicted generation reads as null, so an entry that recorded it misses.
+const localGens = new Map<string, string>();
+function boundedSet<V>(map: Map<string, V>, k: string, v: V) {
+  map.delete(k);
+  if (map.size >= LOCAL_MAX) map.delete(map.keys().next().value!);
+  map.set(k, v);
+}
+const local = {
+  get(k: string): unknown {
+    const e = localEntries.get(k);
+    if (!e) return null;
+    if (Date.now() >= e.expiresAt) { localEntries.delete(k); return null; }
+    return JSON.parse(e.json);
+  },
+  gens: async (ks: string[]) => ks.map((k) => localGens.get(k) ?? null),
+  set: async (k: string, entry: unknown, ttlSec: number) => {
+    boundedSet(localEntries, k, { json: JSON.stringify(entry), expiresAt: Date.now() + ttlSec * 1000 });
+    return true;
+  },
+};
 
 function isEntry<T>(raw: unknown): raw is Entry<T> {
   if (!raw || typeof raw !== 'object') return false;
@@ -102,31 +132,33 @@ export async function cachedCaller<T>(
   load: () => Promise<T | null | undefined>,
   opts: CachedCallerOptions<T> = {},
 ): Promise<T | null> {
-  if (!isRedisConfigured()) return (await load()) ?? null;
+  const shared = isRedisConfigured();
+  if (!shared && !opts.localWithoutRedis) return (await load()) ?? null;
+  const readGens = shared ? (ks: string[]) => getKeys<unknown>(ks) : local.gens;
 
   const ek = entryKey(key);
-  const hit = await getKey<unknown>(ek);
+  const hit = shared ? await getKey<unknown>(ek) : local.get(ek);
   if (isEntry<T>(hit)) {
-    const now = await getKeys<unknown>(hit.d.map(genKey));
+    const now = await readGens(hit.d.map(genKey));
     if (now && now.every((g, i) => norm(g) === norm(hit.s[i])) && (!opts.valid || opts.valid(hit.v))) return hit.v;
   }
 
   const known = [...new Set(opts.known ?? [])];
-  const before = await getKeys<unknown>(known.map(genKey));
+  const before = await readGens(known.map(genKey));
   const value = await load();
   if (value == null) return null;
   // Could not read a generation: the entry could not be checked later either.
   if (!before) return value;
 
   const extra = [...new Set(opts.depsOf?.(value) ?? [])].filter((d) => !known.includes(d));
-  const after = await getKeys<unknown>(extra.map(genKey));
+  const after = await readGens(extra.map(genKey));
   if (!after) return value;
 
   const wanted = typeof opts.ttlSec === 'function' ? opts.ttlSec(value) : opts.ttlSec ?? CALLER_CACHE_MAX_TTL_SEC;
   const ttl = Math.floor(Math.min(CALLER_CACHE_MAX_TTL_SEC, wanted));
   if (!(ttl >= 1)) return value;
   const entry: Entry<T> = { v: value, d: [...known, ...extra], s: [...before, ...after].map(norm) };
-  await setWithTtl(ek, entry, ttl);
+  await (shared ? setWithTtl(ek, entry, ttl) : local.set(ek, entry, ttl));
   return value;
 }
 
@@ -138,12 +170,17 @@ export async function cachedCaller<T>(
  */
 export async function clearCallerCache(...deps: CallerDep[]): Promise<boolean> {
   const unique = [...new Set(deps.filter(Boolean))];
-  if (unique.length === 0 || !isRedisConfigured()) return true;
+  if (unique.length === 0) return true;
+  if (!isRedisConfigured()) {
+    for (const d of unique) boundedSet(localGens, genKey(d), newGeneration());
+    return true;
+  }
   const results = await Promise.all(unique.map((d) => setWithTtl(genKey(d), newGeneration(), GEN_TTL_SEC)));
   return results.every(Boolean);
 }
 
 /** Drop one entry by its key (when the key itself, not a fact, is what changed). */
 export async function dropCallerEntry(key: string): Promise<void> {
-  await delKey(entryKey(key));
+  localEntries.delete(entryKey(key));
+  if (isRedisConfigured()) await delKey(entryKey(key));
 }
