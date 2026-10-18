@@ -26,7 +26,8 @@ describe('BookkeepingAttemptRow', () => {
     const settled = renderToStaticMarkup(
       <BookkeepingAttemptRow workerId="w2" retry={{ kind: 'settled' }}><p>x</p></BookkeepingAttemptRow>,
     );
-    expect(settled).toContain('nothing ran, not counted as a failure');
+    expect(settled).toContain('nothing ran');
+    expect(settled).not.toContain('not counted as a failure');
     expect(settled).not.toContain('status-error');
   });
   it('one line for a run of lost claims: counted, in plain words', () => {

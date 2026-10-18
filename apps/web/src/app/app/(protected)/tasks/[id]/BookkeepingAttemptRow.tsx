@@ -41,7 +41,7 @@ export default function BookkeepingAttemptRow({
           {what}{times} ·{' '}
           {retry.kind === 'scheduled'
             ? <>retry scheduled for <LocalTime iso={retry.atIso} /></>
-            : retry.kind === 'queued' ? 'retry queued' : 'nothing ran, not counted as a failure'}
+            : retry.kind === 'queued' ? 'retry queued' : 'nothing ran'}
           {attemptLabel && count === 1 && <span className="text-text-muted"> · {attemptLabel}</span>}
         </span>
         <span aria-hidden="true" className="shrink-0 text-meta text-text-muted group-open:rotate-90">›</span>
