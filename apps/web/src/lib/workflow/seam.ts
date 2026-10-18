@@ -657,7 +657,7 @@ export async function attemptEnded(p: {
 }
 
 async function markLandingDue(member: string): Promise<void> {
-  const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/pr-landing-sweep')]);
+  const [{ markDue }, { PR_LANDING_DUE_QUEUE }] = await Promise.all([import('@/lib/redis'), import('@/lib/landing-due-queue')]);
   await markDue(PR_LANDING_DUE_QUEUE, member, Date.now());
 }
 
