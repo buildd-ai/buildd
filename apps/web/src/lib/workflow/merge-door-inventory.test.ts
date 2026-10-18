@@ -32,9 +32,8 @@ const INVENTORY: Record<string, { what: string; calls: number }> = {
   'apps/web/src/app/api/github/pr/route.ts': { what: 'D5: merge_pr; `force` never skips the review verdict', calls: 1 },
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { what: 'D6: the dashboard merge (a person may override, recorded)', calls: 1 },
   'apps/web/src/lib/held-pr-tasks.ts': { what: 'D7: release PR on green CI (webhook and the held-release sweep); a kernel PR lands through the kernel', calls: 1 },
-  'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head', calls: 1 },
+  'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head (release-executor.ts holds no merge call of its own: a branch with no PR is refused, never merged)', calls: 1 },
   'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)', calls: 1 },
-  'apps/web/src/lib/release-executor.ts': { what: 'not a door: a branch-to-prod merge with no PR (POST /merges)', calls: 1 },
   'apps/web/src/lib/mission-branch-refresh.ts': { what: 'not a door: a base refresh into a mission branch (POST /merges)', calls: 1 },
   'apps/web/src/lib/workflow/delivery-epochs.ts': { what: 'not a door: the settlement tree probe, a test merge onto a scratch ref deleted in the same step (POST /merges, workflow-kernel-library §6)', calls: 1 },
 };
@@ -86,6 +85,15 @@ describe('merge door inventory (§13.13)', () => {
   test('each known door holds exactly the merge calls it is known for: a second merge inside a door is a new door', () => {
     const counts = Object.fromEntries(Object.keys(INVENTORY).map((f) => [f, (stripComments(readFileSync(join(ROOT, f), 'utf8')).match(CALL) ?? []).length]));
     expect(counts).toEqual(Object.fromEntries(Object.entries(INVENTORY).map(([f, v]) => [f, v.calls])));
+  });
+
+  test('D8/D9: the release executor holds no merge call of its own; both arms merge through release/pinned-merge.ts', () => {
+    // It used to POST /merges a worker branch with no PR into the prod branch, past the review
+    // gate, CI and any head pin (task d932a5b4). That arm is now a refusal.
+    const src = stripComments(readFileSync(join(ROOT, 'apps/web/src/lib/release-executor.ts'), 'utf8'));
+    expect(src.match(CALL) ?? []).toEqual([]);
+    expect(Object.values(PATTERNS).some((re) => re.test(src))).toBe(false);
+    expect(src.match(/\bmergeReleasePrPinned\(/g)?.length).toBe(2);
   });
 
   test('no GraphQL merge and no GitHub auto-merge anywhere', () => {
