@@ -804,21 +804,28 @@ export function HealthClient({
       )}
 
       {show('capacity') && (
-      <div data-testid="health-section-runners" className="mb-6">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h3 className="text-xs font-medium text-text-secondary">Runners</h3>
-          {runners.length > 0 && (
-            <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
-          )}
-        </div>
-        <div className="border-y border-border-default">
-          {runners.length === 0 ? (
-            <div className="p-4 text-center">
+      <div data-testid="health-section-runners">
+        {runners.length === 0 && (
+          <div className="mb-6">
+            <h3 className="text-xs font-medium text-text-secondary mb-3">Runners</h3>
+            <div className="border-y border-border-default p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
             </div>
-          ) : (
+          </div>
+        )}
+        {[
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+        ].filter(g => g.list.length > 0).map(g => (
+        <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <h3 className="text-xs font-medium text-text-secondary">{g.title}</h3>
+          <span className="text-[11px] text-text-muted">{countOf(g.list.length, 'runner')}</span>
+        </div>
+        <div className="border-y border-border-default">
+          {(
             <div className="divide-y divide-border-default">
-              {runners.map((hb) => {
+              {g.list.map((hb) => {
                 // The fleet row for this heartbeat (same id): its name, online
                 // state and count are the ones Running now and Settings print.
                 const fleetRow = fleetById.get(hb.id) ?? null;
@@ -964,6 +971,8 @@ export function HealthClient({
             </div>
           )}
         </div>
+        </div>
+        ))}
       </div>
 
       )}

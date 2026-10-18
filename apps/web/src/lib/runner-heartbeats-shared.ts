@@ -48,6 +48,12 @@ export interface RunnerHeartbeat {
    * this is false (runner-isolation-health.ts).
    */
   shared: boolean;
+  /**
+   * The viewing user created this runner's account: they manage it. False
+   * for a teammate's runner (or one with no recorded creator), which the
+   * Health page lists apart under "Team runners".
+   */
+  mine: boolean;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */

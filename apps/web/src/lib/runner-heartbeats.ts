@@ -40,6 +40,7 @@ export {
 export async function getRunnerHeartbeats(
   teamId: string,
   workspaceIds: string[],
+  viewerUserId: string | null = null,
 ): Promise<RunnerHeartbeat[]> {
   if (workspaceIds.length === 0) return [];
 
@@ -48,7 +49,7 @@ export async function getRunnerHeartbeats(
   const hbs = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
     orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
-    with: { account: { columns: { name: true, teamId: true } } },
+    with: { account: { columns: { name: true, teamId: true, createdByUserId: true } } },
   });
   if (hbs.length === 0) return [];
 
@@ -109,6 +110,7 @@ export async function getRunnerHeartbeats(
       mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
       isolation: readIsolationRecord(hb.environment),
       shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
+      mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
 }
 
