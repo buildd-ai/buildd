@@ -865,6 +865,11 @@ export function HealthClient({
                           {tokenName && (
                             <span className="text-meta text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
                           )}
+                          {hb.runnerClass && hb.runnerClass !== 'unknown' && (
+                            <span data-testid="health-runner-class" className="text-[11px] md:text-[10px] font-mono text-text-muted">
+                              {hb.runnerClass === 'managed' ? 'managed' : hb.runnerClass === 'team' ? 'team host' : hb.mine ? 'personal' : 'teammate\'s'}
+                            </span>
+                          )}
                           <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>

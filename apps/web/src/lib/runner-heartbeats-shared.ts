@@ -10,6 +10,7 @@
  * it. Keep DB access in `runner-heartbeats.ts`. (`@buildd/shared` is fine: it
  * is DB-free and already bundled into client components.)
  */
+import type { RunnerClass } from './runner-ownership';
 
 import { RUNNER_LIVE_WINDOW_MS, isIsolationRecordCurrent, isolationVerdict, type RunnerIsolationRecord } from '@buildd/shared';
 
@@ -54,6 +55,8 @@ export interface RunnerHeartbeat {
    * Health page lists apart under "Team runners".
    */
   mine: boolean;
+  /** Authoritative ownership (managed / team host / personal / unknown); see runner-ownership.ts. */
+  runnerClass?: RunnerClass;
 }
 
 /** Capability string the runner advertises when mount isolation is enforced. */
