@@ -117,10 +117,25 @@ async function seedFailureEdgeWorkers(t: SeededTeam): Promise<void> {
     FROM t`);
 }
 
+/**
+ * An active root cause that names some of the team's tasks, so the service
+ * status read takes its affected-tasks path on every run, not only after an
+ * earlier file in the same database happened to leave one behind.
+ */
+async function seedActiveRootCause(t: SeededTeam): Promise<void> {
+  await q(sql`
+    INSERT INTO root_causes (team_id, key, capability_kind, component, workspace_id, classification, affected_task_ids, first_seen_at, last_seen_at)
+    SELECT ${t.teamId}::uuid, 'budget:infrastructure_failure', 'platform', 'infrastructure_failure', ${t.workspaceIds[0]}::uuid, 'unknown',
+      ARRAY(SELECT id FROM tasks WHERE workspace_id = ${t.workspaceIds[0]}::uuid ORDER BY id LIMIT 3),
+      now() - interval '1 hour', now()
+    ON CONFLICT (team_id, key) DO NOTHING`);
+}
+
 beforeAll(async () => {
   team = await seedLargeTeam(scale);
   await seedHealthExtras(team);
   await seedFailureEdgeWorkers(team);
+  await seedActiveRootCause(team);
 }, 900_000);
 
 /** A request whose protected layout and Health layout already ran. */
