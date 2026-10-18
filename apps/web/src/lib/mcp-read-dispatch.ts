@@ -17,25 +17,21 @@ import { gateApiRead, rateLimitedResponse, readSubjectForKey } from './read-rate
 export type ApiFn = (endpoint: string, options?: RequestInit) => Promise<any>;
 
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response> | Response;
-interface ReadRoute { re: RegExp; params?: string[]; load: () => Promise<{ GET: Handler }> }
+/** One read route: its path pattern, the names of its dynamic segments, and its module, loaded on use. */
+export interface McpReadRoute { re: RegExp; params?: string[]; load: () => Promise<{ GET: Handler }> }
 
-/** The reads MCP actions make, by path (query aside). Lazy: a tool call loads only the route it reads. */
-export const READ_ROUTES: readonly ReadRoute[] = [
-  { re: /^\/api\/tasks$/, load: () => import('@/app/api/tasks/route') as never },
-  { re: /^\/api\/tasks\/([^/]+)$/, params: ['id'], load: () => import('@/app/api/tasks/[id]/route') as never },
-  { re: /^\/api\/missions$/, load: () => import('@/app/api/missions/route') as never },
-  { re: /^\/api\/missions\/([^/]+)$/, params: ['id'], load: () => import('@/app/api/missions/[id]/route') as never },
-  { re: /^\/api\/workspaces$/, load: () => import('@/app/api/workspaces/route') as never },
-  { re: /^\/api\/workers\/([^/]+)$/, params: ['id'], load: () => import('@/app/api/workers/[id]/route') as never },
-  { re: /^\/api\/prs$/, load: () => import('@/app/api/prs/route') as never },
-  { re: /^\/api\/roles$/, load: () => import('@/app/api/roles/route') as never },
-  { re: /^\/api\/workspaces\/([^/]+)\/schedules$/, params: ['id'], load: () => import('@/app/api/workspaces/[id]/schedules/route') as never },
-  { re: /^\/api\/workspaces\/([^/]+)\/skills$/, params: ['id'], load: () => import('@/app/api/workspaces/[id]/skills/route') as never },
-  { re: /^\/api\/github\/pr\/review$/, load: () => import('@/app/api/github/pr/review/route') as never },
-];
+/**
+ * The table lives in the composition root (`MCP_READ_ROUTES`, apps/web/src/modules.ts):
+ * several of these routes are modules', and core never imports a module
+ * (scripts/module-boundaries.test.ts). Loaded on the first read, not when core loads.
+ */
+async function readRoutes(): Promise<readonly McpReadRoute[]> {
+  const modules = (await import('@/modules')) as Record<string, unknown>;
+  return (modules.MCP_READ_ROUTES as readonly McpReadRoute[] | undefined) ?? [];
+}
 
 /** The route and its params for a GET endpoint, or null to go over HTTP. */
-export function matchReadRoute(endpoint: string, routes: readonly ReadRoute[] = READ_ROUTES): { route: ReadRoute; params: Record<string, string> } | null {
+export function matchReadRoute(endpoint: string, routes: readonly McpReadRoute[]): { route: McpReadRoute; params: Record<string, string> } | null {
   const path = endpoint.split('?')[0]!;
   for (const route of routes) {
     const m = route.re.exec(path);
@@ -48,7 +44,7 @@ export function matchReadRoute(endpoint: string, routes: readonly ReadRoute[] = 
 }
 
 export interface InProcessDeps {
-  routes?: readonly ReadRoute[];
+  routes?: readonly McpReadRoute[];
   gate?: typeof gateApiRead;
 }
 
@@ -63,7 +59,7 @@ export function withInProcessReads(
 ): ApiFn {
   return async (endpoint, options = {}) => {
     const method = (options.method ?? 'GET').toUpperCase();
-    const hit = method === 'GET' ? matchReadRoute(endpoint, deps.routes) : null;
+    const hit = method === 'GET' ? matchReadRoute(endpoint, deps.routes ?? await readRoutes()) : null;
     if (!hit) return http(endpoint, options);
 
     const url = new URL(endpoint, opts.baseUrl);

@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { READ_ROUTES, matchReadRoute, withInProcessReads } from './mcp-read-dispatch';
+import { matchReadRoute, withInProcessReads } from './mcp-read-dispatch';
 
 let http: Array<{ endpoint: string; method: string }>;
 let handled: Array<{ url: string; auth: string | null; grant: string | null; params: Record<string, string> }>;
@@ -67,14 +67,28 @@ describe('in-process MCP reads', () => {
   });
 });
 
-describe('READ_ROUTES', () => {
-  it('names the reads MCP actions make, and nothing that writes', () => {
+describe('MCP_READ_ROUTES (the composition root\'s table)', () => {
+  it('names the reads MCP actions make, and nothing that writes', async () => {
+    const { MCP_READ_ROUTES } = await import('@/modules');
     for (const p of ['/api/tasks', '/api/tasks/x', '/api/missions', '/api/missions/x', '/api/workspaces', '/api/workers/x', '/api/prs', '/api/roles', '/api/workspaces/x/schedules', '/api/workspaces/x/skills', '/api/github/pr/review']) {
-      expect(matchReadRoute(p), p).not.toBeNull();
+      expect(matchReadRoute(p, MCP_READ_ROUTES), p).not.toBeNull();
     }
     for (const p of ['/api/workers/claim/x', '/api/tasks/x/attach-pr', '/api/github/pr', '/api/workspaces/x/schedules/y']) {
-      expect(matchReadRoute(p), p).toBeNull();
+      expect(matchReadRoute(p, MCP_READ_ROUTES), p).toBeNull();
     }
-    expect(READ_ROUTES.length).toBe(11);
+    expect(MCP_READ_ROUTES.length).toBe(11);
+  });
+
+  it('a dynamic segment never takes a static sibling route\'s name, as Next would not', async () => {
+    const { MCP_READ_ROUTES } = await import('@/modules');
+    const { readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const api = join(import.meta.dir, '..', 'app', 'api');
+    for (const dir of ['tasks', 'missions', 'workers']) {
+      const statics = readdirSync(join(api, dir), { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('[')).map(d => d.name);
+      expect(statics.length, dir).toBeGreaterThan(0);
+      for (const name of statics) expect(matchReadRoute(`/api/${dir}/${name}`, MCP_READ_ROUTES), `/api/${dir}/${name}`).toBeNull();
+      expect(matchReadRoute(`/api/${dir}/00000000-0000-4000-8000-000000000000`, MCP_READ_ROUTES), dir).not.toBeNull();
+    }
   });
 });

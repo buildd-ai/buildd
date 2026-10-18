@@ -34,6 +34,7 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { refreshMissionSummariesFor } from '@/lib/mission-summary-store';
 import { bumpChangeVersions } from '@/lib/change-version';
 import type { WorkChangeListener } from '@/lib/work-changed';
+import type { McpReadRoute } from '@/lib/mcp-read-dispatch';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
@@ -129,6 +130,26 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
 export const WORK_CHANGE_LISTENERS: readonly WorkChangeListener[] = [
   async (batch) => { await bumpChangeVersions(batch); },
   async (batch) => { await refreshMissionSummariesFor(batch); },
+];
+
+/**
+ * The reads MCP actions make, run in process by lib/mcp-read-dispatch.ts
+ * (spec 3ef37387 R-22), by path with the query aside. Each route module loads
+ * on its first read. Anything not listed (every write) goes over HTTP.
+ */
+export const MCP_READ_ROUTES: readonly McpReadRoute[] = [
+  { re: /^\/api\/tasks$/, load: () => import('@/app/api/tasks/route') as never },
+  // A dynamic segment never takes a static sibling's name (Next routes those to their own handler).
+  { re: /^\/api\/tasks\/(?!(?:bulk|cleanup|waiting-input)$)([^/]+)$/, params: ['id'], load: () => import('@/app/api/tasks/[id]/route') as never },
+  { re: /^\/api\/missions$/, load: () => import('@/app/api/missions/route') as never },
+  { re: /^\/api\/missions\/(?!(?:capabilities|recent|stages)$)([^/]+)$/, params: ['id'], load: () => import('@/app/api/missions/[id]/route') as never },
+  { re: /^\/api\/workspaces$/, load: () => import('@/app/api/workspaces/route') as never },
+  { re: /^\/api\/workers\/(?!(?:active|claim|heartbeat|local-sessions|mine|queue)$)([^/]+)$/, params: ['id'], load: () => import('@/app/api/workers/[id]/route') as never },
+  { re: /^\/api\/prs$/, load: () => import('@/app/api/prs/route') as never },
+  { re: /^\/api\/roles$/, load: () => import('@/app/api/roles/route') as never },
+  { re: /^\/api\/workspaces\/([^/]+)\/schedules$/, params: ['id'], load: () => import('@/app/api/workspaces/[id]/schedules/route') as never },
+  { re: /^\/api\/workspaces\/([^/]+)\/skills$/, params: ['id'], load: () => import('@/app/api/workspaces/[id]/skills/route') as never },
+  { re: /^\/api\/github\/pr\/review$/, load: () => import('@/app/api/github/pr/review/route') as never },
 ];
 
 /**
