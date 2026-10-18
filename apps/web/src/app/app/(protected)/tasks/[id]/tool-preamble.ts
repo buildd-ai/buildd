@@ -95,7 +95,7 @@ const VERBS: Record<string, string> = {
   execute: 'Ran', trigger: 'Triggered', dispatch: 'Dispatched', start: 'Started', complete: 'Finished',
   finish: 'Finished', claim: 'Claimed', request: 'Requested', upload: 'Uploaded', deploy: 'Deployed',
   register: 'Registered', receive: 'Received', emit: 'Emitted', suggest: 'Suggested', approve: 'Approved',
-  reject: 'Rejected', assign: 'Assigned', resolve: 'Resolved', retry: 'Retried', release: 'Released',
+  reject: 'Rejected', assign: 'Gave out', resolve: 'Resolved', retry: 'Retried', release: 'Released',
 };
 
 const ACRONYMS = new Set(['pr', 'prs', 'ci', 'api', 'url', 'mcp', 'id', 'ids', 'kb', 'ui', 'sha']);

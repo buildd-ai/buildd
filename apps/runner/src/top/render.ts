@@ -6,7 +6,7 @@
  * cost column goes first, then the route words, then the role column (R-7,
  * R-41), and text is cut with "…".
  */
-import { TERMS, titleWithAttempt } from '@buildd/shared';
+import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
@@ -164,11 +164,11 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
-    // R-43: "3 of 6 busy".
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version },
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version: '' },
-    { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
-    { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
+    // R-43: "3 of 6 slots in use" (terms catalog: capacity is never "busy").
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version: '' },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
+    { host: false, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
   ];
   for (const v of variants) {
     const leftParts = [v.host ? host : null, served || null].filter(Boolean).join(' · ');
@@ -343,7 +343,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
-    { key: 'running', label: 'Running now' },
+    { key: 'running', label: 'Working now' },
     { key: 'waiting', label: 'Waiting' },
     { key: 'done', label: 'Done today' },
   ];

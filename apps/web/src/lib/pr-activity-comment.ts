@@ -129,7 +129,7 @@ type NormalizedEntry = PrActivityEntry & { at: string };
  * meaning the words don't — most rows have none.
  */
 export const GLYPH = {
-  /** Nothing is running: queued, or waiting on checks/another party. */
+  /** Nothing is running: queued, or waiting for checks/another party. */
   waiting: '○',
   /** An outcome that went well: approved, merged. */
   done: '✓',
@@ -261,14 +261,14 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return e.detail
         // The row appends `detail` itself; the header does not, so name it there.
         ? { tone: 'waiting', label: `${fix} ended`, headline: `${fix} ended · ${e.detail}` }
-        : { tone: 'waiting', label: `${fix} finished`, status: 'waiting on checks' };
+        : { tone: 'waiting', label: `${fix} finished`, status: 'waiting for checks' };
     }
     case 'changes_pushed': {
       const sha = e.sha ? `\`${e.sha}\`` : null;
       return {
         tone: 'waiting',
         label: sha ? `Pushed ${sha}` : 'Pushed',
-        status: 'waiting on checks',
+        status: 'waiting for checks',
         urlLabel: 'commit',
       };
     }

@@ -55,7 +55,7 @@ describe('FleetOverview', () => {
 
   it('headlines busy of capacity, and counts offline runners', () => {
     const f = fleet([runner('a', 'runner-1', 3, 4), runner('b', 'runner-2', 0, 4, false)]);
-    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('3 of 4 slots busy. 1 offline.');
+    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('3 of 4 slots in use. 1 offline.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 5)])).map(p => p.text).join('')).toBe('No agents working. 5 slots free.');
     expect(fleetOverviewHeadline(fleet([runner('a', 'runner-1', 0, 2, false)])).map(p => p.text).join('')).toBe('All runners offline.');
     expect(fleetOverviewHeadline(fleet([])).map(p => p.text).join('')).toBe('No runners online.');
@@ -85,7 +85,7 @@ describe('FleetOverview', () => {
     const one = fleet([runner('a', 'runner-1', 1, 4, false), runner('b', 'runner-2', 0, 4, false)]);
     expect(fleetOverviewHeadline(one).map(p => p.text).join('')).toBe('All runners offline. 1 agent was working at the last check-in.');
     const mixed = fleet([runner('a', 'runner-1', 1, 4), runner('b', 'runner-2', 2, 4, false)]);
-    expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots busy. 1 offline, with 2 agents working at the last check-in.');
+    expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots in use. 1 offline, with 2 agents working at the last check-in.');
   });
 
   it('drops the second link to the same slots (Home and Health already show them)', () => {
