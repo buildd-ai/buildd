@@ -580,7 +580,7 @@ async function readBackWorkflowRun(e: EventOf<'workflow_run.completed'>): Promis
   if (!succeeded) {
     void notifyTeamOf({ taskId: matchingTask.id }, 'needsAttention', {
       title: `Release workflow failed: ${run.name}`,
-      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has not shipped. Check the run for details.`,
+      message: `Conclusion: ${run.conclusion ?? 'unknown'}. Nothing was released to production. Check the run for details.`,
       url: run.html_url,
       urlTitle: 'View workflow run',
       priority: 1,

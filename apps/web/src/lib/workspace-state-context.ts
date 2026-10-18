@@ -3,6 +3,7 @@ import { missions, tasks, pathClaims, workers, initiatives, teams } from '@build
 import { eq, and, ne, isNull, isNotNull, sql, desc } from 'drizzle-orm';
 import { computeInitiativeProgress, type MissionStatus } from '@buildd/core/mission-helpers';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { missionGateTerm } from '@buildd/shared';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,8 @@ export interface SiblingMission {
   title: string;
   status: string;
   isHeld: boolean;
+  /** First run time: a gated mission that ran reads Paused, one that never did Not started. */
+  armedAt?: Date | string | null;
   executor?: string | null;
   pacingMode: string;
   progress: number;
@@ -189,7 +192,7 @@ function renderSiblingMissions(siblings: SiblingMission[]): string {
   const lines: string[] = [`### Sibling missions (${siblings.length} active)`];
   for (const m of siblings.slice(0, 5)) {
     let line = `[${m.progress}%] ${m.title} · ${m.status} · ${m.pacingMode}`;
-    if (m.isHeld) line += ' [HELD]';
+    if (m.isHeld) line += ` [${missionGateTerm(m).word}]`;
     else if (m.executor === 'local') line += ' [LOCAL — runs in a local session]';
     lines.push(line);
   }
@@ -313,6 +316,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           title: missions.title,
           status: missions.status,
           isHeld: missions.isHeld,
+          armedAt: missions.armedAt,
           executor: missions.executor,
           pacingMode: missions.pacingMode,
           completedTasks: sql<number>`COUNT(${tasks.id}) FILTER (WHERE ${tasks.status} = 'completed')::int`,
@@ -330,6 +334,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
           missions.title,
           missions.status,
           missions.isHeld,
+          missions.armedAt,
           missions.executor,
           missions.pacingMode,
         )
@@ -340,6 +345,7 @@ function createDefaultQuerier(): WorkspaceStateQuerier {
         title: r.title,
         status: r.status,
         isHeld: r.isHeld,
+        armedAt: r.armedAt,
         executor: r.executor,
         pacingMode: r.pacingMode,
         progress: r.totalTasks > 0

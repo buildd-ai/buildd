@@ -66,6 +66,15 @@ describe('RunnerLanes', () => {
   });
 });
 
+describe('RunnerLanes: empty slots', () => {
+  it('says an empty slot had no work, never that it held none', () => {
+    const f = { ...fleet, runners: [{ ...fleet.runners[0], slots: [...fleet.runners[0].slots, { lane: { bars: [] } }] }] } as unknown as FleetSnapshot;
+    const html = renderToStaticMarkup(<RunnerLanes fleet={f} idle={[]} now={m(60)} />);
+    expect(html).toContain('1 slot had no work in this window and is not drawn.');
+    expect(html).not.toMatch(/\bheld\b/);
+  });
+});
+
 describe('RunDetail', () => {
   const missions = { m1: { title: 'Delivery UX', landed: 2, total: 7 } };
   const run = {

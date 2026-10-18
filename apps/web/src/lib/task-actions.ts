@@ -347,7 +347,7 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
     case 'entitlement_blocked':
       return 'Queued: plan limit reached';
     case 'coordination_hold':
-      return refusal.reasonsChanged ? 'What holds it changed' : 'Held';
+      return refusal.reasonsChanged ? 'What it waits on changed' : 'Waiting for files';
     default:
       return 'Blocked';
   }

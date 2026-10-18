@@ -14,7 +14,7 @@ import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
-import type { LoopState } from '@buildd/shared';
+import { TERMS, type LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -539,7 +539,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
       { key: 'in_progress', label: 'Running' },
       { key: 'assigned', label: 'Assigned' },
       { key: 'pending', label: 'Pending' },
-      { key: 'completed', label: 'Completed' },
+      { key: 'completed', label: TERMS['work.done'].word },
       { key: 'failed', label: 'Failed' },
     ];
     return order
@@ -663,7 +663,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
   const statusFilters: { key: FilterStatus; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: allCount },
     { key: 'active', label: 'Active', count: activeCount },
-    { key: 'completed', label: 'Completed', count: completedCount },
+    { key: 'completed', label: TERMS['work.done'].word, count: completedCount },
     { key: 'failed', label: 'Failed', count: failedCount },
   ];
 

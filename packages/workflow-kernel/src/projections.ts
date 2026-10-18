@@ -404,7 +404,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       break;
     case 'MERGED': headline = 'Merged'; break;
     case 'CLOSED_UNMERGED': headline = 'Closed without merging'; detail = d.stateReason; break;
-    case 'SUPERSEDED': headline = d.supersededByPr != null ? `Shipped in PR #${d.supersededByPr}` : 'Superseded'; break;
+    case 'SUPERSEDED': headline = d.supersededByPr != null ? `Merged in #${d.supersededByPr}` : 'Superseded'; break;
     case 'ABANDONED': headline = 'Abandoned'; break;
     case 'FAILED': headline = 'Failed'; detail = d.stateReason; break;
   }

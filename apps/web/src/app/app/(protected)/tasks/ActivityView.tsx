@@ -11,6 +11,7 @@
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import { TERMS } from '@buildd/shared';
 import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle, { STEP_OF } from '@/components/ui/Lifecycle';
@@ -57,10 +58,10 @@ export interface ActivityViewProps {
 /** History's outcome chips, in the prototype's words. */
 const OUTCOMES: ReadonlyArray<{ key: ActivityOutcome; label: string }> = [
   { key: 'any', label: 'All' },
-  { key: 'landed', label: 'Landed' },
+  { key: 'landed', label: TERMS['pr.merged'].word },
   { key: 'retries', label: 'Had repairs' },
   { key: 'you', label: 'Sent to you' },
-  { key: 'exceptions', label: 'Not landed' },
+  { key: 'exceptions', label: TERMS['pr.closed'].word },
 ];
 
 /** The headline's breakdown, in delivery order; anything not yet started folds into "N waiting". */
@@ -68,10 +69,10 @@ const BREAKDOWN: ReadonlyArray<{ kind: DeliveryKind; word: string }> = [
   { kind: 'build', word: 'building' },
   { kind: 'audit', word: 'auditing' },
   { kind: 'repair', word: 'repairing' },
-  { kind: 'landing', word: 'landing' },
+  { kind: 'landing', word: TERMS['pr.merging'].short },
   { kind: 'unavailable', word: 'recovering' },
   { kind: 'needs', word: 'waiting on you' },
-  { kind: 'notlanded', word: 'not landed' },
+  { kind: 'notlanded', word: TERMS['pr.closed'].word.toLowerCase() },
 ];
 const NOT_STARTED: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
 
@@ -280,7 +281,7 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
         <h2 className="line-clamp-2 min-w-0 break-words text-meta font-semibold text-text-secondary">{group.title}</h2>
         {/* "n/m landed" only when the mission's projection loaded; never "0/0". */}
         {group.href
-          ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.total > 0 ? `${group.landed}/${group.total} landed` : taskCount(group.rows.length)} ›</Link>
+          ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.total > 0 ? `${group.landed}/${group.total} merged` : taskCount(group.rows.length)} ›</Link>
           : <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{taskCount(group.rows.length)}</span>}
       </div>
       {group.rows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}

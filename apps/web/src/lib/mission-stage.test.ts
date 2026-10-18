@@ -103,7 +103,7 @@ describe('visual verification (review of #4778): the list never says delivered p
 describe('missionStage', () => {
   it('is building while build work has not landed, waiting on the rail\'s build count', () => {
     const s = missionStage(input({ tasks: [task({ prs: [mergedPr] }), task({ status: 'in_progress' })] }));
-    expect(s).toEqual({ step: 'building', waitingOn: '1 of 2 landed' });
+    expect(s).toEqual({ step: 'building', waitingOn: '1 of 2 done' });
   });
 
   it('a completed task whose PR has not merged has not landed', () => {

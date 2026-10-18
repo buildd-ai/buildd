@@ -127,7 +127,7 @@ export async function amendCandidateOnFixMerge(
     await githubApi(installationId, `/repos/${input.repoFullName}/issues/${fix.prNumber}/comments`, {
       method: 'POST',
       body: JSON.stringify({
-        body: `The fix for this candidate merged (#${input.prNumber}). Amending release candidate v${v} from \`${fix.sourceBranch}\`: the Release workflow was dispatched with \`amend: ${v}\`. Its checks and approvals restart on the new head.`,
+        body: `The fix for this candidate merged in #${input.prNumber}. Amending release candidate v${v} from \`${fix.sourceBranch}\`: the Release workflow was dispatched with \`amend: ${v}\`. Its checks and approvals restart on the new head.`,
       }),
     }).catch((err: unknown) => console.error(`[release-amend] comment on PR #${fix.prNumber} failed:`, err));
     return { kind: 'amended', version: v, candidatePr: fix.prNumber };
