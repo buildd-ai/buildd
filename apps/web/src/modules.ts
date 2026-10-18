@@ -30,6 +30,7 @@ import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { refreshMissionSummariesFor } from '@/lib/mission-summary-store';
+import { changeVersionWorkListener } from '@/lib/change-version';
 import type { WorkChangeListener } from '@/lib/work-changed';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
@@ -119,9 +120,12 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
  * Told every write of work (lib/work-changed.ts): a task's status or mission,
  * a worker's status or PR, a delivery, a review, and every core event's ids.
  * The missions module refreshes the stored summary of each mission they
- * belong to, after the response (spec 3ef37387 R-13).
+ * belong to, after the response (spec 3ef37387 R-13). First, the workspaces
+ * the batch belongs to get a new change version, so list polls that sent the
+ * old one read again (R-20, lib/change-version.ts).
  */
 export const WORK_CHANGE_LISTENERS: readonly WorkChangeListener[] = [
+  async (batch) => { await changeVersionWorkListener(batch); },
   async (batch) => { await refreshMissionSummariesFor(batch); },
 ];
 

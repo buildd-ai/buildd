@@ -1,5 +1,6 @@
 import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
-import { readMissionSummaries } from '@/lib/mission-summary-store';
+import { readMissionSummaries, refreshMissionSummary } from '@/lib/mission-summary-store';
+import { cachedReach, listCallerKey, teamChangeScope, withChangeVersion } from '@/lib/change-version';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -47,7 +48,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const teamIds = await resolveAccountTeamIds(user, apiAccount);
+    // Reused for a few seconds per caller (R-35, lib/change-version.ts cachedReach).
+    const caller = `teams:${apiAccount ? listCallerKey({ account: apiAccount }) : listCallerKey({ userId: user!.id })}`;
+    const teamIds = await cachedReach(caller, () => resolveAccountTeamIds(user, apiAccount));
 
     if (teamIds.length === 0) {
       return NextResponse.json({ missions: [] });
@@ -68,6 +71,9 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
+    // R-20/R-35: listed by team, so versioned on each team's scope. Unchanged since
+    // this caller's last read → 304, or the cached body, before any mission row is read.
+    return await withChangeVersion(req, { scopes: scopedTeamIds.map(teamChangeScope), caller }, async () => {
     const { details, limit } = missionReadOptions(searchParams);
     const q = searchParams.get('q');
     const where = buildMissionListWhere({
@@ -151,6 +157,7 @@ export async function GET(req: NextRequest) {
     // total: how many match before the cap, so a capped page can say "N of M".
     const total = limit && results.length >= limit ? await db.$count(missions, where) : results.length;
     return NextResponse.json({ missions: missionsWithProgress, total });
+    });
   } catch (error) {
     console.error('List missions error:', error);
     return NextResponse.json({ error: 'Failed to list missions' }, { status: 500 });
@@ -424,6 +431,8 @@ export async function POST(req: NextRequest) {
         } : {}),
       })
       .returning();
+    // Stored summary, and through it the mission lists' change version (R-13, R-20).
+    refreshMissionSummary(mission.id);
 
     // Every new auto mission gets a check-in (heartbeat) schedule by default.
     // Events plan its next step as work finishes; the check-in is the hourly

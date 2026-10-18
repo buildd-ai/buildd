@@ -314,3 +314,41 @@ export async function evalReadBucket(call: BucketCall): Promise<BucketReply | nu
 export async function setReadPlan(subject: string, plan: string, ttlSec: number): Promise<void> {
   await safe('set read plan', r => r.setex(planCacheKey(subject), ttlSec, plan), undefined);
 }
+
+// ── Per-workspace change versions (lib/change-version.ts) ─────────────────
+//
+// key: buildd:cv:{workspaceId} — an integer that only goes up. A missing key
+// starts at the current epoch ms (SET NX) rather than 0, so a key that expired
+// or was evicted comes back larger than any value a client could still hold.
+
+/** Bump each key (start it at `initMs` when missing) and refresh its TTL. False when Redis could not be asked. */
+export async function bumpVersionCounters(keys: readonly string[], initMs: number, ttlSec: number): Promise<boolean> {
+  if (keys.length === 0) return true;
+  return safe('bump versions', async r => {
+    const p = r.pipeline();
+    for (const key of keys) p.set(key, initMs, { nx: true, ex: ttlSec }).incr(key).expire(key, ttlSec);
+    await p.exec();
+    return true;
+  }, false);
+}
+
+/**
+ * Each key's current value, in order. A missing key is started at `initMs`
+ * (SET NX) and read again. `null` = Redis unavailable: the caller serves the
+ * full answer.
+ */
+export async function readVersionCounters(keys: readonly string[], initMs: number, ttlSec: number): Promise<string[] | null> {
+  if (keys.length === 0) return [];
+  return safe<string[] | null>('read versions', async r => {
+    const got = await r.mget<Array<string | number | null>>(...keys);
+    const missing = keys.filter((_, i) => got[i] == null);
+    if (missing.length === 0) return got.map(String);
+    const p = r.pipeline();
+    for (const key of missing) p.set(key, initMs, { nx: true, ex: ttlSec });
+    await p.exec();
+    const again = await r.mget<Array<string | number | null>>(...missing);
+    const byKey = new Map(missing.map((k, i) => [k, again[i]]));
+    const out = keys.map((k, i) => got[i] ?? byKey.get(k) ?? null);
+    return out.some(v => v == null) ? null : out.map(String);
+  }, null);
+}

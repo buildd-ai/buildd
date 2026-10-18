@@ -9,6 +9,7 @@ import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, i
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
+import { cachedReach, listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
@@ -120,7 +121,7 @@ export async function GET(req: NextRequest) {
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
-  const user = await getCurrentUser();
+  const user = apiAccount ? null : await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -130,9 +131,10 @@ export async function GET(req: NextRequest) {
     // Same reach rule as workspace listing and task/mission creation
     // (lib/workspace-access.ts): an account sees its own team's open
     // workspaces plus its explicit links; a user sees their teams' workspaces.
-    let workspaceIds: string[] = await listReachableWorkspaceIds(
-      apiAccount ? { account: apiAccount } : { userId: user!.id },
-    );
+    // Reused for a few seconds per caller (R-35, lib/change-version.ts cachedReach).
+    const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
+    const listCaller = listCallerKey(accessCaller);
+    let workspaceIds: string[] = await cachedReach(listCaller, () => listReachableWorkspaceIds(accessCaller));
     if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
 
     // Optional query filters to scope the list and shrink the payload.
@@ -176,6 +178,8 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
+    // R-20: a poll that sent the current change version gets 304 before any row is read.
+    return await withChangeVersion(req, { scopes: workspaceIds, caller: listCaller }, async () => {
     const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
@@ -352,6 +356,7 @@ export async function GET(req: NextRequest) {
         },
       } : undefined,
     }, undefined, { route: req.nextUrl.pathname });
+    });
   } catch (error) {
     // Audit mode (a terminal ?status) reaches a workspace's entire history with
     // no 24h window — the one query path where an unusual row shape or a slow

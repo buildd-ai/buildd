@@ -265,3 +265,23 @@ describe('the reconcile', () => {
     expect(asked).toBe(1);
   });
 });
+
+describe('change version (spec 3ef37387 R-20)', () => {
+  it('the writer bumps the workspace and team of each summary it wrote; the reconcile bumps only what it repaired', async () => {
+    const bumped: string[][] = [];
+    for (const m of world.missions) (m as any).teamId = 'team-1';
+    store = createMissionSummaryStore({ ...deps(), changed: async (scopes) => { bumped.push(scopes); } });
+
+    await store.recompute(['m-build']);
+    expect(bumped).toEqual([['ws-1', 'team:team-1']]);
+
+    bumped.length = 0;
+    tick();
+    await store.reconcile({ limit: 50 });
+    expect(bumped).toEqual([]);
+
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged' });
+    await store.reconcile({ limit: 50 });
+    expect(bumped).toEqual([['ws-1', 'team:team-1']]);
+  });
+});
