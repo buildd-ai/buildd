@@ -10,6 +10,7 @@ import Disclosure from '@/components/ui/Disclosure';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
 import { describeCloudflareCapability, type CloudflareCapabilities, type CloudflareCapability } from '@/lib/cloudflare-credential-shared';
 import CloudflareGatewayTokens from './CloudflareGatewayTokens';
+import CloudRunnerDeploy from './CloudRunnerDeploy';
 
 interface Team {
   id: string;
@@ -229,6 +230,9 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
           ) : cred.lastVerificationError && (
             // A verified token keeps what it may not do here (Workers AI, the gateway) until the next Verify.
             <p className="text-xs text-status-error break-words">{cred.lastVerificationError}</p>
+          )}
+          {state.kind === 'verified' && canManage && (
+            <CloudRunnerDeploy teamId={selectedTeamId} capabilities={capabilities} />
           )}
           {state.kind === 'verified' && (
             <Disclosure summary="Deploy from a terminal instead">

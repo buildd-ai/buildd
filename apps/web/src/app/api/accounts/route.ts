@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
+import { accounts, workspaces } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { isTokenScope, requiresTeamAdminToGrant, scopedTokenLevel } from '@buildd/core/token-scopes';
-import { randomBytes } from 'crypto';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { mintApiKeyAccount } from '@/lib/api-key-mint';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage, canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
@@ -13,10 +12,6 @@ import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { roleHas } from '@/lib/permissions';
 import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
 
 export async function GET() {
   if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
@@ -86,8 +81,6 @@ export async function POST(req: NextRequest) {
     }
     const requestedLevel = derivedLevel ?? parsedLevel;
 
-    const plaintextKey = generateApiKey();
-
     // Use requested teamId if provided and user is a member, otherwise fall back to default
     let teamId: string | null = null;
     if (requestedTeamId) {
@@ -142,17 +135,13 @@ export async function POST(req: NextRequest) {
       type: type as 'user' | 'service' | 'action',
       level: requestedLevel,
       authType: authType as 'api' | 'oauth' || 'oauth',
-      apiKey: hashApiKey(plaintextKey),
-      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       maxConcurrentWorkers: maxConcurrentWorkers || 3,
       teamId,
       createdByUserId: user.id,
     };
 
-    const [account] = await db
-      .insert(accounts)
-      .values(insertValues as typeof accounts.$inferInsert)
-      .returning();
+    // Auto-creates the workspace bindings too.
+    const { account, plaintextKey } = await mintApiKeyAccount(insertValues as Parameters<typeof mintApiKeyAccount>[0], selectedWorkspaces);
 
     // For OAuth accounts, populate seatId from the team's Claude credential so
     // groupOauthAccountsBySeatId works immediately without waiting for re-auth.
@@ -169,16 +158,6 @@ export async function POST(req: NextRequest) {
       } catch {
         // Non-fatal: account is created successfully; seatId can be set on next credential store.
       }
-    }
-
-    // Auto-create workspace binding if workspaceId provided
-    for (const selectedWorkspaceId of selectedWorkspaces) {
-      await db.insert(accountWorkspaces).values({
-        accountId: account.id,
-        workspaceId: selectedWorkspaceId,
-        canClaim: true,
-        canCreate: true,
-      });
     }
 
     // A token that names no workspaces of its own, minted by the owner of a
