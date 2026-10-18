@@ -102,7 +102,7 @@ function FeedView({
         {notesEntry && <div data-testid="feed-notes-entry" className="mb-3">{notesEntry}</div>}
         {history.days.length === 0 && (
           <p data-testid="feed-empty" className="text-body text-text-muted">
-            {lens === 'highlights' ? 'No highlights yet. All activity lists every event.' : 'Nothing has happened yet.'}
+            {lens === 'highlights' ? 'No highlights.' : 'Nothing has happened yet.'}
           </p>
         )}
         {history.days.map((d, di) => {
@@ -154,9 +154,9 @@ const DAY_PAGE = 20;
 
 /** With nothing for a person to do, what the mission is doing (never "Waiting on you"). */
 function executionState(m: MissionBoardModel): string {
-  if (m.live > 0) return `Nothing needs you. ${m.live} ${m.live === 1 ? 'agent is' : 'agents are'} working.`;
-  if (m.upNext.length > 0) return `Nothing needs you. ${m.upNext.length} ${m.upNext.length === 1 ? 'task is' : 'tasks are'} queued next.`;
-  return 'Nothing needs you and nothing is running.';
+  if (m.live > 0) return `${m.live} working`;
+  if (m.upNext.length > 0) return `${m.upNext.length} queued next`;
+  return 'Idle. Nothing queued.';
 }
 
 const EVENT_ICON: Record<FeedEvent['kind'], HistoryIconKind> = {

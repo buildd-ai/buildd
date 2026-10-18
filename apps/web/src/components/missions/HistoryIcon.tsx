@@ -12,7 +12,7 @@ export type HistoryIconKind =
 
 export const HISTORY_ICON_LABEL: Record<HistoryIconKind, string> = {
   filed: 'Filed', plan: 'Planning', start: 'Work started', retry: 'Retry', pr: 'Pull request', merged: 'Merged',
-  done: 'Done', attention: 'Needs your decision', answered: 'You answered', failed: 'Stopped or failed',
+  done: 'Done', attention: 'Has a question', answered: 'You answered', failed: 'Stopped or failed',
   friction: 'Friction report', mission: 'Mission completed',
 };
 

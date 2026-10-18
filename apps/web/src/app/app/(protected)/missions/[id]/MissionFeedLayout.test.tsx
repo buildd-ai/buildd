@@ -95,7 +95,7 @@ describe('MissionFeedLayout: Highlights over delivery episodes', () => {
     expect(icons.length).toBeGreaterThan(2);
     for (const [, , name] of icons) expect(name.length).toBeGreaterThan(2);
     expect(withEpisodes).toMatch(/data-icon="merged"[^>]*aria-label="Merged"/);
-    expect(withEpisodes).toMatch(/data-icon="attention"[^>]*aria-label="Needs your decision"/);
+    expect(withEpisodes).toMatch(/data-icon="attention"[^>]*aria-label="Has a question"/);
   });
 
   it('has no fixed widths that could overflow a 360px or 390px phone', () => {
