@@ -618,6 +618,68 @@ describe('S5 re-review: the red-PR sweep ends a CI repair only on every check pa
   });
 });
 
+describe('AC-66: a merge of the base while a review fix runs (workflow-kernel-library.md §5)', () => {
+  const transitionsOf = (deliveryId: string) => q<{ command: string; to_state: string; evidence: Record<string, unknown> }>(
+    sql`SELECT command, to_state, evidence FROM workflow_transitions WHERE delivery_id = ${deliveryId}::uuid ORDER BY to_version`);
+  const roundRows = (deliveryId: string) => q<{ round: number; head_sha: string; kind: string; status: string; scope: Record<string, unknown> | null }>(
+    sql`SELECT round, head_sha, kind, status, scope FROM workflow_review_rounds WHERE delivery_id = ${deliveryId}::uuid ORDER BY round`);
+
+  test('the base merge is recorded as a foreign push, the fix cannot complete on it, and a delta round scoped to the refresh is queued', async () => {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+
+    // GitHub's update-branch merges the base in: H2 descends from H1 and the PR's own diff is unchanged.
+    gh.head = 'H2'; gh.ancestors = { H2: ['H1'] }; gh.equivalent = [['H1', 'H2']];
+    expect(await observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, deps)).toBe(true);
+    const mid = await loadView({ deliveryId });
+    expect(mid.delivery).toMatchObject({ state: 'FIXING', currentHeadSha: 'H2' });
+    expect(mid.attempts.find((a) => a.family === 'review_fix')!.reportedShas).toEqual([]);
+    const head = (await transitionsOf(deliveryId)).filter((x) => x.command === 'HeadObserved').at(-1)!;
+    expect(head).toMatchObject({ to_state: 'FIXING', evidence: { foreignPush: true, baseOnly: 'compare' } });
+
+    // The fix tries to complete on the base merge: refused, naming why.
+    const refusal = await fixCompletionGate({ task: t, localHeadSha: null }, deps);
+    expect(refusal).toMatchObject({ code: 'repair_base_only', boundHeadSha: 'H1', liveHeadSha: 'H2' });
+
+    // Its worker ends anyway: no delivery of the fix, a round scoped to the refresh at H2.
+    const workerId = await seedWorker(fix.taskId, { status: 'completed' });
+    await attemptEnded({ task: t, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    const after = await loadView({ deliveryId });
+    expect(after.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2', boundAttemptId: null });
+    expect(after.attempts.find((a) => a.family === 'review_fix')).toMatchObject({ status: 'ended', outcome: 'noop' });
+    const [, r2] = await roundRows(deliveryId);
+    expect(r2).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta', status: 'queued' });
+    expect(r2.scope).toMatchObject({ refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } });
+    expect(after.rounds.at(-1)!.trigger).toBe('base_refresh');
+  });
+
+  test('a fix push followed by a base merge: only the fix push is credited and the fix completes on the merged head', async () => {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+
+    gh.head = 'L2'; gh.ancestors = { L2: ['H1'] };
+    await observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'L2', source: 'webhook:synchronize' }, deps);
+    gh.head = 'H3'; gh.ancestors = { L2: ['H1'], H3: ['L2', 'H1'] }; gh.equivalent = [['L2', 'H3']];
+    await observeHead({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, hintedHeadSha: 'H3', source: 'webhook:synchronize' }, deps);
+    expect((await loadView({ deliveryId })).attempts.find((a) => a.family === 'review_fix')!.reportedShas).toEqual(['L2']);
+    expect((await transitionsOf(deliveryId)).filter((x) => x.command === 'HeadObserved').at(-1)!.evidence).toMatchObject({ foreignPush: true, baseOnly: 'compare' });
+
+    expect(await fixCompletionGate({ task: t, localHeadSha: 'L2' }, deps)).toBeNull();
+    const workerId = await seedWorker(fix.taskId, { status: 'completed', lastCommitSha: 'L2' });
+    await attemptEnded({ task: t, workerId, status: 'completed', localHeadSha: 'L2', commitCount: 1, source: 'runner' }, deps);
+    const after = await loadView({ deliveryId });
+    expect(after.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H3' });
+    expect(after.attempts.find((a) => a.family === 'review_fix')).toMatchObject({ outcome: 'delivered' });
+    expect(after.rounds.at(-1)!.trigger).toBe('changes_requested_fix');
+  });
+});
+
 describe('S5 part 3: a verified no-op through the seam (§13.13 rule 4)', () => {
   test('a fix that pushed nothing and claims, with evidence, that an open finding is already fixed ends "no change" and owes a verification round at the same head', async () => {
     const { deliveryId, review } = await openAndHandOn();

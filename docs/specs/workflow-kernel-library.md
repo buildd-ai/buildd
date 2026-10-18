@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1068,8 +1068,12 @@ push, refresh, completion or owner change can make it disappear.
 - Remaining rule-4 deviations: a fix in another directory than the
   finding's, with nothing the feedback names, needs the `fixedElsewhere`
   claim; a finding on a file at the repository root accepts any change (its
-  directory is the root); the gate does not tell a refresh push credited to a
-  running fix (§6.9) from the fix's own; legacy review fixes have no gate.
+  directory is the root); legacy review fixes have no gate.
+- Completion, a head moved only by a merge of the base (AC-66): refused
+  (`repair_base_only`) when the PR's diff against the base is the same at the
+  bound head and the live one (`contentEquivalent`): nothing on the head is
+  the fix's own work. A `fixedElsewhere` claim does not excuse it; a person's
+  applied fix (T23) is not checked. An unread compare is not this refusal.
 - A no-op claim never resolves anything: the attempt ends `noop` (it spends
   the budget) and a verification round at the same head checks the named
   findings. A fix that ends with the head where it was bound (read live; an
@@ -1137,6 +1141,25 @@ push, refresh, completion or owner change can make it disappear.
   approved head). Classifying a pre-test infrastructure failure so no CI fix
   is dispatched at all is not built: the green re-run is what clears it.
 
+- A merge of the base while a review fix runs is never the fix's push
+  (AC-66). §6.9 credits a running attempt with any push that descends from
+  its bound head, and a merge of the base does. The head fact reads whether
+  the move from the held head brought only base commits (`baseOnly`: the
+  platform's own `refresh_branch` pinned to the held head updated the
+  branch, or the PR's diff against the base is unchanged across the move)
+  and, when it did, the push is recorded as foreign (`foreignPush`,
+  `baseOnly` on the transition): it is not added to the attempt's reported
+  heads and addresses no finding, even where the base touched a finding's
+  file. A head the fix itself reported stays its own. At the fix's end the
+  seam reads the same compare from the bound head (`AttemptEnded.baseOnly`):
+  when only base commits moved the PR since the fix started, the fix does not
+  complete on that head whatever outcome it reports. The attempt ends `noop`
+  (it spends the budget, AC-19) and a delta round scoped to the refresh is
+  queued at the head (trigger `base_refresh`, scope `refresh { fromHeadSha,
+  toHeadSha }`); the open verdict and findings stand. A fix that pushed its
+  own work and then had the base merged in is credited with its own push
+  only and completes on the merged head as any fix does.
+
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's
   path and a migration-only push follows THEN one finding is `addressed`, the
@@ -1148,6 +1171,16 @@ push, refresh, completion or owner change can make it disappear.
   no-op evidence WHEN it tries to complete THEN completion is refused, the
   attempt counts against the round limit, the findings stay `open`, and the
   attempt is shown as "no change".
+- AC-66 (failure; implements Living Spec criterion AC-36): GIVEN a running
+  review fix WHEN the PR head moves by a merge of the base only THEN the push
+  is recorded as foreign and not credited to the fix, the fix cannot complete
+  on it (`repair_base_only`; its end is "no change"), and a delta round scoped
+  to the refresh is queued; WHEN the fix pushed its own work before the merge
+  THEN only that push is credited and the fix completes on the merged head.
+
+| Criterion | Verified by |
+|---|---|
+| Criterion AC-66 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-66"; `packages/workflow-kernel/src/reducer.test.ts` › "AC-66"; `apps/web/src/lib/workflow/fix-completion-gate.test.ts` › "AC-66"; `apps/web/tests/db/workflow-seam.test.ts` › "AC-66" |
 
 ## 6. Mission deliveries and epochs
 

@@ -754,6 +754,11 @@ export async function attemptEnded(p: {
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
+  // AC-66: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
+  // its own: the PR's diff at the live head, against the base, is the diff at the bound head.
+  const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
+    ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
+    : false;
   // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
   if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
@@ -779,6 +784,7 @@ export async function attemptEnded(p: {
     ...(changedPaths ? { changedPaths } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
+    ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
@@ -916,7 +922,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
 // ── §9 completion gate ──────────────────────────────────────────────────────
 
 export interface GateRefusal {
-  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff';
+  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff' | 'repair_base_only';
   error: string;
   hint: string;
   boundHeadSha: string | null;
@@ -995,6 +1001,16 @@ export async function fixCompletionGate(p: {
     // re-review, which verifies it like any fix.
     const ctx = ctxOf(p.task);
     const human = ctx.trigger === 'human';
+    // AC-66: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
+    // it is the fix's own work, so it cannot complete on it.
+    if (p.task.deliveryRole === 'fix' && !human && attempt.boundHeadSha && await baseOnlyMove(p.task.workspaceId, d.repoFullName, attempt.boundHeadSha, live, deps, repo)) {
+      return {
+        code: 'repair_base_only',
+        error: `PR #${d.prNumber}'s head moved only by a merge of its base since your fix started at ${attempt.boundHeadSha.slice(0, 7)}: none of the commits on it is your fix.`,
+        hint: 'Fix the findings and push your own commits, then complete again. A merge of the base does not count as the fix.',
+        boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha,
+      };
+    }
     const claim = p.fixedElsewhere && openFindings(view).some((f) => p.fixedElsewhere!.findingIds.includes(f.id)) ? p.fixedElsewhere : null;
     if (p.task.deliveryRole === 'fix' && !human && !claim && attempt.boundHeadSha) {
       const reader = readerFor(deps, repo.installationId);
@@ -1028,6 +1044,21 @@ export async function fixCompletionGate(p: {
     liveHeadSha: live.headSha,
     localHeadSha: p.localHeadSha,
   };
+}
+
+/**
+ * AC-66: did the PR move from `fromSha` to the live head only by base commits? True only on a read
+ * that says the PR's diff against the base is the same at both (`contentEquivalent`); unread is false.
+ */
+async function baseOnlyMove(
+  workspaceId: string, repoFullName: string, fromSha: string, live: LivePr | null, deps: SeamDeps,
+  repo?: { installationId: number } | null,
+): Promise<boolean> {
+  if (!live || live.state !== 'open' || live.merged || live.headSha === fromSha || !live.baseRef) return false;
+  const r = repo ?? await (deps.repoFor ?? workspaceRepo)(workspaceId);
+  const reader = r ? readerFor(deps, r.installationId) : null;
+  if (!reader?.contentEquivalent) return false;
+  return (await reader.contentEquivalent(repoFullName, live.baseRef, fromSha, live.headSha).catch(() => null)) === true;
 }
 
 // ── T9: a fix attempt is claimed ────────────────────────────────────────────
