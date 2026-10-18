@@ -415,11 +415,14 @@ export async function waitForPrReviewStatus(params: {
   waitSeconds?: number;
   deps?: {
     read?: (p: { workspaceId: string; prNumber: number; autoMergeExpected?: boolean; waitFor?: PrReviewWaitFor }) => Promise<PrReviewStatus>;
+    /** A cheap "did anything change" read; null = cannot tell, read in full. Defaults to `prReviewFingerprint` with the real `read` only. */
+    fingerprint?: (p: { workspaceId: string; prNumber: number }) => Promise<string | null>;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
   };
 }): Promise<{ status: PrReviewStatus; timedOut: boolean }> {
   const read = params.deps?.read ?? readPrReviewStatus;
+  const fingerprint = params.deps?.fingerprint ?? (params.deps?.read ? null : prReviewFingerprint);
   const sleep = params.deps?.sleep ?? realSleep;
   const now = params.deps?.now ?? Date.now;
 
@@ -431,16 +434,54 @@ export async function waitForPrReviewStatus(params: {
     autoMergeExpected: params.autoMergeExpected,
     waitFor: params.waitFor,
   };
+  const fpArgs = { workspaceId: params.workspaceId, prNumber: params.prNumber };
 
+  // The wait (spec 3ef37387 R-10): between polls a one-row fingerprint of the
+  // rows the status is read from decides whether to read it again in full.
+  // A full read still happens at least every REVIEW_FULL_READ_MS, so a write
+  // that leaves updated_at alone is late by that much at most, never missed.
+  // The print is taken before the full read it stands for, so a write between the two shows as a change.
+  const takePrint = () => (fingerprint ? fingerprint(fpArgs).catch(() => null) : Promise.resolve(null));
+  // Only a read that may wait pays for a print.
+  let lastPrint: string | null = budgetMs >= REVIEW_POLL_INTERVAL_MS ? await takePrint() : null;
+  let status = await read(readArgs);
+  let lastFullAt = now();
   for (;;) {
-    const status = await read(readArgs);
     if (status.terminal) return { status, timedOut: false };
-
-    const elapsed = now() - startedAt;
-    const remaining = budgetMs - elapsed;
+    const remaining = budgetMs - (now() - startedAt);
     if (remaining < REVIEW_POLL_INTERVAL_MS) return { status, timedOut: true };
     await sleep(REVIEW_POLL_INTERVAL_MS);
+    const print = await takePrint();
+    if (print !== null && print === lastPrint && now() - lastFullAt < REVIEW_FULL_READ_MS) continue;
+    lastPrint = print;
+    status = await read(readArgs);
+    lastFullAt = now();
   }
+}
+
+/** Longest a waiting review read goes without a full read, whatever the fingerprint says. */
+export const REVIEW_FULL_READ_MS = 10_000;
+
+/**
+ * One statement over the rows `readPrReviewStatus` reads: the PR's review
+ * tasks and every worker of the PR or of those tasks, as their newest
+ * `updated_at` and their count. Equal prints mean nothing it reads changed.
+ */
+export async function prReviewFingerprint(p: { workspaceId: string; prNumber: number }): Promise<string | null> {
+  const n = String(p.prNumber);
+  const res = await db.execute(sql`-- pr-review:fingerprint
+    with review as (
+      select ${tasks.id} as id, ${tasks.updatedAt} as updated_at from ${tasks}
+      where ${tasks.workspaceId} = ${p.workspaceId} and ${tasks.category} = 'review' and ${tasks.context}->>'prNumber' = ${n}
+    ), w as (
+      select ${workers.updatedAt} as updated_at from ${workers}
+      where ${workers.workspaceId} = ${p.workspaceId}
+        and (${workers.prNumber} = ${p.prNumber} or ${workers.taskId} in (select id from review))
+    )
+    select (select count(*) from review)::text || ':' || coalesce((select max(updated_at) from review)::text, '-')
+      || '|' || (select count(*) from w)::text || ':' || coalesce((select max(updated_at) from w)::text, '-') as print`);
+  const rows = (Array.isArray(res) ? res : (res as { rows?: unknown[] }).rows ?? []) as Array<{ print?: unknown }>;
+  return typeof rows[0]?.print === 'string' ? rows[0].print : null;
 }
 
 /**
