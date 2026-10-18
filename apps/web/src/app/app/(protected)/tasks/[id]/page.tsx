@@ -424,7 +424,7 @@ export default async function TaskDetailPage({
   const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery, openAttemptRead]);
   // The delivery this task belongs to, started with round 2: the review status
   // below reads the same view when this task owns the PR, so it is read once.
-  const deliveryContextPromise = loadTaskDeliveryContext(task.id);
+  const deliveryContextPromise = loadTaskDeliveryContext(task.id, user.id);
   deliveryContextPromise.catch(() => {});
   const [evidenceReview, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber

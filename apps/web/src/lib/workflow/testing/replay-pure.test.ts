@@ -11,6 +11,7 @@ import { recordedReader, UnansweredRead } from './recorded-github';
 import { buildSteps, isDecisionEffect, outOfBandAttemptEnds, outOfBandEffects, outOfBandFacts, reconstructCommand } from './reconstruct';
 import { isProse, Pseudonymizer, REDACTED, redactProse } from './sanitize';
 import type { AttemptSnapshot, KernelView } from '../types';
+import { reduce, type Command } from '@buildd/workflow-kernel';
 
 const FIXTURE = join(import.meta.dir, 'fixtures/synthetic-corpus.jsonl');
 const SALT = Buffer.alloc(32, 7);
@@ -162,6 +163,24 @@ describe('reconstructCommand', () => {
     const tr = t({ command: 'AttemptEnded', toVersion: 3, toState: 'AWAITING_REVIEW', idempotencyKey: 'end:W', evidence: { outcome: 'success', localHeadSha: 'L', commitCount: 1, live: { headSha: 'H2', state: 'open', merged: false } } });
     const r = reconstructCommand(tr, ctx(delivery(), view('WORKING', 'H1')));
     expect(r).toMatchObject({ ok: true, cmd: { type: 'AttemptEnded', workerId: 'W', taskId: 'o', proof: { liveContainsLocal: true } }, inferred: ['proof.liveContainsLocal'] });
+  });
+
+  test('an approve-and-override is rebuilt as permitted and replays to the same approval', () => {
+    const f = (id: string) => ({ id, originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: `${id}.ts`, line: 1, title: id, required: true, status: 'open', lastRound: 1 }) as never;
+    const escalated: KernelView = { ...view('ESCALATED', 'H1'), findings: [f('a'), f('b')] };
+    const tr = t({
+      command: 'HumanResolve', toVersion: 5, toState: 'APPROVED', idempotencyKey: 'x', actor: 'human:u',
+      evidence: { commitId: 'H1', overriddenFindings: ['a', 'b'] },
+      bypass: { choice: 'approve', reason: REDACTED, actor: 'human:u', escalation: 'review_exhausted', decisionId: 'approve_override:H1:v4', headSha: 'H1', overriddenFindings: ['a', 'b'] },
+    });
+    const r = reconstructCommand(tr, ctx(delivery({ transitions: [tr] }), escalated));
+    expect(r).toMatchObject({ ok: true, cmd: { type: 'HumanResolve', choice: 'approve', commitId: 'H1', hasMergePermission: true, overridePermitted: true, decision: { id: 'approve_override:H1:v4', headSha: 'H1' } } });
+    const dec = reduce(escalated, (r as { cmd: Command }).cmd, { newId: () => 'n' });
+    expect(dec).toMatchObject({ result: 'apply', toState: 'APPROVED', bypass: { overriddenFindings: ['a', 'b'] } });
+
+    // A plain approval named no findings: nothing says the policy allowed an override.
+    const plain = t({ ...tr, evidence: { commitId: 'H1' }, bypass: { choice: 'approve', reason: null, actor: 'human:u' } });
+    expect((reconstructCommand(plain, ctx(delivery({ transitions: [plain] }), escalated)) as { cmd: Command }).cmd).not.toHaveProperty('overridePermitted');
   });
 
   test('a transition the record cannot rebuild says what is missing', () => {
