@@ -2,7 +2,7 @@ import { renderHealthPage } from './_lib/render-health';
 
 export type {
   ScheduleRow, OrphanedPrRow, UsageStats, ConsumptionGroup, ConsumptionStats, RecentFailure,
-  StrandedBackendRow, CredentialHealthItem, BudgetForecast, FailureAnalytics, FailureWindow,
+  StrandedBackendRow, CredentialHealthItem, BudgetForecast, FailureAnalytics, FailureHeadline, FailureWindow,
   GateAnalytics, SubagentMetrics, SubagentDelegationPanel, ErrorPatternMetrics,
   ErrorPatternPanel,
 } from './_lib/health-data';
