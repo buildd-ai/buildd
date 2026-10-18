@@ -14,9 +14,10 @@
  * What the proxy did for those requests still happens: the read rate limit
  * (proxy.ts `apiReadProxy`) is asked first and its 429 is returned as is.
  *
- * Writes, and any GET not in the table, still go over HTTP. Static segments
- * are listed before the dynamic ones they would otherwise match
- * (`/api/workspaces/by-repo` before `/api/workspaces/[id]`).
+ * Writes, and any GET not in the table, still go over HTTP. So does a GET a
+ * route outside the table serves even though a table entry's dynamic segment
+ * would match it (`/api/missions/capabilities`, not the mission named
+ * "capabilities"): see `matchLocalRead`.
  */
 import { NextRequest } from 'next/server';
 
@@ -34,28 +35,78 @@ export interface LocalRead {
  * it imports route modules of every module, which core may not
  * (scripts/module-boundaries.ts). Read once, when the first MCP read runs.
  */
-async function localReads(): Promise<readonly LocalRead[]> {
-  const modules = (await import('@/modules')) as { MCP_LOCAL_READS?: readonly LocalRead[] };
-  return modules.MCP_LOCAL_READS ?? [];
+async function localReads(): Promise<{ table: readonly LocalRead[]; shadows: readonly string[] }> {
+  const modules = (await import('@/modules')) as { MCP_LOCAL_READS?: readonly LocalRead[]; MCP_LOCAL_READ_SHADOWS?: readonly string[] };
+  return { table: modules.MCP_LOCAL_READS ?? [], shadows: modules.MCP_LOCAL_READ_SHADOWS ?? [] };
 }
 
-/** The table entry and dynamic params for a pathname, or null when it goes over HTTP. */
-export function matchLocalRead(pathname: string, table: readonly LocalRead[]): { read: LocalRead; params: Record<string, string> } | null {
+const isDyn = (seg: string) => seg.startsWith(':');
+
+/** Next.js precedence: at the first segment where two patterns differ in kind, the static one wins. */
+function moreSpecific(a: string[], b: string[]): boolean {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (isDyn(a[i]) !== isDyn(b[i])) return !isDyn(a[i]);
+  }
+  return false;
+}
+
+function matchPattern(pat: string[], segs: string[]): Record<string, string> | null {
+  if (pat.length !== segs.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < pat.length; i++) {
+    if (isDyn(pat[i])) {
+      if (!segs[i]) return null;
+      try { params[pat[i].slice(1)] = decodeURIComponent(segs[i]); } catch { return null; }
+    } else if (pat[i] !== segs[i]) return null;
+  }
+  return params;
+}
+
+/**
+ * The table entry and dynamic params for a pathname, or null when it goes over HTTP.
+ *
+ * The entry Next.js itself would route to wins (the most specific, not the
+ * first listed), and a path one of `shadows` matches is never a table entry's:
+ * `shadows` are the routes not in the table that Next.js prefers over an
+ * entry's dynamic segment (`/api/missions/capabilities` over
+ * `/api/missions/:id`). Derived from the routes on disk by `shadowedRoutes`;
+ * lib/mcp-local-reads.test.ts fails when the list in modules.ts drifts.
+ */
+export function matchLocalRead(
+  pathname: string,
+  table: readonly LocalRead[],
+  shadows: readonly string[] = [],
+): { read: LocalRead; params: Record<string, string> } | null {
   const segs = pathname.replace(/\/+$/, '').split('/');
+  if (shadows.some(s => matchPattern(s.split('/'), segs))) return null;
+  let best: { read: LocalRead; params: Record<string, string>; pat: string[] } | null = null;
   for (const read of table) {
     const pat = read.path.split('/');
-    if (pat.length !== segs.length) continue;
-    const params: Record<string, string> = {};
-    let ok = true;
-    for (let i = 0; i < pat.length; i++) {
-      if (pat[i].startsWith(':')) {
-        if (!segs[i]) { ok = false; break; }
-        try { params[pat[i].slice(1)] = decodeURIComponent(segs[i]); } catch { ok = false; break; }
-      } else if (pat[i] !== segs[i]) { ok = false; break; }
-    }
-    if (ok) return { read, params };
+    const params = matchPattern(pat, segs);
+    if (params && (!best || moreSpecific(pat, best.pat))) best = { read, params, pat };
   }
-  return null;
+  return best && { read: best.read, params: best.params };
+}
+
+/**
+ * The routes (table-style paths) Next.js would serve in place of a table
+ * entry for some path the entry's pattern matches: same length, every segment
+ * compatible, and more specific at the first segment that differs in kind.
+ * Routes that are themselves entries are not shadows.
+ */
+export function shadowedRoutes(routes: readonly string[], table: readonly LocalRead[]): string[] {
+  const shape = (p: string) => p.replace(/:[^/]+/g, ':');
+  const entries = new Set(table.map(r => shape(r.path)));
+  return routes.filter(route => {
+    if (entries.has(shape(route))) return false;
+    const r = route.split('/');
+    return table.some(({ path }) => {
+      const t = path.split('/');
+      if (t.length !== r.length) return false;
+      if (!t.every((seg, i) => isDyn(seg) || isDyn(r[i]) || seg === r[i])) return false;
+      return moreSpecific(r, t);
+    });
+  }).sort();
 }
 
 export interface LocalReadDeps {
@@ -65,6 +116,8 @@ export interface LocalReadDeps {
   load?: (read: LocalRead) => Promise<unknown>;
   /** Tests: the table in place of the composition root's. */
   table?: readonly LocalRead[];
+  /** Tests: the shadowed routes in place of the composition root's. */
+  shadows?: readonly string[];
 }
 
 async function defaultGate(req: NextRequest): Promise<Response> {
@@ -78,7 +131,8 @@ async function defaultGate(req: NextRequest): Promise<Response> {
  */
 export async function runLocalRead(url: string, headers: Record<string, string>, deps: LocalReadDeps = {}): Promise<Response | null> {
   const parsed = new URL(url);
-  const m = matchLocalRead(parsed.pathname, deps.table ?? await localReads());
+  const root = deps.table ? null : await localReads();
+  const m = matchLocalRead(parsed.pathname, deps.table ?? root!.table, deps.shadows ?? root?.shadows ?? []);
   if (!m) return null;
   const req = new NextRequest(parsed, { method: 'GET', headers });
   const gated = await (deps.gate ?? defaultGate)(req);

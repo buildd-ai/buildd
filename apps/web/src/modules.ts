@@ -410,7 +410,7 @@ export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hook
 /**
  * The read routes MCP actions run in-process (lib/mcp-local-reads.ts, spec
  * 3ef37387 R-22). Here because it imports route modules of every module.
- * Order matters: first match wins; static segments before dynamic ones.
+ * The most specific entry wins (as Next.js routes), whatever the order.
  */
 export const MCP_LOCAL_READS: readonly LocalRead[] = [
   { path: '/api/tasks', load: () => import('@/app/api/tasks/route') },
@@ -450,4 +450,30 @@ export const MCP_LOCAL_READS: readonly LocalRead[] = [
   { path: '/api/stats/usage', load: () => import('@/app/api/stats/usage/route') },
   { path: '/api/specs/outcomes/:taskId', load: () => import('@/app/api/specs/outcomes/[taskId]/route') },
   { path: '/api/workers/:id', load: () => import('@/app/api/workers/[id]/route') },
+];
+
+/**
+ * Routes outside MCP_LOCAL_READS that Next.js serves in place of an entry's
+ * dynamic segment (`/api/missions/capabilities`, not mission "capabilities"):
+ * a path one of these matches goes over HTTP. Derived from the routes on disk;
+ * lib/mcp-local-reads.test.ts fails, with the list it expects, when this drifts.
+ */
+export const MCP_LOCAL_READ_SHADOWS: readonly string[] = [
+  '/api/artifacts/upload-url',
+  '/api/missions/capabilities',
+  '/api/missions/recent',
+  '/api/missions/stages',
+  '/api/releases/compose',
+  '/api/releases/readiness',
+  '/api/releases/trigger',
+  '/api/tasks/bulk',
+  '/api/tasks/cleanup',
+  '/api/tasks/waiting-input',
+  '/api/workers/active',
+  '/api/workers/claim',
+  '/api/workers/heartbeat',
+  '/api/workers/local-sessions',
+  '/api/workers/mine',
+  '/api/workers/queue',
+  '/api/workspaces/match-repos',
 ];

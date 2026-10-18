@@ -10,7 +10,14 @@
  * Reach: the workspace listing's own rule (lib/workspace-access.ts
  * `listReachableWorkspaceIds`), narrowed for a per-task token to its own
  * workspace, the same as GET /api/tasks. The per-workspace routes' access
- * checks agree with it by construction.
+ * checks agree with it by construction. A workspace-restricted scoped key
+ * reaches this path (lib/token-route-policy.ts) and lists its own workspaces.
+ *
+ * Gates: each list keeps its per-workspace route's. Artifacts and schedules
+ * take any key and a per-task token. Skills, as GET /api/workspaces/[id]/skills,
+ * take an admin key or one scoped `tasks:read` (`hasTokenRouteAdminAccess`),
+ * never a worker-level key or a per-task token, and a token caller's reads
+ * count toward the bulk-read guard (lib/body-read-monitor.ts).
  *
  * Rows are small: an artifact carries a 200-character content preview (the
  * whole body is `GET /api/artifacts/[id]`), a skill carries no body.
@@ -29,6 +36,8 @@ import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { reviewArtifactScope } from '@/lib/artifact-scope';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { bodyReadRefused, noteBodyReads } from '@/lib/body-read-monitor';
 
 const LISTS = ['artifacts', 'schedules', 'skills'] as const;
 type List = (typeof LISTS)[number];
@@ -46,6 +55,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ list
   const account = await authenticateTaskScopedCaller(apiKey, req);
   const user = account ? null : await getCurrentUser();
   if (!account && !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (account && list === 'skills' && !hasTokenRouteAdminAccess(account, req, 'tasks:read')) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   try {
     let workspaceIds = await listReachableWorkspaceIds(account ? { account } : { userId: user!.id });
@@ -54,6 +66,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ list
     const sp = req.nextUrl.searchParams;
     const rows = await LOADERS[list as List](workspaceIds, sp);
     if (rows instanceof NextResponse) return rows;
+    if (account && list === 'skills') {
+      const verdict = await noteBodyReads(account.id, (rows as { id: string }[]).map(r => r.id), 'skills_list');
+      if (!verdict.allowed) return bodyReadRefused();
+    }
     return NextResponse.json({ workspaceCount: workspaceIds.length, [list]: rows });
   } catch (err) {
     console.error(`[workspaces/across/${list}] failed:`, err);
