@@ -7,12 +7,15 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
-import { LOCAL_READS, matchLocalRead, runLocalRead } from './mcp-local-reads';
+import { matchLocalRead as match, runLocalRead } from './mcp-local-reads';
+import { MCP_LOCAL_READS as LOCAL_READS } from '../modules';
+
+const matchLocalRead = (p: string) => match(p, LOCAL_READS);
 
 const APP = join(import.meta.dir, '..', 'app');
 const fileOf = (path: string) => join(APP, ...path.split('/').filter(Boolean).map(s => (s.startsWith(':') ? `[${s.slice(1)}]` : s)), 'route.ts');
 
-describe('LOCAL_READS', () => {
+describe('MCP_LOCAL_READS (the composition root\'s table)', () => {
   it('names a route file that exports GET for every entry, with its own param names', () => {
     for (const r of LOCAL_READS) {
       const file = fileOf(r.path);
@@ -38,13 +41,14 @@ describe('runLocalRead', () => {
   const ok = () => new Response(null, { status: 200 });
 
   it('returns null for a path not in the table (the caller fetches)', async () => {
-    expect(await runLocalRead('http://x/api/not-local', {}, { gate: async () => ok() })).toBeNull();
+    expect(await runLocalRead('http://x/api/not-local', {}, { gate: async () => ok(), table: LOCAL_READS })).toBeNull();
   });
 
   it('runs the route GET with the caller headers and params', async () => {
     let seen: { auth: string | null; id: string } | null = null;
     const res = await runLocalRead('http://x/api/tasks/t1?view=status', { Authorization: 'Bearer k' }, {
       gate: async () => ok(),
+      table: LOCAL_READS,
       load: async () => ({
         GET: async (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => {
           seen = { auth: req.headers.get('authorization'), id: (await ctx.params).id };
@@ -60,6 +64,7 @@ describe('runLocalRead', () => {
     let ran = false;
     const res = await runLocalRead('http://x/api/tasks', {}, {
       gate: async () => new Response('{}', { status: 429, headers: { 'Retry-After': '3' } }),
+      table: LOCAL_READS,
       load: async () => ({ GET: async () => { ran = true; return ok(); } }),
     });
     expect(res!.status).toBe(429);
