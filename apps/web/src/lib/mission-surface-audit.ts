@@ -16,11 +16,11 @@ import {
   touchesUiSurface,
   type SurfaceAuditTrigger,
 } from '@buildd/core/surface-audit';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, visualReviewPolicyOf } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
-import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
@@ -224,6 +224,15 @@ export interface RequestSurfaceAuditOptions {
   /** Why the scheduler filed it, recorded for the task page. */
   reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
   attempt?: number;
+  /**
+   * The mission's tasks in the gate's shape and a repo-link memo, when the
+   * caller (the scheduler's sweep) already holds them: the plan then reads
+   * neither again. Absent, both are read here.
+   */
+  gateTasks?: SurfaceAuditGateTask[];
+  gateRepos?: Map<string, Promise<{ installationId: number; fullName: string } | null>>;
+  /** Whether a person waived the audit (`loadSurfaceAuditWaiver` found one), when the caller already read it. */
+  gateWaived?: boolean;
 }
 
 export type RequestSurfaceAuditResult =
@@ -289,13 +298,18 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
 
   const [targetWorkspace, missionTasks] = await Promise.all([
     db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) }),
-    loadSurfaceAuditGateTasks(missionId),
+    opts.gateTasks ?? loadSurfaceAuditGateTasks(missionId),
   ]);
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
     t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
-  const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
+  const gate = await evaluateSurfaceAuditGate(mission, missionTasks, {
+    // The workspace row is in hand: its policy needs no second read.
+    workspacePolicy: visualReviewPolicyOf(targetWorkspace.gitConfig),
+    ...(opts.gateRepos ? { repos: opts.gateRepos } : {}),
+    ...(opts.gateWaived !== undefined ? { waived: opts.gateWaived } : {}),
+  }).catch(() => null);
   const scopedPaths = Array.from(new Set([
     ...(gate?.required ? gate.uiPaths : []),
     ...builders.flatMap(t => (Array.isArray(t.pathManifest) ? t.pathManifest : [])).filter(p => p !== '**'),

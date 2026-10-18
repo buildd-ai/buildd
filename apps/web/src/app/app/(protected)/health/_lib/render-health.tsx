@@ -8,8 +8,9 @@ import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusBanner, ServiceStatusList } from '@/components/service-status/ServiceStatusList';
 import { HealthClient } from '../HealthClient';
 import { sampleRunnerLanes, resolveRunnerLanesSample } from '../runners/sample-lanes';
-import { loadHealth, type HealthPageKey } from './health-data';
+import { loadHealth, type HealthData, type HealthPageKey } from './health-data';
 import HomeAutoRefresh from '../../home/HomeAutoRefresh';
+
 
 export type HealthSearchParams = Promise<{ workspace?: string; window?: string; failureWindow?: string; state?: string | string[] }>;
 
@@ -22,8 +23,17 @@ function Empty({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** What a page's own header may show from the page's data, without reading it again. */
+export interface HealthTopData {
+  pausedWorkspaces: HealthData['pausedWorkspaces'];
+}
+
 /** Shared body of every Health page: auth, team, the page's data, its sections. */
-export async function renderHealthPage(page: HealthPageKey, searchParams: HealthSearchParams, top?: React.ReactNode) {
+export async function renderHealthPage(
+  page: HealthPageKey,
+  searchParams: HealthSearchParams,
+  top?: React.ReactNode | ((data: HealthTopData) => React.ReactNode),
+) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
@@ -41,7 +51,7 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
     loadServiceStatus({ userId: user.id, teamId: activeTeamId }),
   ]);
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
-  const { laneWorkspaceIds, ...data } = loaded.data;
+  const { laneWorkspaceIds, pausedWorkspaces, ...data } = loaded.data;
   const sample = page === 'runners' && resolveRunnerLanesSample(params.state);
   const runnerLanes = sample ? sampleRunnerLanes(data.now) : data.runnerLanes;
   // The banner on every Health page; the quiet list on Overview, where "what needs attention now" lives.
@@ -49,7 +59,7 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
     <>
       {status.banner && <ServiceStatusBanner status={status.banner} />}
       {page === 'overview' && <ServiceStatusList statuses={status.statuses} />}
-      {top}
+      {typeof top === 'function' ? top({ pausedWorkspaces }) : top}
       {/* The timeline re-renders when a run starts, ends or settles, not only on reload. */}
       {page === 'runners' && !sample && <HomeAutoRefresh workspaceIds={laneWorkspaceIds} />}
     </>
