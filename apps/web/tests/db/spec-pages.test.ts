@@ -11,10 +11,10 @@ import { assertDbConfigured, q, seedWorkspace } from './harness';
 
 process.env.AUTH_SECRET ||= 'spec-pages-test-secret';
 
-const { createSpecDraft, reviseSpecDraft } = await import('../../src/lib/specs/store');
+const { createSpecDraft, listSpecs, reviseSpecDraft } = await import('../../src/lib/specs/store');
 const { approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { diffSpecRevisions } = await import('../../src/lib/specs/diff');
-const { specListView, specPageView } = await import('../../src/lib/specs/page-view');
+const { specListView, specPageView, specTree } = await import('../../src/lib/specs/page-view');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 async function person(teamId: string, role: 'owner' | 'admin' | 'member', name?: string) {
@@ -53,13 +53,18 @@ beforeAll(async () => {
 
 describe('spec list', () => {
   test('is the workspace specs as a tree, saying where each stands', async () => {
-    const v = await specListView(member, wsA);
-    if (v.state !== 'ok') throw new Error('expected ok');
-    const parent = v.specs.find((s) => s.id === parentId)!;
+    // The tree is the list's own shape (specTree over the workspace's specs); the index page reads them flat.
+    const l = await listSpecs(user(member), wsA);
+    if (!l.ok) throw new Error('expected ok');
+    const tree = specTree(l.specs);
+    const parent = tree.find((s) => s.id === parentId)!;
     expect(parent).toMatchObject({ standing: 'approved at revision 1', waiting: 2 });
     expect(parent.children.map((c) => c.id)).toEqual([childId]);
     expect(parent.children[0]).toMatchObject({ standing: 'draft, never approved', waiting: null });
-    expect(v.specs.some((s) => s.id === childId)).toBe(false);
+    expect(tree.some((s) => s.id === childId)).toBe(false);
+    const v = await specListView(member, wsA);
+    if (v.state !== 'ok') throw new Error('expected ok');
+    expect(v.index.map((s) => s.id).sort()).toEqual([parentId, childId].sort());
   });
 
   test('another team reads nothing (AC-23)', async () => {
