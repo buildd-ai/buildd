@@ -472,6 +472,7 @@ const ATTEMPT_SITES: Record<string, AttemptSite[]> = {
     { at: /\.set\(\{ status: 'failed', updatedAt: new Date\(\) \}\)[\s\S]*not\(eq\(tasks\.status, 'cancelled'\)\)/, kind: 'NOT_OWNER', predicate: true, why: 'a sandbox mount gap whose cost exhausts its mission fails the requeued task; an owner is refused by AttemptWithdrawn(failed, no claim) (AC-1 slice 9)' },
     { at: /'effectiveVerdictReason', \$\{copyGate\.reason/, kind: 'NO_STATUS', why: 'the copy review\'s verdict on the reviewer task\'s result' },
     { at: /'effectiveVerdictReason', \$\{serverOverrideReason\}/, kind: 'NO_STATUS', why: 'the server\'s escalation on the reviewer task\'s result' },
+    { at: /'evidenceSha', \$\{evidenceSha\}/, kind: 'NO_STATUS', why: 'the commit the reviewer read its verdict at, on the reviewer task\'s result' },
   ],
   'apps/web/src/app/api/workers/claim/route.ts': [
     { at: /claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending'/, kind: 'NOT_OWNER', predicate: true, why: 'rollBackClaim gives back the route\'s own assigned claim (a fix the kernel deferred, a worker the account cap refused); an owner\'s is AttemptWithdrawn(requeued) on exactly that claim (AC-1 slice 9)' },
