@@ -255,6 +255,15 @@ let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
 export function __setModelAuthPreflightForTest(fn: typeof claudeModelAuthMissing | null): void {
   _modelAuthPreflight = fn ?? claudeModelAuthMissing;
 }
+/**
+ * Test-only: pin the host the isolation record is computed for. Harnesses that
+ * mock the bwrap probe model a Linux host; on a macOS developer machine the
+ * real host detection would instead run the Seatbelt probe and refuse the run.
+ * null restores real detection.
+ */
+export function __setIsolationHostForTest(platform: ReturnType<typeof detectHostPlatform>['platform'] | null): void {
+  _isolationHost = platform === null ? null : { platform, evidence: ['test'] };
+}
 /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
 export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
@@ -3762,7 +3771,7 @@ export class WorkerManager {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
       reply,
-      text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+      text: reply.reason || (reply.disposition === 'hold' ? 'Not sent yet: it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
     };
   }
 

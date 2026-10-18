@@ -22,6 +22,18 @@ describe('reducer', () => {
     expect(s.workers['w-name']).toBeDefined();
   });
 
+  test('a late worker snapshot keeps the stream\'s newer copy of the workers it names (fresher)', () => {
+    let s = fixtureState();
+    s = reduce(s, { type: 'worker_update', worker: { ...WORKERS[1], currentAction: 'Pushed just now' } });
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }, WORKERS[0]], fresher: [WORKERS[1].id] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Pushed just now');
+    expect(s.workers[WORKERS[0].id]).toBeDefined();
+    // Without fresher the snapshot replaces the list, as before.
+    s = reduce(s, { type: 'workers', workers: [{ ...WORKERS[1], currentAction: 'Old snapshot' }] });
+    expect(s.workers[WORKERS[1].id].currentAction).toBe('Old snapshot');
+    expect(Object.keys(s.workers)).toEqual([WORKERS[1].id]);
+  });
+
   test('a claimed task appears under running from one worker_update, no refetch needed (AC-2)', () => {
     let s: TopState = { ...fixtureState(), selectedMission: NO_MISSION };
     expect(rowsByTitle(s)['fix flaky test'].group).toBe('waiting');
@@ -97,12 +109,12 @@ describe('missions pane (R-2)', () => {
     expect(missionStageLine(plain)).toBeNull();
   });
 
-  test('stage words are the rail\'s: on hold in two words, no waiting-on line when there is none', () => {
+  test('stage words are the terms catalog\'s: on_hold reads paused, delivering merging, delivered done; no waiting-on line when there is none', () => {
     const row = (step: any, waitingOn: string | null = null) => ({ key: 'm', title: 'M', done: 0, total: 0, running: 0, planning: false, stage: { step, waitingOn } });
-    expect(missionStageWord(row('on_hold'))).toBe('on hold');
-    expect(missionStageLine(row('delivered'))).toBe('delivered');
-    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('delivering: approve the mission PR');
-    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
+    expect(missionStageWord(row('on_hold'))).toBe('paused');
+    expect(missionStageLine(row('delivered'))).toBe('done');
+    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('merging: approve the mission PR');
+    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 merged');
   });
 
   test('Other tasks is there even with no loose tasks', () => {
@@ -149,7 +161,7 @@ describe('rows (R-3)', () => {
     expect(r['heartbeat name']).toMatchObject({ group: 'running', elsewhere: 'runner', action: 'running on another runner' });
     expect(r['heartbeat name'].workerId).toBeUndefined();
     const spec = { ...fixtureState(), selectedMission: 'm-spec-0000-0000' };
-    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is on hold');
+    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is paused');
   });
 
   test('a full runner, and room to start', () => {

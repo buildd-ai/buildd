@@ -15,6 +15,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
+import { missionGateTerm } from '@buildd/shared';
 import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
@@ -148,8 +149,9 @@ export function formatGetPrDelivery(data: {
     headline: string; detail: string | null;
     review: { line: string } | null;
     repairs: Array<{ label: string; words: string }>;
+    reviewApproval?: { state: string; description: string } | null;
   } | null;
-}): { standingLine: string; reviewLine: string; repairsLine: string } {
+}): { standingLine: string; reviewLine: string; repairsLine: string; approvalLine: string } {
   const d = data.delivery;
   const r = data.reviews ?? {};
   const approved = r.approved ?? 0;
@@ -157,11 +159,13 @@ export function formatGetPrDelivery(data: {
   const github = approved > 0 || changes > 0
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
-  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '' };
+  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '', approvalLine: '' };
   return {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
+    // R-43: the review gate is its own line, never folded into CI.
+    approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
   };
 }
 
@@ -584,6 +588,17 @@ export function describeAccountLimitError(err: unknown): string | null {
 }
 
 /**
+ * The mission start gate (missions.isHeld) as one line, in the terms catalog's
+ * words: Not started until the mission first ran (armedAt null), Paused after.
+ * action=arm lifts either.
+ */
+function missionGateLine(m: { armedAt?: Date | string | null }): string {
+  return m.armedAt
+    ? `${missionGateTerm(m).word}: tasks wait until the mission resumes (action=arm resumes it)`
+    : `${missionGateTerm(m).word}: tasks wait until the mission starts (action=arm)`;
+}
+
+/**
  * Human-readable reply for a claim that returned no workers. The claim route
  * always computes `diagnostics.reason` (and, for an explicit taskId, the gate
  * that excluded it as `diagnostics.taskExclusion`); the old reply discarded it
@@ -612,7 +627,7 @@ export function describeEmptyClaim(data: any, taskId?: string): string {
     if (d.taskExclusion) {
       lines.push(`Task ${taskId} was excluded: ${d.taskExclusion.code}. ${d.taskExclusion.detail}`);
     } else if (d.reason === 'all_candidates_deferred' || d.reason === 'race_lost') {
-      lines.push(`Task ${taskId} is claimable but was held back this poll (see the reason above); try again shortly.`);
+      lines.push(`Task ${taskId} is claimable but was not started this round (see the reason above); try again shortly.`);
     }
   }
   return lines.join('\n');
@@ -1293,11 +1308,11 @@ function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWind
   const nextCall = `context: { frictionSignature: "${lookup.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
 
   if (lookup.known && lookup.supersededOnly) {
-    lines.push(`Known, but only on worker(s) already \`superseded\` when the error landed — ${lookup.count} occurrence(s) in the last ${window}.`);
+    lines.push(`Known, but only on worker(s) already \`superseded\` when the error occurred — ${lookup.count} occurrence(s) in the last ${window}.`);
     lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
     lines.push(`first seen ${lookup.firstSeen} · last seen ${lookup.lastSeen}`);
     if (lookup.exampleTaskId) lines.push(`example task: ${lookup.exampleTaskId}`);
-    lines.push('Not counted against the failure rate — the worker(s) had already been answered/replaced when this landed. See the worker row for details.');
+    lines.push('Not counted against the failure rate — the worker(s) had already been answered/replaced when this happened. See the worker row for details.');
     lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
     return lines.join('\n');
   }
@@ -1467,19 +1482,19 @@ const fmtDuration = (ms: number): string => {
  */
 function formatLandingMetrics(landing: LandingMetrics): string {
   const { timeToLand: t, stuck } = landing;
-  const lines: string[] = [`**PR landing — last ${landing.window}**`];
+  const lines: string[] = [`**PR merges — last ${landing.window}**`];
   lines.push(
     t
-      ? `  time to land (approved + green → merged): p50 ${fmtDuration(t.p50Ms)} · p90 ${fmtDuration(t.p90Ms)} · max ${fmtDuration(t.maxMs)} · ${t.count} measured of ${landing.landed} landed`
-      : `  time to land: no measured landings (${landing.landed} landed, ${landing.unmeasured} unmeasured)`,
+      ? `  time to merge (approved + green → merged): p50 ${fmtDuration(t.p50Ms)} · p90 ${fmtDuration(t.p90Ms)} · max ${fmtDuration(t.maxMs)} · ${t.count} measured of ${landing.landed} merged`
+      : `  time to merge: none measured (${landing.landed} merged, ${landing.unmeasured} unmeasured)`,
   );
-  if (t && landing.unmeasured > 0) lines.push(`  ${landing.unmeasured} landed with no derivable start (excluded from the percentiles)`);
+  if (t && landing.unmeasured > 0) lines.push(`  ${landing.unmeasured} merged with no derivable start (excluded from the percentiles)`);
   lines.push(
     stuck.count > 0
       ? `  stuck: ${stuck.count} PR(s) approved and green for over ${fmtDuration(stuck.thresholdMs)} without merging · oldest ${fmtDuration(stuck.oldestMs ?? 0)}`
       : `  stuck: none past ${fmtDuration(stuck.thresholdMs)}`,
   );
-  lines.push('  Only merges through the landing function are measured; a merge done directly on GitHub is not.');
+  lines.push('  Only merges buildd makes are measured; a merge done directly on GitHub is not.');
   return lines.join('\n');
 }
 
@@ -2399,13 +2414,13 @@ export function describeCreatedTaskState(task: any): string {
   }
   const d = task.dispatch as { status?: string; deliveredVia?: string; deliveredAt?: string | null; handedOffAt?: string | null; target?: string } | undefined;
   if (d?.status === 'delivered' && d.deliveredAt) {
-    return `Created and queued; wake delivered${d.deliveredVia ? ` via ${d.deliveredVia}` : ''} (delivery is not a claim — pickup is asynchronous)`;
+    return `Created and queued; wake received${d.deliveredVia ? ` via ${d.deliveredVia}` : ''} (a received wake is not a claim — pickup is asynchronous)`;
   }
   if (d?.status === 'handed_off' || d?.handedOffAt) {
-    return `Created and queued; dispatch handed off${d.target ? ` to ${d.target}` : ''} (not yet confirmed delivered — pickup is asynchronous)`;
+    return `Created and queued; dispatch handed off${d.target ? ` to ${d.target}` : ''} (not yet confirmed received — pickup is asynchronous)`;
   }
   if (d?.status === 'pending' || d?.status === 'delivering') {
-    return 'Created and queued; dispatch enqueued, wake not yet delivered (pickup is asynchronous)';
+    return 'Created and queued; dispatch enqueued, wake not yet received (pickup is asynchronous)';
   }
   return 'Created and queued; pickup is asynchronous';
 }
@@ -3591,7 +3606,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const { standingLine, reviewLine, repairsLine } = formatGetPrDelivery(data);
+      const { standingLine, reviewLine, repairsLine, approvalLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3611,7 +3626,7 @@ export async function handleBuilddAction(
       const supersededLine = pr.supersededByPrNumber
         ? `Superseded by: PR #${pr.supersededByPrNumber}${pr.supersededByPrUrl ? ` (${pr.supersededByPrUrl})` : ''} — ${pr.supersededReason ?? 'no reason recorded'}`
         : (pr.state === 'closed_unmerged'
-          ? 'Closed without merging — no supersession recorded (record_pr_supersession if the work shipped elsewhere)'
+          ? 'Closed without merging — no supersession recorded (record_pr_supersession if the work merged in another PR)'
           : '');
 
       const commentsSection = includeComments
@@ -3679,6 +3694,7 @@ export async function handleBuilddAction(
         standingLine,
         ciLine,
         failingLine,
+        approvalLine,
         reviewLine,
         repairsLine,
         statsLine,
@@ -3809,7 +3825,7 @@ export async function handleBuilddAction(
       return text(
         `PR #${data.supersededPrNumber} recorded as superseded by ${data.supersedingRepo && params.supersedingRepo ? `${data.supersedingRepo}#` : 'PR #'}${data.supersedingPrNumber}.\n`
         + `**Successor:** ${data.supersedingPrUrl}\n`
-        + `canCompleteMission, get_pr, get_task and explain now treat PR #${data.supersededPrNumber}'s deliverable as shipped.`,
+        + `canCompleteMission, get_pr, get_task and explain now treat PR #${data.supersededPrNumber}'s work as merged in ${data.supersedingRepo && params.supersedingRepo ? `${data.supersedingRepo}#` : 'PR #'}${data.supersedingPrNumber}.`,
       );
     }
 
@@ -3973,7 +3989,7 @@ export async function handleBuilddAction(
                 method: 'POST',
                 body: JSON.stringify({ message: deliveryMessage, priority: 'urgent' }),
               });
-              workerNote = `\nNOTE: Description change auto-delivered to worker ${activeWorker.id} (${activeWorker.status}) as an urgent message.`;
+              workerNote = `\nNOTE: Description change auto-sent to worker ${activeWorker.id} (${activeWorker.status}) as an urgent message.`;
               // Fire-and-forget: record the delivery on the task feed.
               api(noteEndpoint, {
                 method: 'POST',
@@ -5089,7 +5105,7 @@ export async function handleBuilddAction(
         return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
       }
 
-      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered at your next turn boundary (or call receive_messages).` : ''}`);
+      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply reaches you at your next turn boundary (or call receive_messages).` : ''}`);
     }
 
     case 'create_artifact': {
@@ -6297,7 +6313,7 @@ export async function handleBuilddAction(
             const createdLine = m.createdAt
               ? `\n  Created: ${new Date(m.createdAt).toISOString()}`
               : '';
-            return `- **${m.title}** [${m.status}]${m.isHeld ? ' [HELD]' : ''}${m.executor === 'local' ? ' [LOCAL]' : ''} — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
+            return `- **${m.title}** [${m.status}]${m.isHeld ? ` [${missionGateTerm(m).word} · isHeld]` : ''}${m.executor === 'local' ? ' [LOCAL]' : ''} — ${m.progress}% (${m.completedTasks}/${m.totalTasks} tasks)\n  ID: ${m.id}${m.workspace ? `\n  Workspace: ${m.workspace.name}` : ''}${activityLine}${createdLine}`;
           }).join('\n\n');
           return text(`${missions.length} mission(s), most recent activity first:\n\n${summary}${truncated}`);
         }
@@ -6354,7 +6370,7 @@ export async function handleBuilddAction(
             : data.heartbeatInfo
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
-          const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
+          const heldInfo = data.isHeld ? `\n${missionGateLine(data)}` : '';
           const executorInfo = data.executor === 'local' ? `\nExecutor: ${LOCAL_EXECUTOR}` : '';
 
           // Same prior-work surfacing as create_task — best-effort, never fails
@@ -6411,7 +6427,7 @@ export async function handleBuilddAction(
             ? `\nPacing: max ${data.pacingMaxPerHour ?? 1} task(s)/hr${data.lastTaskStartedAt ? ` (last start ${new Date(data.lastTaskStartedAt).toISOString()})` : ''}`
             : '';
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
-          const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
+          const heldInfo = data.isHeld ? `\n${missionGateLine(data)}` : '';
           const executorInfo = `\nExecutor: ${data.executor === 'local' ? LOCAL_EXECUTOR : 'runner — background runners claim its tasks'}`;
           // Deliveries (workflow-kernel-library §6): a merged delivery is a fact beside the mission's state, not its verdict.
           const deliveriesArr: any[] = Array.isArray(data.deliveries) ? data.deliveries : [];
@@ -6421,7 +6437,7 @@ export async function handleBuilddAction(
             : '';
           const scopeArr: any[] = Array.isArray(data.scopeUpdates) ? data.scopeUpdates : [];
           const scopeInfo = scopeArr.length > 0
-            ? `\nScope updates: ${scopeArr.slice(-3).map((u: any) => u.status === 'held' ? `task ${String(u.taskId ?? '').slice(0, 8)} on hold for a decision (${u.reason ?? 'unclear'})` : `version ${u.scopeVersion} from task ${String(u.taskId ?? '').slice(0, 8)}`).join('; ')}`
+            ? `\nScope updates: ${scopeArr.slice(-3).map((u: any) => u.status === 'held' ? `task ${String(u.taskId ?? '').slice(0, 8)} waiting on a decision (${u.reason ?? 'unclear'})` : `version ${u.scopeVersion} from task ${String(u.taskId ?? '').slice(0, 8)}`).join('; ')}`
             : '';
 
           // goalCriteria + autoVerify + last evaluation state
@@ -6454,7 +6470,7 @@ export async function handleBuilddAction(
             }
           }
 
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${description ? `Description: ${description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${deliveryInfo}${scopeInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ` [${missionGateTerm(data).word} · isHeld]` : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${description ? `Description: ${description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${deliveryInfo}${scopeInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           // No UUID missionId: the mission is FOUND by title (missionId, else
@@ -6511,7 +6527,7 @@ export async function handleBuilddAction(
             method: 'PATCH',
             body: JSON.stringify(body),
           });
-          const heldStatus = data.isHeld ? ' [HELD — tasks not claimable]' : '';
+          const heldStatus = data.isHeld ? ` [${missionGateTerm(data).word} · isHeld]` : '';
           const localStatus = data.executor === 'local' ? ' [LOCAL — runs in a local session]' : '';
           return text(`Mission updated: "${data.title}" [${data.status}]${heldStatus}${localStatus} (ID: ${data.id})`);
         }

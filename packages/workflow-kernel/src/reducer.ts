@@ -1234,6 +1234,19 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           ...(gate.reasons[0] ? { statusDetail: gate.reasons[0] } : {}),
         });
       }
+      if (cmd.outcome === 'held') {
+        // §4 merge holds: GitHub waits on a required check that has not passed yet. The merge
+        // effect waits on it itself; it says so here only when it stops waiting.
+        const hold = { check: cmd.hold?.check ?? null, heldForMs: cmd.hold?.heldForMs ?? null, ...(cmd.hold?.lasting ? { lasting: true } : {}) };
+        if (!hold.lasting) return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence: { ...evidence, hold } });
+        const detail = cmd.detail ?? `GitHub kept the merge waiting on ${hold.check ? `required check "${hold.check}"` : 'a required check'}`;
+        return c.apply(key, 'ESCALATED', {
+          guardHead: true, patch: { stateReason: 'landing_needs_human' },
+          effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing_hold:${cmd.headSha}:${cmd.landingVersion ?? 'x'}`, payload: { event: 'landing_needs_human', detail, check: hold.check } }],
+          evidence: { ...evidence, hold },
+          statusDetail: detail,
+        });
+      }
       if (cmd.outcome === 'refused') {
         return c.apply(key, 'ESCALATED', {
           guardHead: true, patch: { stateReason: 'landing_needs_human' },
@@ -2515,7 +2528,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
       const why = tolerance && !tolerance.tolerated ? tolerance : null;
       const because = why ? (why.cause === 'refresh_unsafe' ? `; ${why.reason}, so a green on an older base is not proof` : `; ${why.reason}`) : '';
       const detail = finalCycle
-        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
+        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to merge it (merge anyway past freshness, or wait for a quiet base)`
         : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES})${because}; landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,

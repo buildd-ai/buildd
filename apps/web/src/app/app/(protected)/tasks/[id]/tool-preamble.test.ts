@@ -66,6 +66,8 @@ describe('describeOp / describeOps', () => {
     ['Bash', 'Ran commands'],
     ['Grep', 'Searched code'],
     ['frobnicate', 'Ran frobnicate'],
+    ['complete', 'Finished'],
+    ['complete_mission', 'Finished mission'],
   ])('%s → %s', (op, label) => {
     expect(describeOp(op)).toBe(label);
   });

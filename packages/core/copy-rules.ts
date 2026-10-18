@@ -32,7 +32,8 @@ export type CopyRuleId =
   | 'em-dash'
   | 'failed-to'
   | 'shouting-tag'
-  | 'state-jargon';
+  | 'state-jargon'
+  | 'catalog-word';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -54,6 +55,8 @@ export const DUPLICATE_MIN_WORDS = 6;
 
 /** A string longer than this is an explanation, not UI copy. */
 export const LONG_COPY_WORDS = 30;
+
+import { bannedWordsIn } from '@buildd/shared';
 
 const re = (r: RegExp) => (t: string) => r.test(t);
 
@@ -232,6 +235,14 @@ export const COPY_RULES: CopyRule[] = [
     why: 'Held, armed, claimed, polled, leased and raw status values are how the system talks to itself. Say what is happening in the reader\u2019s terms. Operator screens (Health) are exempt by path.',
     bad: 'Held for review until the gate is armed.',
     good: 'Waiting for review.',
+  },
+  {
+    id: 'catalog-word',
+    name: 'State word outside the terms catalog',
+    test: (t) => bannedWordsIn(t).length > 0,
+    why: 'Every state a person reads comes from packages/shared/src/terms.ts (docs/design/terms.md). Held, landed, landing, shipped, delivered and Completed each cover facts the catalog names apart.',
+    bad: 'Mission is on hold',
+    good: 'Not started',
   },
   {
     id: 'duplicate-explanation',

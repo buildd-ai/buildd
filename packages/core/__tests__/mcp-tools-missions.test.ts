@@ -807,7 +807,7 @@ describe('manage_missions get — deliveries and scope updates text', () => {
         { taskId: 'dddddddd-3', status: 'applied', scopeVersion: 4 },
       ],
     });
-    expect(out).toContain('Scope updates: version 3 from task bbbbbbbb; task cccccccc on hold for a decision (needs a decision); version 4 from task dddddddd');
+    expect(out).toContain('Scope updates: version 3 from task bbbbbbbb; task cccccccc waiting on a decision (needs a decision); version 4 from task dddddddd');
     expect(out).not.toContain('aaaaaaaa');
   });
 
@@ -817,5 +817,67 @@ describe('manage_missions get — deliveries and scope updates text', () => {
       expect(out).not.toContain('Deliveries:');
       expect(out).not.toContain('Scope updates:');
     }
+  });
+});
+
+// The start gate (missions.isHeld) reads in catalog words, never "held": Not
+// started until the mission first ran (armedAt null), Paused after. The raw
+// field name stays beside the word for agents.
+describe('manage_missions — the start gate in catalog words', () => {
+  const MISSION_ID = '00000000-0000-0000-0000-0000000000cc';
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+  const run = (params: Record<string, unknown>) =>
+    handleBuilddAction(mockApi as unknown as ApiFn, 'manage_missions', params, createMockContext());
+  const row = (extra: Record<string, unknown>) => ({ id: MISSION_ID, title: 'M', status: 'active', progress: 0, completedTasks: 0, totalTasks: 0, tasks: [], ...extra });
+  const noHeld = (out: string) => {
+    expect(out).not.toMatch(/\bheld\b/i);
+    expect(out).not.toMatch(/start mode/i);
+  };
+
+  it('list: a mission that never ran reads Not started, one that ran reads Paused', async () => {
+    mockApi.mockResolvedValueOnce({ missions: [row({ title: 'Fresh', isHeld: true, armedAt: null }), row({ title: 'Ran', isHeld: true, armedAt: '2030-01-01T00:00:00.000Z' })], total: 2 });
+    const out = (await run({ action: 'list' })).content[0].text;
+    expect(out).toContain('**Fresh** [active] [Not started · isHeld]');
+    expect(out).toContain('**Ran** [active] [Paused · isHeld]');
+    expect(out).not.toContain('[HELD');
+  });
+
+  it('get: the tag and the gate line name the way out', async () => {
+    mockApi.mockResolvedValueOnce(row({ isHeld: true, armedAt: null }));
+    const fresh = (await run({ action: 'get', missionId: MISSION_ID })).content[0].text;
+    expect(fresh).toContain('**M** [active] [Not started · isHeld]');
+    expect(fresh).toContain('\nNot started: tasks wait until the mission starts (action=arm)');
+    expect(fresh).not.toContain('[HELD');
+    expect(fresh).not.toContain('Start mode');
+
+    mockApi.mockResolvedValueOnce(row({ isHeld: true, armedAt: '2030-01-01T00:00:00.000Z' }));
+    const paused = (await run({ action: 'get', missionId: MISSION_ID })).content[0].text;
+    expect(paused).toContain('**M** [active] [Paused · isHeld]');
+    expect(paused).toContain('\nPaused: tasks wait until the mission resumes (action=arm resumes it)');
+    expect(paused).not.toContain('Start mode');
+  });
+
+  it('create: a mission created in the held start mode reads Not started', async () => {
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'M', status: 'active', priority: 0, isHeld: true, armedAt: null });
+    const out = (await run({ action: 'create', title: 'M', startMode: 'held' })).content[0].text;
+    expect(out).toContain('Not started: tasks wait until the mission starts (action=arm)');
+    noHeld(out);
+  });
+
+  it('update: the status tag reads the catalog word and how to start it', async () => {
+    mockApi.mockResolvedValueOnce({ version: 1, capabilities: ['startMode', 'pacing', 'executor'] });
+    mockApi.mockResolvedValueOnce({ id: MISSION_ID, title: 'M', status: 'active', isHeld: true, armedAt: '2030-01-01T00:00:00.000Z' });
+    const out = (await run({ action: 'update', missionId: MISSION_ID, startMode: 'held' })).content[0].text;
+    expect(out).toContain('Mission updated: "M" [active] [Paused · isHeld]');
+    noHeld(out);
+  });
+
+  it('a mission that is not gated carries no gate tag', async () => {
+    mockApi.mockResolvedValueOnce(row({ isHeld: false, armedAt: null }));
+    const out = (await run({ action: 'get', missionId: MISSION_ID })).content[0].text;
+    expect(out).not.toContain('Not started');
+    expect(out).not.toContain('isHeld');
   });
 });

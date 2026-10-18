@@ -71,7 +71,7 @@ export const IN_FLIGHT_GROUP_COPY: Record<InFlightKind, { chip: string; detail: 
   'ci-running': { chip: 'CI running', detail: 'Waiting on checks' },
   'review-running': { chip: 'Reviewing', detail: 'A reviewer is checking the latest commit' },
   'auto-merge': { chip: 'Auto-merging', detail: 'Merges when checks pass' },
-  'docfix-rerun': { chip: 'Doc fixes shipped', detail: 'Waiting on the conformance re-run' },
+  'docfix-rerun': { chip: 'Doc fixes merged', detail: 'Waiting on the conformance re-run' },
   other: { chip: 'In flight', detail: '' },
 };
 

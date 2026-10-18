@@ -362,7 +362,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       <span className="block text-sm text-text-primary">Release candidates</span>
                       <span className="block text-xs text-text-muted mt-0.5">
                         Versioned release PRs from your release workflow skip re-review of already-reviewed changes.
-                        Shipped once production runs the merge.
+                        Released once production runs the merge.
                       </span>
                     </span>
                   </label>

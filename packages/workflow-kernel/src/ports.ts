@@ -83,6 +83,11 @@ export interface ClaimedEffect extends EffectSnapshot {
   dedupeKey: string;
   payload: Record<string, unknown>;
   attemptCount: number;
+  /**
+   * How long ago the row was written, by the store's own clock (ms). The merge effect
+   * bounds a merge hold by it; absent (a store that does not say) never ends a hold by age.
+   */
+  ageMs?: number;
 }
 
 export interface FollowupEffect {
@@ -168,6 +173,11 @@ export interface Store {
   releaseSettledLanes(deliveryId: string): Promise<LaneKey[]>;
   /** Make the oldest parked refresh on this lane due now; returns its delivery. */
   wakeNextLaneWaiter(k: LaneKey): Promise<string | null>;
+  /**
+   * §4 merge holds: make this delivery's held `merge_call` for `headSha` (a pending row
+   * whose outcome is `held:…`) due now. Returns how many rows it woke.
+   */
+  wakeHeldMerges(deliveryId: string, headSha: string): Promise<number>;
 }
 
 // ── GitHub ──────────────────────────────────────────────────────────────────
@@ -177,7 +187,7 @@ export interface GithubFactReader {
   /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
   readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
   /** The latest commit status of `context` on `sha` (state and description); null = none or unreadable. */
-  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null>;
+  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string; targetUrl?: string | null } | null>;
   /** Compare API: is `ancestorSha` contained in `headSha`? */
   contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
   /**
@@ -244,6 +254,8 @@ export interface MergeAnswer {
   detail?: string;
   /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO); null or absent = no wait asked. */
   retryAt?: string | null;
+  /** `held`: the required check GitHub named as not passed yet; null when it gave only a count. */
+  check?: string | null;
 }
 
 export interface PostedReview {
@@ -258,7 +270,8 @@ export interface GithubWrites {
   /**
    * Merge only if the PR's head is still `headSha`. The host reads GitHub's
    * answer into the outcome (a moved head or a rate limit is `not_merged`, a
-   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`); the
+   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`, a
+   * required check that has not passed yet `held` with the check); the
    * kernel verifies anything but a definite refusal with a live read.
    */
   mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }): Promise<MergeAnswer>;
@@ -344,6 +357,18 @@ export interface Work {
   cancelPending(p: { deliveryId: string; role: string; reason: string; summary: string; keepTaskId?: string | null }): Promise<number>;
   /** Tell a filed task (and whoever runs it now) what it was not filed with. Idempotent per `marker`. */
   steer(taskId: string, p: { marker: string; note: string }): Promise<void>;
+}
+
+// ── Links ───────────────────────────────────────────────────────────────────
+
+/** Where in the host a person acts on a delivery. */
+export interface Links {
+  /**
+   * The page showing this delivery's review and its findings: the
+   * `Buildd / Review approval` status's target, so GitHub's Details link goes
+   * somewhere a person can act. Null publishes the status without one.
+   */
+  review(d: DeliverySnapshot): string | null;
 }
 
 // ── Notify ──────────────────────────────────────────────────────────────────
@@ -675,6 +700,8 @@ export interface KernelPorts {
   handOff?: HandOff;
   /** The merge rails the `merge_call` effect reads at merge time. Required to merge: without it the effect refuses (and retries). */
   rails?: Rails;
+  /** Where a person acts on a delivery; absent publishes the review status with no link. */
+  links?: Links;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */

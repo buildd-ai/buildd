@@ -16,6 +16,7 @@ import { resolvePrRepo } from '@/lib/repo-scope';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { buildTaskEvidence, summarizeCheckRuns, type EvidenceTrace } from '@/lib/task-evidence';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 
 const TRACE_LIMIT = 200;
 const CI_LOOKUP_TIMEOUT_MS = 4000;
@@ -85,8 +86,11 @@ export async function persistTaskEvidence(
           .limit(TRACE_LIMIT);
     const traces: EvidenceTrace[] = rows;
 
-    const prNumber = (typeof result.prNumber === 'number' ? result.prNumber : null) ?? worker?.prNumber ?? null;
-    const prUrl = (typeof result.prUrl === 'string' ? result.prUrl : null) ?? worker?.prUrl ?? null;
+    // The task's PR, derived on read (workflow/task-pr.ts); the stored result and this worker's row
+    // only when that read has nothing.
+    const taskPr = await taskPrOf(taskId);
+    const prNumber = taskPr?.prNumber ?? (typeof result.prNumber === 'number' ? result.prNumber : null) ?? worker?.prNumber ?? null;
+    const prUrl = taskPr?.prUrl ?? (typeof result.prUrl === 'string' ? result.prUrl : null) ?? worker?.prUrl ?? null;
 
     let ciChecks: TaskEvidence['ciChecks'] | null = null;
     if (prNumber != null) {

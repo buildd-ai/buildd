@@ -28,7 +28,7 @@ export const INITIATIVE_STATUS_LABEL: Record<InitiativeStatus, string> = {
   planned: 'Planned',
   active: 'Active',
   paused: 'Paused',
-  completed: 'Completed',
+  completed: 'Done',
   archived: 'Archived',
 };
 
@@ -321,7 +321,7 @@ export const SECTION_LABEL: Record<InitiativeSection, string> = {
   active: 'Active',
   planned: 'Planned',
   paused: 'Paused',
-  completed: 'Completed',
+  completed: 'Done',
 };
 
 export interface InitiativeGroup {

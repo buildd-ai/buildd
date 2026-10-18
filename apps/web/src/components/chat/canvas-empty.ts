@@ -200,7 +200,7 @@ export function canvasHero(input: { pulse: CanvasPulse | null | undefined; name:
 
 const START: CanvasSuggestion = { label: 'Start something new', text: 'I want to build ', send: false };
 const RUNNING: CanvasSuggestion = { label: "What's running right now?", text: "What's running right now?", send: true };
-const SHIPPED: CanvasSuggestion = { label: 'What shipped this week?', text: 'What shipped this week?', send: true };
+const SHIPPED: CanvasSuggestion = { label: 'What got done this week?', text: 'What got done this week?', send: true };
 
 export function canvasSuggestions(
   entry: { intent: 'mission' | 'task' | null; about: 'mission' | 'task' | null },

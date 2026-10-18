@@ -2,13 +2,13 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-17
+last_verified: 2026-10-18
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -682,7 +682,15 @@ recorded as such, never as an approval.
   when the kernel would land that head (approved or landing, covered, no open
   verdict), `pending` while review of that head has not finished (so ongoing
   review never reads as failing CI), and `failure` while a required finding is
-  open, a verdict stands against the head, or a person has to decide. One effect per delivery version; only the newest
+  open, a verdict stands against the head, or a person has to decide. Its
+  description leads with one plain term (R-43): "Review in progress",
+  "Changes requested", "Unresolved review finding: <the finding>", "Ready to
+  merge" or "Merge blocked: <reason>", clipped to GitHub's 140 characters; it
+  never says "land" (internal names keep it). Its target URL is the host's
+  page for the delivery's review and findings (the optional `Links` port;
+  buildd links the owner task on the app's public name), so GitHub's Details
+  link is somewhere a person can act. `get_pr` prints the same description on
+  its own `Review approval:` line, apart from `CI:`. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
   never leaves a success standing. It is one GitHub App and one commit-status
@@ -693,6 +701,17 @@ recorded as such, never as an approval.
   `release candidate verified`, `dev` has no rule, and admins are not
   enforced, so a manual GitHub merge on `dev` over an open finding is not
   blocked; it is recorded as an external merge, AC-15), taken once every open PR carries it.
+- A merge GitHub holds on a required check is a wait, never a person's (merge
+  holds). GitHub's 405 "Required status check ... is expected / in progress /
+  pending" is the outcome `held`, not a refusal: the delivery stays `LANDING`
+  with its approval standing, nobody is notified, and the merge is asked again
+  with backoff and as soon as a check reports on that head. Only a hold that
+  outlives its bound, or one on `Buildd / Review approval` for a head the
+  kernel will not turn green (a person's override past the review), is
+  `ESCALATED(landing_needs_human)`, naming the check. A failing required check
+  stays a refusal. The merge is never asked for before the head's own
+  `Buildd / Review approval` success is on GitHub and read back. The release
+  doors hold on the same answer instead of failing the release.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
@@ -720,8 +739,9 @@ recorded as such, never as an approval.
   A refusal is T16 `gate_refused`: a rail that clears by waiting (pending CI, a
   hold) leaves the approval standing (`APPROVED`); a lasting one (protected
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
-  notified, with the rail named on `buildd/landing`. The status is written only
-  when GitHub does not already show it, and re-checked after writing so the
+  notified, with the rail named on `Buildd / Review approval` ("Merge blocked:
+  <rail>"). The status is written only when GitHub does not already show it
+  (state, description and, when the reader reports it, the link), and re-checked after writing so the
   newest version wins across drains. The mission-PR hold is a rail too, and
   lasting when only a person or a new fact changes it: a refresh on a branch it
   was not filed for, or a task PR on a shipped delivery with no current one to
@@ -741,6 +761,28 @@ recorded as such, never as an approval.
   merge-state pass (and the daily full pass) sweeps held tasks (`apps/web/src/lib/held-pr-tasks.ts`): a merged or closed
   PR settles, a green open one is retried through the release-on-green door,
   and a task still held after 24 sweeps fails with the reason.
+- Merge holds (`packages/workflow-kernel/src/merge-hold.ts`): the host reads
+  GitHub's answer with `requiredCheckHold` (`apps/web/src/lib/required-check-hold.ts`)
+  into `MergeAnswer { outcome: 'held', check }`. `merge_call` parks its own
+  outbox row (no attempt spent, outcome `held:required_check:<check>`), due
+  again after 30 s doubling to 10 min with the row's age (`ClaimedEffect.ageMs`,
+  the store's clock), so the floor drain retries it with no wake. At
+  `MERGE_HOLD_MAX_MS` (2 h from the landing request) it applies T16 `held`
+  with `lasting`, which escalates and names the check on the status and in the
+  notice; a `held` that is not lasting returns to `APPROVED`. Before the merge
+  call, `merge_call` publishes the head's `success` under both names when
+  GitHub does not already show it and reads it back; a success GitHub does not
+  show yet parks the row the same way (`held:own_status:…`). A green check
+  suite (`observeCiGreen`) or a commit status `success` on a `LANDING` head
+  (the webhook's `status` case, buildd's own contexts skipped) wakes the held
+  row (`Store.wakeHeldMerges`) and drains the delivery where the kernel is
+  hosted. A door asking meanwhile is told the merge is held and on what
+  (`reason: merge_held`). Release doors: `mergeReleasePrPinned` answers
+  `refused: 'required_check'` with `hold: true`, so the release executor
+  returns `pending_ci`; the release-on-green door leaves the task held. A held
+  release is bounded by the held-release sweep above. The GitHub App must be
+  subscribed to the Commit status event for the `status` wake; without it the
+  check-suite wake and the backoff still retry.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
@@ -755,7 +797,8 @@ recorded as such, never as an approval.
 **Acceptance criteria**:
 - AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked
   to merge it THEN the merge is refused with the finding named, and the
-  `buildd/landing` status at that head is `failure`.
+  `Buildd / Review approval` status at that head is `failure` reading
+  "Unresolved review finding: <the finding>".
 - AC-14: GIVEN an approval at head A WHEN head B is pushed before the merge
   effect runs THEN the effect re-reads, sees B, and does not merge.
 - AC-15: GIVEN a person merges on GitHub over an open finding WHEN the webhook
@@ -770,9 +813,18 @@ recorded as such, never as an approval.
   `ESCALATED(landing_needs_human)` once with the hold named, nothing merges,
   and the sweep does not request landing again for that head; a CI-fix
   attempt's worker on the PR gets the same answer as its owner.
+- AC-36 (failure): GIVEN an approved kernel-owned PR WHEN GitHub refuses the
+  merge because a required check has not passed yet THEN the delivery stays
+  `LANDING` with the approval standing and nobody notified, the merge is asked
+  again once a check reports on that head (or after its backoff), and only a
+  hold past its bound is `ESCALATED(landing_needs_human)` naming the check; the
+  merge call never runs before the head's own `Buildd / Review approval`
+  success is on GitHub; a release door holds the release on the same answer
+  instead of failing it.
 
 | AC | Test |
 | --- | --- |
+| Criterion AC-36 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
 | Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
@@ -915,6 +967,12 @@ push, refresh, completion or owner change can make it disappear.
   round is a round like any other: it uses one of the delivery's `maxRounds`
   (unless it re-checks a head after an approval, which spends none:
   workflow-state-kernel.md §8.2, c1d66a6a).
+  The kept approval covers only the head it judged: approved at H1, and the
+  owner pushes H2 and ends, H2 is reviewed and does not land on H1's word. When the
+  owner's end leaves the delivery `APPROVED` at the same head, the seam marks the PR
+  due on the landing sweep's queue, so landing is re-evaluated at once instead of
+  waiting for a person or the floor (the landing door had deferred while the delivery
+  was `WORKING`, and nothing else woke it).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
@@ -1358,6 +1416,21 @@ column outside the kernel; S3 and S4 remove or route each one.
   that is down or too old to project, a delivery the kill switch released, or
   a release held for CI (no end is sent) still leaves the task settled. A
   release that fails still writes `failed` itself.
+  A task's PR is derived on read, never snapshotted (`task-pr.ts`): its own
+  delivery's PR when it owns one, else its newest attempt worker row that
+  carries a PR, else a placeholder row (an adopted PR, a person's attach),
+  else what `result` stored before this. The sibling row a second PR from one
+  worker gets is a placeholder, so it never displaces the attempt's own PR.
+  No attempt writer puts `prUrl` / `prNumber` into `result` (the worker
+  PATCH's completion, the cleanup promotion, the reaper's promotion); the
+  guard fails on one that does. So an end that lands late on a task that was
+  requeued and claimed again cannot put the old attempt's PR back, and a loop
+  exit that replaces `result` no longer erases the PR. Every reader goes
+  through it: `get_task` and the task page, the mission sheet, the terminal
+  audit list, mission and heartbeat context, the completion callback, the
+  evidence record and the attach guard. No write statement dropped with it:
+  each still writes `status` or other `result` keys, so the attempt ceiling
+  is unchanged until the reaper, requeue and claim families move.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the other attempt writers (the worker PATCH's requeues and failure
   overrides, claim, cleanup, the reaper, interactive detach, credential and
@@ -1365,8 +1438,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
-  not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row). Also not implemented
+  not implemented
   (AC-9): the worker PATCH and the claim route still apply the review verdict
   (record and adopt) and FixClaimed on the web host through the seam, with no
   door op of their own like `attempt_ended`.

@@ -32,7 +32,11 @@ describe('Lifecycle', () => {
     expect(landed).not.toContain('aria-current');
   });
 
-  it('a held task has no current step', () => {
+  it('a closed PR reads closed without merging on Land', () => {
+    expect(current(renderToStaticMarkup(<Lifecycle state="not_landed" />))[1]).toBe('✕ Land · closed without merging');
+  });
+
+  it('a waiting task has no current step', () => {
     expect(renderToStaticMarkup(<Lifecycle state="queued" />)).not.toContain('aria-current');
   });
 });

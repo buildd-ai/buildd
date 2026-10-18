@@ -124,7 +124,7 @@ describe('canvasSuggestions: a plain new chat (PICKED FOR YOU)', () => {
   });
 
   it('calm and idle: start something leads', () => {
-    expect(canvasSuggestions(PLAIN, CALM).map(x => x.label)).toEqual(['Start something new', 'What shipped this week?']);
+    expect(canvasSuggestions(PLAIN, CALM).map(x => x.label)).toEqual(['Start something new', 'What got done this week?']);
   });
 
   it('shortens a long waiting title in the row, not in what it sends', () => {

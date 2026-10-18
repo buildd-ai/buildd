@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, TERMS, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -140,6 +140,8 @@ export interface TopState {
     maxConcurrent: number;
     builddServer: string | null;
     online: boolean;
+    /** The event stream has been up at least once: offline before that is loading, after it reconnecting. */
+    connectedOnce: boolean;
     /** A person's hold (`buildd hold`, `h`): nothing new starts while set (R-33). */
     hold: RunnerHold | null;
     /** The routes this machine's own credentials give (R-39), from GET /api/config. */
@@ -235,7 +237,7 @@ export const NO_MISSION_TITLE = 'Other tasks';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, hold: null, routes: [], routeProblems: [] },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [] },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -265,7 +267,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
   | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[] }
-  | { type: 'workers'; workers: TopWorker[] }
+  | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
   | { type: 'missions'; missions: RecentMission[] }
@@ -318,8 +320,12 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         },
       };
     }
-    case 'workers':
-      return { ...state, workers: mergeWorkers({}, (event as any).workers ?? []) };
+    case 'workers': {
+      // fresher: workers the stream updated after this snapshot was asked for; their pushed copy is newer.
+      const next = mergeWorkers({}, (event as any).workers ?? []);
+      for (const id of (event as any).fresher ?? []) if (state.workers[id]) next[id] = state.workers[id];
+      return { ...state, workers: next };
+    }
     case 'tasks': {
       if (!Array.isArray((event as any).tasks)) return state;
       const tasks: TopTask[] = (event as any).tasks;
@@ -369,8 +375,10 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       const n = (event as any).maxConcurrent;
       return typeof n === 'number' && n > 0 ? { ...state, runner: { ...state.runner, maxConcurrent: n } } : state;
     }
-    case 'connection':
-      return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
+    case 'connection': {
+      const online = !!(event as any).online;
+      return { ...state, runner: { ...state.runner, online, connectedOnce: state.runner.connectedOnce || online } };
+    }
     case 'status':
       return { ...state, status: (event as any).status ?? null };
     case 'init': {
@@ -382,7 +390,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
       // An older runner sends no `hold`: it cannot be held, so none.
-      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
+      return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, connectedOnce: true, hold: parseRunnerHold(e.hold) } };
     }
     case 'runner_hold': {
       return { ...state, runner: { ...state.runner, hold: parseRunnerHold((event as any).hold) } };
@@ -690,11 +698,11 @@ export interface MissionRow {
   held: boolean;
   /** Delivered: when, in ms; it is listed for 7 days after. */
   deliveredAt?: number;
-  /** Set on a team's "Delivered this week" row (R-24): how many it holds, and whether they are listed under it. */
+  /** Set on a team's "Done this week" row (R-24): how many it holds, and whether they are listed under it. */
   fold?: { count: number; open: boolean };
 }
 
-/** The key of a team's "Delivered this week" row. */
+/** The key of a team's "Done this week" row. */
 export function foldKey(team: string | null): string {
   return `fold:${team ?? ''}`;
 }
@@ -713,9 +721,9 @@ export function deliveredDay(ms: number): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
 }
 
-/** What a mission row says besides its title and stage: its delivered day. */
+/** What a mission row says besides its title and stage: the day it was done. */
 export function missionMeta(row: Pick<MissionRow, 'deliveredAt'>): string | null {
-  if (row.deliveredAt !== undefined) return `delivered ${deliveredDay(row.deliveredAt)}`;
+  if (row.deliveredAt !== undefined) return `${TERMS['mission.done'].short} ${deliveredDay(row.deliveredAt)}`;
   return null;
 }
 
@@ -726,8 +734,17 @@ export function missionRowStage(row: Pick<MissionRow, 'stage' | 'local'>): strin
   return row.local ? `${word} locally` : word;
 }
 
+/**
+ * The terms catalog's word per stage. top's mission data carries no armedAt,
+ * so `on_hold` reads the catalog default, paused (never "on hold").
+ */
 const STAGE_WORD: Record<MissionStageStep, string> = {
-  building: 'building', verifying: 'verifying', delivering: 'delivering', delivered: 'delivered', on_hold: 'on hold', planning: 'planning',
+  building: TERMS['mission.building'].short,
+  verifying: TERMS['mission.verifying'].short,
+  delivering: TERMS['pr.merging'].short,
+  delivered: TERMS['mission.done'].short,
+  on_hold: TERMS['mission.paused'].short,
+  planning: TERMS['mission.planning'].short,
 };
 
 /** The stage in one word or two, for the mission row; null without a stage. */
@@ -744,7 +761,8 @@ function waitingOnWords(waitingOn: string | null): string | null {
   if (!waitingOn) return null;
   if (waitingOn === 'see the mission page') return 'visual review finished, results on buildd';
   if (waitingOn === 'a question for you') return 'the visual review asks you a question';
-  return waitingOn;
+  // An older server counts merged tasks as "N of M landed".
+  return waitingOn.replace(/\b(\d+ of \d+) landed\b/g, `$1 ${TERMS['pr.merged'].short}`);
 }
 
 /** The stage and what it waits on: `verifying: 2 checks left`. */
@@ -759,15 +777,15 @@ const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
  * The selected mission's status line, under its title: the stage, how far it
- * got, and who runs it. `Building · 5 of 6 landed`, `Verifying · visual review
- * finished, results on buildd`, `Building · 1 of 2 landed · Managed from a
- * local session`, `Delivered Oct 14`. "Landed" is the server's word and means
- * merged. Null for the fold row, and for loose tasks when there are none.
+ * got, and who runs it. `Building · 5 of 6 merged`, `Verifying · visual review
+ * finished, results on buildd`, `Building · 1 of 2 merged · Managed from a
+ * local session`, `Done Oct 14`. Null for the fold row, and for loose tasks
+ * when there are none.
  */
 export function missionStatusLine(row: MissionRow): string | null {
   if (row.fold) return null;
   if (isLooseKey(row.key)) return row.total > 0 ? `Tasks outside any mission · ${row.total - row.done} open` : null;
-  if (row.deliveredAt !== undefined) return `Delivered ${deliveredDay(row.deliveredAt)}`;
+  if (row.deliveredAt !== undefined) return `${TERMS['mission.done'].word} ${deliveredDay(row.deliveredAt)}`;
   const parts: string[] = [];
   const word = missionStageWord(row);
   if (word) {
@@ -777,7 +795,7 @@ export function missionStatusLine(row: MissionRow): string | null {
   } else if (row.planning) {
     parts.push('Planning');
   } else if (row.held) {
-    parts.push('On hold');
+    parts.push(TERMS['mission.paused'].word);
   }
   if (!word && row.total > 0) parts.push(`${row.done} of ${row.total} tasks done`);
   if (row.local) parts.push('Managed from a local session');
@@ -905,7 +923,7 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
 
 /**
  * The rows the missions pane lists (R-24): each team's open missions, then one
- * "Delivered this week" row folding the ones delivered in the last 7 days.
+ * "Done this week" row folding the ones delivered in the last 7 days.
  * An opened fold lists them under it, newest first; so does a fold holding the
  * selected mission (`--mission`, or the cursor). While `/` filters, missions
  * whose title or a task's title matches are listed, delivered ones on their
@@ -932,7 +950,7 @@ export function missionList(state: TopState, now: number = Date.now()): MissionR
     if (done.length > 0) {
       const key = foldKey(team);
       const open = state.unfolded.includes(key) || done.some(isSelected);
-      out.push({ ...emptyRow(key, 'Delivered this week'), team, fold: { count: done.length, open } });
+      out.push({ ...emptyRow(key, TERMS['total.done_this_week'].word), team, fold: { count: done.length, open } });
       if (open) out.push(...done);
     }
     while (i < rows.length && rows[i].team === team && isLooseKey(rows[i].key)) out.push(rows[i++]);
@@ -1206,7 +1224,7 @@ export function holdRunningWords(running: number): string {
 /**
  * The line under the header while held (R-33): since when, what still runs,
  * that h resumes, and when it resumes on its own (`--for`). Null when not held.
- * "On hold since 09:12: nothing new starts, 3 running finish. h resumes."
+ * "Paused since 09:12: nothing new starts, 3 running finish. h resumes."
  */
 export function holdLine(state: TopState, now: number): string | null {
   const h = heldNow(state, now);
@@ -1215,7 +1233,7 @@ export function holdLine(state: TopState, now: number): string | null {
   // R-33: what still runs, and what `buildd stop` paused.
   const paused = Object.values(state.workers).filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause').length;
   const pausedWords = paused > 0 ? `, ${paused} paused` : '';
-  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
+  return `${TERMS['runner.paused'].word} since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
 }
 
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
@@ -1235,8 +1253,8 @@ export function providerHoldLine(h: ProviderHold, now: number): string {
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
 export const EXCLUSION_WORDS: Record<string, string> = {
   mission_local: 'local session',
-  mission_held: 'mission is on hold',
-  task_held: 'held by a person',
+  mission_held: `mission is ${TERMS['mission.paused'].short}`,
+  task_held: `${TERMS['work.paused'].short} by a person`,
   task_reserved: 'reserved by a local session',
   already_claimed: 'another runner has it',
   active_worker: 'another runner has it',
@@ -1316,7 +1334,7 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
     if (code === 'workspace_paused') {
       return o.until && (isoMs(o.until) ?? 0) > now ? `workspace paused until ${localLiftTime(o.until, now)}` : 'workspace paused';
     }
-    if (code === 'budget_paused') return 'held by a usage limit';
+    if (code === 'budget_paused') return TERMS['wait.usage_limit'].short;
     if (EXCLUSION_WORDS[code]) return EXCLUSION_WORDS[code];
     return o.detail ? firstSentence(o.detail) : codeWords(code);
   }
@@ -1330,7 +1348,7 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
 /** Deferral reasons the server counts on a broad claim, in words. */
 export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
-  budget_paused: 'held by a usage limit',
+  budget_paused: TERMS['wait.usage_limit'].short,
   oauth_parallelism: 'the plan allows only a few sessions at once',
   duplicate_worker: 'a worker already has it',
   sibling_retry_open: 'a retry of it is already open',
@@ -1350,7 +1368,7 @@ export const DEFERRAL_WORDS: Record<string, string> = {
 
 /** Words for a deferral or exclusion code; a code this view has no words for never prints raw. */
 function codeWords(code: string): string {
-  return DEFERRAL_WORDS[code] ?? 'held by the server';
+  return DEFERRAL_WORDS[code] ?? TERMS['wait.unknown'].short;
 }
 
 /**
@@ -1361,8 +1379,8 @@ function codeWords(code: string): string {
 function broadDeferralWords(o: ClaimOutcome): string | null {
   const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0);
   if (entries.length === 0) return null;
-  if (entries.length === 1) return `held at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
-  return 'held at the last claim, for reasons it did not tie to this task';
+  if (entries.length === 1) return `skipped at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
+  return 'skipped at the last claim, for reasons it did not tie to this task';
 }
 
 /**
@@ -1386,8 +1404,8 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
     if (words) return words;
   }
-  if (heldNow(state, now)) return 'runner is on hold';
-  if (task.mission?.isHeld) return 'mission is on hold';
+  if (heldNow(state, now)) return `runner is ${TERMS['runner.paused'].short}`;
+  if (task.mission?.isHeld) return EXCLUSION_WORDS.mission_held;
   const deps = dependencyWords(task, state);
   if (deps) return deps;
   if (task.startAt) {
@@ -1616,7 +1634,7 @@ const BROAD_REASON_WORDS: Record<string, string> = {
   budget_exhausted: 'a plan or rate limit holds the work',
   context_paused: 'claims are paused after repeated failures',
   race_lost: 'another runner took the work first',
-  runner_held: 'this runner is on hold',
+  runner_held: `this runner is ${TERMS['runner.paused'].short}`,
 };
 
 /** Why the last broad claim started nothing, in words. */
@@ -1631,9 +1649,9 @@ export function broadNothingWords(o: ClaimOutcome): string {
     if (top) {
       const words = EXCLUSION_WORDS[top[0]] ?? top[0].replace(/_/g, ' ');
       const total = Object.values(o.deferrals ?? {}).reduce((n, v) => n + v, 0);
-      return total === top[1] ? `every waiting task is held (${words})` : `every waiting task is held (most: ${words})`;
+      return total === top[1] ? `every waiting task: ${words}` : `most waiting tasks: ${words}`;
     }
-    return 'every waiting task is held';
+    return 'no waiting task can start yet';
   }
   return BROAD_REASON_WORDS[o.reason] ?? o.reason.replace(/_/g, ' ');
 }

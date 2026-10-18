@@ -123,7 +123,7 @@ import TaskVerdictBlock from './TaskVerdictBlock';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
-import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
+import { groupAttemptHistory, isBookkeepingAttempt } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
@@ -136,6 +136,7 @@ import { statusPill } from '@/components/ui/states';
 import DiagnosticsDisclosure, { DiagnosticsAudienceProvider } from '@/components/ui/DiagnosticsDisclosure';
 import { canSeeDiagnostics } from '@/lib/diagnostics-audience';
 import { isPlatformOperator } from '@/lib/platform-operator';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -221,7 +222,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat, taskPr] = await Promise.all([
     // The task's workers, open question notes and any failure recovery holding
     // it, picked the way the sheet picks them (lib/task-view.ts): one worker
     // and one question on both surfaces. A mission task's questions carry its
@@ -281,6 +282,8 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
+    // The task's PR, derived on read (workflow/task-pr.ts), for the Deliverables block.
+    taskPrOf(task.id),
   ]);
   if (answerInChat) redirect(answerInChat);
   // Newest first by (createdAt, id).
@@ -1102,7 +1105,7 @@ export default async function TaskDetailPage({
               )}
               {origin.shipped && (
                 <div data-testid="task-origin-shipped" className="text-text-secondary">
-                  Shipped in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
+                  Released in <Link href={origin.shipped.href} className="text-status-success hover:underline">{origin.shipped.label}</Link>
                 </div>
               )}
             </div>
@@ -1135,7 +1138,9 @@ export default async function TaskDetailPage({
     const runWorkers = workerHistory.map(h => h.worker);
     const runners = [...new Set(runWorkers.map(w => runnerLabel(w)).filter((n): n is string => !!n))];
     if (runners.length > 0) runDetails.push({ label: 'Runner', value: runners.join(', ') });
-    if (runWorkers.length > 1) runDetails.push({ label: 'Attempts', value: String(runWorkers.length) });
+    // A claim no session ran is bookkeeping, not an attempt.
+    const ranWorkers = runWorkers.filter(w => !isBookkeepingAttempt(w));
+    if (ranWorkers.length > 1) runDetails.push({ label: 'Attempts', value: String(ranWorkers.length) });
     const turns = runWorkers.reduce((n, w) => n + (w.turns ?? 0), 0);
     if (turns > 0) runDetails.push({ label: 'Turns', value: String(turns) });
     const starts = runWorkers.map(w => w.startedAt?.getTime()).filter((t): t is number => t != null);
@@ -1161,20 +1166,27 @@ export default async function TaskDetailPage({
               Attempts
             </div>
             <div className="border border-border-default overflow-hidden">
-              {workerHistory.map(({ worker, attemptLabel }) => {
-                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
-                const bookkeepingRetry = bookkeepingAttemptRetry(worker, task);
-                if (bookkeepingRetry) {
-                  const shownError = plainWorkerError(worker.error, taskBackend);
+              {groupAttemptHistory(workerHistory, task).map((item) => {
+                if (item.kind === 'bookkeeping') {
+                  const head = item.entries[0];
                   return (
-                    <BookkeepingAttemptRow key={worker.id} workerId={worker.id} retry={bookkeepingRetry} attemptLabel={attemptLabel}>
-                      <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
-                      <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
-                      {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
-                      <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
+                    <BookkeepingAttemptRow key={head.worker.id} workerId={head.worker.id} retry={item.retry} attemptLabel={head.attemptLabel} count={item.entries.length} undelivered={item.undelivered}>
+                      {item.entries.map(({ worker, attemptLabel }) => {
+                        const shownError = plainWorkerError(worker.error, taskBackend);
+                        return (
+                          <div key={worker.id} className="space-y-1">
+                            <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
+                            <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
+                            {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
+                            <p className="font-mono" title={worker.id}>{attemptLabel ?? 'Attempt'} · {worker.turns} turns</p>
+                          </div>
+                        );
+                      })}
                     </BookkeepingAttemptRow>
                   );
                 }
+                const { worker, attemptLabel } = item.entry;
+                const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
@@ -1700,7 +1712,7 @@ export default async function TaskDetailPage({
                   {task.mission.title}
                 </Link>
               ) : 'this mission'}{' '}
-              is on hold. Raise the mission budget to release them, or force-start this task.
+              waits for more budget. Raise the mission budget to start them, or force-start this task.
             </p>
           </div>
         )}
@@ -1913,7 +1925,7 @@ export default async function TaskDetailPage({
         {!shippedView && (
           <TaskDeliverables
             taskId={task.id}
-            result={task.result as TaskDeliverablesResult | null}
+            result={withTaskPr(task.result as Record<string, unknown> | null, taskPr) as TaskDeliverablesResult | null}
             prCard={!!prOutcome}
             summaryInPrCard
             suppressedSummary={suppressedSummaryArtifact}

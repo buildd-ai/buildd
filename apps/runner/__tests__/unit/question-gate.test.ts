@@ -43,7 +43,7 @@ const BRIEFED = {
 const PUSHBACK = { verdict: 'pushback' as const, outcome: 'pushback' as const, reason: 'Not sent: a reader with no context could not decide this question. Add: x. Then ask again.', version: 'v', latencyMs: 3 };
 const SEND = { verdict: 'send' as const, outcome: 'asked' as const, disposition: 'ask' as const, version: 'v', latencyMs: 3 };
 const DECIDE = { verdict: 'decide' as const, outcome: 'decided' as const, disposition: 'decide' as const, reason: 'UTC. (Decided automatically and recorded on the task — can be corrected from the task page if it turns out wrong.)', decision: { optionIndex: 1, label: 'UTC', confidence: 0.9 }, version: 'v', latencyMs: 3 };
-const HELD = { verdict: 'send' as const, outcome: 'held' as const, disposition: 'hold' as const, holdReason: "Held — it didn't look urgent enough to interrupt someone right now.", resurfaceAt: '2026-01-01T00:15:00.000Z', version: 'v', latencyMs: 3 };
+const HELD = { verdict: 'send' as const, outcome: 'held' as const, disposition: 'hold' as const, holdReason: "Not sent yet: it didn't look urgent enough to interrupt someone right now.", resurfaceAt: '2026-01-01T00:15:00.000Z', version: 'v', latencyMs: 3 };
 
 function factory(checkQuestion: (...a: any[]) => Promise<any>) {
   const parked: Array<{ input: unknown; toolUseId?: string; gateReply?: unknown }> = [];

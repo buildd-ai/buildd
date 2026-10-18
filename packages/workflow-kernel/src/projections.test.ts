@@ -107,6 +107,10 @@ describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', 
     expect(v.headline).not.toContain('Repairing');
   });
 
+  test('copy catalog: a superseded PR reads Merged in #N, never Shipped', () => {
+    expect(view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 77 })) }).headline).toBe('Merged in #77');
+  });
+
   test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
     expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
     expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');
@@ -307,8 +311,8 @@ describe('a behind refresh says what it is doing, and whom it waits for in the l
   });
 
   test('parked in the lane: names the PR landing first', () => {
-    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is landing on dev first', needsYou: false });
-    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is landing on dev first');
+    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is merging into dev first', needsYou: false });
+    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is merging into dev first');
   });
 
   test('other repairs keep their copy', () => {
@@ -321,21 +325,21 @@ describe('landing_needs_human says which refusal it was (88318f31)', () => {
 
   test('the base keeps changing what the PR changes: names the files', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', files: ['src/a.ts', 'bun.lock'] })))
-      .toEqual({ headline: 'Landing held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+      .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
   });
 
   test('the base only kept moving: the refresh count and the gap', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
-      .toEqual({ headline: 'Landing held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
+      .toEqual({ headline: 'Merge held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
     // An escalation recorded before the base delta was read is the same kind.
-    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Landing held: the base kept moving faster than CI');
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Merge held: the base kept moving faster than CI');
   });
 
   test('GitHub refusing the merge and a refresh that kept failing are each named', () => {
     expect(landingEscalationCopy(t('MergeCallResult', { outcome: 'refused', detail: 'Required review missing' })))
-      .toEqual({ headline: 'GitHub refused the merge; a person has to land it', detail: 'Required review missing' });
-    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to land it');
-    expect(landingEscalationCopy(null).headline).toBe('Merge refused; a person has to land it');
+      .toEqual({ headline: 'GitHub refused the merge; a person has to merge it', detail: 'Required review missing' });
+    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to merge it');
+    expect(landingEscalationCopy(null).headline).toBe('Merge blocked: a person has to merge it');
   });
 });
 

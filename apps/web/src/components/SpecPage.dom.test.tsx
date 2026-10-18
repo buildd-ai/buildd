@@ -420,7 +420,7 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
   const T = '22222222-2222-4222-8222-222222222222';
   const entry = {
     kind: 'task' as const, id: T, title: 'Show totals in euros', href: `/app/tasks/${T}`,
-    builtTo: 1, provisional: false, delivered: true, deliveredText: 'Built to revision 1 and delivered.',
+    builtTo: 1, provisional: false, delivered: true, deliveredText: 'Built to revision 1. Done.',
     standing: { tone: 'muted' as const, text: 'Not verified against revision 2.' },
     criteria: [{ criterionId: 'R-1', text: 'Totals in the shopper currency.', mark: 'pass' as const, evidence: [{ label: 'ci', href: 'https://example.test/run/1' }] }],
     links: [{ label: 'PR #12', href: 'https://github.com/acme/shop/pull/12' }],
@@ -448,7 +448,7 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: null } }} />));
     expect(container.querySelectorAll('[data-testid="spec-delivery-entry"]')).toHaveLength(1);
     expect(q('spec-delivery-link')?.getAttribute('href')).toBe(`/app/tasks/${T}`);
-    expect(q('spec-delivery-delivered')?.textContent).toContain('Built to revision 1 and delivered.');
+    expect(q('spec-delivery-delivered')?.textContent).toContain('Built to revision 1. Done.');
     expect(q('spec-delivery-standing')?.textContent).toBe('Not verified against revision 2.');
     expect(container.querySelector('a[href="#delivery"]')).not.toBeNull();
     expect(q('spec-delivery-more')).toBeNull();

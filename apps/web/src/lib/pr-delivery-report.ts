@@ -17,6 +17,8 @@ export interface PrDeliveryReport {
   needsYou: boolean;
   review: (ReviewSummary & { line: string }) | null;
   repairs: Array<{ label: string; phase: RepairPhase; words: string; taskId: string | null }>;
+  /** R-43: the `Buildd / Review approval` status on the head, apart from CI; null when none is published. */
+  reviewApproval: { state: 'success' | 'failure' | 'pending'; description: string } | null;
 }
 
 export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
@@ -38,5 +40,6 @@ export function prDeliveryReport(v: DeliveryView): PrDeliveryReport {
     needsYou: v.needsYou,
     review: summary ? { ...summary, line: reviewSummaryLine(summary) } : null,
     repairs,
+    reviewApproval: v.reviewApproval ?? null,
   };
 }
