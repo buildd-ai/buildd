@@ -1,7 +1,7 @@
 import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { DerivedFileRule, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
+import type { DerivedFileRule, LoginMode, RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -361,6 +361,8 @@ export interface LocalWorker {
    * `costBasis` when the agent env is built; a label, never a credential.
    */
   route?: import('./run-route').RunRoute | null;
+  /** Why the run is on its backend when something moved it (the claim's routing stamp, describeBackendRouting), e.g. "routed to Codex by this runner's balanced mode". */
+  routedWhy?: string | null;
   /**
    * The model provider refused this run's login: the SDK's own
    * `authentication_failed` / `oauth_org_not_allowed`, a session that died on
@@ -840,6 +842,8 @@ export interface LocalUIConfig {
   builddServer: string;
   apiKey: string;
   maxConcurrent: number;
+  /** How this runner's own logins share its slots (runner-logins.ts, spec 34a48877 R-14). Absent = balanced. */
+  loginMode?: LoginMode;
   model: string;
   // LLM provider configuration (default: anthropic)
   llmProvider?: ProviderConfig;

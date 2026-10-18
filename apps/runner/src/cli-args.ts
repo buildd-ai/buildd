@@ -95,6 +95,16 @@ export function classifySlotsArgs(args: string[]): SlotsCommand | { kind: 'unkno
   return { kind: 'set', raw, mode, yes };
 }
 
+/** `buildd logins [<mode>]` (runner-logins.ts): the mode itself is checked there. */
+export type LoginsCommand = { kind: 'show' } | { kind: 'set'; raw: string };
+
+export function classifyLoginsArgs(args: string[]): LoginsCommand | { kind: 'unknown'; arg: string } {
+  if (args.length === 0) return { kind: 'show' };
+  if (args.length > 1) return { kind: 'unknown', arg: args[1] };
+  if (args[0].startsWith('-')) return { kind: 'unknown', arg: args[0] };
+  return { kind: 'set', raw: args[0] };
+}
+
 export type CliDecision =
   | { kind: 'help' }
   /** `buildd name [<name>|--clear]` (runner-name.ts); `args` are the words after `name`. */
@@ -107,6 +117,8 @@ export type CliDecision =
   | { kind: 'stop'; yes: boolean; abort: boolean }
   /** `buildd slots [<n>] [--pause|--abort] [--yes]` (runner-slots.ts). */
   | { kind: 'slots'; cmd: SlotsCommand }
+  /** `buildd logins [<mode>]` (runner-logins.ts). */
+  | { kind: 'logins'; cmd: LoginsCommand }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
@@ -190,6 +202,10 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   if (args[0] === 'slots') {
     const c = classifySlotsArgs(args.slice(1));
     return c.kind === 'unknown' ? c : { kind: 'slots', cmd: c };
+  }
+  if (args[0] === 'logins') {
+    const c = classifyLoginsArgs(args.slice(1));
+    return c.kind === 'unknown' ? c : { kind: 'logins', cmd: c };
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };
