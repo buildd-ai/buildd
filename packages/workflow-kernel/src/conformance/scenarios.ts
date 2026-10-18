@@ -2763,4 +2763,36 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: ci.id, revalidation: { live: s.live('H1'), approved: false } }), 'duplicate', 'idempotency_key_seen', 'the re-claim of the requeued repair is answered by its first claim: still running, nothing re-allocated');
     },
   },
+  {
+    name: 'AC-1 slice 7: a claim of the owner task starts its attempt in place; a re-send is a duplicate, the next claim is its own start',
+    async run(host) {
+      const s = await new Delivery(host, 130).open();
+      const before = await s.d();
+      const start = (claimedAt: string, o: Partial<Extract<Command, { type: 'AttemptStarted' }>> = {}) =>
+        s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt, ...o });
+      applied(await start('2026-10-18 08:00:00.000001+00'), 'WORKING', 'the start applies in place');
+      eq(pick(await s.d(), ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), pick(before, ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), 'the delivery itself does not move');
+      eq((await s.d()).version, before.version + 1, 'one version for the start');
+      const after = (await s.d()).version;
+      notApplied(await start('2026-10-18 08:00:00.000001+00'), 'duplicate', 'idempotency_key_seen', 'the same claim re-sent');
+      eq((await s.d()).version, after, 'nothing more written');
+      applied(await start('2026-10-18 08:00:00.000002+00'), 'WORKING', 'a later claim (a microsecond apart) is a start of its own');
+      notApplied(await start('2026-10-18 08:00:00.000003+00', { claimedBy: '' }), 'rejected', 'claim_not_named', 'a start with no claim');
+      eq((await host.transitions(s.deliveryId)).at(-1)?.command, 'AttemptStarted', 'the start is in the log');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the started attempt\'s end hands on as usual');
+    },
+  },
+  {
+    name: 'AC-1 slice 7: a start after the delivery moved on, or of a task that is not the owner, records nothing',
+    async run(host) {
+      const s = await new Delivery(host, 131).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:00+00' }), 'stale', 'attempt_not_bound', 'a loop task\'s next iteration claimed after the hand-off');
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: host.newId(), claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:01+00' }), 'stale', 'attempt_not_bound', 'not the owner task');
+      eq((await s.d()).version, v, 'nothing applied');
+      applied(await s.merged('H1'), 'MERGED', 'merged');
+      notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:02+00' }), 'stale', 'attempt_not_bound', 'terminal: a start after the merge');
+    },
+  },
 ];

@@ -630,6 +630,16 @@ export async function attemptRequeued(p: Omit<KernelOps['attempt_requeued']['inp
 }
 
 /**
+ * AttemptStarted from the claim route (AC-1 slice 7): a claim of a kernel owner task starts its
+ * attempt, applied where the kernel is hosted. The claim projects the start on its own host too
+ * (`projectAttemptStart`) for a control plane that is down, slow or too old, so a claim never
+ * waits on the door beyond its budget; during release skew it is applied here (`doorOrHereOnSkew`).
+ */
+export async function attemptStarted(p: Omit<KernelOps['attempt_started']['input'], 'workspaceId'>, c: DoorCall): Promise<KernelOps['attempt_started']['result']> {
+  return doorOrHereOnSkew('attempt_started', { ...p, workspaceId: p.task.workspaceId }, c, `task ${p.task.id}'s start`);
+}
+
+/**
  * T10 from buildd's own CI doors (the red-PR sweep, the landing path, the check_suite subscriber):
  * a red head on a kernel-owned PR, applied where the kernel is hosted (AC-9). During release skew it
  * is applied here, so a red PR is never left without its repair (`doorOrHereOnSkew`).

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1550,9 +1550,47 @@ column outside the kernel; S3 and S4 remove or route each one.
   down or too old still leaves the task pending. A task with no delivery keeps
   its own requeue write. The worker PATCH's ceiling drops by the three requeue
   statements the helper replaced.
+  A claim starts the owner attempt through the kernel (`AttemptStarted`). The
+  claim route still decides the race in one compare-and-set, never a
+  transaction: for the owner task of a kernel delivery it matches only a
+  `pending` task that no other claim holds (`ownerClaimOpenSql`, the claim
+  query's own rule: unclaimed, or a claim past its expiry), and writes the
+  claim (`claimed_by`, `claimed_at` from the database clock, `expires_at`,
+  context, model) but not the status. Exactly one claimer gets a row back;
+  every other one loses as before and never reaches the kernel. The winner
+  then sends `AttemptStarted` naming its claim (task, account, and
+  `claimed_at` as Postgres renders it, microseconds kept). It is no end and
+  moves no state: while the delivery is `WORKING` on that owner task the
+  transition records it under `start:<taskId>:<claimedAt>` (a re-send is a
+  duplicate, the next claim a new key) and moves the task to `assigned` in its
+  own statement (`t_start`, task-projection.ts), reading the delivery CTE. Any
+  other state (a loop task's next iteration, after the hand-off) or a terminal
+  delivery records nothing. Bound or not, the start projects under one guard
+  (`projectAttemptStart`): only a `pending` task still carrying exactly that
+  claim, never a kernel-merged one. So the kernel cannot assign a task to a
+  claimer that lost the race, and a start that lands late (after a cancel, a
+  requeue and a new claim, or an expired claim taken over) moves nothing. It
+  is a door op (`attempt_started`) inside the claim's one control-plane budget,
+  shared with the fix claims (`KERNEL_CLAIM_BUDGET_MS`, default 5 s); it is
+  never parked, and is applied on the web host during release skew. Unless
+  the kernel answered started, the route projects the start itself, so a
+  control plane that is down, slow, refusing or too old costs a claim at most
+  its budget and never fails it, for a runner and an interactive session
+  alike. A claim lost after its compare-and-set gives back only its own claim
+  fields, with no status write. The start's effects are drained by the floor,
+  never inline on the claim. On the web host (shadow) the start adds a few
+  statements (the delivery read, the view, the transition, the projection
+  read): single-digit milliseconds against a local Postgres in
+  `tests/db/claim-attempt-start.test.ts`; in own mode it is one control-plane
+  request. A task with no delivery, a repair and a review keep the claim's own
+  status write; the two rollbacks of the route's own assigned claim (a fix the
+  kernel deferred, a worker the account cap refused) are one helper
+  (`rollBackClaim`), so the claim route's ceiling drops from four statements
+  to three.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the other attempt writers (the worker PATCH's failure overrides and
-  its silent-completion retry, claim, cleanup, the reaper's requeues, expired
+  its silent-completion retry, the claim's rollback of its own assigned claim,
+  cleanup, the reaper's requeues, expired
   loop waits and reviewer rounds, interactive detach, credential and
   repo-access recovery, the recovery hold, the CI retries' exhaustion, loop
   exits) still set the owner task's status directly;
