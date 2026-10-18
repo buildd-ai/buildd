@@ -5,11 +5,11 @@
  */
 
 import { db } from '@buildd/core/db';
-import { users, accounts, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { users, accounts, tasks, teamMembers, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { classifyRunnerOwnership } from './runner-ownership';
-import { buildOccupancySeries, occupancyBuckets, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
+import { buildOccupancySeries, occupancyBuckets, scopeMembers, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
 
 /** The team's workspace ids: the scope every occupancy read is limited to. */
 export async function teamWorkspaceIds(teamId: string): Promise<string[]> {
@@ -74,10 +74,14 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   }));
 }
 
-export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0, viewerId: string | null = null): Promise<OccupancySeries & { truncated: boolean }> {
+export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0, viewerId: string | null = null, teamId: string | null = null): Promise<OccupancySeries & { truncated: boolean }> {
   const { from } = occupancyBuckets(window, now, tzOffsetMs);
   const rows = await fetchOccupancyRows(workspaceIds, new Date(from), new Date(now));
-  const series = buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId });
+  let series = buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId });
+  if (teamId) {
+    const found = (await db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, teamId))) as { userId: string }[];
+    series = scopeMembers(series, new Set(found.map(m => m.userId)));
+  }
   const ids = (series.members ?? []).map(m => m.id);
   if (ids.length > 0) {
     const found = (await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids))) as { id: string; name: string | null }[];

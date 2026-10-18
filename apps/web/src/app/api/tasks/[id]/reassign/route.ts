@@ -4,6 +4,7 @@ import { tasks, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, inArray, gt, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
@@ -45,6 +46,8 @@ export async function POST(
   const authUserId = user?.id || apiAccount?.id;
 
   const { id: taskId } = await params;
+  // A reassign resets the task and fails its worker: its mission's summary, after the response.
+  noteWorkChanged({ taskIds: [taskId] });
   const url = new URL(req.url);
   const force = url.searchParams.get('force') === 'true';
 

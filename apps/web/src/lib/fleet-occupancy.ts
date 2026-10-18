@@ -281,6 +281,17 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   };
 }
 
+/**
+ * Member attribution limited to the people the viewer may see: current members
+ * of the team being viewed. Work by anyone else (a former member, or a person
+ * from another team on a shared runner) stays in the totals and in Others, but
+ * gets no named row. The members list is a view of the totals, never a gate on
+ * them, and a client filter is not an access boundary: this runs server-side.
+ */
+export function scopeMembers(series: OccupancySeries, teamMemberIds: ReadonlySet<string>): OccupancySeries {
+  return { ...series, members: (series.members ?? []).filter(m => teamMemberIds.has(m.id)) };
+}
+
 const EPS = 1e-6;
 
 /**
