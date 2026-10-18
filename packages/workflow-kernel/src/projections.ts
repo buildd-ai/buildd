@@ -291,6 +291,7 @@ function addressedNote(findings: FindingSnapshot[]): string | null {
  * `landing_needs_human` says which kind of refusal it was (S15 / T16 / §6.7), so a
  * person reading "a person has to merge it" knows whether the base kept moving
  * faster than CI, the base keeps changing what the PR changes (and which files),
+ * the gap touches a risky path (and which),
  * GitHub itself refused the merge, or the branch could not be updated. A policy
  * refusal (deny path, human tier, migration) is its own escalation reason.
  */
@@ -300,6 +301,15 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
   if (t?.command === 'ConflictObserved' && ev?.treadmill === true) {
     const files = Array.isArray(ev.files) ? (ev.files as unknown[]).filter((f): f is string => typeof f === 'string') : [];
     if (ev.cause === 'refresh_unsafe') {
+      // dc4436aa: a risky path in the gap is not the base changing this PR's files. Evidence
+      // from before `deltaBasis` was recorded is told apart by the rule's own words.
+      const risky = ev.deltaBasis === 'risky_path' || (ev.deltaBasis == null && (str('deltaReason') ?? '').startsWith('the gap involves'));
+      if (risky) {
+        return {
+          headline: 'Merge held: the base or this PR touches a migration, lockfile, manifest or CI file',
+          detail: files.length ? `the gap touches ${files.join(', ')}` : str('deltaReason'),
+        };
+      }
       return {
         headline: 'Merge held: the base keeps changing what this PR changes',
         detail: files.length ? `the base changed ${files.join(', ')}` : str('deltaReason'),

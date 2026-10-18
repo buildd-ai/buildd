@@ -35,6 +35,7 @@ import type { LivePr } from '../../src/lib/workflow/commands';
 import type { GithubFactReader } from '../../src/lib/workflow/facts';
 import type { EffectHandler, EffectHandlers } from '../../src/lib/workflow/effects';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { ciSignature } from '../../src/lib/workflow/trunk-signature';
 
 const REPO = 'acme/matrix';
 let workspaceId: string;
@@ -49,6 +50,8 @@ interface FakePr {
   baseRef?: string; baseExists?: boolean | null;
   /** §6.10: failing check names per commit (absent = check runs unreadable), the base branch's head, and commits whose runs are still going. */
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
+  /** §6.10 at test level: the failing entries a test-level read answers per commit (absent = the host reads no tests). */
+  tests?: Record<string, string[]>;
   /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
   equivalent?: Array<[string, string]>;
   /** 58c8961e: the delta read from an approved head, keyed `from->to` (absent = unread). */
@@ -64,7 +67,9 @@ const reader: GithubFactReader = {
   readPr: async () => live(),
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   ciGreen: async () => gh.ciGreen ?? null,
-  checkRuns: async (_repo, sha) => (gh.checks && sha in gh.checks ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha] } : null),
+  checkRuns: async (_repo, sha, o) => (gh.checks && sha in gh.checks
+    ? { complete: !(gh.running ?? []).includes(sha), failing: gh.checks[sha], ...(o?.tests && gh.tests?.[sha] ? { tests: gh.tests[sha] } : {}) }
+    : null),
   branchHead: async () => gh.baseHead ?? null,
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
@@ -1941,6 +1946,46 @@ describe('S24–S27', () => {
     // A PR whose own failure is not the base's still gets its own attempt.
     gh.checks.H1 = ['Unit tests', 'Typecheck'];
     expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+  });
+
+  test('S24: a PR failing its own test in the job the base fails another test in is the PR\'s; the base going green resolves an incident behind a page of stale ones', async () => {
+    const SHARD = 'build · unit tests (1/3)';
+    // dev fails an a11y guard in shard 1/3 (and the aggregate `build`); the PR fails its own ratchet in the same shard.
+    gh.baseHead = 'BT1'; gh.checks = { BT1: [SHARD, 'build'], H1: [SHARD, 'build'] };
+    gh.tests = { BT1: [`${SHARD}::a11y guard > no native <select>`, 'build'], H1: [`${SHARD}::module boundaries ratchet`, 'build'] };
+    const own = await openAndHandOn();
+    expect(await ciFail(own)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'REPAIRING' } } });
+    expect(await delivery(own.deliveryId)).toMatchObject({ state: 'REPAIRING', trunkIncidentId: null });
+    expect((await ciAttempts(own.deliveryId)).map((x) => x.status)).toEqual(['queued']);
+
+    // A page and more of older unresolved incidents the sweep cannot settle: their workspace has no repo.
+    const stale = (await seedWorkspace()).workspaceId;
+    for (let i = 0; i < 30; i++) {
+      await q(sql`INSERT INTO trunk_incidents (workspace_id, repo_full_name, base_ref, signature, first_seen_at, updated_at)
+        VALUES (${stale}::uuid, 'acme/gone', 'dev', ${`ci:stale ${i}`}, now() - interval '2 days', now() - interval '1 day' + make_interval(secs => ${i}::int))`);
+    }
+    const noRepo = { ...deps, repoFor: async (ws: string) => (ws === stale ? null : repoFor()) };
+    try {
+      // The PR fails the base's own test: it joins the incident and waits on the trunk.
+      gh.tests.H1 = [`${SHARD}::a11y guard > no native <select>`, 'build'];
+      const blocked = await openAndHandOn();
+      expect(await ciFail(blocked, { d: noRepo })).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+      const sig = ciSignature(gh.tests.H1);
+      const [inc] = await incidentsOf(sig);
+      expect(inc.status).not.toBe('resolved');
+
+      // The base is green: one pass resolves it, though 30 older incidents, more than a page, sort first.
+      gh.baseHead = 'BT2'; gh.checks.BT2 = []; gh.tests.BT2 = [];
+      override.refresh_branch = async () => ({ outcome: 'ok' });
+      await seam.reconcileTrunkIncidents(noRepo);
+      expect((await incidentsOf(sig))[0].status).toBe('resolved');
+      expect(await delivery(blocked.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', trunkIncidentId: null });
+      const left = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM trunk_incidents WHERE workspace_id = ${stale}::uuid AND status <> 'resolved'`);
+      expect(left[0].n).toBe(30);
+    } finally {
+      await q(sql`UPDATE trunk_incidents SET status = 'resolved', resolved_at = now() WHERE workspace_id = ${stale}::uuid`);
+      gh.tests = undefined;
+    }
   });
 
   test('S24: two dependency-bot PRs on a red trunk accumulate no retries, however often CI reports', async () => {

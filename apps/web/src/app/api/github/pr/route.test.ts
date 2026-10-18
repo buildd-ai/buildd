@@ -2303,6 +2303,35 @@ describe('POST /api/github/pr', () => {
       expect(JSON.parse((createCall as any[])[2].body).head).toBe('second-branch');
     });
 
+    it('a second PR on a different head names the task\'s first open PR and asks for record_pr_supersession', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(firstPr);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockWorkersFindMany.mockResolvedValue([
+        { prNumber: 3193, prUrl: firstPr.prUrl, prLifecycleStatus: 'pr_open' },
+        { prNumber: 3195, prUrl: 'https://github.com/owner/repo/pull/3195', prLifecycleStatus: 'pr_open' },
+        { prNumber: 3100, prUrl: 'https://github.com/owner/repo/pull/3100', prLifecycleStatus: 'closed' },
+      ]);
+      mockGithubApi.mockResolvedValue({
+        number: 3195,
+        html_url: 'https://github.com/owner/repo/pull/3195',
+        state: 'open',
+        title: 'Second PR',
+      });
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Second PR', head: 'second-branch', base: 'other-base' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.number).toBe(3195);
+      expect(data.otherOpenPrs).toEqual([{ number: 3193, url: firstPr.prUrl }]);
+      expect(data.supersessionHint).toContain('record_pr_supersession');
+      expect(data.supersessionHint).toContain('#3193');
+    });
+
     it('still dedups to the task PR when the head is the same branch', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(firstPr);

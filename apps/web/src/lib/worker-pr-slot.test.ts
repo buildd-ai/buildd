@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { wouldDisplaceLivePr, type WorkerPrSlot } from './worker-pr-slot';
+import { supersessionPrompt, wouldDisplaceLivePr, type WorkerPrSlot } from './worker-pr-slot';
 
 const base: WorkerPrSlot = {
   id: 'w1', workspaceId: 'ws', taskId: 't1', prNumber: 10, prUrl: 'https://github.com/o/r/pull/10',
@@ -22,5 +22,17 @@ describe('wouldDisplaceLivePr', () => {
   });
   it('without a task there is no sibling to attach to', () => {
     expect(wouldDisplaceLivePr({ ...base, taskId: null }, 11)).toBe(false);
+  });
+});
+
+describe('supersessionPrompt', () => {
+  it('is silent when the task holds no other open PR', () => {
+    expect(supersessionPrompt(11, [])).toBeNull();
+  });
+  it('names the other open PRs and asks for record_pr_supersession', () => {
+    const hint = supersessionPrompt(5195, [{ number: 5157, url: 'u1' }, { number: 5170, url: 'u2' }])!;
+    expect(hint).toContain('#5157, #5170');
+    expect(hint).toContain('record_pr_supersession');
+    expect(hint).toContain('supersedingPrNumber: 5195');
   });
 });
