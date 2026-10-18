@@ -3429,7 +3429,9 @@ export type RunnerQueueHold =
   | 'task_held'
   | 'workspace_paused'
   | 'workspace_cap'
-  | 'runner_cooldown';
+  | 'runner_cooldown'
+  /** Its mission already runs a task that, like it, declares no files: the claim starts one such task per mission at a time. */
+  | 'advisory_manifest';
 
 /** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
 export type RunnerQueueExclusion =
@@ -3469,6 +3471,8 @@ export interface RunnerQueueTask {
    * overlaps nothing, or overlaps something that holds it.
    */
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
+  /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
+  holderTaskId?: string | null;
 }
 
 export interface RunnerQueueTeam {

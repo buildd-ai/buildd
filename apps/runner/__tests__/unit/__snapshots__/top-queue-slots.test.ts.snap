@@ -5,6 +5,7 @@ exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row'
  Missions  [ Queue ]   t team: all · w workspace: all          9 slots · 8 free 
  Looked for work 14:58 · started 3                                              
 ────────────────────────────────────────────────────────────────────────────────
+ Next: #1, #2 and 2 more start now · 1 waits for work on the same files · 1 wai…
  Buildd · next for this runner       mission          starts                    
 › 1 feat(runner): top says why noth… -                now                       
   2 feat: recovery page, impact-ran… -                now                       
@@ -22,7 +23,6 @@ exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row'
                                                                                 
                                                                                 
                                                                                 
-                                                                                
 ────────────────────────────────────────────────────────────────────────────────
  ↑↓ move c claim o web tab missions t team w workspace / filter ? help q quit   "
 `;
@@ -32,6 +32,7 @@ exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row
  Missions  [ Queue ]   t team: all · w workspace: all                    9 slots · 1 running · 8 free   - fewer  + more 
  Looked for work 14:58 · started 3                                                                                      
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Next: #1, #2 and 2 more start now · 1 waits for work on the same files · 1 waits for its dependency                    
  Buildd · next for this runner                  workspace    mission          est.  starts                              
 › 1 feat(runner): top says why nothing started  buildd       -                13m   now                                 
   2 feat: recovery page, impact-ranked queue    acme-portal  -                -     now                                 
@@ -41,7 +42,6 @@ exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row
   6 feat(insights): estimation dashboard        acme-portal  -                7m    now                                 
  Not yet                                                                                                                
     fix(ci): dev is red                         buildd       -                -     Wed 17:00 · rechecks its login      
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -12,7 +12,7 @@
  *   &variant=wide         one root, 30 dependents (§7.10)
  *   &variant=delivery     35 tasks in a chain, 33 landed; 34 on its second
  *                         automatic repair, 35 held behind it. The drawer's
- *                         Build › Audit › Land row and its Audit and repair
+ *                         Build › Verify › Deliver row and its Audit and repair
  *                         disclosure (`missionTaskDeliveries`).
  *   &variant=overview-2|overview-10|overview-20|overview-64
  *                         the Overview tab's Done / In progress / Waiting groups
