@@ -81,6 +81,7 @@ import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { workerIdForNewPr, wouldDisplaceLivePr } from '@/lib/worker-pr-slot';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { githubReviewCounts } from '@buildd/shared';
 
 
 /**
@@ -2707,7 +2708,7 @@ export async function GET(req: NextRequest) {
       changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
       pending: reviewStates.filter(s => s === 'PENDING').length,
       // GitHub's own state for a review posted as a comment (every review buildd posts on a PR its App opened), AC-24.
-      commented: reviewList.filter((r: any) => r.state === 'COMMENTED').length,
+      commented: githubReviewCounts(reviewList).commented,
     };
 
     // Canonical state: GitHub is authoritative for open versus closed; the

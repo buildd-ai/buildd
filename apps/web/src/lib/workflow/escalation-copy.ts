@@ -13,6 +13,8 @@
  */
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import type { AttemptSnapshot, RoundSnapshot } from '@buildd/workflow-kernel/types';
+import { countWord } from '@buildd/shared';
+export { DECISION_LABELS } from '@buildd/shared';
 
 /** The actions this page can carry out (EscalationDecision's handlers). */
 export const HANDLED_ACTIONS: ReadonlySet<EscalationActionId> = new Set(['review_findings', 'request_fix', 'force_re_review']);
@@ -32,8 +34,7 @@ export interface DecisionCopy {
   primary: EscalationAction;
 }
 
-const WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-const word = (n: number): string => WORDS[n] ?? String(n);
+const word = countWord;
 const many = (n: number, one: string, more = `${one}s`) => `${word(n)} ${n === 1 ? one : more}`;
 
 export function decisionCopy(brief: EscalationBrief, ctx: { rounds: readonly RoundSnapshot[]; ledger: readonly AttemptSnapshot[] }): DecisionCopy {
@@ -47,7 +48,7 @@ export function decisionCopy(brief: EscalationBrief, ctx: { rounds: readonly Rou
 
   const rounds = ctx.rounds.filter((r) => r.status !== 'superseded').length;
   const fixes = ctx.ledger.filter((a) => a.family === 'review_fix' && a.mode === 'agent' && a.status !== 'skipped').length;
-  const after = `Automation stopped after ${many(rounds, 'review round')}`;
+  const after = rounds === 0 ? 'Automation stopped before any review round finished' : `Automation stopped after ${many(rounds, 'review round')}`;
   const reason = brief.cause === 'fixes_exhausted'
     ? `${fixes === 2 ? 'both automatic fixes' : fixes === 1 ? 'the automatic fix' : `all ${word(fixes)} automatic fixes`} ran and the review still asks for changes`
     : awaiting.length > 0 && open.length === 0

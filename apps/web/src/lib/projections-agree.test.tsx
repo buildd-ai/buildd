@@ -11,7 +11,7 @@ import { formatGetPrDelivery } from '@buildd/core/mcp-tools';
 import TaskChecks from '@/app/app/(protected)/tasks/[id]/TaskChecks';
 import PrCard from '@/components/task/PrCard';
 import { prDeliveryReport } from './pr-delivery-report';
-import { GITHUB_COMMENTED_NOTE } from './pr-activity-rounds';
+import { GITHUB_COMMENTED_NOTE } from './workflow/delivery-rounds';
 import { deriveTaskChecks } from './task-checks';
 import { renderDeliveryActivity } from './workflow/pr-activity-render';
 import { deriveDeliveryView } from './workflow/projections';
@@ -121,8 +121,8 @@ describe('AC-43: get_pr names what a stuck PR waits on and what the reader may d
     expect(decisionLine).toContain('Decision: How should the two unresolved findings be settled?');
     expect(decisionLine).toContain('Automation stopped after three review rounds');
     expect(decisionLine).toContain('Still open: Mutation tests do not cover the new guard');
-    expect(decisionLine).toContain('Fixed, waiting for a review to confirm: Verify against a real Postgres');
-    expect(decisionLine).toContain('Open to you: Review findings, Request another fix, Request a forced re-review');
+    expect(decisionLine).toContain('Fixed, waiting for a review: Verify against a real Postgres');
+    expect(decisionLine).toContain('Open on the task page: Review findings, Request another fix, Request a forced re-review');
     expect(decisionLine).not.toMatch(/approve/i);
     expect(roundsLine).toContain('Round 3 at H3: changes requested');
   });
@@ -171,7 +171,7 @@ describe('AC-43 / AC-44 / AC-48: the PR activity comment carries the decision', 
     expect(body).toContain('**How should the two unresolved findings be settled?**');
     expect(body).toContain('Automation stopped after three review rounds');
     expect(body).toContain('Still open: Mutation tests do not cover the new guard');
-    expect(body).toContain('Fixed, waiting for a review to confirm: Verify against a real Postgres');
+    expect(body).toContain('Fixed, waiting for a review: Verify against a real Postgres');
     expect(body).toContain('Open on the task page: Review findings, Request another fix, Request a forced re-review');
     expect(body).not.toMatch(/Approve and override/);
   });

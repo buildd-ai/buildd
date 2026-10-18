@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/components/escalation-decision-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/pr-activity-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
+verified_by: [apps/web/src/lib/workflow/escalation-copy.test.ts, apps/web/src/components/EscalationDecision.test.tsx, apps/web/src/lib/workflow/delivery-rounds.test.ts, apps/web/src/lib/projections-agree.test.tsx, packages/workflow-kernel/src/escalation-brief.test.ts, apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.page-body.test.tsx, apps/web/src/lib/task-live-view.test.ts, apps/web/src/lib/mission-board.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -421,7 +421,7 @@ A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
   (rounds and fixes spent, in words) (spec r7 §7, AC-43). Its primary button names the
   action it takes (Request another fix, Request a forced re-review, else Review
   findings) and links `#task-decision-<action>`; the PR on GitHub is the second
-  link (AC-48). The wording is `decisionCopy` (components/escalation-decision-copy.ts),
+  link (AC-48). The wording is `decisionCopy` (lib/workflow/escalation-copy.ts),
   shared by the verdict row, the card and get_pr.
 - The card, `#task-decision`, right under the verdict row, names each unresolved
   finding (still open, or fixed and waiting for a review) and lists only the actions
@@ -442,7 +442,7 @@ A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
 Under the review summary line the checks list prints each round as buildd judged it
 ("Round 1 at abc1234: changes requested · Round 2 at def5678: changes requested")
 and, once buildd has posted a verdict, that on a PR buildd opened GitHub lists those
-reviews as Commented (`reviewRoundsOf`, lib/pr-activity-rounds.ts). get_pr
+reviews as Commented (`reviewRoundsOf`, lib/workflow/delivery-rounds.ts). get_pr
 (`Review rounds:`) and the PR activity comment (`Rounds:`) print the same line and
 note (spec r7 §7, AC-24). Where GitHub's reviews were read (get_pr, the PR card) the
 line also gives GitHub's own states in words ("On GitHub: two reviews Commented"),

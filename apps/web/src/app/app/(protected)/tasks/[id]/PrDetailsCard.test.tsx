@@ -170,7 +170,8 @@ describe('PrDetailsCard', () => {
     ]);
     githubResponses.set('/pulls/7', { head: { sha: 'abc' } });
     const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
-    expect(props.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0, commented: 1 });
+    // One basis per reviewer: a later comment neither overwrites the approval nor counts as a Commented review.
+    expect(props.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0, commented: 0 });
   });
 
   const degradations: Array<[string, () => void]> = [

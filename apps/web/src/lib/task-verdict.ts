@@ -77,7 +77,7 @@ export interface VerdictInput {
    */
   escalation?: {
     title: string;
-    /** The question the person decides (escalation-decision-copy). */
+    /** The question the person decides (lib/workflow/escalation-copy). */
     question: string;
     /** Why automation stopped, in words. */
     why: string;

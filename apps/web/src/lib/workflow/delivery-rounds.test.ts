@@ -5,8 +5,8 @@
  * changes requested".
  */
 import { describe, expect, test } from 'bun:test';
-import { GITHUB_COMMENTED_NOTE, githubReviewStatesLine, reviewRoundsOf } from './pr-activity-rounds';
-import type { RoundSnapshot } from './workflow/types';
+import { GITHUB_COMMENTED_NOTE, githubReviewStatesLine, reviewRoundsOf } from './delivery-rounds';
+import type { RoundSnapshot } from './types';
 
 const R = (n: number, o: Partial<RoundSnapshot> = {}): RoundSnapshot => ({
   id: `r${n}`, round: n, headSha: `${n}aaaaaaabbbbbbb`, kind: 'full', status: 'decided',
@@ -38,7 +38,7 @@ describe('reviewRoundsOf', () => {
       R(3, { status: 'reviewing', verdict: null, effectiveVerdict: null }),
     ])!;
     expect(r.line).toBe('Round 1 at 1aaaaaa: approved · Round 3 at 3aaaaaa: in review');
-    expect(reviewRoundsOf([R(1, { status: 'queued', verdict: null, effectiveVerdict: null })])!.line).toBe('Round 1 at 1aaaaaa: queued');
+    expect(reviewRoundsOf([R(1, { status: 'queued', verdict: null, effectiveVerdict: null })])!.line).toBe('Round 1 at 1aaaaaa: waiting for review');
     expect(reviewRoundsOf([R(1, { status: 'failed', verdict: null, effectiveVerdict: null })])!.line).toBe('Round 1 at 1aaaaaa: review did not finish');
   });
 
@@ -57,4 +57,15 @@ describe('githubReviewStatesLine (AC-24): GitHub\'s formal states, kept apart fr
     expect(githubReviewStatesLine(null)).toBeNull();
     expect(githubReviewStatesLine({ approved: 0, changesRequested: 0 })).toBeNull();
   });
+});
+
+test('one basis for every GitHub state: each reviewer once', async () => {
+  const { githubReviewCounts } = await import('@buildd/shared');
+  const c = githubReviewCounts([
+    { user: { login: 'bot' }, state: 'COMMENTED' }, { user: { login: 'bot' }, state: 'COMMENTED' },
+    { user: { login: 'a' }, state: 'APPROVED' }, { user: { login: 'a' }, state: 'COMMENTED' },
+    { user: { login: 'b' }, state: 'CHANGES_REQUESTED' }, { user: { login: 'b' }, state: 'APPROVED' },
+  ]);
+  expect(c).toEqual({ approved: 2, changesRequested: 0, pending: 0, commented: 1 });
+  expect(githubReviewStatesLine(c)).toBe('On GitHub: two reviews Approved, one Commented');
 });

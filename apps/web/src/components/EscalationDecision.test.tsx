@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 mock.module('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
 const { default: EscalationDecision } = await import('./EscalationDecision');
-const { decisionCopy } = await import('./escalation-decision-copy');
+const { decisionCopy } = await import('@/lib/workflow/escalation-copy');
 const { deriveEscalationBrief } = await import('@buildd/workflow-kernel/escalation-brief');
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot, AttemptSnapshot } from '@buildd/workflow-kernel/types';
 
@@ -48,5 +48,13 @@ describe('EscalationDecision', () => {
     expect(html).not.toMatch(/Approve and override|Waiting on you|Unavailable:/);
     // The primary is the shared primary button, named for the action.
     expect(html).toMatch(/btn-primary[^>]*data-testid="decision-action-request_fix"|data-testid="decision-action-request_fix"[^>]*btn-primary/);
+  });
+});
+
+describe('EscalationDecision confirm', () => {
+  test('posts the head and version the card showed, and shows a stale refusal in its own words', async () => {
+    const src = await Bun.file(new URL('./EscalationDecision.tsx', import.meta.url)).text();
+    expect(src).toContain('headSha: brief.decisionHead.headSha, version: brief.decisionHead.version');
+    expect(src).toContain('data.error');
   });
 });

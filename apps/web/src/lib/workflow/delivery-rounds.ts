@@ -10,7 +10,8 @@
  * line beside the review summary line (`reviewSummaryLine`), so the three read the
  * same rounds the same way. Pure and client-safe.
  */
-import type { RoundSnapshot, Verdict } from './workflow/types';
+import { TERMS } from '@buildd/shared';
+import type { RoundSnapshot, Verdict } from './types';
 
 export interface ReviewRoundReading {
   round: number;
@@ -41,7 +42,7 @@ const VERDICT_WORDS: Record<Verdict, string> = {
 function wordsOf(r: RoundSnapshot, verdict: Verdict | null): string {
   if (r.status === 'decided' && verdict) return VERDICT_WORDS[verdict];
   if (r.status === 'reviewing') return 'in review';
-  if (r.status === 'queued') return 'queued';
+  if (r.status === 'queued') return TERMS['wait.review'].short;
   return 'review did not finish';
 }
 
@@ -61,18 +62,6 @@ export function reviewRoundsOf(rounds: readonly RoundSnapshot[] | null | undefin
   };
 }
 
-const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-const countWord = (n: number): string => COUNT_WORDS[n] ?? String(n);
 
-/**
- * GitHub's formal review states on the PR, in GitHub's own words, printed beside
- * buildd's verdict and never in place of it (AC-24): a COMMENTED review is not a
- * request for changes, and buildd's verdict is not a GitHub review state.
- */
-export function githubReviewStatesLine(r: { approved?: number; changesRequested?: number; commented?: number } | null | undefined): string | null {
-  if (!r) return null;
-  const parts = ([[r.approved ?? 0, 'Approved'], [r.changesRequested ?? 0, 'Changes requested'], [r.commented ?? 0, 'Commented']] as const)
-    .filter(([n]) => n > 0)
-    .map(([n, state], i) => (i === 0 ? `${countWord(n)} ${n === 1 ? 'review' : 'reviews'} ${state}` : `${countWord(n)} ${state}`));
-  return parts.length > 0 ? `On GitHub: ${parts.join(', ')}` : null;
-}
+/** GitHub's formal review states (AC-24); one formatter, in the shared terms catalog. */
+export { githubReviewStatesLine } from '@buildd/shared';

@@ -6,6 +6,7 @@ import { latestRunPerName } from '@/lib/ci-verdict';
 import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
 import { StoredPrCard, type StoredPrFacts } from '@/components/task/StoredPrCard';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { githubReviewCounts } from '@buildd/shared';
 
 export { StoredPrCard, type StoredPrFacts };
 
@@ -100,7 +101,7 @@ export default async function PrDetailsCard({
           approved: reviewStates.filter(s => s === 'APPROVED').length,
           changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
           pending: reviewStates.filter(s => s === 'PENDING').length,
-          commented: reviewList.filter((r: any) => r.state === 'COMMENTED').length,
+          commented: githubReviewCounts(reviewList).commented,
         }}
         mergeable={typeof pr.mergeable === 'boolean' ? pr.mergeable : null}
         mergeableState={typeof pr.mergeable_state === 'string' ? pr.mergeable_state : null}
