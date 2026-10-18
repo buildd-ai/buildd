@@ -198,7 +198,7 @@ export function visualShotsForMissionsQuery(q: Selectable, missionIds: readonly 
       inArray(artifacts.missionId, [...missionIds]),
       eq(artifacts.type, ArtifactType.SCREENSHOT),
       sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
-      sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${artifacts.missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+      sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${artifacts.missionId} and ${auditTaskSql('"t"')})`,
     ))
     .as('ranked_shots');
   return q
@@ -230,7 +230,7 @@ export function visualReviewWorkersForMissionsQuery(q: Selectable, missionIds: r
       error: workers.error,
     })
     .from(workers)
-    .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" in (${idList(missionIds)}) and ("t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
+    .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" in (${idList(missionIds)}) and (${auditTaskSql('"t"')} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
 }
 
 export function missionCaptureRefsQuery(q: Selectable, missionIds: readonly string[]) {

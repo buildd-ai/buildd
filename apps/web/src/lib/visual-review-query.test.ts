@@ -57,7 +57,9 @@ describe('one audit identity in SQL', () => {
   it('every task-scoped audit predicate matches the role or the title prefix', () => {
     const shotsQ = visualReviewWorkersQuery(qb(), MISSION).toSQL();
     const awaitingQ = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL();
-    for (const { sql, params } of [shotsQ, awaitingQ]) {
+    const batchShotsQ = visualShotsForMissionsQuery(qb(), [MISSION]).toSQL();
+    const batchWorkersQ = visualReviewWorkersForMissionsQuery(qb(), [MISSION]).toSQL();
+    for (const { sql, params } of [shotsQ, awaitingQ, batchShotsQ, batchWorkersQ]) {
       expect(sql).toContain(ROLE);
       expect(sql).toContain(TITLE);
       // The bound values are the identity: the role slug and the title prefix.
@@ -99,7 +101,7 @@ describe('batch reads for the scheduler (spec 3ef37387 R-25)', () => {
   it("ties each shot to an auditor of the shot's own mission, so a batch never lends one mission's auditor to another", () => {
     const { sql, params } = visualShotsForMissionsQuery(qb(), [MISSION, OTHER]).toSQL();
     expect(sql).toMatch(/"artifacts"\."mission_id" in \(\$1, \$2\)/);
-    expect(sql).toContain(`where "t"."mission_id" = "artifacts"."mission_id" and "t"."role_slug" = `);
+    expect(sql).toContain(`where "t"."mission_id" = "artifacts"."mission_id" and ("t".role_slug = `);
     expect(sql).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
     expect(params.slice(0, 2)).toEqual([MISSION, OTHER]);
   });
@@ -112,7 +114,7 @@ describe('batch reads for the scheduler (spec 3ef37387 R-25)', () => {
 
   it('reads only audit and fix workers of the batch missions', () => {
     const { sql, params } = visualReviewWorkersForMissionsQuery(qb(), [MISSION, OTHER]).toSQL();
-    expect(sql).toMatch(/"t"\."mission_id" in \(\$1, \$2\) and \("t"\."role_slug" = \$3/);
+    expect(sql).toMatch(/"t"\."mission_id" in \(\$1, \$2\) and \(\("t"\.role_slug = \$3/);
     expect(params.slice(0, 2)).toEqual([MISSION, OTHER]);
   });
 });
