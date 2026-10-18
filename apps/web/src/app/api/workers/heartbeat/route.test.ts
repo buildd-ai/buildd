@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -28,7 +28,16 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+// Redis for lib/liveness and lib/runner-beats: a key map, or absent (the
+// default: every op "could not ask", so each beat writes as it always did).
+let redisUp = false;
+const redisKeys = new Map<string, unknown>();
 mock.module('@/lib/redis', () => ({
+  setWithTtl: async (k: string, v: unknown) => { if (!redisUp) return false; redisKeys.set(k, v); return true; },
+  getKey: async (k: string) => (redisUp ? (redisKeys.get(k) ?? null) : undefined),
+  getKeys: async (ks: string[]) => (redisUp ? ks.map(k => redisKeys.get(k) ?? null) : undefined),
+  tryLock: async (k: string) => { if (!redisUp) return null; if (redisKeys.has(k)) return false; redisKeys.set(k, 1); return true; },
+  delKey: async (k: string) => { redisKeys.delete(k); },
   getCachedOpenWorkspaceIds: mockGetCachedOpenWorkspaceIds,
   setCachedOpenWorkspaceIds: mockSetCachedOpenWorkspaceIds,
   getCachedApiKey: mockGetCachedApiKey,
@@ -1413,5 +1422,107 @@ describe('POST /api/workers/heartbeat — Codex auth source (docs/specs/runner-m
       expect(res.status).toBe(200);
       expect(captured.set.codexAuthSource).toBe(source);
     }
+  });
+});
+
+describe('POST /api/workers/heartbeat — liveness in Redis (spec 3ef37387 R-32)', () => {
+  const RUNNER = 'http://localhost:8766';
+  const beat = (body: Record<string, unknown> = {}) => POST(createMockRequest({
+    headers: { Authorization: 'Bearer bld_test' },
+    body: { localUiUrl: RUNNER, activeWorkerCount: 1, activeWorkerIds: ['w-1'], ...body },
+  }));
+  let inserts: number;
+
+  beforeEach(() => {
+    redisUp = true;
+    redisKeys.clear();
+    inserts = 0;
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsInsert.mockImplementation(() => {
+      inserts++;
+      return { values: mock(() => ({ onConflictDoUpdate: mock(() => Promise.resolve()) })) };
+    });
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    mockReleaseUnacknowledgedClaims.mockReset();
+    mockReleaseUnacknowledgedClaims.mockResolvedValue(0);
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [{ id: 'w-1' }];
+    leaseUpdateThrows = null;
+  });
+  afterAll(() => { redisUp = false; });
+
+  /** Lapse the once-per-interval gate, as five minutes passing would. */
+  const intervalPasses = () => { for (const k of [...redisKeys.keys()]) if (k.startsWith('buildd:live-db:')) redisKeys.delete(k); };
+
+  it('a beat that changes nothing reads and writes no row, and keeps the same viewer token', async () => {
+    const first = await (await beat()).json();
+    expect(inserts).toBe(1);
+    expect(leaseUpdateCalls).toHaveLength(1);
+    expect(mockHeartbeatsFindFirst).toHaveBeenCalledTimes(1);
+
+    const second = await (await beat()).json();
+    expect(inserts).toBe(1);
+    expect(leaseUpdateCalls).toHaveLength(1);
+    expect(mockHeartbeatsFindFirst).toHaveBeenCalledTimes(1);
+    expect(second.viewerToken).toBe(first.viewerToken);
+    expect(second.leasesRenewed).toBe(1);
+    // The beat itself is in Redis, for the "online now" readers.
+    expect(typeof redisKeys.get(`buildd:live:runner:account-1|${RUNNER}`)).toBe('number');
+  });
+
+  it('writes when the content changes', async () => {
+    await beat();
+    await beat({ activeWorkerCount: 2, activeWorkerIds: ['w-1'] });
+    expect(inserts).toBe(2);
+  });
+
+  it('writes when it names a worker no write renewed yet, so Redis never vouches for it', async () => {
+    await beat();
+    leaseRenewedRows = [{ id: 'w-1' }, { id: 'w-2' }];
+    await beat({ activeWorkerIds: ['w-1', 'w-2'] });
+    expect(leaseUpdateCalls).toHaveLength(2);
+    expect(leaseUpdateCalls[1].where.args[0].values).toEqual(['w-1', 'w-2']);
+  });
+
+  it('a worker the scoped UPDATE refused (another account, or ended) makes every beat write, as before', async () => {
+    leaseRenewedRows = [];
+    await beat({ activeWorkerIds: ['w-foreign'] });
+    await beat({ activeWorkerIds: ['w-foreign'] });
+    expect(leaseUpdateCalls).toHaveLength(2);
+  });
+
+  it('writes again once the interval passes', async () => {
+    await beat();
+    await beat();
+    intervalPasses();
+    await beat();
+    expect(inserts).toBe(2);
+  });
+
+  it('a lease written on an interval beat outlives the interval', async () => {
+    await beat();
+    // WORKER_LEASE_TTL_MS (5 min) plus the 5-minute write interval.
+    expect(leaseUpdateCalls[0].set.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now() + 9 * 60_000);
+  });
+
+  it('the lost-claim search rides the interval when nothing is pending, and runs at once when something is', async () => {
+    const handoff = { pendingStartIds: [] as string[], claimInFlight: false };
+    await beat({ claimHandoff: handoff });
+    await beat({ claimHandoff: handoff });
+    expect(mockReleaseUnacknowledgedClaims).toHaveBeenCalledTimes(1);
+    await beat({ claimHandoff: { pendingStartIds: ['w-starting'], claimInFlight: false } });
+    expect(mockReleaseUnacknowledgedClaims).toHaveBeenCalledTimes(2);
+  });
+
+  it('without Redis every beat writes (fail open)', async () => {
+    redisUp = false;
+    await beat();
+    await beat();
+    expect(inserts).toBe(2);
+    expect(leaseUpdateCalls).toHaveLength(2);
   });
 });
