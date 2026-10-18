@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   DELIVERY_KIND,
+  STATE_OF_KIND,
   bindVerdict,
   deliveryCounts,
   deliveryStageIndex,
@@ -13,6 +14,7 @@ import {
   type MissionTaskRow,
 } from './delivery-projection';
 import * as missionHelpers from '@buildd/core/mission-helpers';
+import { STATES } from '@/components/ui/states';
 
 const projectMissionDelivery = (m: Parameters<typeof project>[0]) => project(m, missionHelpers);
 
@@ -232,10 +234,18 @@ describe('stage track and repair badge', () => {
     expect(DELIVERY_KIND.landing.label).toBe('Ready to merge');
     expect(DELIVERY_KIND.landed.label).toBe('Merged');
     expect(DELIVERY_KIND.notlanded.label).toBe('Merge blocked');
-    // Verify no "land" terms in any pills
-    Object.entries(DELIVERY_KIND).forEach(([key, { label }]) => {
-      expect(label.toLowerCase()).not.toContain('land');
+    // No pill says land, landing or landed (internal kind keys stay).
+    Object.values(DELIVERY_KIND).forEach(({ label }) => {
+      expect(label).not.toMatch(/\bland/i);
     });
+  });
+  it('the state pill a mission row draws (STATE_OF_KIND → STATES) says merge too', () => {
+    for (const key of Object.values(STATE_OF_KIND)) {
+      if (key) expect(STATES[key].word).not.toMatch(/\bland/i);
+    }
+    expect(STATES[STATE_OF_KIND.landing!].word).toBe('Ready to merge');
+    expect(STATES[STATE_OF_KIND.landed!].word).toBe('Merged');
+    expect(STATES[STATE_OF_KIND.notlanded!].word).toBe('Merge blocked');
   });
 });
 

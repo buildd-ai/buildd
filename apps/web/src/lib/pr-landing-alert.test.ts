@@ -17,8 +17,8 @@ const MIN = 60_000;
 describe('LANDING_ACTION_LABELS (R-43 plain terms)', () => {
   it('uses plain merge terms and never says landing', () => {
     expect(LANDING_ACTION_LABELS.retry_landing).toBe('Retry merge');
-    Object.entries(LANDING_ACTION_LABELS).forEach(([key, label]) => {
-      expect(label.toLowerCase()).not.toContain('land');
+    Object.values(LANDING_ACTION_LABELS).forEach((label) => {
+      expect(label).not.toMatch(/\bland/i);
     });
   });
 });

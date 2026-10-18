@@ -398,7 +398,7 @@ export function classifyPullRequestMigrations(
       safe: false,
       operationClass: 'CONTRACT',
       reason:
-        `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then land the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
+        `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then merge the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
       mixedSplit: true,
       kind: 'mixed',
     };

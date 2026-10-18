@@ -199,7 +199,7 @@ describe('MissionGrid portfolio', () => {
 
   it('shows a state as glyph + word', () => {
     expect(rowHtml('m02')).toContain('Auditing');
-    expect(rowHtml('m03')).toContain('Not landed');
+    expect(rowHtml('m03')).toContain('Merge blocked');
   });
 
   it('a closed PR still being reconciled is In motion and reads Recovering, never Needs you', () => {

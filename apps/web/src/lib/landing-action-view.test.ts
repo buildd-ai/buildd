@@ -16,7 +16,7 @@ describe('describeTapResult', () => {
   it('a retry that left landing waiting on checks reads as progress, not as a failed fix', () => {
     const v = describeTapResult({ summary: 'Not mergeable yet: checks or the review are still running on the PR head.', outcome: 'waiting_ci' });
     expect(v.progressing).toBe(true);
-    expect(v.heading).toBe('Landing is under way');
+    expect(v.heading).toBe('The merge is under way');
     expect(v.body).toContain('Nothing failed');
     expect(v.body).toContain('checks or the review are still running');
   });

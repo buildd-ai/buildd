@@ -44,14 +44,14 @@ export const STATES: Record<StateKey, StateDef> = {
   fixing:     { glyph: '↻', word: 'Repairing',  tone: 'act', pattern: 'hatch-45',         frame: 'none',     cellGlyph: true,  means: 'A check failed; buildd is fixing it' },
   waiting:    { glyph: '◇', word: 'Waiting',    tone: 'act', pattern: 'empty',            frame: 'heavy',    cellGlyph: true,  means: 'The agent is paused, waiting on an answer' },
   ci_failed:  { glyph: '⊗', word: 'CI failed',  tone: 'bad', pattern: 'dots',             frame: 'none',     cellGlyph: true,  means: 'A required check failed on the current revision' },
-  failed:     { glyph: '⊠', word: 'Failed',     tone: 'bad', pattern: 'crosshatch',       frame: 'none',     cellGlyph: true,  means: 'The task stopped without a revision to land' },
-  landing:    { glyph: '▲', word: 'Landing',    tone: 'ok',  pattern: 'hatch-horizontal', frame: 'none',     cellGlyph: false, means: 'Every check passed; the merge is queued' },
-  landed:     { glyph: '■', word: 'Landed',     tone: 'ok',  pattern: 'solid',            frame: 'none',     cellGlyph: false, means: 'Merged into its target branch' },
+  failed:     { glyph: '⊠', word: 'Failed',     tone: 'bad', pattern: 'crosshatch',       frame: 'none',     cellGlyph: true,  means: 'The task stopped without a revision to merge' },
+  landing:    { glyph: '▲', word: 'Ready to merge', tone: 'ok',  pattern: 'hatch-horizontal', frame: 'none',     cellGlyph: false, means: 'Every check passed; the merge is queued' },
+  landed:     { glyph: '■', word: 'Merged',     tone: 'ok',  pattern: 'solid',            frame: 'none',     cellGlyph: false, means: 'Merged into its target branch' },
   ready:      { glyph: '□', word: 'Ready',      tone: 'q',   pattern: 'empty',            frame: 'hairline', cellGlyph: false, means: 'Nothing holds it; it starts when a slot frees' },
   blocked:    { glyph: '▦', word: 'Blocked',    tone: 'q',   pattern: 'hatch-dense',      frame: 'none',     cellGlyph: false, means: 'Waits on a dependency that is moving; starts by itself' },
   queued:     { glyph: '░', word: 'Queued',     tone: 'q',   pattern: 'hatch-sparse',     frame: 'none',     cellGlyph: false, means: 'Queued behind a chain that is itself waiting' },
   recovering: { glyph: '⊘', word: 'Recovering', tone: 'q',   pattern: 'flat',             frame: 'hairline', cellGlyph: true,  means: "A check can't run; buildd is restoring it" },
-  not_landed: { glyph: '✕', word: 'Not landed', tone: 'bad', pattern: 'flat',             frame: 'none',     cellGlyph: true,  means: 'The PR closed without merging' },
+  not_landed: { glyph: '✕', word: 'Merge blocked', tone: 'bad', pattern: 'flat',             frame: 'none',     cellGlyph: true,  means: 'The PR closed without merging' },
   needs_you:  { glyph: '!', word: 'Waiting on you',  tone: 'dec', pattern: 'flat',             frame: 'decision', cellGlyph: true,  means: 'A decision only a person can make' },
 };
 

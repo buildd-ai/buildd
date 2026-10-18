@@ -30,7 +30,7 @@ export function describeTapResult(r: { summary: string; outcome?: string }): Tap
   const summary = r.summary.trim();
   if (r.outcome && PROGRESSING_OUTCOMES.has(r.outcome)) {
     return {
-      heading: 'Landing is under way',
+      heading: 'The merge is under way',
       body: `${summary} Nothing failed: buildd merges it once the current commit's checks and review pass, and pages you again only if it stops making progress.`,
       progressing: true,
     };
