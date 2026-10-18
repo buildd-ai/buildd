@@ -141,6 +141,13 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
     return row('finding', plural(Math.max(state.findings.issues, 1), 'finding'), sentence(p.label, p.detail));
   }
   if (p.owner) return row('owner', p.owner.label, p.detail);
+  // I-14: queued behind failed build work, named, with no action of its own; the failed task holds the recovery.
+  if (state.status === 'queued' && state.waitingOn) {
+    return {
+      ...row('queued', 'waiting on failed work', p.detail, 'none'),
+      evidence: [...base.evidence, { label: 'Open the failed task', href: `/app/tasks/${encodeURIComponent(state.waitingOn.taskId)}` }],
+    };
+  }
   if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last check. It checks again.');
   if (state.status === 'running') {
     const pr = state.progress;

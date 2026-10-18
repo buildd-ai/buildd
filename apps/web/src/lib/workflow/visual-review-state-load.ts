@@ -12,6 +12,7 @@ import { sqlWhere, sqlOrderBy } from '@buildd/core/db/relational-sql';
 import { isTerminalTaskStatus } from '@buildd/shared';
 import { missions, tasks as tasksTable, workflowDeliveries, workspaces } from '@buildd/core/db/schema';
 import { SURFACE_AUDIT_TITLE_PREFIX, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { dependencyFailureOf } from '@buildd/core/dependency-failure';
 import { visualReviewPolicyOf } from '@buildd/shared';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWaiver, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { loadVisualReview } from '@/lib/visual-review-load';
@@ -43,6 +44,7 @@ export async function loadMissionAuditLedger(missionId: string): Promise<Schedul
     headSha: readAuditedSha(r.context),
     updatedAt: new Date(r.updatedAt ?? r.createdAt).getTime(),
     captureConfigError: r.status === 'failed' ? captureConfigErrorFrom(r.result) : null,
+    dependencyFailed: r.status === 'failed' ? dependencyFailureOf(r.result) : null,
   }));
 }
 
@@ -124,7 +126,7 @@ export async function getMissionVisualReviewState(
   const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
   const ledger = opts.ledger ?? await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
-  const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
+  const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && !a.dependencyFailed && a.headSha === headSha).length : 0;
   const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType, status: model.audit.status } : null;
 
   // R-33: a queued audit names the claim loop's hold on it.
@@ -147,6 +149,7 @@ export async function getMissionVisualReviewState(
           needsYouReason: model.needsYou?.reason ?? null,
           captured: model.progress?.captured ?? 0,
           expected: model.progress?.expected ?? null,
+          waitingOn: model.waitingOn ?? null,
         }
       : null,
     waiver,
