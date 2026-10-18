@@ -247,11 +247,91 @@ describe('loadRunnerQueue', () => {
     expect(out.teams[0].queue[0].alongside).toBeUndefined();
   });
 
+  it('one scope-undeclared task per mission starts; the rest wait on it by name, as the claim defers them (advisory_manifest)', async () => {
+    const m = (id: string, over: Record<string, unknown> = {}) => row({ id, missionId: 'm-1', missionTitle: 'Fast', pathManifest: null, category: 'feature', outputRequirement: 'pr_required', ...over });
+    let reads = 0;
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [
+        m('t-first'), m('t-second'), m('t-review', { category: 'review' }), m('t-declared', { pathManifest: ['a.ts'] }),
+        m('t-research', { outputRequirement: 'artifact_required' }), m('t-later', { g_startAt: false, startAt: '2026-03-11T00:00:00Z' }),
+        row({ id: 't-other-mission', missionId: 'm-2', pathManifest: null }),
+        row({ id: 't-busy-mission', missionId: 'm-3', pathManifest: null }),
+      ],
+      estimates: async () => null,
+      workspaceConfigs: async () => [{ id: 'ws-a', gitConfig: null }],
+      overlaps: async () => ({ openPrs: new Map(), leases: new Map() }),
+      missionInFlight: async (ids) => { reads++; expect(ids.sort()).toEqual(['m-1', 'm-2', 'm-3']); return new Map([['m-3', new Set(['running-task'])]]); },
+    });
+    expect(reads).toBe(1);
+    const by = new Map(out.teams[0].queue.map(t => [t.id, t]));
+    // The first starts and so occupies the mission's one slot for undeclared work.
+    expect(by.get('t-first')!.holds).toEqual([]);
+    expect(by.get('t-second')!.holds).toEqual(['advisory_manifest']);
+    expect(by.get('t-second')!.holderTaskId).toBe('t-first');
+    // Reviews, declared scope and non-code deliverables never take part.
+    for (const id of ['t-review', 't-declared', 't-research']) expect(by.get(id)!.holds).toEqual([]);
+    // A task held on its own never starts, so it occupies nothing and is not marked.
+    expect(by.get('t-later')!.holds).toEqual(['deferred']);
+    expect(by.get('t-other-mission')!.holds).toEqual([]);
+    // A live worker already holds that mission's slot.
+    expect(by.get('t-busy-mission')!.holds).toEqual(['advisory_manifest']);
+    expect(by.get('t-busy-mission')!.holderTaskId).toBe('running-task');
+    for (const t of out.teams[0].queue) { expect(t).not.toHaveProperty('category'); expect(t).not.toHaveProperty('outputRequirement'); }
+  });
+
+  it('a failed in-flight read marks nothing', async () => {
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [row({ id: 'a', missionId: 'm-1', pathManifest: null }), row({ id: 'b', missionId: 'm-1', pathManifest: null })],
+      estimates: async () => null, workspaceConfigs: async () => [], overlaps: async () => ({ openPrs: new Map(), leases: new Map() }),
+      missionInFlight: async () => { throw new Error('down'); },
+    });
+    expect(out.teams[0].queue.map(t => t.holds)).toEqual([[], []]);
+  });
+
   it('says when the read hit its row limit', async () => {
     const many = Array.from({ length: RUNNER_QUEUE_LIMIT + 1 }, (_, i) => row({ id: `t-${i}` }));
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => many, estimates: async () => null });
     expect(out.truncated).toBe(true);
     expect(out.teams[0].queue.length).toBe(RUNNER_QUEUE_LIMIT);
+  });
+});
+
+describe('whose work each row is (R-58, AC-42)', () => {
+  const VIEWER = 'user-viewer';
+  it('reads the owner in the same query: the task, else its mission, else its schedule, and the owner name', () => {
+    const q = buildRunnerQueueQuery(new QueryBuilder() as any, { workspaceIds: ['ws-a'], gates: runnerQueueGates(caller, NOW) }).toSQL().sql;
+    expect(q).toContain('coalesce("tasks"."created_by_user_id", "missions"."created_by_user_id", "task_schedules"."created_by_user_id")');
+    expect(q).toContain('left join "task_schedules" on "task_schedules"."id" = "tasks"."schedule_id"');
+    // Never the email: only the name is read, and only its first word is sent.
+    expect(q).not.toContain('"email"');
+  });
+
+  it('"you" for the viewer\'s own work, a first name for a teammate\'s, unattributed when no owner is known', () => {
+    const own = classifyRunnerQueueRow(row({ ownerUserId: VIEWER, ownerName: 'Robin Vale' }), VIEWER).task;
+    expect(own.owner).toBe('you');
+    expect(own.ownerName).toBeUndefined();
+    const mate = classifyRunnerQueueRow(row({ ownerUserId: 'user-other', ownerName: 'Sam Okafor' }), VIEWER).task;
+    expect(mate.owner).toBe('teammate');
+    expect(mate.ownerName).toBe('Sam');
+    // Filed by a schedule nobody owns.
+    expect(classifyRunnerQueueRow(row({ ownerUserId: null, ownerName: null }), VIEWER).task.owner).toBe('unattributed');
+  });
+
+  it('with no person behind the runner key, nothing reads as "you"', () => {
+    expect(classifyRunnerQueueRow(row({ ownerUserId: VIEWER, ownerName: 'Robin Vale' }), null).task.owner).toBe('teammate');
+  });
+
+  it('loadRunnerQueue labels every section and keeps the claim order', async () => {
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, viewerUserId: VIEWER }, {
+      calibrated: () => false,
+      read: async () => [
+        row({ id: 't-1', ownerUserId: VIEWER }),
+        row({ id: 't-2', ownerUserId: 'user-other', ownerName: 'Sam' }),
+        row({ id: 't-3', ownerUserId: VIEWER, g_missionLocal: false }),
+      ],
+    });
+    expect(out.teams[0].queue.map(t => [t.id, t.owner])).toEqual([['t-1', 'you'], ['t-2', 'teammate']]);
+    expect(out.teams[0].notForRunner.map(t => [t.id, t.owner])).toEqual([['t-3', 'you']]);
   });
 });
 

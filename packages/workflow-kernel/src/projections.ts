@@ -19,7 +19,7 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
-import { openRequiredFindings } from './findings';
+import { findingTotals, openRequiredFindings, type FindingTotals } from './findings';
 import { deriveEscalationBrief, type EscalationBrief, type EscalationBriefPermissions } from './escalation-brief';
 import { landingStatusOf } from './landing-gate';
 import { ROUND_TRIGGER_COPY } from './delta-approval';
@@ -157,6 +157,13 @@ export interface DeliveryView {
   openFindings?: number;
   /** Of those, how many a push already touched (`addressed`): a fix waiting for a re-review (AC-17). */
   addressedFindings?: number;
+  /**
+   * Living Spec r7 AC-47: the required findings partitioned, each counted once: open,
+   * addressed awaiting verification, verified resolved, set aside (waived or deferred).
+   * `open + addressedAwaitingVerification` equals `openFindings`. Count from this, never by
+   * adding `openFindings` and `addressedFindings` (the second is inside the first).
+   */
+  findingTotals: FindingTotals;
   /**
    * R-43: what the `Buildd / Review approval` status says on the current head, in the
    * same plain terms it publishes, so a surface can show it apart from CI. Null
@@ -394,7 +401,12 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
           : 'every change in it was reviewed at its own head; nothing new was added';
       } else {
         // Approved is not merged: the header says what it waits on until the merge fact.
-        headline = d.approvalBasis === 'policy' ? 'Ready to merge' : 'Approved · awaiting merge';
+        // Ready only once the required checks passed on this head; until then
+        // the approval waits on them, not on a merge.
+        const ci = deliveryPrState(d);
+        headline = ci === 'awaiting_ci' || ci === 'ci_running' ? 'Approved · checking'
+          : ci === 'ci_failed' ? 'Approved · checks failing'
+          : d.approvalBasis === 'policy' || ci === 'ci_passed' ? 'Ready to merge' : 'Approved · awaiting merge';
       }
       break;
     case 'LANDING': headline = 'Merging'; break;
@@ -472,6 +484,7 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     findings: input.view.findings ?? [],
     openFindings: openRequiredFindings(input.view).length,
     addressedFindings: openRequiredFindings(input.view).filter((f) => f.status === 'addressed').length,
+    findingTotals: findingTotals(input.view.findings),
     reviewApproval: reviewApprovalOf(input.view),
     escalation: deriveEscalationBrief(input.view, input.escalationPermissions),
   };

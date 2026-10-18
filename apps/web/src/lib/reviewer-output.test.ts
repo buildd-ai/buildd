@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseReviewerOutput, applyConfidenceGate, DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, applyEvidenceGate, reviewerEvidenceSha, DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
 
 describe('parseReviewerOutput', () => {
   const valid = { verdict: 'approve', confidence: 0.9, summary: 'Looks right' };
@@ -148,5 +148,34 @@ describe('applyConfidenceGate', () => {
     expect(applyConfidenceGate({ verdict: 'approve', confidence: 0.5, threshold }).verdict).toBe('escalate');
     expect(applyConfidenceGate({ verdict: 'request-changes', confidence: 0.5, threshold }).verdict).toBe('escalate');
     expect(applyConfidenceGate({ verdict: 'escalate', confidence: 0.5, threshold }).verdict).toBe('escalate');
+  });
+});
+
+describe('0230612e: the reviewer\'s checkout as the verdict\'s evidence', () => {
+  const head = 'a'.repeat(40);
+
+  it('reads checkoutSha trimmed and lowercased, and none as null', () => {
+    expect(reviewerEvidenceSha({ checkoutSha: ` ${'A'.repeat(40)}\n` })).toBe(head);
+    expect(reviewerEvidenceSha({})).toBeNull();
+    expect(reviewerEvidenceSha({ checkoutSha: '' })).toBeNull();
+    expect(reviewerEvidenceSha({ checkoutSha: 42 })).toBeNull();
+    expect(reviewerEvidenceSha(null)).toBeNull();
+  });
+
+  it('a verdict read at the head stands', () => {
+    for (const verdict of ['approve', 'request-changes', 'escalate'] as const) {
+      expect(applyEvidenceGate({ verdict, evidenceSha: head, headSha: head.toUpperCase() })).toEqual({ verdict, overrideReason: null });
+    }
+  });
+
+  it('a verdict read at another commit, a short SHA of the head, or none is inconclusive and never approves', () => {
+    for (const evidenceSha of ['b'.repeat(40), head.slice(0, 7), null]) {
+      for (const verdict of ['approve', 'request-changes'] as const) {
+        const gated = applyEvidenceGate({ verdict, evidenceSha, headSha: head });
+        expect(gated.verdict).toBe('escalate');
+        expect(gated.overrideReason).toContain('inconclusive');
+      }
+    }
+    expect(applyEvidenceGate({ verdict: 'approve', evidenceSha: null, headSha: head }).overrideReason).toContain('no reported checkout');
   });
 });

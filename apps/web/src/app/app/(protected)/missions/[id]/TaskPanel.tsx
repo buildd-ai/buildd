@@ -18,7 +18,7 @@ import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task
 import type { LiveWorkerViewProps, WorkerSteerProps } from '@/lib/task-live-view';
 import type { TaskChecksSection as TaskChecksSectionData } from '@/lib/task-sections';
 import type { AccessItem } from '@/lib/agent-capabilities/access-log';
-import type { DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { deliveryPillLabel, type DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 import { StoredPrCard } from '@/components/task/StoredPrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { TaskPrFacts } from '@/lib/task-sections';
@@ -95,6 +95,8 @@ export interface TaskPanelData {
   blockedByCount: number;
   /** `classifyTaskFailure`: null unless the task failed. */
   failureKind?: TaskFailureKind | null;
+  /** For a `dependency` failure: the failed task it waits on. */
+  failureWaitingOn?: { taskId: string; title: string | null } | null;
   /** What the task produced (W4 "Records"); absent from older responses. */
   records?: Array<{ id: string; type: string; title: string | null; href: string }>;
   /** Provenance from `deriveTaskOrigin` (U6); null when nothing is stored. */
@@ -353,8 +355,10 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         isBlocked={isBlocked}
         blockedByCount={data.blockedByCount}
         backend={data.backend}
+        deliveryReading={deliveryPillLabel(data.delivery)}
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
+        waitingOn={data.failureWaitingOn ?? null}
         auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
         // The live run view asks a live worker's question, as on the page.
         worker={w && !data.live ? { id: w.id, waitingFor: w.waitingFor, questionNote: data.questionNote ?? null } : null}

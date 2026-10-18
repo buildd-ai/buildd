@@ -106,10 +106,23 @@ export async function currentFiling(specId: string): Promise<FilingView | null> 
 export async function filingViews(rows: readonly FilingRow[]): Promise<FilingView[]> {
   const ids = [...new Set(rows.flatMap((r) => [r.parentSpecId, r.previousParentId]).filter((x): x is string => !!x))];
   const titled = ids.length ? await db.select({ id: specs.id, title: specs.title, workspaceId: specs.workspaceId }).from(specs).where(inArray(specs.id, ids)) : [];
+  return viewsOf(rows, (f, id) => titled.find((x) => x.id === id && x.workspaceId === f.workspaceId)?.title);
+}
+
+/**
+ * `filingViews` for filings of one workspace whose specs' titles the caller
+ * already holds (the index): no read. A parent not in `titles` is not named,
+ * as one in another workspace is not.
+ */
+export function filingViewsFrom(rows: readonly FilingRow[], titles: ReadonlyMap<string, string>): FilingView[] {
+  return viewsOf(rows, (_f, id) => titles.get(id));
+}
+
+function viewsOf(rows: readonly FilingRow[], titleOf: (f: FilingRow, id: string) => string | undefined): FilingView[] {
   return rows.map((f) => {
     const name = (id: string | null) => {
-      const t = id ? titled.find((x) => x.id === id && x.workspaceId === f.workspaceId) : undefined;
-      return t ? { specId: t.id, title: t.title } : null;
+      const title = id ? titleOf(f, id) : undefined;
+      return id && title !== undefined ? { specId: id, title } : null;
     };
     const prop = (f.proposal ?? {}) as Record<string, unknown>;
     const newArea = prop.answer === 'new_area' && typeof prop.title === 'string' ? { title: prop.title, charter: typeof prop.charter === 'string' ? prop.charter : '' } : null;

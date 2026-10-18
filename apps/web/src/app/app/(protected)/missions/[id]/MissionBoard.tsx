@@ -89,7 +89,7 @@ export interface MissionBoardProps extends BoardLinkContext {
    */
   stripFocus?: StripFocus | null;
   /**
-   * Each deliverable's own Build › Audit › Land and audit/repair evidence
+   * Each deliverable's own Build › Verify › Deliver and audit/repair evidence
    * (`missionTaskDeliveries`): the drawer's stage row and disclosure.
    */
   deliveries?: LandedStripProps['deliveries'];

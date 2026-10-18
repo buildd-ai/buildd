@@ -14,7 +14,7 @@ import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock, isTerminalTaskStatus } from '@buildd/shared';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
-import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { loadTaskFailure, type TaskFailure } from '@/lib/task-failure-kind-load';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -243,9 +243,10 @@ export async function GET(
     // worker.
     const questionNote = view.questionNote;
 
-    let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
+    let failureKind: TaskFailure['kind'] = null;
+    let failureWaitingOn: TaskFailure['waitingOn'] = null;
     try {
-      failureKind = await loadTaskFailureKind(task);
+      ({ kind: failureKind, waitingOn: failureWaitingOn } = await loadTaskFailure(task));
     } catch (err) {
       console.error('Task summary: failure kind load failed', err);
     }
@@ -369,6 +370,7 @@ export async function GET(
       access: accessItems,
       blockedByCount,
       failureKind,
+      failureWaitingOn,
       records,
       origin,
       visual,

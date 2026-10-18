@@ -1,3 +1,4 @@
+import { withoutRecentWorkerHeartbeat } from '@/lib/worker-patch-diff';
 import { isSilentCompletion } from '@/lib/silent-completion';
 import { inheritTaskDelegation } from '@buildd/core/token-delegation';
 import { db } from '@buildd/core/db';
@@ -7,7 +8,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, CLAIM_RESPONSE_LOST_ERROR, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
@@ -780,7 +781,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
   await detachInteractiveWorkersOfEndedTasks({ accountId });
 
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
-  const staleWorkers = await db.query.workers.findMany({
+  const staleCandidates = await db.query.workers.findMany({
     where: sqlWhere(staleWorkerScope(accountId)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
@@ -798,6 +799,17 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
       runner: true,
       updatedAt: true,
     },
+  });
+
+  const nowMs = Date.now();
+  const staleWorkers = await withoutRecentWorkerHeartbeat(staleCandidates, w => {
+    const windowMs = w.runner === INTERACTIVE_WORKER_RUNNER
+      ? INTERACTIVE_WORKER_IDLE_TTL_MS
+      : w.status === 'idle' ? 5 * 60 * 1000
+      : w.startedAt && (w.turns ?? 0) <= SILENT_START_MAX_TURNS
+        && Number(w.costUsd ?? 0) === 0 && !(w.inputTokens ?? 0) && !(w.outputTokens ?? 0)
+        ? 10 * 60 * 1000 : WORKER_STALE_REAP_MS;
+    return nowMs - windowMs;
   });
 
   // ── Lease shadow evaluation (observe-only) ────────────────────────────────
@@ -1021,7 +1033,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   });
   if (freshHeartbeat) return 0;
 
-  const orphanedByHeartbeat = await db.query.workers.findMany({
+  const orphanCandidates = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
     // heartbeatOrphanScope for why widening it is unsafe either way.
     where: sqlWhere(heartbeatOrphanScope(accountId, heartbeatCutoff, now)),
@@ -1030,6 +1042,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
     },
   });
+  const orphanedByHeartbeat = await withoutRecentWorkerHeartbeat(orphanCandidates, () => heartbeatCutoff.getTime());
   if (orphanedByHeartbeat.length === 0) return 0;
 
   const orphanIds = orphanedByHeartbeat.map(w => w.id);
@@ -1118,7 +1131,7 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   const RECOVERY_CUTOFF_MS = 30 * 60 * 1000;
   const recoveryCutoff = new Date(Date.now() - RECOVERY_CUTOFF_MS);
 
-  const staleWorkers = await db.query.workers.findMany({
+  const recoveryCandidates = await db.query.workers.findMany({
     where: sqlWhere(and(
       eq(workers.accountId, accountId),
       inArray(workers.status, ['running', 'starting']),
@@ -1130,6 +1143,7 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
     columns: { id: true, taskId: true, localUiUrl: true },
   });
 
+  const staleWorkers = await withoutRecentWorkerHeartbeat(recoveryCandidates, () => staleThreshold.getTime());
   if (staleWorkers.length === 0) return [];
 
   const recoveredIds: string[] = [];
@@ -1232,8 +1246,13 @@ export async function cleanupStuckWaitingInput(
   });
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
+  const expiredRunnerIds = new Set((await withoutRecentWorkerHeartbeat(
+    allWaitingWorkers.filter(w => w.runner !== INTERACTIVE_WORKER_RUNNER),
+    w => (w as any).task?.missionId ? missionCutoff.getTime() : standaloneCutoff.getTime(),
+  )).map(w => w.id));
   const stuckWorkers = allWaitingWorkers.filter(w => {
     if (superseded) return true;
+    if (w.runner !== INTERACTIVE_WORKER_RUNNER && !expiredRunnerIds.has(w.id)) return false;
     const isMissionTask = !!(w as any).task?.missionId;
     if (isMissionTask) return true; // Already past 4h cutoff
     return w.updatedAt < standaloneCutoff;
@@ -1667,7 +1686,8 @@ export async function cleanupUnreadInteractiveAnswers(
 
   let degraded = 0;
 
-  for (const worker of candidates) {
+  const quietCandidates = await withoutRecentWorkerHeartbeat(candidates, () => quietSince.getTime());
+  for (const worker of quietCandidates) {
     if (worker.runner !== INTERACTIVE_WORKER_RUNNER || worker.status !== 'running') continue;
     if (!worker.updatedAt || new Date(worker.updatedAt).getTime() >= quietSince.getTime()) continue;
     const task = (worker as any).task as Record<string, any> | null;

@@ -508,12 +508,12 @@ export function buildActivityNow(input: {
 
 // ── Mission detail: one task's delivery ─────────────────────────────────────
 
-/** Build › Audit › Land, one short phrase per stage, for the Landed strip's drawer. */
+/** Build › Verify › Deliver, one short phrase per stage, for the Landed strip's drawer. */
 export interface StageNotes { build: string; audit: string; land: string }
 
 /**
  * A mission task's own delivery, for mission detail's drawer: where it is on
- * Build › Audit › Land and the evidence behind it. Mission dependency progress
+ * Build › Verify › Deliver and the evidence behind it. Mission dependency progress
  * (landed n/m, what unblocks what) stays the strip's; this is one task's flow.
  */
 export interface TaskDeliveryDetail {
@@ -547,8 +547,8 @@ function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: r
   } else if (delivery.kind === 'unavailable') audit = 'Could not run; retries on its own';
   else if (delivery.kind === 'needs') audit = 'Waiting on a decision';
   else audit = (cur && gateLine(cur.gates) ? `${gateLine(cur.gates)}${onHead}` : null)
-    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to audit');
-  const land = at < 2 ? 'After Audit'
+    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to verify');
+  const land = at < 2 ? 'After Verify'
     : delivery.kind === 'landing' ? 'Merging'
     : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without a change to merge')
     : prNumber ? 'Merged' : 'Nothing to merge';

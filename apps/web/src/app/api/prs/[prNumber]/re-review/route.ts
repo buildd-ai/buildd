@@ -34,6 +34,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { explainDecisionRefusal, STALE_DECISION_REASONS } from '@buildd/workflow-kernel/decision-refusal';
 
 export async function POST(
   req: NextRequest,
@@ -51,9 +52,15 @@ export async function POST(
   }
 
   let workspaceId: string | undefined;
+  // Living Spec r7 AC-45: the escalation decision card sends the head and delivery version it
+  // showed, so the forced review is one decision bound to that head (absent = the live head).
+  let decision: { headSha: string; version: number } | null = null;
   try {
     const body = await req.json().catch(() => ({}));
     if (typeof body?.workspaceId === 'string') workspaceId = body.workspaceId;
+    if (typeof body?.headSha === 'string' && /^[0-9a-zA-Z]{1,64}$/.test(body.headSha) && Number.isInteger(body?.version)) {
+      decision = { headSha: body.headSha, version: body.version };
+    }
   } catch { /* non-fatal — body is optional */ }
 
   const resolved = await resolveOpenWorkerForUser(user.id, prNumber, workspaceId);
@@ -93,6 +100,7 @@ export async function POST(
     const kernel = await requestKernelReview({
       workspaceId: worker.workspaceId, repoFullName: kernelRepo.repoFullName, prNumber,
       installationId: kernelRepo.installationId, forced: true, actor: `human:${user.id}`,
+      ...(decision ? { decision } : {}),
     }, { principal: { kind: 'user', id: user.id } }).catch((err) => {
       // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
       if (isDoorError(err)) return err;
@@ -102,15 +110,35 @@ export async function POST(
     if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
     if (kernel?.handled) {
       const r = kernel.result;
+      // AC-45: the escalation note clears only once the kernel took the decision: applied now,
+      // or (the same decision again) applied by the first submission.
       if (r.result === 'applied') {
         await supersedeAncestorEscalations(db, originalTask.id, prNumber);
         return NextResponse.json({ ok: true, dispatched: true, kernel: true });
       }
+      if (r.result === 'duplicate') {
+        // A replayed decision is answered by its first transition before anything is read, so a
+        // stale tab replaying it after the PR escalated again must not clear the new escalation's
+        // note: nothing ran this time. Only a PR no longer waiting on a person is the first's success.
+        if (r.current.state === 'ESCALATED') {
+          const reason = 'decision_already_answered';
+          return NextResponse.json(
+            { error: explainDecisionRefusal('force_re_review', reason), code: reason, stale: true, current: r.current, kernel: true },
+            { status: 409 },
+          );
+        }
+        await supersedeAncestorEscalations(db, originalTask.id, prNumber);
+        return NextResponse.json({ ok: true, alreadyRequested: true, kernel: true });
+      }
       if (r.result === 'rejected' && r.reason === 'review_in_flight') {
         return NextResponse.json({ ok: true, alreadyRequested: true, kernel: true });
       }
+      // AC-46: refused, in plain words; nothing was queued and the note stays.
       return NextResponse.json(
-        { error: `Review not requested: ${r.reason}`, code: r.reason, current: r.current, kernel: true },
+        {
+          error: explainDecisionRefusal('force_re_review', r.reason), code: r.reason, current: r.current, kernel: true,
+          ...(STALE_DECISION_REASONS.has(r.reason) ? { stale: true } : {}),
+        },
         { status: 409 },
       );
     }
