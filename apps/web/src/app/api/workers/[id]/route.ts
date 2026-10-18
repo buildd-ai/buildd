@@ -10,7 +10,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -28,6 +28,7 @@ import { disposeParkedWaitingFor } from '@/lib/park-disposition';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -980,6 +981,14 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+
+  // A report that moves the worker (status, a question, a PR) moves its
+  // mission: the summary is refreshed once, after the response, whichever
+  // branch below writes (lib/work-changed.ts). A bare progress heartbeat does
+  // not; what it ages the reconcile catches.
+  if (reportedStatus !== undefined || waitingFor !== undefined || body.prUrl !== undefined || body.prNumber !== undefined) {
+    noteWorkChanged({ workerIds: [id] });
+  }
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
@@ -5322,6 +5331,7 @@ export async function PATCH(
   // row. The full row can exceed Pusher's 10 KB limit (instructionHistory,
   // mcpCalls, milestones). Clients that need fresh row data call router.refresh()
   // or re-fetch; clients that only need status use the fields below.
+  const isTerminalEvent = status === 'completed' || status === 'failed';
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
@@ -5347,10 +5357,24 @@ export async function PATCH(
     pusherPayload.heartbeatOk = true;
   }
 
-  await triggerEvent(channels.worker(id), eventName, pusherPayload);
+  // ── No-op suppression ──────────────────────────────────────────────────
+  // Terminal events always fire (completions/failures need to reach the
+  // dashboard immediately). WORKER_PROGRESS events are suppressed when
+  // nothing visible to subscribers has changed — this is the single biggest
+  // lever for daily Pusher message volume, since runners sync every ~30 s
+  // even when idle within a task.
+  const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
+    { status: worker.status, currentAction: worker.currentAction },
+    { status: updated.status, currentAction: updates.currentAction },
+    taskProgress,
+  );
 
-  if (worker.workspaceId) {
-    await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+  if (shouldPublish) {
+    await triggerEvent(channels.worker(id), eventName, pusherPayload);
+
+    if (worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+    }
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.

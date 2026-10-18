@@ -4,11 +4,13 @@
  *
  * Keys are the strip's display states (docs/specs/mission-progress-strip-ordering.md
  * §3.1, `StripState`) plus the delivery states the strip spec does not carry:
- * landing, recovering, not landed and needs you.
+ * landing, recovering, not_landed and needs_you.
  *
  * Every state is distinguishable without colour: each has its own glyph, and
  * its cell has its own (pattern, frame) pair. `states.test.ts` holds both.
  */
+import { termFor, type Term } from '@buildd/shared';
+
 /** The strip spec's display states (§3.1); the same union as `StripState` in lib/mission-task-strip.ts. */
 export type StripDisplayState =
   | 'landed' | 'review' | 'running' | 'fixing' | 'waiting' | 'ci_failed' | 'failed'
@@ -38,6 +40,15 @@ export interface StateDef {
   means: string;
 }
 
+/**
+ * Glyph, word, tone and meaning from the terms catalog (`@buildd/shared` terms.ts)
+ * for a strip state it covers; the cell texture stays here (it is CSS, not copy).
+ */
+function fromTerm(key: StateKey): Pick<StateDef, 'glyph' | 'word' | 'tone' | 'means'> {
+  const t: Term = termFor({ kind: 'strip', value: key });
+  return { glyph: t.glyph ?? '', word: t.word, tone: t.tone, means: t.means };
+}
+
 export const STATES: Record<StateKey, StateDef> = {
   running:    { glyph: '▶', word: 'Building',   tone: 'act', pattern: 'hatch-bold',       frame: 'none',     cellGlyph: false, means: 'An agent is producing a revision' },
   review:     { glyph: '◐', word: 'Auditing',   tone: 'run', pattern: 'hatch-vertical',   frame: 'none',     cellGlyph: false, means: 'Required checks are running on the current revision' },
@@ -45,13 +56,13 @@ export const STATES: Record<StateKey, StateDef> = {
   waiting:    { glyph: '◇', word: 'Waiting',    tone: 'act', pattern: 'empty',            frame: 'heavy',    cellGlyph: true,  means: 'The agent is paused, waiting on an answer' },
   ci_failed:  { glyph: '⊗', word: 'CI failed',  tone: 'bad', pattern: 'dots',             frame: 'none',     cellGlyph: true,  means: 'A required check failed on the current revision' },
   failed:     { glyph: '⊠', word: 'Failed',     tone: 'bad', pattern: 'crosshatch',       frame: 'none',     cellGlyph: true,  means: 'The task stopped without a revision to land' },
-  landing:    { glyph: '▲', word: 'Landing',    tone: 'ok',  pattern: 'hatch-horizontal', frame: 'none',     cellGlyph: false, means: 'Every check passed; the merge is queued' },
-  landed:     { glyph: '■', word: 'Landed',     tone: 'ok',  pattern: 'solid',            frame: 'none',     cellGlyph: false, means: 'Merged into its target branch' },
+  landing:    { ...fromTerm('landing'), pattern: 'hatch-horizontal', frame: 'none',     cellGlyph: false },
+  landed:     { ...fromTerm('landed'),  pattern: 'solid',            frame: 'none',     cellGlyph: false },
   ready:      { glyph: '□', word: 'Ready',      tone: 'q',   pattern: 'empty',            frame: 'hairline', cellGlyph: false, means: 'Nothing holds it; it starts when a slot frees' },
   blocked:    { glyph: '▦', word: 'Blocked',    tone: 'q',   pattern: 'hatch-dense',      frame: 'none',     cellGlyph: false, means: 'Waits on a dependency that is moving; starts by itself' },
   queued:     { glyph: '░', word: 'Queued',     tone: 'q',   pattern: 'hatch-sparse',     frame: 'none',     cellGlyph: false, means: 'Queued behind a chain that is itself waiting' },
   recovering: { glyph: '⊘', word: 'Recovering', tone: 'q',   pattern: 'flat',             frame: 'hairline', cellGlyph: true,  means: "A check can't run; buildd is restoring it" },
-  not_landed: { glyph: '✕', word: 'Not landed', tone: 'bad', pattern: 'flat',             frame: 'none',     cellGlyph: true,  means: 'The PR closed without merging' },
+  not_landed: { ...fromTerm('not_landed'), pattern: 'flat',      frame: 'none',     cellGlyph: true },
   needs_you:  { glyph: '!', word: 'Waiting on you',  tone: 'dec', pattern: 'flat',             frame: 'decision', cellGlyph: true,  means: 'A decision only a person can make' },
 };
 
@@ -97,7 +108,9 @@ export const STATUS_PILL: Record<string, { state: StateKey; label: string }> = {
   // The subject-liveness claim gate excludes this task: no worker can ever
   // pick it up. See lib/subject-gate-contract.ts.
   subject_dead:   { state: 'not_landed', label: 'Superseded' },
-  completed:      { state: 'landed',     label: 'Completed' },
+  // A finished task reads Done (work.done). The merged cell is kept: work.done
+  // and pr.merged share the glyph and tone, and a strip state only exists per PR.
+  completed:      { state: 'landed',     label: 'Done' },
   failed:         { state: 'failed',     label: 'Failed' },
   cancelled:      { state: 'not_landed', label: 'Cancelled' },
   idle:           { state: 'ready',      label: 'Idle' },

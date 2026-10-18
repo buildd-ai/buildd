@@ -408,8 +408,16 @@ export type Command =
        * and unmerged at the head (or the head moved under the call), so nothing
        * landed and landing may be requested again.
        */
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'gate_refused';
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'gate_refused' | 'held';
       detail?: string;
+      /**
+       * `held`: GitHub would not merge yet because a required check has not passed
+       * (§4, merge holds). The merge effect waits on it itself; this is applied only
+       * when it stops waiting: `lasting` (the hold outlived its bound, or the check is
+       * one only a person can now pass) escalates naming `check`, otherwise the
+       * approval stands and a door or the sweep asks again.
+       */
+      hold?: { check: string | null; heldForMs?: number | null; lasting?: boolean };
       /**
        * `gate_refused`: the landing gate, asked again when the merge effect ran,
        * refused before any merge call (§4): which half refused and why. The

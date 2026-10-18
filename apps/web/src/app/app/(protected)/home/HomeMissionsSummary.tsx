@@ -95,7 +95,7 @@ export function HomeMissionsSummary({ rows, total, shippedToday, timeZone }: { r
       <div className="mb-3 flex items-center justify-between gap-3">
         <span className="section-label text-text-muted">Missions</span>
         <Link href="/app/missions" className="inline-flex min-h-11 items-center font-mono text-[12px] text-text-muted hover:text-text-secondary md:min-h-0">
-          {shippedToday > 0 ? `${shippedToday} shipped · ` : ''}{total} total →
+          {shippedToday > 0 ? `${shippedToday} done · ` : ''}{total} total →
         </Link>
       </div>
       {rows.length === 0 ? (

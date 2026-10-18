@@ -78,6 +78,7 @@ it('a mission group whose projection did not load counts its tasks instead of "0
   const root = createRoot(container);
   try {
     act(() => root.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    expect(container.textContent).not.toContain('0/0 merged');
     expect(container.textContent).not.toContain('0/0 landed');
   } finally {
     act(() => root.unmount());
@@ -120,11 +121,11 @@ it('History-only outcomes do not hide live rows when switching to Now', () => {
   const props = { now, history: [], nowMs, hrefs: { now: '/app/tasks', history: '/app/tasks?view=history' } };
   try {
     act(() => root.render(<ActivityView mode="history" {...props} />));
-    const landed = [...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')!;
+    const landed = [...container.querySelectorAll('button')].find(b => b.textContent === 'Merged')!;
     act(() => landed.click());
     act(() => root.render(<ActivityView mode="now" {...props} />));
     expect(container.querySelectorAll('[data-testid="activity-now-row"]')).toHaveLength(1);
     act(() => root.render(<ActivityView mode="history" {...props} />));
-    expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')?.getAttribute('aria-pressed')).toBe('true');
+    expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Merged')?.getAttribute('aria-pressed')).toBe('true');
   } finally { act(() => root.unmount()); }
 });

@@ -51,6 +51,7 @@ import type { SpecCaller } from '@/lib/specs/store';
 import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { armedAtForStartGate } from '@/lib/mission-start-state';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -894,6 +895,8 @@ export async function PATCH(
       .set(updateData)
       .where(eq(missions.id, id))
       .returning();
+    // Status, hold, schedule or criteria: the summary reads them (lib/work-changed.ts).
+    if (updated) noteWorkChanged({ missionIds: [id] });
 
     // A mission change that lifts a claim gate leaves its tasks `pending`, so
     // the outbox trigger sees nothing; wake them here or they wait for a poll.

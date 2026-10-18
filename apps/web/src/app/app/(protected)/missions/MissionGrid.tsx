@@ -202,9 +202,9 @@ export function MissionGrid({
       </div>
 
       {recentDone.length + olderDone.length > 0 && (
-        <section data-testid="mission-group" data-group="completed" aria-label="Completed missions">
+        <section data-testid="mission-group" data-group="completed" aria-label="Done missions">
           <Disclosure
-            summary={<span className="text-title font-semibold text-text-primary">Completed{recentDone.length > 0 ? ' this week' : ''}</span>}
+            summary={<span className="text-title font-semibold text-text-primary">Done{recentDone.length > 0 ? ' this week' : ''}</span>}
             count={recentDone.length > 0 ? recentDone.length : olderDone.length}
           >
             <div className="mt-1">
@@ -309,9 +309,9 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
         title={d.title}
         strip={row.strip ?? []}
         state={state}
-        stat={d.total > 0 ? `${d.landed} of ${d.total} landed` : undefined}
+        stat={d.total > 0 ? `${d.landed} of ${d.total} merged` : undefined}
         decide={d.kind === 'needs' ? d.evidence : undefined}
-        meta={state ? undefined : `${k.glyph} ${k.label}${d.total > 0 ? ` · ${d.landed} of ${d.total} landed` : ''}`}
+        meta={state ? undefined : `${k.glyph} ${k.label}${d.total > 0 ? ` · ${d.landed} of ${d.total} merged` : ''}`}
         aside={aside || undefined}
         next={nextLine(row)}
       />
@@ -327,7 +327,7 @@ export function DoneRow({ row, now }: { row: PortfolioRow; now: number }) {
       <Link href={d.href} className="min-w-0 flex-1 truncate text-body text-text-primary after:absolute after:inset-0 hover:underline">
         {d.title}
       </Link>
-      {d.total > 0 && <span className="shrink-0 whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{d.landed}/{d.total} landed</span>}
+      {d.total > 0 && <span className="shrink-0 whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{d.landed}/{d.total} merged</span>}
       <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{ago(row.completedAt, now)}</span>
     </div>
   );

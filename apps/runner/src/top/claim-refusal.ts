@@ -8,6 +8,7 @@
  * (`claimRefusalWords`). An older runner sends only `error`; its prose still
  * reads without the title and the raw code.
  */
+import { TERMS } from '@buildd/shared';
 import { EXCLUSION_WORDS } from './state';
 
 export interface ClaimRefusalBody {
@@ -47,7 +48,7 @@ const REASON_WORDS: Record<string, string> = {
   no_slots: "the account's worker limit is reached",
   budget_exhausted: 'a plan or rate limit holds it',
   context_paused: 'claims are paused after repeated failures',
-  runner_held: 'this runner is on hold',
+  runner_held: `this runner is ${TERMS['runner.paused'].short}`,
 };
 
 const EXCLUSION_OVERRIDES: Record<string, string> = {

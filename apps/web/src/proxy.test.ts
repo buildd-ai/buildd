@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { proxy, config, MARKETING_PATHS, hasSessionCookie } from './proxy';
+import { proxy, config, MARKETING_PATHS, hasSessionCookie, apiReadProxy } from './proxy';
+import type { ReadVerdict } from './lib/read-rate-limit';
 import nextConfig from '../next.config.mjs';
 
 const WWW = 'https://www.buildd.dev';
@@ -130,8 +131,8 @@ describe('proxy: must not redirect', () => {
     '/manifest.webmanifest',
   ];
   for (const path of untouched) {
-    it(`passes ${path} through on the apex, logged out`, () => {
-      const res = proxy(req(`https://buildd.dev${path}`));
+    it(`passes ${path} through on the apex, logged out`, async () => {
+      const res = await proxy(req(`https://buildd.dev${path}`));
       expect(passedThrough(res)).toBe(true);
     });
 
@@ -141,8 +142,9 @@ describe('proxy: must not redirect', () => {
     });
   }
 
-  it('never matches /api or /app prefixes', () => {
+  it('never matches /app prefixes, and /api only for the read limiter', () => {
     for (const m of config.matcher) {
+      if (m === '/api/:path*') continue;
       expect(m.startsWith('/api')).toBe(false);
       expect(m.startsWith('/app')).toBe(false);
       expect(m.startsWith('/.well-known')).toBe(false);
@@ -174,5 +176,72 @@ describe('next.config redirects do not shadow the proxy', () => {
 describe('hasSessionCookie', () => {
   it('is false with no cookies', () => {
     expect(hasSessionCookie(req('https://buildd.dev/'))).toBe(false);
+  });
+});
+
+describe('proxy: read rate limit on /api', () => {
+  function apiReq(path: string, opts: { method?: string; bearer?: string; cookie?: string } = {}) {
+    const headers = new Headers({ host: 'buildd.dev' });
+    if (opts.bearer) headers.set('authorization', `Bearer ${opts.bearer}`);
+    if (opts.cookie) headers.set('cookie', opts.cookie);
+    return new NextRequest(new URL(`https://buildd.dev${path}`), { method: opts.method ?? 'GET', headers });
+  }
+  const refuse = async (): Promise<ReadVerdict> => ({ allowed: false, retryAfterSec: 4, cls: 'poll', limitPerMin: 30 });
+
+  it('matches /api in the matcher', () => {
+    expect(config.matcher).toContain('/api/:path*');
+  });
+
+  it('over the limit: 429 with Retry-After and the JSON body', async () => {
+    const res = await apiReadProxy(apiReq('/api/tasks', { bearer: 'bld_x' }), { gate: refuse });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('4');
+    const body = await res.json();
+    expect(body.code).toBe('rate_limited');
+    expect(body.retryAfterSec).toBe(4);
+  });
+
+  it('under the limit: passes through', async () => {
+    const res = await apiReadProxy(apiReq('/api/tasks', { bearer: 'bld_x' }), { gate: async () => ({ allowed: true }) });
+    expect(passedThrough(res)).toBe(true);
+  });
+
+  it('a bearer is counted under its hash; the key itself never reaches the gate', async () => {
+    let seen: string | null = null;
+    await apiReadProxy(apiReq('/api/tasks', { bearer: 'bld_secret' }), { gate: async (_r, s) => { seen = s; return { allowed: true }; } });
+    expect(seen!).toMatch(/^key:[0-9a-f]{32}$/);
+  });
+
+  it('a browser session is counted per user', async () => {
+    let seen: string | null = null;
+    await apiReadProxy(apiReq('/api/missions', { cookie: 'authjs.session-token=abc' }), {
+      gate: async (_r, s) => { seen = s; return { allowed: true }; },
+      sessionUserId: async () => 'u-1',
+    });
+    expect(seen!).toBe('user:u-1');
+  });
+
+  it('no credential: not counted (the route answers 401)', async () => {
+    let seen: string | null = 'unset';
+    await apiReadProxy(apiReq('/api/tasks'), { gate: async (_r, s) => { seen = s; return { allowed: true }; } });
+    expect(seen).toBeNull();
+  });
+
+  it('exempt runner coordination and writes pass through untouched, even with a refusing gate', async () => {
+    for (const [path, method] of [
+      ['/api/workers/claim', 'POST'],
+      ['/api/workers/queue', 'GET'],
+      ['/api/workers/heartbeat', 'POST'],
+      ['/api/workers/0b7c1e2a-0000-4000-8000-000000000000', 'PATCH'],
+      ['/api/tasks', 'POST'],
+    ] as const) {
+      const res = await apiReadProxy(apiReq(path, { method, bearer: 'bld_x' }), { gate: refuse });
+      expect(passedThrough(res)).toBe(true);
+    }
+  });
+
+  it('fails open with Redis unconfigured (the default gate)', async () => {
+    const res = await apiReadProxy(apiReq('/api/tasks', { bearer: 'bld_x' }));
+    expect(passedThrough(res)).toBe(true);
   });
 });

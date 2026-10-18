@@ -27,7 +27,7 @@ export default function MissionShippedHeader({ missionId, view }: { missionId: s
     >
       <div className="flex flex-wrap items-center gap-2">
         <h2 id="what-shipped-label" className="font-mono text-[11px] font-bold uppercase tracking-[1.5px] text-status-success">
-          What shipped
+          What changed
         </h2>
         {view.changeTypeLabel && (
           <span data-testid="shipped-change-type" className="border border-border-default px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase text-text-secondary">

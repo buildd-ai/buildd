@@ -104,8 +104,13 @@ describe('taskDockModel', () => {
     expect(live.insight).toEqual({ text: 'Editing receipts.ts', flag: false });
     expect(live.actions).toEqual([]);
     const done = taskDockModel(view({ status: 'completed' }, { status: 'completed', mergedAt: 5, prNumber: 4 }));
-    expect(done.badge).toEqual({ label: 'Landed', tone: 'landed' });
+    expect(done.badge).toEqual({ label: 'Merged', tone: 'landed' });
     expect(done.actions).toEqual([]);
+  });
+
+  it('a completed task with no PR reads Done, not Merged', () => {
+    const done = taskDockModel(view({ status: 'completed' }, { status: 'completed' }));
+    expect(done.badge).toEqual({ label: 'Done', tone: 'landed' });
   });
 
   it('a stalled delivery uses warning tone, not live', () => {

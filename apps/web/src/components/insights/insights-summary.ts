@@ -59,7 +59,7 @@ export function comparisonCaption(series: FlowSeries, window: FlowWindow, o: For
   return current + before + bars + align;
 }
 
-/** "Shipped 12 tasks in the last 7 days, up 20% on the 7 days before (10); median 5h from first agent start to production." */
+/** "12 tasks done in the last 7 days, up 20% on the 7 days before (10); median 5h from first agent start to production." */
 export function shippingSentence(series: FlowSeries, window: FlowWindow): string {
   const n = series.headline.shippedTasks;
   const prev = series.previous?.shippedTasks;
@@ -75,7 +75,7 @@ export function shippingSentence(series: FlowSeries, window: FlowWindow): string
       else compare = `, ${n > prev ? 'up' : 'down'} ${pct}% on ${before} (${prev})`;
     }
   }
-  const head = n === 0 ? `No tasks shipped ${now}${compare}` : `Shipped ${countOf(n, 'task')} ${now}${compare}`;
+  const head = n === 0 ? `No tasks done ${now}${compare}` : `${countOf(n, 'task')} done ${now}${compare}`;
   const median = series.headline.medianStartToProdMs;
   return median != null && n > 0 ? `${head}; median ${formatDuration(median)} from first agent start to production.` : `${head}.`;
 }

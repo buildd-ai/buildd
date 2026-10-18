@@ -275,6 +275,7 @@ describe('missionPrCheck (R-21, AC-9)', () => {
   it('merged passes; closed unmerged never reads delivered', () => {
     expect(missionPrCheck({ ...pr, state: 'merged' }, { ...ctx, mergeTier: 'agent-review' }).status).toBe('passed');
     expect(missionPrCheck({ ...pr, state: 'closed' }, { ...ctx, mergeTier: 'agent-review' }).status).toBe('unable');
+    expect(missionPrCheck({ ...pr, state: 'closed' }, { ...ctx, mergeTier: 'agent-review' }).detail).toBe('Closed without merging, so none of this work reached dev.');
   });
 });
 
@@ -286,6 +287,12 @@ describe('releaseCheck (R-22, P-3)', () => {
     expect(releaseCheck('dispatched')!.status).toBe('running');
     expect(releaseCheck('failed')!).toMatchObject({ status: 'finding', problem: 'system' });
   });
+
+  it('says Releasing and Released, never delivered', () => {
+    expect(releaseCheck('deploying')!).toMatchObject({ state: 'releasing', detail: 'Released once production is healthy.' });
+    expect(releaseCheck('dispatched')!.detail).toBe('Released once production is healthy.');
+    expect(releaseCheck('failed')!.detail).toBe('Not released until a deploy is healthy.');
+  });
 });
 
 describe('the rail (R-11 to R-13, R-22)', () => {
@@ -294,7 +301,7 @@ describe('the rail (R-11 to R-13, R-22)', () => {
     expect(c.buildComplete).toBe(false);
     expect(c.checkpoint).toBe('build');
     expect(c.rail.map(s => [s.key, s.state, s.text])).toEqual([
-      ['build', 'now', '5 of 10 landed'], ['verify', 'todo', 'after build'], ['deliver', 'todo', 'after visual review'],
+      ['build', 'now', '5 of 10 done'], ['verify', 'todo', 'after build'], ['deliver', 'todo', 'after visual review'],
     ]);
   });
 

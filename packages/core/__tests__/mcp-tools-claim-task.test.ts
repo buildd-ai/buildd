@@ -182,6 +182,8 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     const out = result.content[0].text;
     expect(out).toContain('all_candidates_deferred');
     expect(out).toContain('mission_paced');
+    expect(out).toContain(`Task ${TASK_ID} is claimable but was not started this round (see the reason above); try again shortly.`);
+    expect(out).not.toMatch(/\bheld\b/);
   });
 
   it('surfaces the per-task exclusion when an explicit taskId was filtered out', async () => {
