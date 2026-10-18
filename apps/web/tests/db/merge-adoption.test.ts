@@ -93,4 +93,56 @@ describe('a PR with no delivery is adopted before a door merges it (AC-13)', () 
     const p = await undeliveredPr(w);
     expect(await adoptBeforeMerge(input(w, p.prNumber, null), SYSTEM)).toMatchObject({ kind: 'refused', reason: 'adoption_failed:no_owner_task' });
   }, 60_000);
+
+  // Review of #5167: a frozen release candidate with a bookkeeping owner (ci-failure-retry and
+  // request_pr_review give a PR with no worker one) is never adopted, and keeps the candidate status.
+  test('a frozen release candidate opens no delivery, and the open-PR sweep still answers it as a release candidate', async () => {
+    w = await world();
+    await q(sql`UPDATE workspaces SET release_config = ${JSON.stringify({
+      enabled: true, strategy: 'workflow_dispatch', prodBranch: 'main', releaseBranch: 'dev',
+      candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+    })}::jsonb WHERE id = ${w.workspaceId}::uuid`);
+    w.gh.createBranch(w.repo, 'main', 'dev');
+    w.gh.createBranch(w.repo, 'release/v1.2.3', 'dev');
+    const head = w.gh.push(w.repo, 'release/v1.2.3', { 'CHANGELOG.md': '# v1.2.3\n' }, { message: 'chore: bump version to v1.2.3' });
+    const meta = { schema: 1, version: 'v1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: head, candidateSha: head, baseRef: 'main' };
+    const prNumber = w.gh.openPr(w.repo, { head: 'release/v1.2.3', base: 'main', user: 'github-actions[bot]', body: `Release v1.2.3\n<!-- release-candidate ${JSON.stringify(meta)} -->` });
+    await w.deliver();
+    const bookkeeping = await seedTask(w.workspaceId, { status: 'completed', title: `Release PR #${prNumber}` });
+
+    expect(await adoptBeforeMerge(input(w, prNumber, bookkeeping), SYSTEM)).toEqual({ kind: 'gate', why: 'release' });
+    const rows = await q(sql`SELECT id FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid AND pr_number = ${prNumber}::int`);
+    expect(rows).toHaveLength(0);
+
+    const { publishOpenPrStatuses, linkedRepos } = await import('../../src/lib/workflow/open-pr-status');
+    const { openPrReviewReads } = await import('../../src/lib/release/open-pr-review');
+    const { githubReader } = await import('../../src/lib/workflow/github-facts');
+    await publishOpenPrStatuses({
+      repos: async () => (await linkedRepos()).filter((r) => r.workspaceId === w.workspaceId),
+      reviews: async () => openPrReviewReads(),
+    });
+    const shown = await githubReader(w.installationId).statusOf!(w.repo, head, 'Buildd / Review approval');
+    expect(shown?.description ?? '').toContain('release candidate');
+  }, 90_000);
+
+  test('a fork PR is refused at adoption, saying it merges on GitHub, and no delivery is written', async () => {
+    w = await world();
+    const p = await undeliveredPr(w);
+    const a = await adoptBeforeMerge(input(w, p.prNumber, p.ownerTaskId), SYSTEM, {
+      readPr: async () => ({ headRef: p.branch, baseRef: 'dev', headSha: p.head, author: 'someone', headRepoFullName: 'someone/fork', baseRepoFullName: w.repo, body: '' }),
+    });
+    expect(a).toMatchObject({ kind: 'refused', reason: 'adoption_failed:fork' });
+    expect(await q(sql`SELECT id FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid AND pr_number = ${p.prNumber}::int`)).toHaveLength(0);
+  }, 60_000);
+
+  test('a dependency bot\'s PR opens no delivery', async () => {
+    w = await world();
+    w.gh.createBranch(w.repo, 'renovate/lib-2.x', 'dev');
+    w.gh.push(w.repo, 'renovate/lib-2.x', { 'package.json': '{"lib":"2"}\n' }, { message: 'chore(deps): lib 2' });
+    const prNumber = w.gh.openPr(w.repo, { head: 'renovate/lib-2.x', base: 'dev', user: 'renovate[bot]' });
+    await w.deliver();
+    const placeholder = await seedTask(w.workspaceId, { status: 'completed', title: 'adopted bot PR' });
+    expect(await adoptBeforeMerge(input(w, prNumber, placeholder), SYSTEM)).toEqual({ kind: 'gate', why: 'dependency_bot' });
+    expect(await q(sql`SELECT id FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid AND pr_number = ${prNumber}::int`)).toHaveLength(0);
+  }, 60_000);
 });

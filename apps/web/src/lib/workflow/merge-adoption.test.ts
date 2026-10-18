@@ -7,13 +7,29 @@ import { describe, expect, mock, test } from 'bun:test';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
-const { adoptBeforeMerge } = await import('./merge-adoption');
+const { adoptBeforeMerge: adoptRaw, mergeOutsideKernel } = await import('./merge-adoption');
 
 const BASE = { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, taskId: 'task-1', door: 'dashboard' };
 const CALL = { principal: { kind: 'user' as const, id: 'u1' } };
 
 /** A store answering the one resolver read with `row` (or none). */
 const execOf = (row: { delivery_id: string; authority: string } | null) => mock(async () => ({ rows: row ? [row] : [] }));
+
+const RELEASE_CONFIG = {
+  enabled: true, strategy: 'workflow_dispatch', prodBranch: 'main', releaseBranch: 'dev',
+  candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+};
+const ORDINARY = { headRef: 'feat/x', baseRef: 'dev', headSha: 'H1', author: 'buildd-app[bot]', headRepoFullName: 'acme/w', baseRepoFullName: 'acme/w', body: '' };
+const candidateMeta = (sha: string) => `Release v1.2.3\n<!-- release-candidate ${JSON.stringify({ schema: 1, version: 'v1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: 'S1', candidateSha: sha, baseRef: 'main' })} -->`;
+const CANDIDATE = { headRef: 'release/v1.2.3', baseRef: 'main', headSha: 'C1', author: 'github-actions[bot]', headRepoFullName: 'acme/w', baseRepoFullName: 'acme/w', body: candidateMeta('C1') };
+
+type Deps = NonNullable<Parameters<typeof adoptRaw>[2]>;
+/** The helper with an ordinary same-repo PR in a kernel-on workspace, unless a test says otherwise. */
+const adoptBeforeMerge = (p: Parameters<typeof adoptRaw>[0], c: Parameters<typeof adoptRaw>[1], d: Deps = {}) => adoptRaw(p, c, {
+  workspace: async () => ({ gitConfig: {}, releaseConfig: RELEASE_CONFIG }),
+  readPr: async () => ORDINARY,
+  ...d,
+});
 
 describe('adoptBeforeMerge (AC-13)', () => {
   test('a PR the kernel already owns: nothing opened, the door lands through the kernel', async () => {
@@ -78,5 +94,81 @@ describe('adoptBeforeMerge (AC-13)', () => {
     const open = mock(async () => ({ owned: true, deliveryId: 'd3' }));
     await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, ownerOf: async () => { throw new Error('x'); } });
     expect((open.mock.calls[0] as unknown as [{ ownerTaskId: string }])[0].ownerTaskId).toBe('task-1');
+  });
+
+  // Review of #5167: a release PR must never get a delivery (its candidate status, the release
+  // bookkeeping and the frozen branch stay the release gate's).
+  test('a trusted frozen candidate opens no delivery: the release gate merges it', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'x' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, readPr: async () => CANDIDATE });
+    expect(r).toEqual({ kind: 'gate', why: 'release' });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test('the legacy release PR (releaseBranch into prodBranch) opens no delivery', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'x' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, readPr: async () => ({ ...ORDINARY, headRef: 'dev', baseRef: 'main' }) });
+    expect(r).toEqual({ kind: 'gate', why: 'release' });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test('a candidate-shaped PR by an author the workflow does not trust is an ordinary PR: adopted', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'd9' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, ownerOf: async (t) => t, readPr: async () => ({ ...CANDIDATE, author: 'someone' }) });
+    expect(r).toEqual({ kind: 'kernel', deliveryId: 'd9', adopted: true });
+  });
+
+  test('a dependency bot\'s PR opens no delivery (the bot owns its branch): the release gate merges it', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'x' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, readPr: async () => ({ ...ORDINARY, author: 'renovate[bot]' }) });
+    expect(r).toEqual({ kind: 'gate', why: 'dependency_bot' });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test('a fork PR is refused by every buildd door, saying it merges on GitHub; nothing is opened', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'x' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, readPr: async () => ({ ...ORDINARY, headRepoFullName: 'someone/w' }) });
+    expect(r.kind === 'refused' && r.reason).toBe('adoption_failed:fork');
+    expect(r.kind === 'refused' && r.message).toContain('fork');
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test('the kill switch off answers legacy before anything is read from GitHub', async () => {
+    const readPr = mock(async () => CANDIDATE);
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), workspace: async () => ({ gitConfig: { workflowKernel: false }, releaseConfig: RELEASE_CONFIG }), readPr });
+    expect(r).toEqual({ kind: 'legacy', reason: 'kernel_off' });
+    expect(readPr).not.toHaveBeenCalled();
+  });
+
+  test('an unreadable PR is refused, never classified as ordinary', async () => {
+    const open = mock(async () => ({ owned: true, deliveryId: 'x' }));
+    const r = await adoptBeforeMerge(BASE, CALL, { exec: execOf(null), open, readPr: async () => null });
+    expect(r.kind === 'refused' && r.reason).toBe('adoption_failed:adoption_unavailable');
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeOutsideKernel (the release gate for a PR adoption kept out of the kernel)', () => {
+  test('merges through mergeReleasePrPinned at the checked head, in the door\'s result shape', async () => {
+    const calls: any[] = [];
+    const r = await mergeOutsideKernel(
+      { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'dashboard', actorUserId: 'u1', taskId: 't' },
+      { merge: (async (p: any) => { calls.push(p); return { merged: true, sha: 'M', message: 'PR merged', via: 'pinned' }; }) as never },
+    );
+    expect(r).toEqual({ merged: true, message: 'PR merged' });
+    expect(calls[0]).toMatchObject({ verifiedHeadSha: 'C1', mergeMethod: 'merge', surface: 'dashboard', actorUserId: 'u1' });
+  });
+
+  test('a review hold or a lost answer is not a merge', async () => {
+    const held = await mergeOutsideKernel(
+      { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'merge_pr' },
+      { merge: (async () => ({ merged: false, refused: 'review', message: 'the review gate holds it' })) as never },
+    );
+    expect(held).toEqual({ merged: false, message: 'the review gate holds it' });
+    const lost = await mergeOutsideKernel(
+      { workspaceId: 'ws', installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'C1', mergeMethod: 'merge', door: 'merge_pr' },
+      { merge: (async () => ({ merged: false, refused: 'merge_failed', message: 'timeout', indeterminate: true })) as never },
+    );
+    expect(lost).toEqual({ merged: false, message: 'timeout', indeterminate: true });
   });
 });

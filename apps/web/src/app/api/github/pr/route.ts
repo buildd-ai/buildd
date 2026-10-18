@@ -55,7 +55,7 @@ import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
-import { adoptBeforeMerge } from '@/lib/workflow/merge-adoption';
+import { adoptBeforeMerge, mergeOutsideKernel } from '@/lib/workflow/merge-adoption';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { prDeliveryReport } from '@/lib/pr-delivery-report';
@@ -2386,6 +2386,9 @@ export async function PUT(req: NextRequest) {
         : null;
       if (kernel) return { kernel };
       // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+      if (adoption.kind === 'gate') {
+        return { legacy: await mergeOutsideKernel({ workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha, mergeMethod: effectiveMergeMethod, door: 'merge_pr', actorUserId: landingActor.kind === 'human' ? landingActor.userId : null, taskId: worker.taskId ?? null }) };
+      }
       if (adoption.kind !== 'legacy') return { notLanded: true as const };
       return { legacy: await mergePullRequest(
         repo.installation.installationId,

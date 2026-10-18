@@ -60,7 +60,8 @@ mock.module('@/lib/workflow/landing', () => ({
 // AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
 mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest, githubApi: mockGithubApi }));
@@ -1416,6 +1417,20 @@ describe('POST /api/prs/[prNumber]/merge — a PR with no delivery (D6, AC-13)',
     const res = await POST(req, ctx);
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ reason: 'kernel_not_landed' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the kernel or the unpinned merge', async () => {
+    mockAdoptBeforeMerge.mockResolvedValue({ kind: 'gate', why: 'release' });
+    mockMergeOutsideKernel.mockReset();
+    mockMergeOutsideKernel.mockResolvedValue({ merged: true, message: 'PR merged' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockMergeOutsideKernel).toHaveBeenCalledTimes(1);
+    expect(mockMergeOutsideKernel.mock.calls[0]![0]).toMatchObject({ workspaceId: 'ws-1', repoFullName: 'org/repo', prNumber: 42, headSha: 'head-A', door: 'dashboard', actorUserId: 'u-1' });
+    expect(mockLandThroughKernel).not.toHaveBeenCalled();
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 

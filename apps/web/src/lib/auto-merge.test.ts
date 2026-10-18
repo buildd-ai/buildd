@@ -32,7 +32,8 @@ mock.module('@/lib/workflow/landing', () => ({
 // AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // The visual review half of the mission-PR gate (ready-to-merge.ts) is proven in
 // ready-to-merge.test.ts and mission-pr.test.ts; here the review has passed.
 mock.module('@/lib/workflow/visual-review-state-load', () => ({
@@ -2079,6 +2080,22 @@ describe('tryAutoMergeWorkerPr — return value', () => {
       );
       expect(result).toEqual({ merged: false, reason: 'nothing was merged' });
       expect(landed).toHaveLength(0);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the unpinned merge', async () => {
+      green();
+      const outside: any[] = [];
+      const result = await tryAutoMergeWorkerPr({
+        installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha',
+        worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+        policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+        adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+        landThroughKernel: (async () => null) as never,
+        mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+      });
+      expect(result).toEqual({ merged: true });
+      expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha', door: 'auto_merge' })]);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 

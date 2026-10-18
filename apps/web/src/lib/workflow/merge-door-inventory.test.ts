@@ -128,6 +128,12 @@ describe('merge door inventory (§13.13)', () => {
       expect(adopt, `${file}: adoption comes before the legacy merge call`).toBeLessThan(src.indexOf('mergePullRequest('));
       // A refused adoption returns before anything else runs.
       expect(src.slice(adopt, adopt + 1200)).toMatch(/adoption\.kind === 'refused'/);
+      // A release PR or a dependency bot's PR (adoption answers `gate`) opens no delivery and merges
+      // through the release gate, never the unpinned legacy call (review of #5167).
+      const gate = src.search(/adoption\??\.kind === 'gate'/);
+      expect(gate, `${file}: the gate answer must be routed`).toBeGreaterThan(adopt);
+      expect(gate).toBeLessThan(src.indexOf('mergePullRequest('));
+      expect(src.slice(gate, gate + 600)).toMatch(/mergeOutsideKernel|outside\(/);
     });
   }
 

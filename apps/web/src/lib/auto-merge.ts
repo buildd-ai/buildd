@@ -642,6 +642,8 @@ export async function tryAutoMergeWorkerPr(params: {
   landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
   /** AC-13: adopts a PR with no delivery before it merges (merge-adoption.ts). Injected by tests. */
   adoptBeforeMerge?: typeof import('@/lib/workflow/merge-adoption').adoptBeforeMerge;
+  /** The release gate's merge for a PR adoption answered `gate` for. Injected by tests. */
+  mergeOutsideKernel?: typeof import('@/lib/workflow/merge-adoption').mergeOutsideKernel;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
@@ -942,6 +944,10 @@ export async function tryAutoMergeWorkerPr(params: {
     const kernel = await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } });
     if (kernel) return { kernel };
     // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption.kind === 'gate') {
+      const outside = params.mergeOutsideKernel ?? (await import('@/lib/workflow/merge-adoption')).mergeOutsideKernel;
+      return { legacy: await outside({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, mergeMethod, door: 'auto_merge', taskId: worker.taskId ?? null }) };
+    }
     if (adoption.kind !== 'legacy') return { notLanded: true as const };
     return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });

@@ -94,7 +94,8 @@ mock.module('@/lib/workflow/landing', () => ({
 // AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
@@ -4148,6 +4149,19 @@ describe('PUT /api/github/pr', () => {
         expect(mockLandThroughKernel).not.toHaveBeenCalled();
         expect(mockMergePullRequest).not.toHaveBeenCalled();
         expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      });
+
+      it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the kernel or the unpinned merge', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'gate', why: 'release' });
+        mockMergeOutsideKernel.mockReset();
+        mockMergeOutsideKernel.mockResolvedValue({ merged: true, message: 'PR merged' });
+        const res = await put();
+        expect(mockMergeOutsideKernel).toHaveBeenCalledTimes(1);
+        expect(mockMergeOutsideKernel.mock.calls[0]![0]).toMatchObject({ repoFullName: 'owner/repo', prNumber: 42, door: 'merge_pr' });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
       });
 
       it('adopted, but the kernel did not take the merge: refused, never the legacy merge', async () => {

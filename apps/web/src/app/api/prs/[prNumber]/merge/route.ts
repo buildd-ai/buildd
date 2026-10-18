@@ -36,7 +36,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-polic
 import { latestRunPerName, listAllCheckRuns, type CheckRunState } from '@/lib/ci-verdict';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
-import { adoptBeforeMerge } from '@/lib/workflow/merge-adoption';
+import { adoptBeforeMerge, mergeOutsideKernel } from '@/lib/workflow/merge-adoption';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -659,6 +659,9 @@ export async function POST(
       : null;
     if (kernel) return { kernel };
     // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption.kind === 'gate') {
+      return { legacy: await mergeOutsideKernel({ workspaceId: worker.workspaceId, installationId, repoFullName, prNumber, headSha: liveHeadSha!, mergeMethod, door: 'dashboard', actorUserId: user.id, taskId: worker.taskId ?? null }) };
+    }
     if (adoption.kind !== 'legacy') return { notLanded: true as const };
     return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
   }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));

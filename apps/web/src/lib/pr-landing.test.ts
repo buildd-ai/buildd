@@ -20,7 +20,8 @@ mock.module('@/lib/workflow/landing', () => ({
 // AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
 // arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
 const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
-mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/workflow/merge-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -459,6 +460,20 @@ describe('landPr — a PR with no delivery (D2/D3, AC-13)', () => {
     };
     const out = await land({}, d);
     expect(out.kind).not.toBe('merged');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the unpinned merge', async () => {
+    const outside: any[] = [];
+    const d: LandPrDeps = {
+      ...deps(),
+      adoptBeforeMerge: (async () => ({ kind: 'gate', why: 'release' })) as never,
+      landThroughKernel: async () => null,
+      mergeOutsideKernel: (async (p: any) => { outside.push(p); return { merged: true, message: 'PR merged' }; }) as never,
+    };
+    const out = await land({}, d);
+    expect(out.kind).toBe('merged');
+    expect(outside).toEqual([expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', door: 'land_pr:check_suite' })]);
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 

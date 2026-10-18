@@ -264,6 +264,8 @@ export interface LandPrDeps {
   kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
   /** AC-13: adopts a PR with no delivery before the door decides who owns it (merge-adoption.ts). Injected by tests. */
   adoptBeforeMerge?: typeof import('@/lib/workflow/merge-adoption').adoptBeforeMerge;
+  /** The release gate's merge for a PR adoption answered `gate` for. Injected by tests. */
+  mergeOutsideKernel?: typeof import('@/lib/workflow/merge-adoption').mergeOutsideKernel;
   /** Runs a delivery's due effects (a REPAIRING delivery's backed-off repair). Defaults to the seam's `drainDelivery`. */
   drainDelivery?: (deliveryId: string) => Promise<unknown>;
   /** The mission-PR / delivery-target hold. Defaults to mission-pr.ts `guardMissionPrMerge`. */
@@ -1115,6 +1117,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     if (kernel) return { kernel };
     if (lastingHold) return { held: true as const };
     // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption?.kind === 'gate') {
+      const outside = deps.mergeOutsideKernel ?? (await import('@/lib/workflow/merge-adoption')).mergeOutsideKernel;
+      return { legacy: await outside({ workspaceId, installationId, repoFullName, prNumber, headSha: liveHead, mergeMethod, door: `land_pr:${input.door}`, actorUserId: actor.kind === 'human' ? actor.userId ?? null : null, taskId: owner.taskId ?? null }) };
+    }
     if (adoption?.kind !== 'legacy') return { notLanded: true as const };
     return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });

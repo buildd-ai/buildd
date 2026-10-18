@@ -893,9 +893,19 @@ recorded as such, never as an approval.
   (an attempt walked to its owner) and the door's principal; the delivery
   starts as a late open does (the owner's end forwarded, a review of the live
   head owed), so the door lands it through T15 and a legacy reviewer's
-  approval never carries it. If nothing can adopt it (no task, a review or
-  attempt task, a task bound to another PR, a PR that cannot be bound, the
-  control plane unreachable) the door merges nothing and says why. Its legacy
+  approval never carries it. Before opening anything it reads the PR live: a
+  release PR (`classifyReleasePr`: the legacy release branch, or a trusted
+  frozen candidate) or a dependency bot's PR opens no delivery, even when a
+  bookkeeping task owns it (`ci-failure-retry.ts` and `request_pr_review`
+  give a PR with no worker one). The door merges such a PR through the release
+  gate (`mergeOutsideKernel` → `mergeReleasePrPinned`: review gate at the
+  head, GitHub's `sha` pin), so a candidate keeps `releaseCandidateStatus` and
+  no kernel repair ever pushes to a candidate's or a bot's branch. A fork PR
+  cannot be bound, so it is refused at every buildd door, the dashboard
+  included: a fork PR merges only on GitHub. If nothing can adopt a PR (a
+  fork, no task, a review or attempt task, a task bound to another PR, a PR
+  that cannot be bound or read, the control plane unreachable) the door merges
+  nothing and says why. Its legacy
   merge call is reached only when the workspace's kill switch is off or the
   PR's delivery was released to legacy (sticky, §14); an adopted PR whose
   landing the kernel does not answer is refused, never merged on that arm.
