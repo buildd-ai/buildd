@@ -399,7 +399,7 @@ Every non-terminal operation has an owner and a durable next action:
 - The mission surfaces show the delivery facts the kernel projects for the
   conflict task's PR and the mission PR (`workflow/projections.ts`): "Updating
   branch" or "Waiting to update branch" while it is brought current, "Approved ·
-  awaiting merge" or "Ready to land" while it waits to merge, and "Merged". This
+  awaiting merge" or "Ready to merge" while it waits to merge, and "Merged". This
   spec adds no status card, no "Why this?" and no raw state.
 - A refresh conflict appears as its task, linked like any mission task. A
   refresh that cannot settle appears as one mission note, posted once, naming
