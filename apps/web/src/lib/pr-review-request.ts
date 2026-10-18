@@ -36,6 +36,7 @@ import {
   type PrReviewWaitFor,
 } from './pr-review-status';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 
 // ── DB reads ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,18 @@ export async function findReviewTaskForPr(
       ),
     )
     .orderBy(desc(tasks.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** One reviewer task by id, in the shape `derivePrReviewStatus` reads. */
+export async function findReviewTaskById(
+  id: string,
+): Promise<{ id: string; status: string; result: unknown; context: unknown } | null> {
+  const rows = await db
+    .select({ id: tasks.id, status: tasks.status, result: tasks.result, context: tasks.context })
+    .from(tasks)
+    .where(eq(tasks.id, id))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -375,6 +388,28 @@ export async function listWorkspaceRoles(
   return rows;
 }
 
+/**
+ * Everything `derivePrReviewStatus` reads for one PR. A PR the workflow kernel
+ * owns takes state, verdict, round and open findings from its delivery (§7);
+ * its reviewer task is then only the round's own, for the reviewer's prose.
+ * With no delivery the newest reviewer task by PR number is the legacy source.
+ */
+async function loadReviewStatusInput(workspaceId: string, prNumber: number) {
+  const worker = (await findPrOwningWorker(workspaceId, prNumber)) ?? null;
+  const view = worker?.taskId
+    ? (await getDeliveryViewsForTasks([worker.taskId], undefined, undefined, { withFindings: true })).get(worker.taskId)
+    : undefined;
+  const delivery = view && view.prNumber === prNumber ? view : null;
+  const roundTaskId = delivery
+    ? [...delivery.rounds].reverse().find((r) => r.status !== 'superseded' && r.reviewerTaskId)?.reviewerTaskId ?? null
+    : null;
+  const reviewTask = delivery
+    ? roundTaskId ? await findReviewTaskById(roundTaskId) : null
+    : await findReviewTaskForPr(workspaceId, prNumber);
+  const reviewerWorker = reviewTask ? await findReviewTaskWorker(reviewTask.id) : null;
+  return { worker, delivery, reviewTask, reviewerWorker };
+}
+
 /** Read the current review status for a PR straight from the DB. */
 export async function readPrReviewStatus(params: {
   workspaceId: string;
@@ -382,14 +417,11 @@ export async function readPrReviewStatus(params: {
   autoMergeExpected?: boolean;
   waitFor?: PrReviewWaitFor;
 }): Promise<PrReviewStatus> {
-  const [reviewTask, worker] = await Promise.all([
-    findReviewTaskForPr(params.workspaceId, params.prNumber),
-    findPrOwningWorker(params.workspaceId, params.prNumber),
-  ]);
-  const reviewerWorker = reviewTask ? await findReviewTaskWorker(reviewTask.id) : null;
+  const { worker, delivery, reviewTask, reviewerWorker } = await loadReviewStatusInput(params.workspaceId, params.prNumber);
   return derivePrReviewStatus({
     reviewTask,
-    worker: worker ?? null,
+    worker,
+    delivery,
     reviewerWorker,
     autoMergeExpected: params.autoMergeExpected,
     waitFor: params.waitFor,
@@ -482,15 +514,14 @@ export async function deliverPrReviewCallback(params: {
   autoMergeExpected?: boolean;
 }): Promise<PrReviewCallbackOutcome> {
   try {
-    const reviewTask = await findReviewTaskForPr(params.workspaceId, params.prNumber);
+    const { worker, delivery, reviewTask, reviewerWorker } = await loadReviewStatusInput(params.workspaceId, params.prNumber);
     const callback = asCallback(reviewTask?.context);
     if (!reviewTask || !callback) return 'skipped';
 
-    const worker = await findPrOwningWorker(params.workspaceId, params.prNumber);
-    const reviewerWorker = await findReviewTaskWorker(reviewTask.id);
     const status = derivePrReviewStatus({
       reviewTask,
-      worker: worker ?? null,
+      worker,
+      delivery,
       reviewerWorker,
       autoMergeExpected: params.autoMergeExpected,
       waitFor: callback.on,
