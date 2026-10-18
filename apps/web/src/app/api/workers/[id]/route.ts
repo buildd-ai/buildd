@@ -656,8 +656,8 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // The workspace row carries the webhook dispatch bearer token; neither a
-  // team member reading a worker nor a cloud container has any use for it.
+  // The workspace row carries the webhook dispatch bearer token; no reader of
+  // a worker has any use for it, the owning account's key included.
   const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
 
   if (!account) {
@@ -676,7 +676,7 @@ export async function GET(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(account.taskScope ? redacted() : worker);
+  return NextResponse.json(redacted());
 }
 
 // PATCH /api/workers/[id] - Update worker status
