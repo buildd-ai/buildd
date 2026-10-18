@@ -17,7 +17,7 @@ function day(iso: string, tz?: string | null): string {
 export function LandedThisWeek({ missions, timeZone, idPrefix = 'home' }: { missions: readonly LandedMission[]; timeZone?: string | null; idPrefix?: string }) {
   if (missions.length === 0) return null;
   return (
-    <section data-testid="home-landed" aria-labelledby={`${idPrefix}-landed-h`} style={{ gridArea: 'landed' }} className="min-w-0">
+    <section data-testid="home-landed" aria-labelledby={`${idPrefix}-landed-h`} style={{ gridArea: 'done' }} className="min-w-0">
       <h2 id={`${idPrefix}-landed-h`} className="section-label mb-3">{TERMS['total.done_this_week'].word}</h2>
       <ul className="divide-y divide-border-default border-t border-border-default">
         {missions.map(m => (

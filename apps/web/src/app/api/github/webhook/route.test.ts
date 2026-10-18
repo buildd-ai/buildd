@@ -6459,6 +6459,21 @@ describe('pull_request merged — effects that belong to the merge, not the tran
   });
 });
 
+describe('release PR CI failure alert copy', () => {
+  beforeEach(() => {
+    resetAll();
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42 } }]
+      : null;
+  });
+
+  it('says production is unchanged, never shipped', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    const alert = mockNotifyTeamOf.mock.calls.find(c => c[1] === 'needsAttention' && String(c[2]?.title).startsWith('Release CI failed'));
+    expect(alert?.[2].message).toBe('CI is red on release PR #42. Production is unchanged.');
+  });
+});
+
 describe('release PR CI success pins the live head', () => {
   beforeEach(() => {
     resetAll();

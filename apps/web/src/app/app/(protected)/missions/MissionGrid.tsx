@@ -202,9 +202,9 @@ export function MissionGrid({
       </div>
 
       {recentDone.length + olderDone.length > 0 && (
-        <section data-testid="mission-group" data-group="completed" aria-label="Completed missions">
+        <section data-testid="mission-group" data-group="completed" aria-label="Done missions">
           <Disclosure
-            summary={<span className="text-title font-semibold text-text-primary">Completed{recentDone.length > 0 ? ' this week' : ''}</span>}
+            summary={<span className="text-title font-semibold text-text-primary">Done{recentDone.length > 0 ? ' this week' : ''}</span>}
             count={recentDone.length > 0 ? recentDone.length : olderDone.length}
           >
             <div className="mt-1">

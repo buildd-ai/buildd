@@ -82,8 +82,9 @@ describe('MissionReleaseSection', () => {
   it('renders one line: the step, this mission\'s status, and a link to the release', () => {
     const html = renderToStaticMarkup(<MissionReleaseSection step={released} releaseId="rel-1" workspaceId="ws-1" />);
     expect(html).toContain('data-testid="mission-shipped-status"');
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Release');
     expect(html).toContain('Released');
+    expect(html).not.toContain('Shipped');
     expect(html).toContain('href="/app/releases/rel-1"');
     // One link, one row, a 44px tap target.
     expect(html.split('<a ').length - 1).toBe(1);

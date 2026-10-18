@@ -78,7 +78,7 @@ describe('MissionGrid portfolio', () => {
   it('renders one row per open mission still moving or waiting; completed and on-dev ones collapsed', () => {
     expect(html.match(/data-testid="portfolio-row"/g)?.length).toBe(11);
     const history = html.match(/<section[^>]*data-group="completed"[\s\S]*?<\/section>/)![0];
-    expect(history).toContain('Completed this week');
+    expect(history).toContain('Done this week');
     expect(history).toContain('aria-expanded="false"');
     // Collapsed: the rows mount when it opens.
     expect(history).not.toContain('Workspace settings split into tabs');

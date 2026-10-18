@@ -3762,7 +3762,7 @@ export class WorkerManager {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
       reply,
-      text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+      text: reply.reason || (reply.disposition === 'hold' ? 'Not sent yet: it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
     };
   }
 

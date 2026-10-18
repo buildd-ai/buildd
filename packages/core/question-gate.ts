@@ -253,7 +253,7 @@ export function detectIrreversibleAction(texts: ReadonlyArray<string | null | un
 export const HOLD_RESURFACE_MS = 15 * 60_000;
 
 /** Jev gives no free-text reason today (see `QUESTION_DECIDE_QUESTIONS` in ./question-gate-decision.ts — disposition only, no reason-code question); this is what a held question's `holdReason` reads until that changes. */
-export const DEFAULT_HOLD_REASON = "Held — it didn't look urgent enough to interrupt someone right now.";
+export const DEFAULT_HOLD_REASON = "Not sent yet: it didn't look urgent enough to interrupt someone right now.";
 
 export const QUESTION_DECIDE_PROMPT_VERSION = 'qd1';
 export const QUESTION_DECIDE_DECISION_TIMEOUT_MS = 3_000;
