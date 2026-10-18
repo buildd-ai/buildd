@@ -270,7 +270,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
 
 export type TopEvent =
   | { type: 'runner'; pid?: number | null; version?: string | null }
-  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: string }
+  | { type: 'config'; maxConcurrent?: number; builddServer?: string | null; routes?: RunRoute[]; routeProblems?: RouteProblem[]; loginMode?: unknown }
   /** The runner's login mode changed (`buildd logins`, b; spec 34a48877 R-14). */
   | { type: 'logins'; loginMode: string }
   | { type: 'workers'; workers: TopWorker[]; fresher?: string[] }
@@ -399,7 +399,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         const tasks = e.claimOutcomes.tasks && typeof e.claimOutcomes.tasks === 'object' ? e.claimOutcomes.tasks : {};
         next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ? stampBroad(e.claimOutcomes.broad, next.tasks) : null } };
       }
-      if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer, loginMode: (e.config as { loginMode?: string }).loginMode });
+      if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer, loginMode: (e.config as { loginMode?: unknown }).loginMode });
       // An older runner sends no `hold`: it cannot be held, so none.
       return { ...next, lookingForWork: e.lookingForWork === true, runner: { ...next.runner, online: true, connectedOnce: true, hold: parseRunnerHold(e.hold) } };
     }
