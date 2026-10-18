@@ -25,7 +25,7 @@ mock.module('@/lib/visual-review-load', () => ({ loadVisualReview }));
 mock.module('@/lib/mission-claim-deferrals', () => ({ loadClaimHoldReasons: async () => new Map() }));
 
 const { getMissionVisualReviewState, loadMissionAuditLedger } = await import('./visual-review-state-load');
-beforeEach(() => { rows = []; reads.length = 0; loadSurfaceAuditWaiver.mockClear(); loadVisualReview.mockClear(); evaluateSurfaceAuditGate.mockClear(); });
+beforeEach(() => { reads.length = 0; loadSurfaceAuditWaiver.mockClear(); loadVisualReview.mockClear(); evaluateSurfaceAuditGate.mockClear(); });
 
 it("reuses the caller's waiver and model reads instead of repeating them", async () => {
   const state = await getMissionVisualReviewState('m1', { waiver: Promise.resolve(null), model: { audit: null } as any });
