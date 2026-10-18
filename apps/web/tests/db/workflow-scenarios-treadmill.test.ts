@@ -76,6 +76,56 @@ async function lastTransition(pr: OpenedPr) {
   return t;
 }
 
+describe('#5172: the platform\'s own base refresh of an approved PR', () => {
+  test('one refresh_branch (update-branch) → HeadObserved with its merge commit carries the approval as own_refresh, the delivery stays APPROVED, and the next landing merges on green with no second review', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/own-refresh', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.approve(pr);
+    const approvedHead = w.gh.pr(w.repo, pr.prNumber).headSha;
+    trunkMoves(1, 'r');
+    await w.deliver();
+
+    expect((await sweep(pr)).kind).toBe('updating_branch');
+    await w.deliver();
+    expect(updateBranchCalls(pr)).toHaveLength(1);
+    const refreshed = w.gh.pr(w.repo, pr.prNumber).headSha;
+    expect(refreshed).not.toBe(approvedHead);
+
+    const d = await w.delivery(pr);
+    expect(d).toMatchObject({ state: 'APPROVED', currentHeadSha: refreshed });
+    const [seen] = await q<{ to_state: string; evidence: Record<string, any> }>(sql`SELECT to_state, evidence FROM workflow_transitions
+      WHERE delivery_id = ${pr.deliveryId}::uuid AND command = 'HeadObserved' ORDER BY to_version DESC LIMIT 1`);
+    expect(seen).toMatchObject({ to_state: 'APPROVED', evidence: { carryForward: 'own_refresh' } });
+    // No delta round is owed, so none waits on a reviewer nobody dispatched.
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(1);
+
+    w.gh.greenCi(w.repo, refreshed, ['build', 'test']);
+    await w.deliver();
+    expect(await sweep(pr)).toMatchObject({ kind: 'merged' });
+    expect(w.mergeCalls(pr).map((c) => c.status)).toEqual([200]);
+    expect(updateBranchCalls(pr)).toHaveLength(1);
+    expect((await w.delivery(pr)).state).toBe('MERGED');
+    expect(w.gh.unsupported).toEqual([]);
+  });
+
+  test('counter-case: a push nobody in the platform made starts a review round, and its reviewer is dispatched', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/foreign-push', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.approve(pr);
+    w.gh.push(w.repo, 'feat/foreign-push', { 'src/a.ts': 'export const a = 5;\n' });
+    await w.deliver();
+
+    const d = await w.delivery(pr);
+    expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: w.gh.pr(w.repo, pr.prNumber).headSha });
+    // The state that reads "waiting for its review" has a reviewer working on it.
+    const reviews = await w.tasksOf(pr, 'review');
+    expect(reviews).toHaveLength(2);
+    expect(['pending', 'assigned', 'in_progress']).toContain(reviews.at(-1)!.status);
+    expect(await sweep(pr)).not.toMatchObject({ kind: 'merged' });
+    expect(w.mergeCalls(pr)).toEqual([]);
+  });
+});
+
 describe('#4283: an approved, green PR on a trunk that moves faster than CI', () => {
   test('two approvals, the base gains 4 unrelated commits before every landing, three refreshes spend the budget, GitHub stays mergeable → the PR lands across the disjoint gap with no person', async () => {
     w = await world();
