@@ -244,8 +244,9 @@ const defaultDeps: OrphanSweepDeps = {
   },
 
   async release(ownerWorkerId) {
-    // The row stays (its PR fact points at it); without the PR it owns nothing.
-    await db.update(workers).set({ prNumber: null, prUrl: null }).where(eq(workers.id, ownerWorkerId));
+    // The row was inserted a moment ago by `adopt`; what references it (its PR
+    // fact) cascades with it.
+    await db.delete(workers).where(eq(workers.id, ownerWorkerId));
   },
 
   // missionId may be null: the needs-you readers (lib/pr-attention.ts, the
