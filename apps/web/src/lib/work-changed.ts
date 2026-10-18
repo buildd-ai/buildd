@@ -72,11 +72,22 @@ function take(): WorkChangeBatch {
   return batch;
 }
 
+/**
+ * Core's own listener runs first: the change version of the batch's
+ * workspaces and teams (lib/change-version.ts, spec 3ef37387 R-20), so a list
+ * poll that sent the old version reads again. It is core, not a module, as
+ * the list routes that answer with it are.
+ */
+const coreChangeVersion: WorkChangeListener = async (batch) => {
+  const { changeVersionWorkListener } = await import('./change-version');
+  await changeVersionWorkListener(batch);
+};
+
 async function listeners(): Promise<readonly WorkChangeListener[]> {
   if (testListeners) return testListeners;
   // Loaded when a flush runs, not when core loads: the composition root imports every module.
   const modules = (await import('@/modules')) as Record<string, unknown>;
-  return (modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [];
+  return [coreChangeVersion, ...((modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [])];
 }
 
 function runFlush(): Promise<void> {
