@@ -139,7 +139,7 @@ function OwnerSplit({ by, coverage }: { by: OccupancyBreakdown; coverage?: Occup
       </div>
       {gaps.length > 0 && (
         <p data-testid="occupancy-coverage-note" className="mt-2 text-meta text-text-muted">
-          Of {coverage!.total} runner jobs: {gaps.join('; ')}. Shown as unattributed, not assigned to anyone.
+          Of {coverage!.total} runner jobs: {gaps.join('; ')}.
         </p>
       )}
     </div>
