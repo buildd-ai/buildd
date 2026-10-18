@@ -30,6 +30,11 @@ mock.module('@/lib/team-access', () => ({
 }));
 mock.module('next/headers', () => ({ cookies: downstream }));
 
+// The kernel log is read only past the gate: count loader calls to prove a 404 reads nothing.
+let kernelReads = 0;
+const kernelView = await import('@/lib/kernel-operator-view');
+mock.module('@/lib/kernel-operator-view', () => ({ ...kernelView, loadKernelOperatorView: async () => { kernelReads++; throw new Downstream(); } }));
+
 process.env.BUILDD_OPERATOR_USER_EMAILS = OWNER;
 
 type Load = () => Promise<{ default: (p: { searchParams: Promise<Record<string, string>> }) => unknown }>;
@@ -51,7 +56,7 @@ async function visit(load: Load): Promise<'not-found' | 'past-gate'> {
   }
 }
 
-beforeEach(() => { signedIn = null; });
+beforeEach(() => { signedIn = null; kernelReads = 0; });
 
 describe("the team's Health pages", () => {
   for (const [route, load] of teamPages) {
@@ -66,6 +71,14 @@ describe('Operator', () => {
   it('is a 404 for a team admin', async () => {
     signedIn = { id: 'admin', email: 'admin@example.com' };
     expect(await visit(operatorPage)).toBe('not-found');
+  });
+
+  it('never reads the kernel log for anyone but the platform owner', async () => {
+    for (const who of [null, { id: 'admin', email: 'admin@example.com' }]) {
+      signedIn = who;
+      expect(await visit(operatorPage)).toBe('not-found');
+    }
+    expect(kernelReads).toBe(0);
   });
 
   it('still opens for the platform owner', async () => {
