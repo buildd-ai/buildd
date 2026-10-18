@@ -9,7 +9,7 @@
  * the audit" for a worker that crashed.
  */
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
-import { dependencyFailureOf } from '@buildd/core/dependency-failure';
+import { dependencyFailureOf, RECOVERED_DEPENDENCY_STATUSES } from '@buildd/core/dependency-failure';
 
 export type TaskFailureKind = 'execution' | 'verification' | 'dependency';
 
@@ -39,7 +39,7 @@ function implementationLanded(t: FailureTaskLike): boolean {
 }
 
 /** Statuses after which the dependency no longer holds anything (the claim gate's satisfied set). */
-const RECOVERED = new Set(['completed', 'cancelled']);
+const RECOVERED: ReadonlySet<string> = new Set(RECOVERED_DEPENDENCY_STATUSES);
 
 /**
  * The failed task a never-run task still waits on, or null. An audit always

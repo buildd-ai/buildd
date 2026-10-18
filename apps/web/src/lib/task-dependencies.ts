@@ -17,7 +17,7 @@ import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
-import { dependencyFailedResult, dependencyFailureOf } from '@buildd/core/dependency-failure';
+import { dependencyFailedResult, dependencyFailureOf, RECOVERED_DEPENDENCY_STATUSES } from '@buildd/core/dependency-failure';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 /**
@@ -914,7 +914,7 @@ export async function sweepChecksFailedByRecoveredDeps(limit = 50): Promise<numb
   const recovered = await db
     .select({ id: tasks.id })
     .from(tasks)
-    .where(and(inArray(tasks.id, blockers), inArray(tasks.status, ['completed', 'cancelled'])));
+    .where(and(inArray(tasks.id, blockers), inArray(tasks.status, [...RECOVERED_DEPENDENCY_STATUSES])));
   for (const r of recovered) await reopenChecksFailedBy(r.id);
   return recovered.length;
 }

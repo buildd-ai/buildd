@@ -9,6 +9,8 @@
  * the recovery is. Pure; safe on the client.
  */
 
+import { TERMINAL_TASK_STATUSES, type TerminalTaskStatus } from '@buildd/shared';
+
 /** `tasks.result.errorType` the cascade writes. */
 export const DEPENDENCY_FAILED_ERROR_TYPE = 'dependency_failed';
 
@@ -17,6 +19,9 @@ export interface DependencyFailure {
   taskId: string;
   title: string | null;
 }
+
+/** A dependency in one of these no longer holds back a task that failed on it: it finished, or was dropped. */
+export const RECOVERED_DEPENDENCY_STATUSES: readonly TerminalTaskStatus[] = TERMINAL_TASK_STATUSES.filter(s => s !== 'failed');
 
 /** The text rows written before `errorType` existed still carry. */
 const LEGACY_ERROR_RE = /^Blocked: dependency "([\s\S]*)" \(([0-9a-f-]{36})\) failed$/i;
