@@ -51,7 +51,7 @@ import {
   type DispatchConflictRetryResult,
 } from '@/lib/conflict-retry';
 import { guardMissionPrMerge, finalizeMissionPrMerge, deliveryOwnerTask } from '@/lib/mission-pr';
-import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta } from '@/lib/workflow/base-delta';
+import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta, versionBumpManifests } from '@/lib/workflow/base-delta';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { ChecksState, LandingAlertInput } from '@/lib/pr-landing-alert';
@@ -314,6 +314,8 @@ export function evaluateTreadmillBound(input: {
   baseCommitsSince: number;
   baseFiles: string[] | null;
   prFiles: string[] | null;
+  /** Base manifests whose gap diff is only a version bump (`versionBumpManifests`). */
+  versionBumpFiles?: string[];
   /** Overrides the base-commit limit (the exhausted-cycle rule passes the wider one). */
   maxBaseCommits?: number;
 }): TreadmillVerdict {
@@ -328,7 +330,7 @@ export function evaluateTreadmillBound(input: {
   if (!baseFiles || !prFiles) {
     return { accepted: false, reason: 'could not list the files on one side of the gap' };
   }
-  const verdict = judgeBaseDelta({ baseCommits: baseCommitsSince, baseFiles, prFiles }, maxBaseCommits);
+  const verdict = judgeBaseDelta({ baseCommits: baseCommitsSince, baseFiles, prFiles, versionBumpFiles: input.versionBumpFiles }, maxBaseCommits);
   if (!verdict.tolerated) return { accepted: false, unsafe: verdict.cause === 'refresh_unsafe', reason: verdict.reason };
   return { accepted: true };
 }
@@ -1271,6 +1273,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       baseCommitsSince: typeof baseSide?.ahead_by === 'number' ? baseSide.ahead_by : Number.POSITIVE_INFINITY,
       baseFiles: filenames(baseSide?.files),
       prFiles: filenames(prSide),
+      versionBumpFiles: versionBumpManifests(baseSide?.files),
       ...(spent ? { maxBaseCommits: Math.max(TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, policyValue('treadmillMaxBaseCommits')) } : {}),
     });
   }
