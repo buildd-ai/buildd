@@ -33,6 +33,7 @@ import {
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 import { postgresCommandOutbox, shouldPark, type CommandOutbox } from './command-outbox';
+import { noteWorkChanged, workChangeOfKernelInput } from '@/lib/work-changed';
 
 export type { KernelOp, KernelOps, KernelPrincipal, DeliveryVersion } from './command-api';
 
@@ -323,9 +324,19 @@ export async function submitKernelCommand<K extends KernelOp>(op: K, input: Kern
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
       throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
     }
-    return runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false);
+    return noted(input, await runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false));
   }
-  return submitRemote(op, input, { ...opts, idempotencyKey }, deps);
+  return noted(input, await submitRemote(op, input, { ...opts, idempotencyKey }, deps));
+}
+
+/**
+ * A command that ran changed the delivery, review or task it names: its
+ * mission's summary is refreshed after the response (lib/work-changed.ts).
+ * Here, not in the kernel, so it holds wherever the kernel is hosted.
+ */
+function noted<T>(input: unknown, answer: T): T {
+  noteWorkChanged(workChangeOfKernelInput(input));
+  return answer;
 }
 
 async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery = true): Promise<KernelAnswer<K>> {
