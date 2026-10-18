@@ -122,6 +122,7 @@ import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
 import TaskVerdictBlock from './TaskVerdictBlock';
 import EscalationDecision from '@/components/EscalationDecision';
+import { decisionActionHref, decisionCopy } from '@/components/escalation-decision-copy';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
@@ -910,6 +911,10 @@ export default async function TaskDetailPage({
   // the state; a decision cached on the task by the last state change may only
   // reword it (and only for the same state and cause). Nothing here calls the
   // decision model: a page load never does.
+  // AC-43 / AC-48: a review escalation's question, why it stopped and the actions open now, one wording for the verdict row and the decision card.
+  const escalationCopy = deliveryView?.escalation
+    ? decisionCopy(deliveryView.escalation, { rounds: deliveryView.rounds, ledger: deliveryView.ledger ?? [] })
+    : null;
   const storedVerdictDecision = parseStoredVerdictDecision((task as { verdictDecision?: unknown }).verdictDecision);
   const rulesVerdict = deriveTaskVerdict({ ...buildVerdictInput({
     task: { status: task.status, mode: task.mode, result: task.result },
@@ -921,13 +926,13 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
-    escalation: deliveryView?.escalation
+    escalation: escalationCopy && deliveryView?.escalation
       ? {
           title: deliveryView.escalation.title,
-          summary: deliveryView.escalation.summary,
-          open: deliveryView.escalation.findings.open.length,
-          awaitingVerification: deliveryView.escalation.findings.addressedAwaitingVerification.length,
-          resolved: deliveryView.escalation.findings.resolved.length,
+          question: escalationCopy.question,
+          why: escalationCopy.why,
+          unresolved: escalationCopy.unresolved,
+          primary: { label: escalationCopy.primary.label, href: decisionActionHref(escalationCopy.primary.id) },
         }
       : null,
     // The platform updating the branch or merging: in progress, not "ready to merge".
@@ -1546,7 +1551,7 @@ export default async function TaskDetailPage({
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
         {deliveryView?.escalation && deliveryView.prNumber != null && subject.kind === 'deliverable' && (
-          <EscalationDecision brief={deliveryView.escalation} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
+          <EscalationDecision brief={deliveryView.escalation} copy={escalationCopy!} prNumber={deliveryView.prNumber} workspaceId={task.workspaceId} />
         )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}

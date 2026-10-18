@@ -77,10 +77,14 @@ export interface VerdictInput {
    */
   escalation?: {
     title: string;
-    summary: string;
-    open: number;
-    awaitingVerification: number;
-    resolved: number;
+    /** The question the person decides (escalation-decision-copy). */
+    question: string;
+    /** Why automation stopped, in words. */
+    why: string;
+    /** The unresolved findings by title: the concrete blocker. */
+    unresolved: { open: string[]; awaitingVerification: string[] };
+    /** The action the button names; it opens that action's confirmation on this page. */
+    primary: { label: string; href: string };
   } | null;
   /**
    * How long the merged PR took from claim to merge ("2h 14m"). The status
@@ -259,14 +263,18 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
     // A held review budget is a decision with a cause, not a generic wait: say which, and open the decision card.
     if (input.escalation) {
       const e = input.escalation;
+      const named = [
+        e.unresolved.open.length > 0 ? `Still open: ${e.unresolved.open.join('; ')}.` : '',
+        e.unresolved.awaitingVerification.length > 0 ? `Fixed, waiting for a review: ${e.unresolved.awaitingVerification.join('; ')}.` : '',
+      ].filter(Boolean).join(' ');
       return {
         ...base,
         state: 'needs_you',
         label: e.title,
         labelTone: 'warning',
-        headline: `PR #${pr.number} · ${e.open} open, ${e.awaitingVerification} awaiting verification, ${e.resolved} resolved`,
-        cause: e.summary,
-        actions: [link('Decide', '#task-decision', 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
+        headline: e.question,
+        cause: named ? `${e.why} ${named}` : e.why,
+        actions: [link(e.primary.label, e.primary.href, 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
         causeKey: `needs_you:escalation:${e.title}`,
       };
     }

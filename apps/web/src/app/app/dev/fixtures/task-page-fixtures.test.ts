@@ -53,4 +53,14 @@ describe('task page regression cases', () => {
     expect(text('failed').f.verdict?.state).toBe('failed');
     expect(text('needs-human').f.verdict?.state).toBe('needs_you');
   });
+  it('review-stuck (AC-43 / AC-48): question first, blocker named, primary names the action, no approval offered', () => {
+    const { f } = text('review-stuck');
+    expect(f.verdict?.state).toBe('needs_you');
+    expect(f.verdict?.headline).toBe('How should the two unresolved findings be settled?');
+    expect(f.verdict?.cause).toContain('Automation stopped after three review rounds');
+    expect(f.verdict?.cause).toContain('Still open:');
+    expect(f.verdict?.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', tone: 'primary' });
+    expect(f.escalation?.copy.actions.map(a => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
+    expect(f.checks.rounds?.githubNote).toContain('Commented');
+  });
 });

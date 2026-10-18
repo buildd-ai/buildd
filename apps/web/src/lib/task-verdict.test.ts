@@ -222,15 +222,32 @@ describe('verdictRepeatsOpenQuestion', () => {
 describe('review escalation verdict (PR #4996 shape)', () => {
   const pr = { url: 'https://github.com/acme/widgets/pull/7', number: 7, lifecycle: null, merged: false };
   const base: VerdictInput = { taskStatus: 'completed', live: null, openQuestion: false, pr, checks: null, openAttempt: null };
-  const escalation = { title: 'Automated fixes exhausted · 2 of 2 used', summary: 'The automatic fix budget is spent. Nothing runs again until you choose.', open: 1, awaitingVerification: 2, resolved: 3 };
+  const escalation = {
+    title: 'Automated fixes exhausted · 2 of 2 used',
+    question: 'How should the two unresolved findings be settled?',
+    why: 'Automation stopped after three review rounds: both automatic fixes ran and the review still asks for changes. Nothing runs again until someone chooses.',
+    unresolved: { open: ['Mutation tests do not cover the new guard'], awaitingVerification: ['Verify against a real Postgres'] },
+    primary: { label: 'Request another fix', href: '#task-decision-request_fix' },
+  };
 
-  it('names the cause and counts instead of "Waiting on you", and points at the decision card', () => {
+  it('names the cause, leads with the question and names the blocker instead of "Waiting on you"', () => {
     const v = deriveTaskVerdict({ ...base, escalation })!;
     expect(v.state).toBe('needs_you');
     expect(v.label).toBe('Automated fixes exhausted · 2 of 2 used');
-    expect(v.headline).toContain('1 open, 2 awaiting verification, 3 resolved');
-    expect(v.cause).toContain('Nothing runs again until you choose');
-    expect(v.actions[0]).toMatchObject({ href: '#task-decision', external: false, tone: 'primary' });
+    expect(v.headline).toBe('How should the two unresolved findings be settled?');
+    // Copy rule 3: no PR number in the headline.
+    expect(v.headline).not.toContain('#7');
+    expect(v.cause).toContain('Automation stopped after three review rounds');
+    expect(v.cause).toContain('Still open: Mutation tests do not cover the new guard.');
+    expect(v.cause).toContain('Fixed, waiting for a review: Verify against a real Postgres.');
+    expect(v.cause).not.toMatch(/waiting on you/i);
+  });
+
+  it('AC-48: the primary button names the action and opens the decision on this page, GitHub second', () => {
+    const v = deriveTaskVerdict({ ...base, escalation })!;
+    expect(v.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', external: false, tone: 'primary' });
+    expect(v.actions[1]).toMatchObject({ href: pr.url, tone: 'quiet' });
+    expect(v.actions.some((a) => /approve/i.test(a.label))).toBe(false);
   });
 
   it('without an escalation the generic PR reading is unchanged', () => {
