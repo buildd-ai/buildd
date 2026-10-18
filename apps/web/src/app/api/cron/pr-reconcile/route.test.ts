@@ -99,7 +99,7 @@ mock.module('@/lib/workflow/command-ledger', () => ({
 
 // …and re-submitting the door commands the control plane never answered (lib/workflow/command-outbox.ts).
 const realCommandOutbox = await import('@/lib/workflow/command-outbox');
-mock.module('@/lib/workflow/command-outbox', () => ({ ...realCommandOutbox, drainParkedCommands: async () => ({ claimed: 0, done: 0, retried: 0, dead: 0, pruned: 0 }) }));
+mock.module('@/lib/workflow/command-outbox', () => ({ ...realCommandOutbox, drainParkedCommands: async () => ({ claimed: 0, done: 0, retried: 0, dead: 0, pruned: 0 }), readOutboxDepth: async () => ({ parked: 0, parkedOldestAgeS: 0, effectsDue: 0, effectsOldestAgeS: 0 }) }));
 // …and Buildd / Review approval on every open PR head (lib/workflow/open-pr-status.ts).
 const realOpenPrStatus = await import('@/lib/workflow/open-pr-status');
 mock.module('@/lib/workflow/open-pr-status', () => ({
