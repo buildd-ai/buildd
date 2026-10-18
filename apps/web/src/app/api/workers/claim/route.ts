@@ -95,7 +95,8 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, isRepairRole, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole, notOwnerTaskSql, ownerClaimOpenSql, projectAttemptStart } from '@/lib/workflow/seam';
+import { isOwnerTask, withdrawOwner, type OwnerTask } from '@/lib/workflow/owner-attempt';
 // T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { attemptStarted as kernelAttemptStarted, attemptStartKey, parkAttemptStart, claimFix as claimKernelFix, ControlPlaneUnavailableError, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 
@@ -189,11 +190,22 @@ const ROLE_ENV_WINDOW_MAX_PAGES = 4;
  * undoes our own claim, it is not new runnable state, and a wake here would loop claim, refuse,
  * rollback, wake across every runner.
  */
-async function rollBackClaim(taskId: string, accountId: string): Promise<void> {
+async function rollBackClaim(taskId: string, accountId: string, owner: { task: OwnerTask; claimedAt: string; principal: KernelPrincipal | null } | null = null): Promise<void> {
+  // AC-1 slice 9: a kernel owner's start was the kernel's (AttemptStarted), so giving it back is too
+  // (AttemptWithdrawn), guarded on exactly this claim: a rollback that lands after the task moved on
+  // moves nothing. This write is every other task's.
+  if (owner) {
+    // Its reason tells the tasks trigger not to wake dispatch, as withDispatchHint does below.
+    await withdrawOwner({
+      task: owner.task, claim: { claimedBy: accountId, claimedAt: owner.claimedAt }, outcome: 'requeued',
+      reason: 'claim_rollback', source: 'claim', principal: owner.principal,
+    });
+    return;
+  }
   await withDispatchHint({ suppress: 'claim_rollback' }, db
     .update(tasks)
     .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, accountId))));
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, accountId), notOwnerTaskSql())));
 }
 
 /**
@@ -2359,21 +2371,37 @@ export async function POST(req: NextRequest) {
     const taskProject = (task as any).project as string | null;
     const workspaceProjects = ((task.workspace as any)?.projects || []) as Array<{ name: string }>;
     if (taskProject && workspaceProjects.length > 0 && !workspaceProjects.some((p) => p.name === taskProject)) {
-      await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          claimedBy: null,
-          claimedAt: null,
-          expiresAt: null,
-          updatedAt: now,
-          context: {
-            ...(taskContext || {}),
-            terminalError: 'workspace_mismatch',
-            terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
-          },
-        })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')));
+      const mismatchContext = {
+        ...(taskContext || {}),
+        terminalError: 'workspace_mismatch',
+        terminalReason: `Task pinned to project "${taskProject}" but workspace ${task.workspaceId} has no project with that name. Check that MCP is connected to the workspace that owns this repo.`,
+      };
+      if (isOwnerTask(task as any)) {
+        // AC-1 slice 9: a kernel owner is refused through the kernel (AttemptWithdrawn, no claim: a
+        // queued task no claim holds), then the refusal's reason is recorded on the failed task.
+        const refused = await withdrawOwner({
+          task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context },
+          claim: null, outcome: 'failed', reason: 'workspace_mismatch', source: 'claim', principal: kernelPrincipalOf({ account }),
+        });
+        if (refused) {
+          await db
+            .update(tasks)
+            .set({ context: mismatchContext, updatedAt: now })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'failed')));
+        }
+      } else {
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            claimedBy: null,
+            claimedAt: null,
+            expiresAt: null,
+            updatedAt: now,
+            context: mismatchContext,
+          })
+          .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending'), notOwnerTaskSql()));
+      }
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'workspace_mismatch',
@@ -2904,8 +2932,10 @@ export async function POST(req: NextRequest) {
         .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
         .returning({ id: tasks.id });
 
+    // The kernel owner's claim stamp: the claim a later rollback withdraws (rollBackClaim).
+    const ownerClaimStamp = kernelOwner ? updated[0]?.claimStamp ?? null : null;
     if (updated.length > 0 && kernelOwner) {
-      const stamp = updated[0].claimStamp ?? null;
+      const stamp = ownerClaimStamp;
       const started = stamp
         ? await startKernelOwnerAttempt({
           task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context },
@@ -3162,7 +3192,9 @@ export async function POST(req: NextRequest) {
       // Suppressed for the dispatch trigger: this undoes our own claim, it is
       // not new runnable state, and a wake here would loop claim → refuse →
       // rollback → wake across every runner.
-      await rollBackClaim(task.id, account.id);
+      await rollBackClaim(task.id, account.id, kernelOwner && ownerClaimStamp
+        ? { task: { id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: 'owner', context: task.context }, claimedAt: ownerClaimStamp, principal: kernelPrincipalOf({ account }) }
+        : null);
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',

@@ -1308,9 +1308,9 @@ export async function cleanupStuckWaitingInput(
       ? await kernelDeliveryById(originalTask.deliveryId).catch(() => null)
       : null;
     // AC-1 slice 5: an owner attempt's end is the kernel's to project onto the task, so this
-    // sweep fails only the others itself. Superseded by recovery is no attempt end the kernel
-    // hears, so that task is still failed here.
-    const ownerAttempt = !!kernelDeliveryId && originalTask.deliveryRole === 'owner' && !superseded;
+    // sweep fails only the others itself. AC-1 slice 9: a question superseded by recovery is the
+    // same end (the worker failed); the recovery's requeue later reopens the task (AttemptReopened).
+    const ownerAttempt = !!kernelDeliveryId && originalTask.deliveryRole === 'owner';
     // A worker that is no longer the task's current attempt (it was requeued and claimed again)
     // ends nothing: the new attempt keeps its task.
     if (ownerAttempt && !(await reapedOwnerAttemptIsCurrent(originalTask.id, worker.id))) continue;
@@ -1329,7 +1329,7 @@ export async function cleanupStuckWaitingInput(
     // Superseded by recovery (failure-incident-recovery §16.4): the incident
     // re-queues this same task once its check passes. No clone, no
     // dependency release: the task is not done, it is blocked by a repair.
-    if (superseded) continue;
+    if (superseded && !ownerAttempt) continue;
 
     if (kernelDeliveryId) {
       const { attemptEnded: workflowAttemptEnded, systemPrincipal } = await import('@/lib/workflow/kernel-client');

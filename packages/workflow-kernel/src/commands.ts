@@ -198,6 +198,45 @@ export type Command =
       /** Why (a short tag: `retry`, `loop_hold`, `budget`, `codex_deferral`, `conflict_recovery`, ...). */
       reason: string;
     })
+  | (Base & {
+      /**
+       * AC-1 slice 9 (workflow-kernel-library.md §9): the owner task's attempt already ended (the
+       * task is completed or failed) and the task is opened again. `pending` puts it back in the
+       * queue for a new attempt (a credential, GitHub access or incident recovery requeues a task
+       * that failed); `assigned` is the same worker running again (a person's follow-up resumed a
+       * finished session). Not a requeue (that names a current attempt) and no state change: the
+       * kernel records it and moves the task in the transition's own statement, only while the
+       * named worker is still the task's latest attempt and its end is the one named.
+       */
+      type: 'AttemptReopened';
+      taskId: string;
+      /** The worker row of the ended attempt it reopens; null when the task never ran one. */
+      workerId: string | null;
+      /** When that attempt ended (its worker's completed_at, ISO): each reopen of one worker is its own key. */
+      endedAt: string | null;
+      to: 'pending' | 'assigned';
+      /** Why (a short tag: `credential_restored`, `repo_access_verified`, `incident_recovery`, `resumed`). */
+      reason: string;
+    })
+  | (Base & {
+      /**
+       * AC-1 slice 9: a claim that does not go on to run the owner task's attempt. With `claim`,
+       * the claim's own start is given back (`requeued`: the account cap refused its worker, or a
+       * cleanup found the claim with no attempt row) or ended for good (`failed`). With no claim,
+       * a queued task that no claim holds is refused for good (`failed`: the workspace lacks the
+       * project it is pinned to, or a sandbox mount gap ran its mission out of budget). No attempt
+       * ran under it, so it is no end; no state change. The kernel records it and moves the task in
+       * the transition's own statement, only while the task still carries exactly that claim (or,
+       * with no claim, is still queued with no live attempt).
+       */
+      type: 'AttemptWithdrawn';
+      taskId: string;
+      /** tasks.claimed_by and tasks.claimed_at as Postgres renders it (microseconds kept), or null. */
+      claim: { claimedBy: string; claimedAt: string } | null;
+      outcome: 'requeued' | 'failed';
+      /** Why (a short tag: `account_cap`, `orphaned_claim`, `retry_cap`, `workspace_mismatch`, `mission_budget`). */
+      reason: string;
+    })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
       type: 'ReviewVerdictRecorded';
