@@ -35,7 +35,7 @@ describe('BookkeepingAttemptRow', () => {
       <BookkeepingAttemptRow workerId="w3" retry={{ kind: 'queued' }} count={4} undelivered attemptLabel="Attempt 4"><p>x</p></BookkeepingAttemptRow>,
     );
     expect(grouped).toContain('Claim didn&#x27;t reach the runner 4 times');
-    expect(grouped).toContain('the runner never received it');
+    expect(grouped).toContain('Runner never received this attempt. Released.');
     // A per-row label would name only one of the four.
     expect(grouped).not.toContain('Attempt 4');
   });

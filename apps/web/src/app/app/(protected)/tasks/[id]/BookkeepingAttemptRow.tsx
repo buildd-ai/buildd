@@ -50,7 +50,7 @@ export default function BookkeepingAttemptRow({
       <div className="space-y-1 px-3 pb-3 pl-14 text-meta text-text-muted md:px-4 md:pl-[3.75rem] [overflow-wrap:anywhere]">
         <p>
           {undelivered
-            ? 'buildd handed this attempt to a runner, but the runner never received it, so buildd took it back.'
+            ? 'Runner never received this attempt. Released.'
             : 'The runner took this attempt but never started it.'}
         </p>
         {children}
