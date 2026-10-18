@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import FindingDisposeForm from './FindingDisposeForm';
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
@@ -46,25 +47,28 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
     }
   }
 
-  const groups: Array<[string, typeof brief.findings.open]> = [
-    ['Open', brief.findings.open],
-    ['Fix awaiting verification', brief.findings.addressedAwaitingVerification],
-    ['Resolved', brief.findings.resolved],
+  // A finding can be waived or deferred only while it is open or awaiting verification; chosen by key.
+  const groups: Array<{ key: string; label: string; list: typeof brief.findings.open; count: number; disposable: boolean }> = [
+    { key: 'open', label: 'Open', list: brief.findings.open, count: brief.totals.open, disposable: true },
+    { key: 'addressedAwaitingVerification', label: 'Fix awaiting verification', list: brief.findings.addressedAwaitingVerification, count: brief.totals.addressedAwaitingVerification, disposable: true },
+    { key: 'resolved', label: 'Resolved', list: brief.findings.resolved, count: brief.totals.verifiedResolved, disposable: false },
+    { key: 'waived', label: 'Waived', list: brief.findings.waived, count: brief.totals.waived, disposable: false },
+    { key: 'deferred', label: 'Deferred', list: brief.findings.deferred, count: brief.totals.deferred, disposable: false },
   ];
 
   return (
     <section id="task-decision" data-testid="task-decision" data-cause={brief.cause} aria-label="Decision" className="card-decision mb-6 px-4 py-3 md:px-5">
       <h2 className="text-body font-semibold">{brief.title}</h2>
       <p className="mt-1 text-body text-text-secondary">{brief.summary}</p>
-      <dl className="mt-3 grid grid-cols-3 gap-2 text-meta">
-        {groups.map(([label, list]) => (
-          <div key={label}><dt className="text-text-muted">{label}</dt><dd data-testid="decision-count" className="text-body font-medium">{list.length}</dd></div>
+      <dl className="mt-3 grid grid-cols-3 gap-2 md:grid-cols-5 text-meta">
+        {groups.map(({ key, label, count }) => (
+          <div key={key}><dt className="text-text-muted">{label}</dt><dd data-testid="decision-count" className="text-body font-medium">{count}</dd></div>
         ))}
       </dl>
       {showFindings && (
         <div data-testid="decision-findings" className="mt-3 flex flex-col gap-3 border-t border-border-default pt-3">
-          {groups.filter(([, list]) => list.length > 0).map(([label, list]) => (
-            <div key={label}>
+          {groups.filter((g) => g.list.length > 0).map(({ key, label, list, disposable }) => (
+            <div key={key}>
               <h3 className="text-meta font-medium text-text-muted">{label}</h3>
               <ul className="mt-1 flex flex-col gap-1">
                 {list.map((f) => (
@@ -72,6 +76,7 @@ export default function EscalationDecision({ brief, prNumber, workspaceId }: { b
                     {f.title}
                     {f.path && <span className="font-mono text-meta text-text-muted"> {f.path}{f.line != null ? `:${f.line}` : ''}</span>}
                     {f.stale && <span className="text-meta text-text-muted"> · touched by an older push</span>}
+                    {disposable && <FindingDisposeForm prNumber={prNumber} workspaceId={workspaceId} findingId={f.id} decisionHead={brief.decisionHead} />}
                   </li>
                 ))}
               </ul>

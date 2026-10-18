@@ -1649,6 +1649,24 @@ describe('T17 to T19, T3 and T29 from the webhook and the sweeps are doors too (
   });
 });
 
+describe('a person-only op is refused for any other caller, on this host too', () => {
+  const disposeInput = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, actor: `human:${USER}`, findingId: 'r1:0', disposition: 'waived' as const, reason: 'covered' };
+  it('an account, a system caller or no principal never reaches the kernel', async () => {
+    for (const p of [{ kind: 'account' as const, id: '44444444-4444-4444-8444-444444444444' }, { kind: 'system' as const, id: 'sweep' }, null]) {
+      const { ran, deps } = local();
+      await expect(submitKernelCommand('dispose_finding', disposeInput, { principal: p, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+      expect(ran).toEqual([]);
+    }
+  });
+  it('a person acting as someone else is refused; as themselves it runs', async () => {
+    const { ran, deps } = local();
+    await expect(submitKernelCommand('dispose_finding', { ...disposeInput, actor: 'human:other' }, { principal, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+    expect(ran).toEqual([]);
+    await submitKernelCommand('dispose_finding', disposeInput, { principal, deps });
+    expect(ran).toEqual(['dispose_finding']);
+  });
+});
+
 describe('a webhook request answers inside GitHub\'s timeout when the control plane hangs', () => {
   const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
   const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;

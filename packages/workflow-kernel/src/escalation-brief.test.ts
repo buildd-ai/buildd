@@ -79,6 +79,31 @@ describe('deriveEscalationBrief', () => {
   });
 });
 
+describe('Living Spec r7 AC-45 to AC-47', () => {
+  test('AC-47: the brief groups partition the required findings; waived and deferred are their own groups, never resolved', () => {
+    const b = deriveEscalationBrief(V(D(), {
+      findings: [F(1), F(2, { status: 'addressed', addressedBySha: 'H3' }), F(3, { status: 'resolved' }), F(4, { status: 'waived' }), F(5, { status: 'deferred' }), F(6, { required: false })],
+    }))!;
+    expect(b.findings.open.map((f) => f.id)).toEqual(['f1']);
+    expect(b.findings.addressedAwaitingVerification.map((f) => f.id)).toEqual(['f2']);
+    expect(b.findings.resolved.map((f) => f.id)).toEqual(['f3']);
+    expect(b.findings.waived.map((f) => f.id)).toEqual(['f4']);
+    expect(b.findings.deferred.map((f) => f.id)).toEqual(['f5']);
+    expect(b.totals).toEqual({ open: 1, addressedAwaitingVerification: 1, verifiedResolved: 1, waived: 1, deferred: 1, total: 5, advisory: 1 });
+  });
+
+  test('AC-45: the brief names the head and version a decision on it is bound to', () => {
+    const b = deriveEscalationBrief(V(D(), { findings: [F(1)] }))!;
+    expect(b.decisionHead).toEqual({ headSha: 'H3', version: 9 });
+  });
+
+  test('AC-47: the delivery view carries the same partition, and open + awaiting verification is what blocks', () => {
+    const v = deriveDeliveryView({ view: V(D(), { findings: [F(1), F(2, { status: 'addressed', addressedBySha: 'H3' }), F(3, { status: 'resolved' })] }) } as DeliveryViewInput)!;
+    expect(v.findingTotals).toEqual({ open: 1, addressedAwaitingVerification: 1, verifiedResolved: 1, waived: 0, deferred: 0, total: 3, advisory: 0 });
+    expect(v.findingTotals.open + v.findingTotals.addressedAwaitingVerification).toBe(v.openFindings);
+  });
+});
+
 describe('one reading across surfaces', () => {
   test('the delivery display and reading carry the cause, not "Waiting on you"', async () => {
     const { toDeliveryDisplay, deliveryReading } = await import('./delivery-display');

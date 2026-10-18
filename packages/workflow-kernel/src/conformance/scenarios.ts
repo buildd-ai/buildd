@@ -294,6 +294,15 @@ const neverAsked: Decide = { id: 'never', decide: async () => { throw new Confor
 
 // ── Scenarios ───────────────────────────────────────────────────────────────
 
+/** r7 §7: a one-round budget spent by a request for changes that raised two findings, at H1. */
+async function exhaustedWithTwoFindings(host: ConformanceHost, pr: number): Promise<Delivery> {
+  const s = await new Delivery(host, pr).open({ maxRounds: 1 });
+  applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+  applied(await s.verdictWith('request_changes', { findings: [{ title: 'fix a', path: 'src/a.ts' }, { title: 'fix b', path: 'src/b.ts' }] }), 'ESCALATED', 'the budget is spent');
+  eq((await s.d()).stateReason, 'review_exhausted', 'review_exhausted');
+  return s;
+}
+
 export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
   {
     name: 'happy path: open → review → changes requested → fix pushed → re-review → approved → landing → merged',
@@ -1875,6 +1884,29 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '§5: a finding deferred, restated by a later round, and deferred again ends deferred: the second disposal is a new decision, not a replay of the first',
+    async run(host) {
+      const s = await new Delivery(host, 91).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'x.ts', title: 'needs a test' }] });
+      const id = await s.findingId('x.ts');
+      const task = ['00000000', '0000', '4000', '8000', '0000000000aa'].join('-');
+      const defer = async (headSha: string) => s.submit({
+        type: 'FindingDisposed', actor: 'human:owner', findingId: id, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: task,
+        decision: { id: `dispose_finding:${id}:${headSha}:v${(await s.d()).version}`, headSha },
+      });
+      applied(await defer('H1'), 'CHANGES_REQUESTED', 'deferred');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'closed');
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['y.ts'] });
+      await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } });
+      await s.verdictWith('request_changes', { findings: [{ id, path: 'x.ts', title: 'needs a test' }] });
+      eq(await s.findingStates(), { 'x.ts': 'open' }, 'the later round restated it, so it is open again');
+      applied(await defer('H2'), 'CHANGES_REQUESTED', 'deferred again, at the head and version the person saw');
+      eq(await s.findingStates(), { 'x.ts': 'deferred' }, 'ends deferred');
+    },
+  },
+  {
     name: '§5: an approval held while a repair runs, that left a finding unverified, re-enters as a verification round when the repair ends, never as APPROVED',
     async run(host) {
       const s = await new Delivery(host, 68).open();
@@ -2909,6 +2941,71 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await withdraw({ claim: null }), 'rejected', 'claim_not_named', 'a requeue names its claim');
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       notApplied(await withdraw({ claim: { ...claim, claimedAt: '2026-10-18 09:00:00+00' } }), 'stale', 'attempt_not_bound', 'a withdrawal after the hand-off records nothing');
+    },
+  },
+  // ── Living Spec r7 §7 (task 59f2c591): findings after a spent budget, and a person's decisions ──
+  {
+    name: 'r7 AC-44: after the review budget runs out, a pushed fix shows its finding addressed, awaiting verification, and green CI does not lift the hold',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 131);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a fix pushed after the escalation');
+      eq(await s.findingStates(), { 'src/a.ts': 'addressed', 'src/b.ts': 'open' }, 'the touched finding is addressed, not resolved');
+      eq({ rounds: (await s.view()).rounds.length, reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { rounds: 1, reviewers: 1, fixes: 0 }, 'no review and no fix started on its own');
+      await s.submit({ type: 'CiObserved', actor: 'webhook', headSha: 'H2', verdict: 'green', liveChecks: { complete: true, failing: [] }, allPassing: true });
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'review_exhausted' }, 'green CI leaves it a person\'s');
+      ok((await s.land('H2')).result !== 'applied', 'nothing lands it');
+      eq(await s.count('merge_call'), 0, 'no merge call');
+      const v = deriveDeliveryView({ view: await s.view() })!;
+      eq(v.findingTotals, { open: 1, addressedAwaitingVerification: 1, verifiedResolved: 0, waived: 0, deferred: 0, total: 2, advisory: 0 }, 'one open, one awaiting verification, nothing verified');
+      eq(v.escalation?.findings.addressedAwaitingVerification.map((f) => f.path), ['src/a.ts'], 'the decision brief lists it as awaiting verification');
+      eq(v.escalation?.findings.resolved.length, 0, 'and not as resolved');
+    },
+  },
+  {
+    name: 'r7 AC-45: a person\'s forced review and bounded fix at the current head are one audited command each; replaying the same decision changes nothing',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 132);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a fix pushed after the escalation');
+      const before = (await host.transitions(s.deliveryId)).length;
+      const force = (v: number) => s.submit({ type: 'ReviewRequested', actor: 'human:u1', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: `force_re_review:H2:v${v}`, headSha: 'H2' } });
+      const v1 = (await s.d()).version;
+      applied(await force(v1), 'AWAITING_REVIEW', 'the forced review');
+      notApplied(await force(v1), 'duplicate', 'idempotency_key_seen', 'the same decision again');
+      eq({ transitions: (await host.transitions(s.deliveryId)).length - before, reviewers: await s.count('dispatch_review'), rounds: (await s.view()).rounds.length }, { transitions: 1, reviewers: 2, rounds: 2 }, 'one transition, one reviewer, one round');
+      eq(pick(await s.latestRound(), ['headSha', 'trigger']), { headSha: 'H2', trigger: 'manual_force' }, 'at the head the person decided on');
+
+      // The forced review verifies the addressed finding and keeps the other open: past the budget, a person's again.
+      const a = await s.findingId('src/a.ts');
+      const b = await s.findingId('src/b.ts');
+      applied(await s.verdictWith('request_changes', { resolvedFindings: [a], findings: [{ id: b, title: 'fix b', path: 'src/b.ts' }] }), 'ESCALATED', 'it asks for changes again');
+      eq(await s.findingStates(), { 'src/a.ts': 'resolved', 'src/b.ts': 'open' }, 'verified only by the review, not by the push');
+      // A stale tab replays the first decision: answered by its transition, nothing runs, and the
+      // delivery is still the person's (the door reads that and leaves the new escalation's note).
+      notApplied(await force(v1), 'duplicate', 'idempotency_key_seen', 'the old decision replayed after it escalated again');
+      eq({ state: (await s.d()).state, reviewers: await s.count('dispatch_review') }, { state: 'ESCALATED', reviewers: 2 }, 'still escalated, no new reviewer');
+
+      // A bounded fix: one more fix attempt, at the head, once.
+      const v2 = (await s.d()).version;
+      const fix = () => s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'apply_recommendation', expectedVersion: v2, decision: { id: `request_fix:H2:v${v2}`, headSha: 'H2' } });
+      applied(await fix(), 'CHANGES_REQUESTED', 'the bounded fix');
+      notApplied(await fix(), 'duplicate', 'idempotency_key_seen', 'the same fix decision again');
+      eq(await s.count('dispatch_fix'), 1, 'one fix dispatched');
+      const owed = (await host.effects(s.deliveryId)).find((e) => e.kind === 'dispatch_fix')!;
+      eq(pick(owed.payload as Record<string, unknown>, ['headSha', 'trigger', 'actor']), { headSha: 'H2', trigger: 'human', actor: 'human:u1' }, 'bound to the head, recorded as the person\'s');
+    },
+  },
+  {
+    name: 'r7 AC-46: a decision for a stale head, by an agent, or an approval without merge permission is refused and changes nothing',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 133);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a push the person has not seen');
+      const v = (await s.d()).version;
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'human:u1', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: 'force_re_review:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'a forced review decided on the older head');
+      notApplied(await s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'apply_recommendation', expectedVersion: v, decision: { id: 'request_fix:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'a fix decided on the older head');
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t9', headSha: 'H2', live: s.live('H2'), forced: true, decision: { id: 'force_re_review:H2', headSha: 'H2' } }), 'rejected', 'human_required', 'an agent deciding for a person');
+      notApplied(await s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'approve', expectedVersion: v, commitId: 'H2', hasMergePermission: false, decision: { id: 'approve_override:H2', headSha: 'H2' } }), 'rejected', 'no_merge_permission', 'an override without merge permission');
+      eq(pick(await s.d(), ['state', 'stateReason', 'version']), { state: 'ESCALATED', stateReason: 'review_exhausted', version: v }, 'nothing moved');
+      eq({ reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { reviewers: 1, fixes: 0 }, 'nothing dispatched');
     },
   },
 ];
