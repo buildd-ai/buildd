@@ -1,6 +1,7 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import TaskTimeRow from '@/components/TaskTimeRow';
-import { LiveRegion } from '@/components/LiveRegion';
+import { LiveData } from '@/components/LiveRegion';
+import { loadTaskLiveRegion } from '@/lib/task-live-region';
 import { isDeliverableArtifact } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
@@ -36,7 +37,7 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
-import { liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
+import { liveWorkerOf, liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -162,25 +163,7 @@ function missionExecutorOf(row: { executor?: string | null } | null | undefined)
   return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
 }
 
-type PageProps = {
-  params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string; respond?: string }>;
-};
-
-/**
- * Live events re-read this body through `loadRegion` (components/LiveRegion.tsx)
- * instead of a full page refresh; the body is the same function either way.
- */
-export default async function TaskDetailPage(props: PageProps) {
-  const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
-  async function loadRegion() {
-    'use server';
-    return TaskDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
-  }
-  return <LiveRegion load={loadRegion}>{await TaskDetailBody(props)}</LiveRegion>;
-}
-
-async function TaskDetailBody({
+export default async function TaskDetailPage({
   params,
   searchParams,
 }: {
@@ -1443,9 +1426,19 @@ async function TaskDetailBody({
     />
   ) : null;
 
+  // What a live event re-reads: the shown worker and the task's status, from
+  // the task's own rows. The page's other loaders do not run (lib/task-live-region.ts).
+  const renderedRegion = { taskId: task.id, taskStatus: task.status, workerId: activeWorker?.id ?? null, hadQuestion: !!activeWorker?.waitingFor };
+  async function loadRegion() {
+    'use server';
+    const viewer = await getCurrentUser();
+    return viewer ? loadTaskLiveRegion(viewer.id, renderedRegion) : null;
+  }
+
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
     <DiagnosticsAudienceProvider visible={diagnosticsVisible}>
+    <LiveData initial={{ taskStatus: task.status, worker: activeWorker ? liveWorkerOf(activeWorker) : null }} load={loadRegion}>
     <div className="p-4 md:p-8 overflow-x-hidden overflow-y-auto h-full">
       <div className="max-w-[1384px] w-full">
         {/* Auto-refresh when worker claims this task or deps resolve */}
@@ -2132,6 +2125,7 @@ async function TaskDetailBody({
         </div>{/* end grid */}
       </div>
     </div>
+    </LiveData>
     </DiagnosticsAudienceProvider>
     </DisplayTimezoneProvider>
   );

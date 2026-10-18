@@ -136,8 +136,11 @@ type PageProps = {
 };
 
 /**
- * Live events re-read this body through `loadRegion` (components/LiveRegion.tsx)
- * instead of a full page refresh; the body is the same function either way.
+ * Live events re-render this body through `loadRegion` (components/LiveRegion.tsx)
+ * instead of a router refresh. The body is the same function either way, so what
+ * a live event skips is the layout, not any of the mission's own reads: the board
+ * rows and header are derived from the whole mission read (gates, deliveries,
+ * release and visual state), and have no smaller source to render from.
  */
 export default async function MissionDetailPage(props: PageProps) {
   const [{ id }, search] = await Promise.all([props.params, props.searchParams]);

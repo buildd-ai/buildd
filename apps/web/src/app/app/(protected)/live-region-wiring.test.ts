@@ -16,13 +16,18 @@ describe('live regions', () => {
     expect(auto).toContain('requestPageRefresh(target)');
   });
 
-  for (const [name, rel] of [['mission', './missions/[id]/page.tsx'], ['task', './tasks/[id]/page.tsx']] as const) {
-    it(`the ${name} page wraps its body in a LiveRegion backed by a server action`, async () => {
-      const page = await read(rel);
-      expect(page).toMatch(/async function loadRegion\(\)\s*\{\s*'use server';/);
-      expect(page).toContain('<LiveRegion load={loadRegion}>');
-    });
-  }
+  it('the mission page wraps its body in a LiveRegion backed by a server action', async () => {
+    const page = await read('./missions/[id]/page.tsx');
+    expect(page).toMatch(/async function loadRegion\(\)\s*\{\s*'use server';/);
+    expect(page).toContain('<LiveRegion load={loadRegion}>');
+  });
+
+  it('the task page re-reads only its worker and status through LiveData', async () => {
+    const page = await read('./tasks/[id]/page.tsx');
+    expect(page).toMatch(/async function loadRegion\(\)\s*\{\s*'use server';[\s\S]*?loadTaskLiveRegion\(/);
+    expect(page).toContain('<LiveData initial=');
+    expect(page).not.toContain('TaskDetailBody');
+  });
 
   it('the mission and task subscribers refresh the region, not the router', async () => {
     const files = await Promise.all([read('./missions/[id]/MissionAutoRefresh.tsx'), read('./tasks/[id]/TaskAutoRefresh.tsx'), read('./tasks/[id]/RealTimeWorkerView.tsx')]);
