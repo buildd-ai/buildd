@@ -8,7 +8,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
+import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp, parseRunnerLoginUse, pickLoginBackend } from '@buildd/shared';
+import { claudeDefaultTaskIds } from './login-mode-gate';
 import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
@@ -882,8 +883,8 @@ export async function POST(req: NextRequest) {
   // (every flip below is in-memory). Stamped on the claim's context write as
   // BACKEND_ROUTING_KEY so explain / get_task can say why the backend changed.
   const backendRouting = new Map<string, ClaimBackendRouting>();
-  const noteRouting = (task: { id: string }, from: AgentBackend, backend: AgentBackend, reason: ClaimRoutingReason) => {
-    backendRouting.set(task.id, { backend, from, reason, at: now.toISOString() });
+  const noteRouting = (task: { id: string }, from: AgentBackend, backend: AgentBackend, reason: ClaimRoutingReason, mode?: string) => {
+    backendRouting.set(task.id, { backend, from, reason, at: now.toISOString(), ...(mode ? { mode } : {}) });
   };
 
   // Apply the team toggle's SAFE direction up front: if a task's backend is
@@ -919,6 +920,16 @@ export async function POST(req: NextRequest) {
 
   const runnerHasCodexBackend = capabilities.includes('backend:codex');
   const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
+  // The runner's login mode (spec 34a48877 R-14 to R-19): how its own logins
+  // share its slots. Null for an older runner, which keeps today's behaviour
+  // exactly (Claude, with Codex only as failover, one per workspace).
+  const loginUse = parseRunnerLoginUse((body as { loginUse?: unknown }).loginUse);
+  // R-17: a runner running Codex on its own machine login is limited by its
+  // own share, not by the one-Codex-per-workspace cap. A delivered credential
+  // keeps the cap.
+  const ownCodexLogin = !!loginUse && runnerHasCodexBackend && runnerHasLocalCodexAuth && !cloudExecutor;
+  // This runner's agents per backend: what it sent, plus what this claim starts.
+  const loginRunning = { claude: loginUse?.running.claude ?? 0, codex: loginUse?.running.codex ?? 0 };
   // A team's agent model endpoint can power Codex too (OpenAI-compatible
   // kinds only), but only for a runner that will actually apply it — one that
   // declares AGENT_ENDPOINT_RUNNER_FEATURE, same as the Claude path.
@@ -1189,6 +1200,16 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Candidates a runner's login mode must leave on Claude (spec 34a48877 R-16).
+  // Only read when the mode can move work to Codex at all.
+  const loginTiedIds = loginUse && loginUse.mode !== 'claude-first'
+    ? await claudeDefaultTaskIds(filteredTasks as any[]).catch((err) => {
+      // Unknown defaults: move nothing (today's behaviour), never guess.
+      console.warn('[claim] login mode default lookup failed:', err);
+      return new Set(filteredTasks.map(t => t.id));
+    })
+    : new Set<string>();
+
   // Claim tasks and create workers with optimistic locking to prevent double-assignment.
   // Note: neon-http driver does not support interactive transactions (where intermediate
   // results inform subsequent queries). Instead, we use atomic UPDATE...WHERE status='pending'
@@ -1358,13 +1379,13 @@ export async function POST(req: NextRequest) {
   // Why the last tryFlipToCodex returned false: only `no_credential` is a missing key.
   let codexFlipFailure: 'paused' | 'slot_taken' | 'no_credential' | undefined;
   const tryFlipToCodex = async (task: any, teamId: string | undefined, wsId: string | undefined, reason: ClaimRoutingReason): Promise<boolean> => {
-    const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
+    const codexFree = !!wsId && (ownCodexLogin || (!codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId)));
     codexFlipFailure = undefined;
     if (teamId && (await teamPauses(teamId)).has('codex')) { codexFlipFailure = 'paused'; return false; }
     if (!codexFree) { codexFlipFailure = 'slot_taken'; return false; }
     codexFlipFailure = 'no_credential';
     if (wsId && teamId && codexFree && await codexAuthReachesRunner({ teamId, workspaceId: wsId })) {
-      noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason);
+      noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason, reason === 'runner_login_mode' ? loginUse?.mode : undefined);
       task.backend = 'codex';
       codexFlippedWorkspaces.add(wsId);
       return true;
@@ -2318,6 +2339,7 @@ export async function POST(req: NextRequest) {
     // below), so two originally-Codex tasks for the same workspace in one
     // poll don't both get claimed.
     if (
+      !ownCodexLogin &&
       taskOriginallyCodex &&
       isCodexTask && // still resolved to Codex — the toggle/wall reroutes above may have moved it to Claude
       (codexBusyWorkspaces.has(task.workspaceId) || codexFlippedWorkspaces.has(task.workspaceId))
@@ -2348,6 +2370,21 @@ export async function POST(req: NextRequest) {
           ...(backendPinned ? { pinned: true } : {}),
         });
         continue;
+      }
+    }
+
+    // The runner's login mode picks the backend for work nothing ties to one
+    // (spec 34a48877 R-15, R-16): never a pinned task, never one whose mission,
+    // role or workspace names a backend, never tenant work. Here the task is on
+    // Claude only when Claude can take it (a walled seat deferred or failed it
+    // over above), so the choice is whether Codex takes it instead.
+    if (
+      loginUse && loginUse.mode !== 'claude-first' && !backendPinned && !isTenantTask
+      && (task as any).backend === 'claude' && codexEnabledForTeam && !loginTiedIds.has(task.id)
+      && pickLoginBackend({ mode: loginUse.mode, slots: loginUse.slots, running: loginRunning, claudeUsable: true, codexUsable: true }) === 'codex'
+    ) {
+      if (await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'runner_login_mode')) {
+        console.log(`[claim] Login mode: task ${task.id} → Codex (runner ${loginUse.mode}, ${loginRunning.codex} on Codex, ${loginRunning.claude} on Claude)`);
       }
     }
 
@@ -3022,6 +3059,8 @@ export async function POST(req: NextRequest) {
     if (isCodexTask) {
       codexBusyWorkspaces.add(task.workspaceId);
     }
+    // Count it toward this runner's per-backend split for the rest of the batch.
+    if (loginUse) loginRunning[(task as any).backend === 'codex' ? 'codex' : 'claude']++;
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.

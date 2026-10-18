@@ -216,7 +216,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // only (the runner answers from memory), so a finished run re-reads it: a
   // login that just failed shows as expired in the header.
   const configEvent = (body: any): TopEvent => ({
-    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems,
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems, loginMode: body.loginMode,
   });
   const refreshConfig = async () => {
     try {
@@ -316,6 +316,9 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         // A lower that left extras running keeps its own line: it offers p (R-45).
         if (result.status >= 200 && result.status < 300 && !effect.extras && state.slotOffer?.slots === effect.slots) { queueChanged(); return; }
         if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know slots yet (update it)' } };
+      } else if (effect.type === 'logins') {
+        result = await client.post('/api/logins', { mode: effect.mode });
+        if (result.status === 404) result = { status: 404, body: { error: 'the runner running now does not know login modes yet (update it)' } };
       } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
