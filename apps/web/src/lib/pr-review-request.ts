@@ -36,7 +36,9 @@ import {
   type PrReviewWaitFor,
 } from './pr-review-status';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import type { DeliveryView } from '@/lib/workflow/projections';
 
 // ── DB reads ──────────────────────────────────────────────────────────────────
 
@@ -330,6 +332,8 @@ export async function resolveOrAdoptPrOwner(params: {
   if (!adoptedTask?.id) {
     throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (task insert failed)`);
   }
+  // A new task in the workspace's lists (spec 3ef37387 R-20).
+  noteWorkChanged({ taskIds: [adoptedTask.id] });
 
   const adoptedWorker = await insertPrOwnerWorker({
     workspaceId,
@@ -394,11 +398,24 @@ export async function listWorkspaceRoles(
  * its reviewer task is then only the round's own, for the reviewer's prose.
  * With no delivery the newest reviewer task by PR number is the legacy source.
  */
-async function loadReviewStatusInput(workspaceId: string, prNumber: number) {
+/**
+ * A delivery view the caller is already reading (with findings) for one task:
+ * the task page reads its own task's. Used when that task owns the PR, so
+ * the review status costs no second read of it; a failed read falls back.
+ */
+export interface KnownDelivery {
+  taskId: string;
+  view: Promise<DeliveryView | null>;
+}
+
+async function loadReviewStatusInput(workspaceId: string, prNumber: number, known?: KnownDelivery) {
   const worker = (await findPrOwningWorker(workspaceId, prNumber)) ?? null;
-  const view = worker?.taskId
-    ? (await getDeliveryViewsForTasks([worker.taskId], undefined, undefined, { withFindings: true })).get(worker.taskId)
-    : undefined;
+  const readView = async (taskId: string) =>
+    (await getDeliveryViewsForTasks([taskId], undefined, undefined, { withFindings: true })).get(taskId);
+  const view = !worker?.taskId ? undefined
+    : known && known.taskId === worker.taskId
+      ? await known.view.then((v) => v ?? undefined, () => readView(worker.taskId!))
+      : await readView(worker.taskId);
   const delivery = view && view.prNumber === prNumber ? view : null;
   const roundTaskId = delivery
     ? [...delivery.rounds].reverse().find((r) => r.status !== 'superseded' && r.reviewerTaskId)?.reviewerTaskId ?? null
@@ -416,8 +433,9 @@ export async function readPrReviewStatus(params: {
   prNumber: number;
   autoMergeExpected?: boolean;
   waitFor?: PrReviewWaitFor;
+  knownDelivery?: KnownDelivery;
 }): Promise<PrReviewStatus> {
-  const { worker, delivery, reviewTask, reviewerWorker } = await loadReviewStatusInput(params.workspaceId, params.prNumber);
+  const { worker, delivery, reviewTask, reviewerWorker } = await loadReviewStatusInput(params.workspaceId, params.prNumber, params.knownDelivery);
   return derivePrReviewStatus({
     reviewTask,
     worker,

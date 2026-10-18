@@ -39,7 +39,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
-  resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
+  resolveIncidentSql, touchIncidentSql, trunkExplains, trunkRecoveredOnRuns, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
@@ -1748,33 +1748,54 @@ async function joinRepairingDeliveries(p: {
 
 export interface TrunkSweepSummary { checked: number; resolved: number; recovered: number; stillRed: number; errors: number }
 
+/** Pages of unresolved incidents one sweep reads at most (see `reconcileTrunkIncidents`). */
+export const TRUNK_SWEEP_PAGES = 4;
+
 /**
  * Re-read the base head of every unresolved trunk incident. Once the base no
- * longer fails the incident's checks (and every run on it completed), the
+ * longer fails the incident's checks (and they finished on it), the
  * incident resolves and each delivery blocked on it re-enters its resume state
  * (T26), with a mechanical refresh when its head predates the fix. A
  * delivery left blocked on an already-resolved incident (an interrupted pass)
  * is recovered too. Runs on the pr-reconcile floor tick.
+ *
+ * Least recently rechecked first, and every incident left unresolved goes to
+ * the back. An incident whose workspace has no repo costs no GitHub read, so
+ * the pass reads further pages (at most `TRUNK_SWEEP_PAGES`) until `limit`
+ * incidents had their base read: a pile of unreadable ones never keeps a
+ * newer incident on a green base from resolving.
  */
 export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): Promise<TrunkSweepSummary> {
   const exec = deps.exec ?? seamExec;
   const s: TrunkSweepSummary = { checked: 0, resolved: 0, recovered: 0, stillRed: 0, errors: 0 };
-  const incidents = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
-  for (const inc of incidents) {
-    s.checked++;
-    try {
-      const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
-      if (!repo) continue;
-      const reader = readerFor(deps, repo.installationId);
-      const head = reader.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
-      const runs = head && reader.checkRuns ? await reader.checkRuns(inc.repo_full_name, head) : null;
-      // Unknown or still running is never read as recovered.
-      if (!runs || !runs.complete || !trunkRecovered(inc.signature, runs.failing)) { s.stillRed++; continue; }
-      const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
-      if (won) s.resolved++;
-    } catch (err) {
-      s.errors++;
-      console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+  const seen = new Set<string>();
+  let read = 0;
+  for (let page = 0; page < TRUNK_SWEEP_PAGES && read < limit; page++) {
+    const rows = ((await exec(unresolvedIncidentsSql(limit))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string; base_ref: string; signature: string }>;
+    const incidents = rows.filter((r) => !seen.has(String(r.id)));
+    if (incidents.length === 0) break;
+    for (const inc of incidents) {
+      seen.add(String(inc.id));
+      s.checked++;
+      try {
+        const repo = await (deps.repoFor ?? workspaceRepo)(String(inc.workspace_id));
+        const reader = repo ? readerFor(deps, repo.installationId) : null;
+        if (reader) read++;
+        const head = reader?.branchHead ? await reader.branchHead(inc.repo_full_name, inc.base_ref) : null;
+        const runs = head && reader?.checkRuns ? await reader.checkRuns(inc.repo_full_name, head, { tests: true }) : null;
+        // Unknown, or the incident's checks still running, is never read as recovered.
+        if (trunkRecoveredOnRuns(inc.signature, runs)) {
+          const won = ((await exec(resolveIncidentSql(String(inc.id)))).rows ?? []).length > 0;
+          if (won) s.resolved++;
+          continue;
+        }
+        s.stillRed++;
+      } catch (err) {
+        s.errors++;
+        console.error(`[workflow] trunk incident ${inc.id} recheck failed:`, err);
+      }
+      // Still unresolved (red, unreadable, no repo, or an error): to the back of the queue.
+      await exec(touchIncidentSql(String(inc.id))).catch(() => undefined);
     }
   }
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;

@@ -9,7 +9,7 @@ import VisualReviewTray from '@/components/visual-review/VisualReviewTray';
 import { parseQaMeta } from '@/lib/mission-visual-review';
 import { buildVisualReviewModel } from '@/lib/visual-review-model';
 import AuditRoundTrays from './AuditRoundTrays';
-import type { TaskArtifactItem } from './task-artifact-items';
+import { fetchArtifactBody, type TaskArtifactItem } from './task-artifact-items';
 
 type ArtifactItem = TaskArtifactItem;
 
@@ -55,6 +55,20 @@ export default function TaskArtifactsSection({
   // Only run on mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The page sends a long body's first part only; the viewer loads the rest on open.
+  useEffect(() => {
+    if (!viewerOpen) return;
+    const pending = items.filter(a => a.truncated);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    void Promise.all(pending.map(async a => [a.id, await fetchArtifactBody(a.id)] as const)).then((bodies) => {
+      if (cancelled) return;
+      const byId = new Map(bodies.filter(([, body]) => body != null));
+      setItems(prev => prev.map(a => (byId.has(a.id) ? { ...a, content: byId.get(a.id)!, truncated: false } : a)));
+    });
+    return () => { cancelled = true; };
+  }, [viewerOpen, items]);
 
   // Audit screenshots (a valid metadata.qa) show as Trays; everything else
   // keeps its card. With no mission model (a task outside a mission), the

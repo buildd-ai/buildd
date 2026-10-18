@@ -20,13 +20,13 @@
  */
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, type KernelPorts } from '../ports';
-import { signatureChecks, trunkRecoveredFrom } from '../trunk-signature';
+import { signatureCheckNames, signatureChecks, trunkRecoveredFrom } from '../trunk-signature';
 import { need } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
 export function trunkFixTitle(baseRef: string, signature: string): string {
-  const checks = signatureChecks(signature);
+  const checks = signatureCheckNames(signature);
   return `fix(ci): ${baseRef} is red — ${checks.length ? checks.slice(0, 3).join(', ') : 'CI'}${checks.length > 3 ? ` +${checks.length - 3}` : ''}`;
 }
 
@@ -72,8 +72,8 @@ export function trunkHandlers(ports: KernelPorts): EffectHandlers {
     if (!reader) throw new Error(NO_INSTALLATION);
     const baseHead = reader.branchHead ? await reader.branchHead(inc.repoFullName, inc.baseRef) : null;
     // §10.5 at dispatch: a base that is already green owes no fix; the recovery sweep resolves the incident.
-    const runs = baseHead && reader.checkRuns ? await reader.checkRuns(inc.repoFullName, baseHead) : null;
-    if (runs?.complete && trunkRecoveredFrom(inc.signature, trunk.signatureOf(runs.failing))) return { outcome: 'skipped:trunk_green' };
+    const runs = baseHead && reader.checkRuns ? await reader.checkRuns(inc.repoFullName, baseHead, { tests: true }) : null;
+    if (runs?.complete && trunkRecoveredFrom(inc.signature, trunk.signatureOf(runs.tests ?? runs.failing))) return { outcome: 'skipped:trunk_green' };
 
     const anchor = await trunk.fixAnchor(inc.id);
     const taskId = anchor?.taskId ?? inc.id;

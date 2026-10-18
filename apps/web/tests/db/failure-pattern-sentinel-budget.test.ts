@@ -13,7 +13,7 @@
  * full sweep (after a first sweep has opened the incidents and advanced the
  * watermarks), the way the 30-minute backstop runs.
  */
-import { describe, it, expect, beforeAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q } from './harness';
 import { measureLoader, reportBudget, seedLargeTeam, seedScale, type SeededTeam } from './budget-harness';
@@ -129,6 +129,14 @@ function sweepDeps() {
   // No page and no model: the sentinel's database cost is what is measured.
   return { ...productionSweepDeps(), decide: null, send: async () => false };
 }
+
+// The sweep opens root causes naming the kinds' tasks on the shared team. Left
+// behind, they make every later file's service-status read take its second
+// round (health-budget's Overview counted two extra queries).
+afterAll(async () => {
+  await q(sql`DELETE FROM root_causes WHERE team_id = ${team.teamId}::uuid`);
+  await q(sql`DELETE FROM workspaces WHERE name LIKE 'fps-kind-%'`);
+}, 120_000);
 
 describe('Failure pattern sentinel: the activity read misses nothing a rule finds (R-25)', () => {
   it('selects every workspace with a fact or an open incident, and every workspace it leaves out has nothing to find', async () => {

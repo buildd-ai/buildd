@@ -1379,6 +1379,12 @@ export interface WorkerEnvironment {
    */
   hold?: RunnerHold | null;
   /**
+   * How this runner's own logins share its slots (./runner-login-mode, spec
+   * 34a48877 R-14): balanced, claude-first or codex-first. Absent on runner
+   * builds that predate it, which behave as claude-first.
+   */
+  loginMode?: import('./runner-login-mode').LoginMode;
+  /**
    * The confinement this runner can apply, per backend and mode, from this
    * process's own probe (./runner-isolation). Absent on runner builds that
    * predate it: readers then fall back to the legacy `sandboxEnabled` boolean,
