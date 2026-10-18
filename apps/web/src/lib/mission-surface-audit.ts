@@ -16,14 +16,15 @@ import {
   touchesUiSurface,
   type SurfaceAuditTrigger,
 } from '@buildd/core/surface-audit';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, visualReviewPolicyOf } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
-import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, type SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
 import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
 import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
+import { dependencyFailureOf } from '@buildd/core/dependency-failure';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -224,6 +225,15 @@ export interface RequestSurfaceAuditOptions {
   /** Why the scheduler filed it, recorded for the task page. */
   reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
   attempt?: number;
+  /**
+   * The mission's tasks in the gate's shape and a repo-link memo, when the
+   * caller (the scheduler's sweep) already holds them: the plan then reads
+   * neither again. Absent, both are read here.
+   */
+  gateTasks?: SurfaceAuditGateTask[];
+  gateRepos?: Map<string, Promise<{ installationId: number; fullName: string } | null>>;
+  /** Whether a person waived the audit (`loadSurfaceAuditWaiver` found one), when the caller already read it. */
+  gateWaived?: boolean;
 }
 
 export type RequestSurfaceAuditResult =
@@ -236,10 +246,15 @@ const finishedWithoutLooking = (status: string) => status === 'failed' || status
  * An audit that still answers for the mission: open or done, or failed but
  * blocked by an incident's repair (`context.incidentRecovery`,
  * failure-incident-recovery §16.4), which re-queues that same audit when its
- * capture works again. Only a failed audit nothing is recovering is replaced.
+ * capture works again, or failed only because build work it depends on failed
+ * (`dependencyFailureOf`): it never ran, and goes back to the queue when that
+ * work completes (`reopenChecksFailedBy`, spec 072de598 I-14). A replacement
+ * would skip the failed work and check a branch without it. Only a failed
+ * audit nothing is recovering is replaced.
  */
-export function isLiveAudit(a: { status: string; context?: unknown }): boolean {
-  return !finishedWithoutLooking(a.status) || (a.status === 'failed' && readIncidentRecoveryRef(a.context) !== null);
+export function isLiveAudit(a: { status: string; context?: unknown; result?: unknown }): boolean {
+  if (!finishedWithoutLooking(a.status)) return true;
+  return a.status === 'failed' && (readIncidentRecoveryRef(a.context) !== null || dependencyFailureOf(a.result) !== null);
 }
 
 type PlanMission = { id: string; title: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; executor: string | null };
@@ -278,7 +293,7 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
 
   const audits = await db.query.tasks.findMany({
     where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
-    columns: { id: true, status: true, context: true },
+    columns: { id: true, status: true, context: true, result: true },
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   // A finished audit is the answer only for the commit it looked at. Asked for a
@@ -289,13 +304,18 @@ export async function planMissionSurfaceAudit(missionId: string, opts: RequestSu
 
   const [targetWorkspace, missionTasks] = await Promise.all([
     db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) }),
-    loadSurfaceAuditGateTasks(missionId),
+    opts.gateTasks ?? loadSurfaceAuditGateTasks(missionId),
   ]);
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
     t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
-  const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
+  const gate = await evaluateSurfaceAuditGate(mission, missionTasks, {
+    // The workspace row is in hand: its policy needs no second read.
+    workspacePolicy: visualReviewPolicyOf(targetWorkspace.gitConfig),
+    ...(opts.gateRepos ? { repos: opts.gateRepos } : {}),
+    ...(opts.gateWaived !== undefined ? { waived: opts.gateWaived } : {}),
+  }).catch(() => null);
   const scopedPaths = Array.from(new Set([
     ...(gate?.required ? gate.uiPaths : []),
     ...builders.flatMap(t => (Array.isArray(t.pathManifest) ? t.pathManifest : [])).filter(p => p !== '**'),

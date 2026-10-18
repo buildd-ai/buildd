@@ -33,6 +33,9 @@ const mockHandleLearnAction = mock(async () => ({ content: [{ type: 'text', text
 const mockHandleBuilddAction = mock(async () => ({ content: [{ type: 'text', text: '{"dispatched":true}' }] }));
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 
+// Every self-call goes over (mocked) HTTP here; the in-process read path is
+// lib/mcp-local-reads.test.ts.
+mock.module('@/lib/mcp-local-reads', () => ({ runLocalRead: async () => null }));
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));

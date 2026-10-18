@@ -105,6 +105,8 @@ export const VISUAL_REVIEW_TASK_SELECTION = {
   errorType: sql<string | null>`${tasks.result} ->> 'errorType'`.as('error_type'),
   // An audit's `why` (cancelled, failed): the summary only, never the whole result.
   resultSummary: sql<string | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),
+  // A failed audit's dependency failure (`dependencyFailureOf`): the three keys it reads, never the whole result.
+  dependencyFailure: sql<Record<string, unknown> | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} and ${tasks.status} = 'failed' then jsonb_build_object('errorType', ${tasks.result} -> 'errorType', 'blockedBy', ${tasks.result} -> 'blockedBy', 'error', left(${tasks.result} ->> 'error', 500)) else null end`.as('dependency_failure'),
 };
 
 export function visualReviewTasksQuery(q: Selectable, missionId: string) {
@@ -168,6 +170,92 @@ export function roundCapNoteQuery(q: Selectable, missionId: string, title: strin
     .from(missionNotes)
     .where(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, title), eq(missionNotes.status, 'open')))
     .limit(1);
+}
+
+// ── The same reads for a batch of missions (the scheduler's sweep) ─────────
+//
+// One query each for many missions, each row carrying its mission, so the
+// caller groups them and builds every mission's model exactly as
+// `loadVisualReview` does for one (spec 3ef37387 R-25). The shot scoping rule
+// is `missionVisualShotsWhere`'s, with the auditor's task tied to the shot's
+// OWN mission, so a batch can never lend one mission's auditor to another's shots.
+
+const idList = (ids: readonly string[]) => sql.join(ids.map(id => sql`${id}`), sql`, `);
+
+export function visualShotsForMissionsQuery(q: Selectable, missionIds: readonly string[]) {
+  const ranked = q
+    .select({
+      ...VISUAL_SHOT_SELECTION,
+      missionId: artifacts.missionId,
+      rank: sql<number>`row_number() over (partition by ${artifacts.missionId} order by ${artifacts.createdAt} desc)`.as('shot_rank'),
+    })
+    .from(artifacts)
+    .leftJoin(workers, eq(workers.id, artifacts.workerId))
+    .where(and(
+      inArray(artifacts.missionId, [...missionIds]),
+      eq(artifacts.type, ArtifactType.SCREENSHOT),
+      sql`jsonb_typeof(${artifacts.metadata} -> 'qa') = 'object'`,
+      sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${artifacts.missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+    ))
+    .as('ranked_shots');
+  return q
+    .select({
+      id: ranked.id, workerId: ranked.workerId, title: ranked.title, type: ranked.type,
+      metadata: ranked.metadata, createdAt: ranked.createdAt, taskId: ranked.taskId, missionId: ranked.missionId,
+    })
+    .from(ranked)
+    .where(sql`${ranked.rank} <= ${MISSION_VISUAL_SHOTS_LIMIT}`)
+    .orderBy(desc(ranked.createdAt));
+}
+
+export function visualReviewTasksForMissionsQuery(q: Selectable, missionIds: readonly string[]) {
+  return q.select({ ...VISUAL_REVIEW_TASK_SELECTION, missionId: tasks.missionId }).from(tasks).where(inArray(tasks.missionId, [...missionIds]));
+}
+
+export function visualReviewWorkersForMissionsQuery(q: Selectable, missionIds: readonly string[]) {
+  return q
+    .select({
+      id: workers.id,
+      taskId: workers.taskId,
+      status: workers.status,
+      startedAt: workers.startedAt,
+      waitingFor: workers.waitingFor,
+      prUrl: workers.prUrl,
+      prNumber: workers.prNumber,
+      mergedAt: workers.mergedAt,
+      prBaseRef: workers.prBaseRef,
+      error: workers.error,
+    })
+    .from(workers)
+    .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" in (${idList(missionIds)}) and ("t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
+}
+
+export function missionCaptureRefsQuery(q: Selectable, missionIds: readonly string[]) {
+  return q
+    .select({
+      missionId: missions.id,
+      workingBranch: missions.workingBranch,
+      integrationBranchEnabled: missions.integrationBranchEnabled,
+      gitConfig: workspaces.gitConfig,
+    })
+    .from(missions)
+    .leftJoin(workspaces, eq(workspaces.id, missions.workspaceId))
+    .where(inArray(missions.id, [...missionIds]));
+}
+
+export function visualShotReviewsForMissionsQuery(q: Selectable, missionIds: readonly string[]) {
+  return q
+    .select()
+    .from(visualShotReviews)
+    .where(inArray(visualShotReviews.missionId, [...missionIds]))
+    .orderBy(asc(visualShotReviews.createdAt));
+}
+
+export function roundCapNotesQuery(q: Selectable, missionIds: readonly string[], title: string) {
+  return q
+    .select({ missionId: missionNotes.missionId })
+    .from(missionNotes)
+    .where(and(inArray(missionNotes.missionId, [...missionIds]), eq(missionNotes.title, title), eq(missionNotes.status, 'open')));
 }
 
 // ── A workspace's missions with screens awaiting a human ────────────────────

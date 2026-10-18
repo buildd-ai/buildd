@@ -8,6 +8,7 @@
  * `buildVisualReviewModel`, so a fixture is always a shape the real model can
  * produce.
  */
+import { dependencyFailedResult } from '@buildd/core/dependency-failure';
 import type { HumanShotReview, VisualReviewModel, VisualReviewNeedsYouReason, VisualReviewPhase } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, BOOT_FAILURE_QUESTION_PREFIX } from './mission-visual-review';
 import {
@@ -186,6 +187,12 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
       return { ...base, shots: [], tasks: [buildTask('completed')] };
     case 'waiting_deps':
       return { ...base, shots: [], tasks: [buildTask('in_progress'), auditTask('fixture-audit-1', 1, 'pending', null)] };
+    case 'waiting_on_failed_work':
+      // The build task failed, so the cascade failed the audit before any worker claimed it.
+      return {
+        ...base, shots: [],
+        tasks: [buildTask('failed', 20), auditTask('fixture-audit-1', 1, 'failed', null, { result: dependencyFailedResult({ id: 'fixture-build', title: 'Build the fixture screens' }) })],
+      };
     case 'queued':
       return {
         ...base, shots: [],

@@ -141,3 +141,15 @@ describe('automated re-completion after a reopen', () => {
     expect(await completedAt(id)).toBe(new Date(NOW).toISOString());
   });
 });
+
+describe('the delivered read (spec 3ef37387 R-10)', () => {
+  test('scans the completion notes once, grouped, not once per row and twice per statement', async () => {
+    const { deliveredMissionsQuery } = await import('../../src/lib/missions-recent');
+    const rendered = deliveredMissionsQuery([crypto.randomUUID()], ago(7)).toSQL().sql;
+    expect(rendered.match(/from "mission_notes"/gi)?.length).toBe(1);
+    expect(rendered.match(/ like /gi)?.length).toBe(1);
+    expect(rendered).toMatch(/group by/i);
+    // Recent deliveries are capped; open missions never are (the open read has no limit).
+    expect(deliveredMissionsQuery([crypto.randomUUID()], ago(7)).toSQL().params).toContain(300);
+  });
+});

@@ -18,7 +18,7 @@ import { missions, tasks, workers } from '@buildd/core/db/schema';
 import { sqlExtras, sqlWhere } from '@buildd/core/db/relational-sql';
 import { and, inArray } from 'drizzle-orm';
 import type { MissionStage } from '@buildd/shared';
-import { stageContextSql, stageWorkersPredicate } from './mission-stage-sql';
+import { stageContextSql, stageDependencyFailedSql, stageWorkersPredicate } from './mission-stage-sql';
 import { getOwnerDeliveryDisplays, getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { loadDependencyRows } from './dependency-rows';
 import { foreignDependencyIds } from './mission-helpers';
@@ -48,7 +48,7 @@ export async function loadMissionStages(missionIds: string[], workspaceIds: stri
         missionPhaseIndex: true, missionPhaseLabel: true, outputRequirement: true,
       },
       // Never the whole context: only the keys the stage reads (mission-stage-sql.ts).
-      extras: sqlExtras({ stageContext: stageContextSql }),
+      extras: sqlExtras({ stageContext: stageContextSql, stageDependencyFailed: stageDependencyFailedSql }),
     }),
   ]);
 

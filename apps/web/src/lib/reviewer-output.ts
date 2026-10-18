@@ -121,3 +121,34 @@ export function applyConfidenceGate(params: {
 
   return { verdict, overrideReason: null };
 }
+
+/**
+ * The commit the reviewer reported its checkout at (`checkoutSha`), trimmed and
+ * lowercased, or null when it reported none. Only an exact match of the head
+ * counts as evidence of it (`applyEvidenceGate`): a short SHA does not.
+ */
+export function reviewerEvidenceSha(output: unknown): string | null {
+  const raw = output && typeof output === 'object' ? (output as { checkoutSha?: unknown }).checkoutSha : undefined;
+  if (typeof raw !== 'string') return null;
+  const sha = raw.trim().toLowerCase();
+  return sha.length > 0 && sha.length <= 64 ? sha : null;
+}
+
+/**
+ * A verdict counts only when the reviewer read the head it was asked about. One
+ * whose evidence is another commit (its worktree sat at the base, say) or none is
+ * inconclusive: whatever it said, it never approves, and goes to a person.
+ */
+export function applyEvidenceGate(params: {
+  verdict: ReviewerTaskOutput['verdict'];
+  evidenceSha: string | null;
+  headSha: string;
+}): { verdict: ReviewerTaskOutput['verdict']; overrideReason: string | null } {
+  const head = params.headSha.trim().toLowerCase();
+  if (params.evidenceSha !== null && params.evidenceSha === head) return { verdict: params.verdict, overrideReason: null };
+  const read = params.evidenceSha ? `commit ${params.evidenceSha.slice(0, 7)}` : 'no reported checkout';
+  return {
+    verdict: 'escalate',
+    overrideReason: `inconclusive: the reviewer judged ${read}, not the head ${head.slice(0, 7)}`,
+  };
+}

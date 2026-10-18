@@ -8,6 +8,7 @@ import { emit } from '@/lib/core-emit';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
 import { invalidateAppChrome } from '@/lib/app-chrome';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 export async function GET(req: NextRequest) {
   const principal = await getRequestPrincipal(req);
@@ -131,6 +132,8 @@ export async function POST(req: NextRequest) {
         userId: user.id,
         role: 'owner',
       });
+    // Cached callers of this person re-read their memberships (lib/caller-cache.ts).
+    await clearCallerCache(callerDep.user(user.id));
 
     // The roles module seeds the default roles (fire-and-forget).
     await emit({ type: 'team.created', teamId: team.id });

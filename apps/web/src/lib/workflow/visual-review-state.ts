@@ -48,6 +48,8 @@ export interface VisualReviewStateInput {
     needsYouReason: 'question' | 'unsure' | 'round_cap' | null;
     captured: number;
     expected: number | null;
+    /** For `waiting_on_failed_work`: the failed build task the audit waits on. */
+    waitingOn?: { taskId: string; title: string | null } | null;
   } | null;
   /** The newest waiver a person recorded. */
   waiver: { reason: string; actorLabel: string | null; at: string } | null;
@@ -104,6 +106,12 @@ export interface MissionVisualReviewState {
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
   waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
   auditTaskId: string | null;
+  /**
+   * A queued audit that never ran because build work it depends on failed
+   * (spec 072de598 I-14): that task. Not a check failure, so `blocked` is
+   * absent and nothing here offers a retry; the recovery is on this task.
+   */
+  waitingOn?: { taskId: string; title: string | null };
   /** The claim loop's newest refusal reason for a queued audit (gate_events), when the loader read one. */
   holdReason?: string | null;
   branch: {
@@ -159,6 +167,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
   let blockedActor: VisualReviewNextActor | null = null;
   let staleEvidence = false;
   let passedOnEarlierCommit = false;
+  let waitingOn: MissionVisualReviewState['waitingOn'];
 
   const hasAudit = !!audit && !(review && review.phase === 'off');
   if (waiverActive) {
@@ -170,6 +179,10 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       status = 'blocked';
       blocked = { ...b, autoRetriesLeft: retries };
       blockedActor = b.causeOwner === 'workspace' || retries <= 0 ? 'owner' : 'system';
+    } else if (review.phase === 'waiting_on_failed_work') {
+      // Waits on the failed task, whose own recovery is the way on: no actor here.
+      status = 'queued';
+      waitingOn = review.waitingOn ?? undefined;
     } else if (review.phase === 'waiting_deps' || review.phase === 'queued') {
       status = 'queued';
       nextActor = 'system';
@@ -247,6 +260,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       ? { waiver: { ...input.waiver, supersededBy: waiverActive ? null : (audit?.id ?? null) } }
       : {}),
     auditTaskId: audit?.id ?? null,
+    ...(waitingOn ? { waitingOn } : {}),
     branch: {
       headSha: branch.headSha,
       base: branch.base,

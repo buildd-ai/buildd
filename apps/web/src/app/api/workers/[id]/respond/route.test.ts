@@ -157,6 +157,11 @@ const mockEnqueueWorkerMessage = mock(async (taskId: string, message: any) => {
   enqueuedMessages.push({ taskId, message });
   return true;
 });
+const teamCacheClears: Array<[string | null | undefined, string[]]> = [];
+mock.module('@/lib/team-cache', () => ({
+  clearTeamCache: async (teamId: string | null | undefined, ...kinds: string[]) => { teamCacheClears.push([teamId, kinds]); return true; },
+}));
+
 mock.module('@buildd/core/worker-messages', () => ({
   enqueueWorkerMessage: mockEnqueueWorkerMessage,
   clearWorkerMessages: mock(async () => true),
@@ -289,6 +294,20 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(res.status).toBe(401);
     const data = await res.json();
     expect(data.error).toContain('Unauthorized');
+  });
+
+  it('an answer clears the team\'s cached questions waiting; a refused one clears nothing', async () => {
+    teamCacheClears.length = 0;
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+    expect((await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams })).status).toBe(200);
+    expect(teamCacheClears).toEqual([['team-1', ['questions']]]);
+
+    teamCacheClears.length = 0;
+    expect((await POST(createMockRequest({}), { params: mockParams })).status).toBe(400);
+    expect(teamCacheClears).toEqual([]);
   });
 
   it('returns 404 when worker not found', async () => {
