@@ -81,6 +81,11 @@ export interface KernelOps {
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
+  /**
+   * The fast heal of one delivery (kernel-heal.ts): its floor pass, run where the kernel is hosted.
+   * What the web host's heal tick asks for instead of reconciling (and so applying T17 to T19) itself.
+   */
+  heal: { input: { deliveryId: string }; result: Awaited<ReturnType<Seam['reconcileKernelDeliveries']>> };
   /** A mission delivery epoch transition (§6): merged, ensure_writable, bind_pr, reconcile. */
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
@@ -102,6 +107,22 @@ export interface KernelOps {
   observe_conflict: { input: Parameters<Seam['observeConflict']>[0]; result: Awaited<ReturnType<Seam['observeConflict']>> };
   /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
   claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
+  /**
+   * T17 to T19: a PR closed, merged or reopened (the webhook, the reconcile and refresh sweeps, the
+   * dependency gate). The control plane reads the live PR. A failed read is an answer, not a throw:
+   * the caller's `pull` is recorded unapplied, the fast heal scheduled, and `observationFailed` says so.
+   */
+  observe_pr_state: { input: Parameters<Seam['observePrState']>[0]; result: PrStateObservation };
+  /** T3: the PR head moved (webhook `synchronize`). True = the kernel owns the PR; legacy must not act. */
+  observe_head: { input: Parameters<Seam['observeHead']>[0]; result: Awaited<ReturnType<Seam['observeHead']>> };
+  /** T29: the PR's base changed (webhook `edited` with `changes.base`). True = the kernel owns the PR. */
+  observe_base: { input: Parameters<Seam['observeBase']>[0]; result: Awaited<ReturnType<Seam['observeBase']>> };
+}
+
+/** `owned` false: not the kernel's PR. `observationFailed`: the kernel owns it but its live read failed (S4a). */
+export interface PrStateObservation {
+  owned: boolean;
+  observationFailed?: { deliveryId: string; reason: string };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -115,6 +136,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   abandon: (s, i) => s.abandonDelivery(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
+  heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
   attempt_ended: (s, { workspaceId, ...p }) => {
@@ -134,9 +156,23 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     if (task?.workspaceId !== workspaceId) throw new Error('claim_fix: input.workspaceId is not the task\'s workspace');
     return s.claimFix(task);
   },
+  observe_pr_state: async (s, i) => {
+    // A throw would reach the door as `command_failed`; the failed read is the answer itself.
+    try {
+      return { owned: await s.observePrState(i) };
+    } catch (err) {
+      if (err instanceof s.KernelObservationFailed) return { owned: true, observationFailed: { deliveryId: err.deliveryId, reason: err.reason } };
+      throw err;
+    }
+  },
+  observe_head: (s, i) => s.observeHead(i),
+  observe_base: (s, i) => s.observeBase(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
+
+/** `drain` and `heal`: buildd's own upkeep of one delivery, by id, with no workspace on the input and only a `system` principal. */
+const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drain' || op === 'heal';
 export const isKernelOp = (v: unknown): v is KernelOp => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RUN, v);
 
 /** The ops whose input names a GitHub App installation (`installationId`). */
@@ -144,6 +180,7 @@ type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOp
 // A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
 const INSTALLATION_OP: Record<InstallationOp, true> = {
   land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true, observe_conflict: true,
+  observe_pr_state: true, observe_head: true, observe_base: true,
 };
 /**
  * The control plane acts through the installation it resolves for the command's workspace and repo,
@@ -175,7 +212,7 @@ export async function deliveryAfter(op: KernelOp, input: unknown, result: unknow
     const d = (await loadView({ deliveryId })).delivery;
     return d ? { id: d.id, version: d.version } : null;
   };
-  if (op === 'drain' && typeof i.deliveryId === 'string') return byId(i.deliveryId);
+  if (isSystemDeliveryOp(op) && typeof i.deliveryId === 'string') return byId(i.deliveryId);
   if (op === 'open_delivery') {
     const id = (result as { deliveryId?: unknown } | null)?.deliveryId;
     if (typeof id === 'string') return byId(id);
@@ -242,7 +279,7 @@ export function commandProblem(body: unknown): string | null {
   if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account|grant (uuid id) | system, id }';
   const input = b.input as Record<string, unknown> | null;
   if (!input || typeof input !== 'object') return 'input must be an object';
-  if (b.op === 'drain') return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : 'drain needs input.deliveryId (uuid)';
+  if (isSystemDeliveryOp(b.op)) return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : `${b.op} needs input.deliveryId (uuid)`;
   if (typeof input.workspaceId !== 'string' || !UUID.test(input.workspaceId)) return 'input.workspaceId must be a uuid';
   if ('prNumber' in input && !(Number.isInteger(input.prNumber) && (input.prNumber as number) > 0)) return 'input.prNumber must be a positive integer';
   if (INSTALLATION_OPS.has(b.op) && !(typeof input.repoFullName === 'string' && REPO.test(input.repoFullName))) return 'input.repoFullName must be owner/name';
@@ -386,8 +423,8 @@ export async function applyCommandRequest(cmd: CommandRequest, deps: CommandServ
   if (host !== 'control-plane' || executionModeOf((deps.env ?? process.env).EXECUTION_MODE) !== 'own') {
     return refuse(409, 'not_host', 'This host does not apply kernel commands in the current mode; the web host runs them.', { host });
   }
-  const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
-  if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
+  const workspaceId = isSystemDeliveryOp(cmd.op) ? null : String((cmd.input as { workspaceId: string }).workspaceId);
+  if (isSystemDeliveryOp(cmd.op) && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', `${cmd.op} is a system operation`);
   // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
   // retry. Only an answered "no" is a 403. The workspace's installation is read alongside it, so it
   // adds no round trip of its own.

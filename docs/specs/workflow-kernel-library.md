@@ -343,7 +343,9 @@ the control plane, authenticated as the caller).
   - Operations are the seam's door functions, unchanged: `land`,
     `apply_recommendation`, `policy_merge`, `request_review`,
     `request_ci_retry`, `record_supersession`, `abandon`, `open_delivery`, and
-    `drain` (one delivery's due effects, `system` principals only), and
+    `drain` (one delivery's due effects, `system` principals only), `heal`
+    (one delivery's fast heal, the floor pass narrowed to it, `system`
+    principals only), and
     `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
     its PR, reconcile what is owed; re-checked against the mission's repo
     workspace), and `attempt_ended` (T4: an attempt's end as the worker
@@ -367,7 +369,11 @@ the control plane, authenticated as the caller).
     place of the seam's own reads), and `observe_conflict` (T12 from the
     conflict door: landing, the merge routes, auto-merge, the dead-zone sweep
     and the migration-collision dispatch, as a `system` principal; the live PR
-    is read on the control plane), each for the caller that reported it,
+    is read on the control plane), and `observe_pr_state` (T17 to T19: a PR
+    closed, merged or reopened, from the GitHub webhook, the reconcile and
+    refresh sweeps and the dependency gate), `observe_head` (T3, the
+    `synchronize` webhook) and `observe_base` (T29, a retarget's `edited`
+    webhook), each as a `system` principal, each for the caller that reported it,
     with the same skew rule; each names its workspace on the input, and the
     host acts only on a delivery of that workspace (a verdict for another
     workspace's delivery is refused, never read as a release to legacy). A
@@ -486,21 +492,29 @@ the control plane, authenticated as the caller).
   `control_plane_refused`, or 500 `command_failed` with the key; supersession
   and abandonment pass the same body through. `update_task` and `correct_task_result` issue no kernel
   command today: their writes to a delivery-owned task's columns are the
-  one-writer work of §1 (S4), not a command to move. Ingesting a fact
-  (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and
-  still runs where the fact arrives; on the web host that is the render
-  read-through and the sweeps, a §9 write site S3b and S4 remove.
-  What still applies a kernel command on the web host, and why each stays:
-  `observePrState` (T17 to T19, a PR closed, merged or reopened), `observeBase`
-  (T29) and `observeHead` (T3) are applied from the GitHub webhook and the
-  reconcile and refresh sweeps. A webhook is a fact about GitHub that must be
-  recorded the moment it arrives; when the kernel cannot read the live PR it
-  records the fact unapplied and the fast heal applies it, so none is lost to a
-  host that is down. They move to the control plane with S3b, when the webhook
-  receiver itself does. `recordLocalHead` is one provenance statement on an
-  attempt row, not a command. `cancelSkippedTask` writes a task row the claim
-  route owns. Every command a person or a worker actively requests is a door
-  op above.
+  one-writer work of §1 (S4), not a command to move.
+  GitHub's own PR facts are door ops too, so no kernel command is applied on
+  the web host in own mode (AC-9). `observe_pr_state` keeps its contract
+  across the boundary: when the kernel's live read of GitHub fails, the host
+  records the caller's own observation (the webhook's pull object, cut to the
+  fields the kernel reads) as an unapplied fact, schedules the fast heal, and
+  answers `observationFailed`, which the door throws as
+  `KernelObservationFailed`, so the caller neither takes a legacy path nor
+  reports success. A control plane that does not answer, refuses the
+  command or fails it is the same failed read: the web host reads ownership
+  itself and, for a kernel PR, records the observation unapplied (a fact, as
+  a render does, AC-3) and schedules the heal; only a PR the kernel does not
+  own goes to legacy. It is never parked: the unapplied fact and the sweeps
+  are its re-senders. The heal queue is read by the web host's per-minute
+  tick, but in own mode that tick only asks the control plane to heal each
+  due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
+  there. An unconfirmed heal is re-marked while the delivery is still owed,
+  and the floor backs it. GitHub sends `synchronize` and a retarget once, so
+  an unanswered `observe_head` or `observe_base` is parked (AC-35); unanswered,
+  refused or failed, ownership is read on the web host so legacy never acts
+  beside the kernel. `recordLocalHead` is one provenance
+  statement on an attempt row, not a command. `cancelSkippedTask` writes a
+  task row the claim route owns.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
@@ -618,7 +632,11 @@ the web host.
   process (asserted by a host tag on every transition row). The client path
   and the host tags: `apps/web/tests/db/kernel-command-host.test.ts`; the
   dashboard route submitting and applying nothing itself:
-  `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts`.
+  `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts`. Met for every
+  command the web host reaches: each seam command is a door op of the one
+  client, and the S3a write-site guard
+  (`packages/core/__tests__/workflow-write-sites.test.ts`) fails on any module
+  outside the kernel that imports one from the seam.
 - AC-10: GIVEN the Vercel project paused WHEN the drain schedule fires THEN
   due effects drain and the floor runs on the control plane
   (`kernel-command-host.test.ts`, `kernel-floor.test.ts`,
@@ -688,8 +706,9 @@ recorded as such, never as an approval.
   merge" or "Merge blocked: <reason>", clipped to GitHub's 140 characters; it
   never says "land" (internal names keep it). Its target URL is the host's
   page for the delivery's review and findings (the optional `Links` port;
-  buildd links the owner task on the app's public name), so GitHub's Details
-  link is somewhere a person can act. `get_pr` prints the same description on
+  buildd links the owner task's review findings, `/app/tasks/<id>#review-findings`
+  on the app's public name, which opens the Code review row to them), so
+  GitHub's Details link is somewhere a person can act. `get_pr` prints the same description on
   its own `Review approval:` line, apart from `CI:`. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
@@ -754,7 +773,10 @@ recorded as such, never as an approval.
   hold) leaves the approval standing (`APPROVED`); a lasting one (protected
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
   notified, with the rail named on `Buildd / Review approval` ("Merge blocked:
-  <rail>"). The status is written only when GitHub does not already show it
+  <rail>"). A rail's refusal reason is passed through verbatim, so the rails
+  word it in merge terms and never say "land" either; the mission delivery
+  pills read the shared terms catalog ("Merging", "Merged", "Closed without
+  merging") and the page's action says "Retry merge". The status is written only when GitHub does not already show it
   (state, description and, when the reader reports it, the link), and re-checked after writing so the
   newest version wins across drains. The mission-PR hold is a rail too, and
   lasting when only a person or a new fact changes it: a refresh on a branch it
@@ -1490,11 +1512,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   repo-access recovery, the recovery hold, conflict and CI retries, loop
   exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
-  decisions, waivers, tracker webhooks) still write it as a person's act. Also
-  not implemented
-  (AC-9): the worker PATCH and the claim route still apply the review verdict
-  (record and adopt) and FixClaimed on the web host through the seam, with no
-  door op of their own like `attempt_ended`.
+  decisions, waivers, tracker webhooks) still write it as a person's act.
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one

@@ -59,7 +59,7 @@ export const LANDING_ACTION_LABELS: Record<LandingAction, string> = {
   ci_fix: 'Dispatch CI fix',
   conflict: 'Resolve conflicts',
   re_review: 'Re-review',
-  retry_landing: 'Retry landing',
+  retry_landing: 'Retry merge',
   merge_anyway: 'Merge anyway',
   close_superseded: 'Close as superseded',
   review_on_github: 'Review on GitHub',
@@ -207,11 +207,11 @@ export function plainReason(reason: PageReason): string {
   const [family, detail = ''] = reason.split(':');
   if (family === 'fix_stuck') return FIX_WORDS[detail as FixKind] ?? 'its fix was not picked up';
   if (family === 'needs_human') return CAUSE_WORDS[detail as HumanCause] ?? 'it needs a person';
-  return 'landing has stopped making progress';
+  return 'merge has stopped making progress';
 }
 
 /**
- * What counts as landing progress, as one comparable string: the head landing
+ * What counts as merge progress, as one comparable string: the head merge
  * is working on (a refresh's new head, not the one it replaced), the coarse
  * stage, and the newest review round. Any of these changing restarts the
  * invariant clock. `updating_branch` and `waiting_ci` are one stage: both are
@@ -259,7 +259,7 @@ export function buildLandingPageCopy(i: {
     quiet != null ? `no progress for ${formatDuration(quiet)}` : null,
   ].filter(Boolean);
   return {
-    title: `PR #${i.prNumber} won't land: ${plainReason(i.reason)}`,
+    title: `PR #${i.prNumber} won't merge: ${plainReason(i.reason)}`,
     message: [i.prTitle ?? `PR #${i.prNumber}`, facts.length ? `${facts.join(' · ')}.` : null, i.detail].filter(Boolean).join('\n'),
   };
 }
