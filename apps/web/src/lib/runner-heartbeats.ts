@@ -50,7 +50,7 @@ export async function getRunnerHeartbeats(
   const hbs = await db.query.workerHeartbeats.findMany({
     where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
     orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
-    with: { account: { columns: { name: true, teamId: true, createdByUserId: true, managedRunner: true, hostRunner: true } } },
+    with: { account: { columns: { name: true, teamId: true, createdByUserId: true, managedRunner: true, hostRunner: true, authType: true } } },
   });
   if (hbs.length === 0) return [];
 
@@ -114,6 +114,7 @@ export async function getRunnerHeartbeats(
       codexAuthSource: hb.codexAuthSource ?? null,
       shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
       runnerClass: classifyRunnerOwnership(hb.account),
+      authType: hb.account?.authType === 'oauth' || hb.account?.authType === 'api' ? hb.account.authType : undefined,
       mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
 }

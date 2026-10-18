@@ -40,6 +40,7 @@ import {
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
+import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
@@ -1023,7 +1024,7 @@ export function HealthClient({
       {show('budget') && budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
 
       {show('credentials') && credentialHealth.length > 0 && (
-        <CredentialStateSection credentials={credentialHealth} now={now} />
+        <CredentialStateSection credentials={credentialHealth} now={now} runners={runners} />
       )}
 
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
@@ -1815,10 +1816,13 @@ const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
 function CredentialStateSection({
   credentials,
   now,
+  runners = [],
 }: {
   credentials: CredentialHealthItem[];
   now: number;
+  runners?: RunnerHeartbeat[];
 }) {
+  const claudeRoute = resolveClaudeRoute(runners, credentials, now);
   return (
     <div data-testid="health-section-credentials" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -1827,6 +1831,9 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
+      <p data-testid="claude-route" data-state={claudeRoute.state} className="mb-2 text-xs text-text-muted">
+        {claudeRoute.summary}
+      </p>
       <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
@@ -2405,7 +2412,11 @@ export function routeLine(r: { requested: string; effective: string } | undefine
  */
 export function claimBlockerLine(c: ClaimBlocker | undefined): string {
   if (!c || c.state === 'unknown') return 'no recent scheduler decision (not known to be blocked)';
-  const at = c.evaluatedAt ? ` (last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+  const at = c.evaluatedAt ? ` (claim scheduler, last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
   const why = c.phrase ?? c.reason ?? 'held';
-  return c.state === 'blocked' ? `blocked: ${why}${at}` : `last held: ${why}, may no longer apply${at}`;
+  const label = c.kind === 'credential_unavailable' ? 'credential unavailable'
+    : c.kind === 'capacity_exhausted' ? 'capacity exhausted'
+    : c.kind === 'sandbox' ? 'sandbox requirement unmet'
+    : 'blocked';
+  return c.state === 'blocked' ? `${label}: ${why}${at}` : `last held (${label}): ${why}, may no longer apply${at}`;
 }
