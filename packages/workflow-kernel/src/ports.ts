@@ -188,6 +188,17 @@ export interface Store {
 
 // ── GitHub ──────────────────────────────────────────────────────────────────
 
+/** The check runs on one commit, as `GithubFactReader.checkRuns` reads them (§6.10). */
+export interface CheckRunsRead {
+  complete: boolean;
+  /** The failing check runs' names. */
+  failing: string[];
+  /** The failing entries at test level (`trunk-signature.ts`); only when asked for and readable. */
+  tests?: string[];
+  /** The names of the runs not completed yet; only when asked for `tests` and the whole list was read. */
+  pending?: string[];
+}
+
 /** Live reads the kernel acts on (R2: never a webhook payload). Every optional read answers null when it cannot tell. */
 export interface GithubFactReader {
   /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
@@ -203,9 +214,12 @@ export interface GithubFactReader {
   ciGreen?(repoFullName: string, headSha: string): Promise<boolean | null>;
   /**
    * The check runs on `sha` (§6.10 signatures): the names of the failing ones,
-   * and whether every run has completed. null = unreadable.
+   * and whether every run has completed. null = unreadable. With `tests`, a
+   * host that can read a failing check's tests also answers `tests`: the
+   * failing entries at test level (`trunk-signature.ts`), which is what a
+   * signature is taken from when present, and `pending`.
    */
-  checkRuns?(repoFullName: string, sha: string): Promise<{ complete: boolean; failing: string[] } | null>;
+  checkRuns?(repoFullName: string, sha: string, opts?: { tests?: boolean }): Promise<CheckRunsRead | null>;
   /** The head commit of branch `ref` now; null = unreadable. */
   branchHead?(repoFullName: string, ref: string): Promise<string | null>;
   /**

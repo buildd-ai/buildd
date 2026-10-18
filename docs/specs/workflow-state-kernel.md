@@ -636,7 +636,14 @@ author string**:
 
 ### 6.10 Trunk health and where policy checks run
 
-**Circuit breaker.** CI failures are classified by `signature` at ingestion. The kernel
+**Circuit breaker.** CI failures are classified by `signature` at ingestion. A
+signature is taken at test level where it can be: a failing Actions job's tests come
+from its log (`apps/web/src/lib/workflow/failing-tests.ts`), because a sharded job's
+normalised name is shared by unrelated failures. Two failures of one job match only
+on the same test, and a job whose tests could not be read never matches. The base
+explains a PR only when every failing entry of the PR also fails on the base. The
+recovery sweep reads the least recently rechecked incidents first, sends every one it
+leaves unresolved to the back, and pages past incidents it cannot read. The kernel
 opens a trunk incident (T25) when the same signature (a) is failing on the base
 branch's own head, or (b) is failing on at least a configured number of distinct
 deliveries inside a configured window. While an incident is open: no per-PR `ci`

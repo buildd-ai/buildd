@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { PR_PILL, canonicalPrState, derivePrDisplayState, prListStatus, prRecord, resolvePrDisplayState, type PrDisplayState } from './pr-presentation';
+import { PR_PILL, canonicalPrState, derivePrDisplayState, prListStatus, prOutcome, prRecord, resolvePrDisplayState, type PrDisplayState } from './pr-presentation';
 
 const pill = (lifecycle: string | null, mergedAt: unknown = null) => PR_PILL[derivePrDisplayState(lifecycle, mergedAt)];
 
@@ -102,5 +102,16 @@ describe('Slice F: the API vocabulary reads the delivery for a kernel-owned PR',
     expect(canonicalPrState({ githubMerged: false, githubClosed: true }, false)).toBe('closed_unmerged');
     // An open PR on GitHub is open, whatever a stale record says.
     expect(canonicalPrState({ githubMerged: false, githubClosed: false }, true)).toBe('open');
+  });
+});
+
+describe('prOutcome (spec 3ef37387 R-24: one coarse PR state)', () => {
+  it('merged by stamp or by lifecycle, closed only unmerged, everything else open', () => {
+    expect(prOutcome({ mergedAt: new Date(), prLifecycleStatus: 'closed' })).toBe('merged');
+    expect(prOutcome({ mergedAt: null, prLifecycleStatus: 'merged' })).toBe('merged');
+    expect(prOutcome({ prLifecycleStatus: 'closed' })).toBe('closed');
+    for (const s of ['pr_open', 'ci_running', 'ci_green', 'ci_failed', 'conflict', 'unresolvable', null]) {
+      expect(prOutcome({ prLifecycleStatus: s })).toBe('open');
+    }
   });
 });
