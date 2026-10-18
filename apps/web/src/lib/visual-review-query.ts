@@ -11,7 +11,7 @@
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { artifacts, missionNotes, missions, tasks, visualShotReviews, workers, workspaces } from '@buildd/core/db/schema';
 import { ArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
-import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_AUDIT_TITLE_PREFIX, SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
 
 // ── Shots ───────────────────────────────────────────────────────────────────
 
@@ -47,6 +47,11 @@ export const MISSION_VISUAL_SHOTS_ORDER = (
  * a screenshot with a hand-made `metadata.qa`, so the rows are limited to
  * workers of this mission's `visual-auditor` tasks.
  */
+/** `isMissionAuditTask` in SQL: the audit title prefix or the visual-auditor role, on a raw `tasks` alias. */
+const auditTaskSql = (alias: string) => sql`(${sql.raw(alias)}.role_slug = ${VISUAL_AUDITOR_ROLE_SLUG} or ${sql.raw(alias)}.title like ${`${SURFACE_AUDIT_TITLE_PREFIX}%`})`;
+/** The same, on the drizzle `tasks` columns. */
+const isAuditTaskCol = sql`(${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} or ${tasks.title} like ${`${SURFACE_AUDIT_TITLE_PREFIX}%`})`;
+
 export const missionVisualShotsWhere = (missionId: string): SQL =>
   and(
     eq(artifacts.missionId, missionId),
@@ -55,7 +60,7 @@ export const missionVisualShotsWhere = (missionId: string): SQL =>
     // Plain aliased identifiers, not workers/tasks column objects: the
     // relational query maps every column in a raw `where` onto the queried
     // table, which turned `workers.id` into `"artifacts"."id"`.
-    sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missionId} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG})`,
+    sql`${artifacts.workerId} in (select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missionId} and ${auditTaskSql('"t"')})`,
   )!;
 
 /** The shot row plus the worker's task, so a shot's round never depends on a worker limit. */
@@ -101,10 +106,10 @@ export const VISUAL_REVIEW_TASK_SELECTION = {
   updatedAt: tasks.updatedAt,
   // Audits: round and frozen routes. Everyone else: the trunk-refresh marks
   // isTrunkRefreshTask reads, so a refresh dependency names no route.
-  context: sql<Record<string, unknown> | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then jsonb_build_object('surfaceAuditRound', ${tasks.context} -> 'surfaceAuditRound', 'visualQa', ${tasks.context} -> 'visualQa') else nullif(jsonb_strip_nulls(jsonb_build_object('requireMergeCommit', ${tasks.context} -> 'requireMergeCommit', 'refreshTrunk', ${tasks.context} -> 'refreshTrunk')), '{}'::jsonb) end`.as('visual_context'),
+  context: sql<Record<string, unknown> | null>`case when ${isAuditTaskCol} then jsonb_build_object('surfaceAuditRound', ${tasks.context} -> 'surfaceAuditRound', 'visualQa', ${tasks.context} -> 'visualQa') else nullif(jsonb_strip_nulls(jsonb_build_object('requireMergeCommit', ${tasks.context} -> 'requireMergeCommit', 'refreshTrunk', ${tasks.context} -> 'refreshTrunk')), '{}'::jsonb) end`.as('visual_context'),
   errorType: sql<string | null>`${tasks.result} ->> 'errorType'`.as('error_type'),
   // An audit's `why` (cancelled, failed): the summary only, never the whole result.
-  resultSummary: sql<string | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),
+  resultSummary: sql<string | null>`case when ${isAuditTaskCol} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),
 };
 
 export function visualReviewTasksQuery(q: Selectable, missionId: string) {
@@ -130,7 +135,7 @@ export function visualReviewWorkersQuery(q: Selectable, missionId: string) {
       error: workers.error,
     })
     .from(workers)
-    .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" = ${missionId} and ("t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
+    .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" = ${missionId} and (${auditTaskSql('"t"')} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
 }
 
 // ── The capture ref ─────────────────────────────────────────────────────────
@@ -184,7 +189,7 @@ export const WORKSPACE_AWAITING_MISSIONS_LIMIT = 10;
  * Scoped to the caller's teams as well as the workspace.
  */
 export function workspaceAwaitingMissionsQuery(q: Selectable, workspaceId: string, teamIds: readonly string[], limit = WORKSPACE_AWAITING_MISSIONS_LIMIT) {
-  const auditorWorkers = sql`select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG}`;
+  const auditorWorkers = sql`select "w"."id" from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and ${auditTaskSql('"t"')}`;
   return q
     .select({
       id: missions.id,
@@ -196,7 +201,7 @@ export function workspaceAwaitingMissionsQuery(q: Selectable, workspaceId: strin
     .where(and(
       eq(missions.workspaceId, workspaceId),
       inArray(missions.teamId, [...teamIds]),
-      sql`(exists (select 1 from "artifacts" "a" where "a"."mission_id" = ${missions.id} and "a"."type" = 'screenshot' and "a"."metadata" -> 'qa' ->> 'verdict' = 'unsure' and "a"."worker_id" in (${auditorWorkers}) and not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)) or exists (select 1 from "mission_notes" "n" where "n"."mission_id" = ${missions.id} and "n"."title" = ${SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE} and "n"."status" = 'open') or exists (select 1 from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and "t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} and "w"."status" = 'waiting_input'))`,
+      sql`(exists (select 1 from "artifacts" "a" where "a"."mission_id" = ${missions.id} and "a"."type" = 'screenshot' and "a"."metadata" -> 'qa' ->> 'verdict' = 'unsure' and "a"."worker_id" in (${auditorWorkers}) and not exists (select 1 from "visual_shot_reviews" "r" where "r"."artifact_id" = "a"."id" and "r"."superseded_at" is null)) or exists (select 1 from "mission_notes" "n" where "n"."mission_id" = ${missions.id} and "n"."title" = ${SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE} and "n"."status" = 'open') or exists (select 1 from "workers" "w" inner join "tasks" "t" on "t"."id" = "w"."task_id" where "t"."mission_id" = ${missions.id} and ${auditTaskSql('"t"')} and "w"."status" = 'waiting_input'))`,
     ))
     .orderBy(desc(missions.updatedAt))
     .limit(limit + 1);

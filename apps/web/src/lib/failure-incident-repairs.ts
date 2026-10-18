@@ -377,10 +377,10 @@ export async function dbCausePeers(incident: Pick<StoredIncident, 'id'>, causeKe
  * leaves its field null (unknown), which no precondition treats as a pass.
  */
 export async function loadRepairFacts(incident: StoredIncident, peers: readonly StoredIncident[] = []): Promise<RepairFacts> {
-  const [{ db }, schema, { and, desc, eq, gt, inArray, isNull, sql }, shared] = await Promise.all([
+  const [{ db }, schema, { and, desc, eq, inArray, isNull, sql }, shared] = await Promise.all([
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('@buildd/shared'),
   ]);
-  const { tasks, workers, taskDispatchOutbox, pathClaims, workerHeartbeats } = schema;
+  const { tasks, workers, taskDispatchOutbox, pathClaims } = schema;
   const now = new Date();
   const r = incident.recovery && incident.recovery.v === 1 ? incident.recovery : null;
   const all = [incident, ...peers];
@@ -435,12 +435,11 @@ export async function loadRepairFacts(incident: StoredIncident, peers: readonly 
     };
   });
 
-  // Runner: any heartbeat inside the cutoff that serves the subjects' workspace.
+  // Runner: a fresh heartbeat of an account that may claim the subjects' workspace
+  // (the claim rule; the heartbeat `workspace_ids` column is deprecated and always empty).
   const wsId = incident.workspaceId ?? taskById.get(ordered[0] ?? '')?.workspaceId ?? null;
-  const hb = wsId
-    ? await safe(db.select({ id: workerHeartbeats.id }).from(workerHeartbeats)
-      .where(and(gt(workerHeartbeats.lastHeartbeatAt, new Date(now.getTime() - shared.RUNNER_STALE_CUTOFF_MS)), sql`${workerHeartbeats.workspaceIds} @> ${JSON.stringify([wsId])}::jsonb`)).limit(1))
-    : null;
+  const online = wsId ? (await import('./runner-heartbeats')).loadRunnerOnlineByWorkspace([wsId]) : null;
+  const runnerOnline = online ? (await online).get(wsId!) ?? null : null;
 
   // The fix and whether its PR merged; a capture failure after the merge.
   let fix: RepairFacts['fix'] = null;
@@ -500,7 +499,7 @@ export async function loadRepairFacts(incident: StoredIncident, peers: readonly 
     },
     blocker,
     subjects,
-    runnerOnline: hb === null ? null : hb.length > 0,
+    runnerOnline,
     fix,
     captureFailedAfterFix,
     missions,
