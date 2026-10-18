@@ -44,7 +44,7 @@ mock.module('@/lib/repo-scope', () => ({ resolvePrRepo: ({ workspaceRepo }: { wo
 mock.module('@/lib/workspace-installation', () => ({
   WORKSPACE_INSTALLATION_WITH: {},
   pickWorkspaceRepoIdentity: () => ({ fullName: 'o/r', installationId: 1 }),
-  installationIdForRepo: async () => 1,
+  createTeamInstallationResolver: () => ({ resolve: async () => ({ installationId: 1 }) }),
 }));
 
 const { persistTaskEvidence } = await import('./task-evidence-store');

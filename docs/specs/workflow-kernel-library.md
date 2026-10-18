@@ -364,7 +364,10 @@ the control plane, authenticated as the caller).
     `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
     PATCH: a kernel round's verdict, or one from outside the rounds on a PR
     the kernel owns) and `claim_fix` (T9 from the claim route, one request in
-    place of the seam's own reads), each for the caller that reported it,
+    place of the seam's own reads), and `observe_conflict` (T12 from the
+    conflict door: landing, the merge routes, auto-merge, the dead-zone sweep
+    and the migration-collision dispatch, as a `system` principal; the live PR
+    is read on the control plane), each for the caller that reported it,
     with the same skew rule; each names its workspace on the input, and the
     host acts only on a delivery of that workspace (a verdict for another
     workspace's delivery is refused, never read as a release to legacy). A
@@ -487,6 +490,17 @@ the control plane, authenticated as the caller).
   (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and
   still runs where the fact arrives; on the web host that is the render
   read-through and the sweeps, a §9 write site S3b and S4 remove.
+  What still applies a kernel command on the web host, and why each stays:
+  `observePrState` (T17 to T19, a PR closed, merged or reopened), `observeBase`
+  (T29) and `observeHead` (T3) are applied from the GitHub webhook and the
+  reconcile and refresh sweeps. A webhook is a fact about GitHub that must be
+  recorded the moment it arrives; when the kernel cannot read the live PR it
+  records the fact unapplied and the fast heal applies it, so none is lost to a
+  host that is down. They move to the control plane with S3b, when the webhook
+  receiver itself does. `recordLocalHead` is one provenance statement on an
+  attempt row, not a command. `cancelSkippedTask` writes a task row the claim
+  route owns. Every command a person or a worker actively requests is a door
+  op above.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
@@ -662,15 +676,23 @@ recorded as such, never as an approval.
 - A PR with no delivery is not merged by a buildd door. A door asked to merge
   one opens (or adopts) its delivery first; "legacy" merges end at slice S3.
 - GitHub enforces the verdict: on every kernel-owned PR head the kernel's
-  `publish_landing_status` effect publishes the commit status `buildd/landing`.
-  It is `success` only when the kernel would land that head (approved or
-  landing, covered, no open verdict), and `failure` while a required finding is
-  open or review is missing. One effect per delivery version; only the newest
+  `publish_landing_status` effect publishes the commit status
+  `Buildd / Review approval` (also under its former name `buildd/landing`,
+  written with the same answer until nothing reads it). It is `success` only
+  when the kernel would land that head (approved or landing, covered, no open
+  verdict), `pending` while review of that head has not finished (so ongoing
+  review never reads as failing CI), and `failure` while a required finding is
+  open, a verdict stands against the head, or a person has to decide. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
-  never leaves a success standing. CI is not part of it: CI has its own checks,
-  and the merge rails never read `buildd/landing` as CI. Making it a required
-  check on trunk is an owner decision, taken once every open PR carries it.
+  never leaves a success standing. It is one GitHub App and one commit-status
+  check, separate from CI: no second App and no native GitHub self-approval.
+  CI is not part of it: CI has its own checks,
+  and the merge rails never read either name as CI. Making `Buildd / Review approval` a required
+  check on trunk is an owner decision (today `main` requires `build` and
+  `release candidate verified`, `dev` has no rule, and admins are not
+  enforced, so a manual GitHub merge on `dev` over an open finding is not
+  blocked; it is recorded as an external merge, AC-15), taken once every open PR carries it.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
@@ -1303,12 +1325,44 @@ column outside the kernel; S3 and S4 remove or route each one.
   PATCH writes the worker's terminal status before it decides on a retry
   requeue, so an end read in between is not sent. A terminal task's end
   counts at once.
+  The owner attempt's end projects onto its task: T4 for an owner (an end
+  of the attempt a `WORKING` delivery is bound to) sets the owner task in
+  its own statement (`t_attempt`, task-projection.ts), reading the delivery
+  CTE, so a version miss writes nothing. `success` completes it; `failed`,
+  `lost` and `unproven` fail it. The kernel's own requeue (a
+  `taskRetryBudgetLeft` end it answers by keeping the delivery `WORKING`)
+  projects nothing; a `taskRetryBudgetLeft` end that moves the delivery on (an
+  unproven end with commits goes to `AWAITING_PUSH`) projects like any other,
+  which leaves the task alone because its retry already set it `pending`. It
+  moves only an open task (`assigned`, legacy `in_progress`), so a cancel, a
+  requeue to `pending`, or a status another writer already settled is kept,
+  and only for the task's current attempt: the ending worker must be the
+  task's latest attempt row (placeholder rows no runner executed, such as the
+  sibling row a second PR gets, do not count) and not older than its
+  `claimed_at`, which the claim stamps from the database clock, so an end
+  that lands late (a parked re-send, a slow door) after the task was requeued
+  and claimed again never settles the new attempt. It carries
+  `notKernelMergedTaskSql`. An owner end that applies nothing (a duplicate, a
+  stale end) still projects (`projectOwnerEnd`): the ledger's recorded
+  `end:<workerId>` wins, else the end that was sent. The floor's re-sent end
+  therefore settles a task that stranded `assigned`, and for a delivery
+  already past `WORKING` (an end applied by an older control plane that did
+  not project) the floor projects the settled latest attempt's end itself,
+  never while an attempt on the task is still live.
+  The worker PATCH is the first family behind it: for the plain end of a
+  kernel owner attempt (no retry or loop hold, no contract or loop failure)
+  its completion statement writes result, loop and context but not status.
+  It sends the end before anything in the same request reads the status
+  (the mission release, the terminal evidence record, dependency resolution,
+  mission completion), then runs `projectOwnerEnd` itself, so a control plane
+  that is down or too old to project, a delivery the kill switch released, or
+  a release held for CI (no end is sent) still leaves the task settled. A
+  release that fails still writes `failed` itself.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
-  live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
-  interactive detach, credential and repo-access recovery, the recovery hold,
-  conflict and CI retries, loop exits) still set the owner task's status
-  directly, because there is no attempt-to-task projection to replace them
-  yet (an AttemptEnded that sets the owner task in its own statement);
+  live, the other attempt writers (the worker PATCH's requeues and failure
+  overrides, claim, cleanup, the reaper, interactive detach, credential and
+  repo-access recovery, the recovery hold, conflict and CI retries, loop
+  exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
   not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the

@@ -6,6 +6,7 @@ import { effectiveKeyPolicy, DEFAULT_KEY_POLICY } from '@buildd/core/inference-k
 import Chip from '@/components/ui/Chip';
 import Section from '@/components/ui/Section';
 import { roleHas } from '@/lib/permission-registry';
+import { isPersonalTeamOf } from '@/lib/personal-team';
 import { BILLING_TEAM_COLUMNS } from '@/lib/billing/team-billing-access';
 import { teamSeatUsage } from '@/lib/billing/seats';
 import { settingsReadOnly } from '@/lib/settings-nav';
@@ -79,7 +80,7 @@ export default async function BillingSettingsPage({
   ]);
 
   // manage_billing is owner/admin; a personal team's user is its owner.
-  const canManageBilling = roleHas(currentTeam.role, 'manage_billing') || currentTeam.slug === `personal-${user.id}`;
+  const canManageBilling = roleHas(currentTeam.role, 'manage_billing') || isPersonalTeamOf(currentTeam, user.id);
 
   return (
     <SettingsPage title={title} readOnly={settingsReadOnly('billing', perms) && !canManageBilling}>

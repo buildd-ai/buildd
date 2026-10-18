@@ -63,6 +63,9 @@ mock.module('@/lib/health-watcher-vercel', () => ({
   listProdDeployments: async () => [],
   evaluateDeploymentHealth: () => ({ status: 'healthy' }),
 }));
+// The watched project's own team's installation on the repo's account.
+const mockTeamInstallationForOwner = mock(async (_owner: string, _teamId: string | null | undefined) => 1 as number | null);
+mock.module('@/lib/workspace-installation', () => ({ teamInstallationIdForOwner: mockTeamInstallationForOwner }));
 mock.module('@buildd/core/secrets', () => ({ getSecretsProvider: () => ({ get: async () => null }) }));
 
 const chain = (rows: any[]): any => {
@@ -121,5 +124,11 @@ describe('health watcher alerts route to the owning workspace team', () => {
     expect(subject).toEqual({ workspaceId: 'ws-1' });
     expect(event).toBe('needsAttention');
     expect(payload.title).toContain('acme/widgets');
+  });
+
+  it("reads the release PRs through the project workspace's own team's installation", async () => {
+    mockTeamInstallationForOwner.mockClear();
+    await runWatcherForProject(PROJECT as any);
+    expect(mockTeamInstallationForOwner).toHaveBeenCalledWith(expect.any(String), 'team-1');
   });
 });

@@ -808,7 +808,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'buildd/landing: failure while review is pending, success once approved, failure again on a new head; an older or duplicate effect never overwrites the newer answer',
+    name: 'Buildd / Review approval: pending while review runs, failure once changes are asked, success once approved, pending again on a new head; an older or duplicate effect never overwrites the newer answer',
     async run(host) {
       const s = await new Delivery(host, 29).open();
       const f = fakePorts(host);
@@ -816,17 +816,18 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const lastDesc = () => String(f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.description ?? '');
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'review missing: failure');
+      eq(published().at(-1), { sha: 'H1', state: 'pending', context: 'Buildd / Review approval' }, 'review pending: pending, not failure');
+      ok(published().some((x) => x.context === 'buildd/landing' && x.sha === 'H1'), 'the legacy name carries the same answer');
       ok(lastDesc().includes('review of H1 is pending'), `names the wait: ${lastDesc()}`);
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'changes asked: failure');
+      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'Buildd / Review approval' }, 'changes asked: failure');
       const fix = await s.startFix();
       applied(await s.push('H2', { attribution: { descendsFromBound: true } }), 'FIXING', 'fix pushed');
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'approved: success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
       const count = published().length;
       // Every version owes one effect, and only the newest publishes: no older answer was written after a newer one.
@@ -838,10 +839,10 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: older.payload, dedupeKey: older.dedupeKey }), { outcome: 'skipped:older_version' }, 'a late older effect publishes nothing');
       eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:unchanged:success' }, 'a duplicate of the newest finds GitHub already showing it');
       eq(published().length, count, 'no second write of the same answer');
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'still success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'still success at H2');
       applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new head');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H3', state: 'failure', context: 'buildd/landing' }, 'a new head starts at failure');
+      eq(published().at(-1), { sha: 'H3', state: 'pending', context: 'Buildd / Review approval' }, 'a new head starts pending');
     },
   },
   {
@@ -2525,6 +2526,25 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const a2 = await toAgent('second');
       eq(await h.dispatch_conflict_fix!(await direct(host, c, 'dispatch_conflict_fix')), { outcome: 'ok' }, 'filed');
       eq({ row: a2.attemptNo, title: g.work.filed.filter((w) => w.role === 'conflict_fix').at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1');
+    },
+  },
+  {
+    // Task 38ed99bc: the dispatch-time "CI fix N of M" activity entry reads detail.attemptNo, so the
+    // kernel must hand the host the dispatched count, not the ledger row's own number.
+    name: '38ed99bc: a CI fix filed behind a skipped row carries its dispatched count, so its activity entry never reads past the budget',
+    async run(host) {
+      const s = await new Delivery(host, 125).open();
+      await s.approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
+      const first = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.fixEnded(first.id, { outcome: 'lost', cancelled: true, taskId: undefined, workerId: `cancel:${first.id}` }), 'APPROVED', 'cancelled before it started');
+      applied(await s.ciRed('H1', { trigger: 'human', actor: 'human:u' }), 'REPAIRING', 'Fix CI files the next fix');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const next = (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => b.attemptNo - a.attemptNo)[0];
+      eq(next!.attemptNo, 2, 'the ledger row is number 2');
+      eq(f.work.filed.filter((w) => w.role === 'ci_fix').at(-1)!.detail?.attemptNo, 1, 'but it is CI fix 1');
     },
   },
   {

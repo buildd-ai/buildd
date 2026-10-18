@@ -21,6 +21,9 @@ mock.module('@/lib/mission-epoch-door', () => ({
   reconcileMissionDeliveries: async () => [],
 }));
 
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -323,6 +326,19 @@ describe('evaluateAutoMergeSafety CI verification', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
     mockStatusApi.mockResolvedValueOnce({ state: 'failure', total_count: 1, statuses: [{ context: 'buildd/landing', state: 'failure' }] });
+    // Past the CI rail: the next refusal is the mergeable-state one, not "CI checks still pending or failed".
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('does not read buildd\'s own Buildd / Review approval status as CI (it follows the verdict, not the build)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 1, statuses: [{ context: 'Buildd / Review approval', state: 'pending' }] });
     // Past the CI rail: the next refusal is the mergeable-state one, not "CI checks still pending or failed".
     await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
       ok: false,

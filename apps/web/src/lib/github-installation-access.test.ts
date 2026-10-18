@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// Installation ownership is derived from (a) teams with workspaces on an
-// installation of the same GitHub account and (b) the installer's teams.
+// What a user may do with an installation, given its owning teams.
 
-let installation: Record<string, unknown> | null = null;
-let sameAccount: Array<{ id: string }> = [];
 let workspacesByCall: Array<Array<{ teamId: string }>> = [];
 const userTeams: Record<string, string[]> = {};
 const adminTeams: Record<string, string[]> = {};
@@ -19,11 +16,11 @@ function callerMemberships() {
 
 mock.module('@buildd/core/db', () => ({
   db: {
+    // getInstallationOwnerTeamIds: the owning teams, here the first workspace list's teams.
+    execute: async () => ({
+      rows: [...new Set((workspacesByCall.shift() ?? []).map(w => w.teamId))].map(team_id => ({ team_id })),
+    }),
     query: {
-      githubInstallations: {
-        findFirst: async () => installation,
-        findMany: async () => sameAccount,
-      },
       workspaces: { findMany: async () => workspacesByCall.shift() ?? [] },
       teamMembers: { findMany: async () => callerMemberships() },
       teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
@@ -34,35 +31,17 @@ mock.module('@/lib/team-access', () => ({
   getUserTeamIds: async (u: string) => userTeams[u] ?? [],
 }));
 
-const { getInstallationOwnerTeamIds, getInstallationAccessForUser } = await import('./github-installation-access');
+const { getInstallationAccessForUser } = await import('./github-installation-access');
 
 beforeEach(() => {
-  installation = { id: 'inst-1', accountId: 42, installedByUserId: null };
-  sameAccount = [{ id: 'inst-1' }, { id: 'inst-old' }];
   workspacesByCall = [];
   for (const k of Object.keys(userTeams)) delete userTeams[k];
   for (const k of Object.keys(adminTeams)) delete adminTeams[k];
  
 });
 
-describe('getInstallationOwnerTeamIds', () => {
-  it('includes teams with workspaces on any installation of the same GitHub account', async () => {
-    workspacesByCall = [[{ teamId: 'team-a' }, { teamId: 'team-a' }]];
-    expect(await getInstallationOwnerTeamIds('inst-1')).toEqual(['team-a']);
-  });
-
-  it('includes the installer\'s teams', async () => {
-    installation = { id: 'inst-1', accountId: 42, installedByUserId: 'user-installer' };
-    userTeams['user-installer'] = ['team-i'];
-    workspacesByCall = [[]];
-    expect(await getInstallationOwnerTeamIds('inst-1')).toEqual(['team-i']);
-  });
-
-  it('is empty for an unknown installation', async () => {
-    installation = null;
-    expect(await getInstallationOwnerTeamIds('missing')).toEqual([]);
-  });
-});
+// getInstallationOwnerTeamIds is one SQL read; its rule is pinned on real Postgres in
+// tests/db/team-installation-ownership.test.ts, against installationBelongsToTeam.
 
 describe('getInstallationAccessForUser', () => {
   it('a user in no owning team can neither view nor manage', async () => {
