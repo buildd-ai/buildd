@@ -170,7 +170,6 @@ const TABLE: Row[] = [
   { name: 'approved, a green run on an older head does not count', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'green', ciHeadSha: 'H0older' }), label: 'Approved · checking', tone: 'live' },
   { name: 'approved, checks failed', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'], ci: 'red', ciHeadSha: 'H1abcdef' }), label: 'Approved · checks failing', tone: 'stalled' },
   { name: 'approved, a person merges, checks still running', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Approved · checking', tone: 'needs' },
-  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Waiting on you', tone: 'needs' },
   // A review escalation names its cause (escalation-brief); a non-review one keeps the generic words.
   { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Review required', tone: 'needs' },
   { name: 'escalated, not a review', input: V({ state: 'ESCALATED', stateReason: 'landing_needs_human' }), label: 'Waiting on you', tone: 'needs' },
