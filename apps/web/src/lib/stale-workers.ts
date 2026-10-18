@@ -348,7 +348,7 @@ async function resolveStaleTask(
       const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
 
       // An interactive worker never reaches here: resolveTasksOfReapedWorkers
-      // routes it to resolveAbandonedInteractiveTask, and the heartbeat-orphan
+      // routes it to resolveUnexecutedTask, and the heartbeat-orphan
       // scope excludes it.
       if (infraRetryCount >= MAX_INFRA_RETRIES) {
         // Infra retry cap reached — mark as stalled so mission health surfaces the issue
@@ -415,87 +415,48 @@ async function resolveStaleTask(
  * claim it again at once, on the worker's branch; a terminal one keeps its
  * status (failure-incident-recovery §18.3, I-15: never `failed`). The same
  * outcome as "Release slot" (lib/interactive-detach.ts).
+ *
+ * Undelivered runner claims share this guarded writer. They back off using
+ * claimLostCount (bookkeeping, never a retry budget), without ending a kernel
+ * attempt or stalling the task. Terminal and already pending tasks stay put.
  */
-async function resolveAbandonedInteractiveTask(
+async function resolveUnexecutedTask(
   taskId: string,
   workspaceId: string,
   staleWorker: { branch?: string | null; error?: string | null } | undefined,
+  undelivered = false,
 ) {
   const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
     const existingCtx = (current.context || {}) as Record<string, unknown>;
-    await db
-      .update(tasks)
-      .set({
-        status: 'pending',
-        claimedBy: null,
-        claimedAt: null,
-        expiresAt: null,
-        startAt: null,
-        context: {
-          ...withoutForceClaim(existingCtx),
-          ...requeueBranchContext(existingCtx, staleWorker?.branch),
-          failureContext: staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
-          // Carried as it was: an interactive release is never charged.
-          infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
-        },
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
-    await wakeTask(taskId, 'task.requeued');
-  }
-  await releaseAndNotify(taskId, 'abandoned').catch(e =>
-    console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
-  );
-  await resolveCompletedTask(taskId, workspaceId);
-}
-
-/**
- * Minutes before a task whose claim never reached its runner is offered again,
- * by how many times that has happened to it. Short: nothing ran and the next
- * claim usually lands. Grows so a runner that keeps losing responses is not
- * fed the same task every minute.
- */
-const UNDELIVERED_CLAIM_BACKOFF_MINUTES = [1, 2, 5, 10, 15];
-
-/**
- * Requeue the task of a claim its runner reported it never received
- * (lib/lost-claim.ts). No session ran, so it is not an attempt: the infra
- * retry budget is carried as it was, the task is never stalled or failed for
- * it, and a kernel delivery hears nothing (an infra requeue is not an attempt
- * end). Only a task still held by that claim moves; a cancelled, finished or
- * already pending one is left as it is. `claimLostCount` is bookkeeping for
- * the backoff and for the task page, not a budget.
- */
-async function resolveUndeliveredClaimTask(
-  taskId: string,
-  workspaceId: string,
-  staleWorker: { branch?: string | null } | undefined,
-) {
-  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
-  if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
-    const existingCtx = (current.context || {}) as Record<string, unknown>;
+    // Lost claims back off without charging a retry budget; interactive sessions
+    // can re-claim immediately. Neither release ends a kernel attempt.
     const claimLostCount = ((existingCtx.claimLostCount as number) || 0) + 1;
-    const backoffMins = UNDELIVERED_CLAIM_BACKOFF_MINUTES[Math.min(claimLostCount, UNDELIVERED_CLAIM_BACKOFF_MINUTES.length) - 1];
-    const startAt = new Date(Date.now() + backoffMins * 60_000);
+    const backoffMinutes = [1, 2, 5, 10, 15];
+    const startAt = undelivered
+      ? new Date(Date.now() + backoffMinutes[Math.min(claimLostCount, backoffMinutes.length) - 1] * 60_000)
+      : null;
     await db
       .update(tasks)
       .set({
         status: 'pending',
         claimedBy: null,
         claimedAt: null,
+        ...(!undelivered ? { expiresAt: null } : {}),
         startAt,
         context: {
           ...withoutForceClaim(existingCtx),
           ...requeueBranchContext(existingCtx, staleWorker?.branch),
-          failureContext: CLAIM_RESPONSE_LOST_ERROR,
+          failureContext: undelivered ? CLAIM_RESPONSE_LOST_ERROR : staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
+          ...(undelivered ? { claimLostCount } : {}),
+          // Both bookkeeping releases carry the infra retry budget as it was.
           infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
-          claimLostCount,
         },
         updatedAt: new Date(),
       })
       .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
-    await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
+    if (startAt) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
+    else await wakeTask(taskId, 'task.requeued');
   }
   await releaseAndNotify(taskId, 'abandoned').catch(e =>
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
@@ -895,7 +856,7 @@ type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
 export async function resolveTasksOfReapedWorkers(
   reaped: readonly ReapedWorker[],
   exitCauseOverride?: WorkerExitCause,
-  /** `undelivered`: the runner reported it never received these claims (resolveUndeliveredClaimTask). */
+  /** `undelivered`: the runner reported it never received these claims (resolveUnexecutedTask). */
   opts: { undelivered?: boolean } = {},
 ): Promise<void> {
   const taskIds = reaped.map(w => w.taskId).filter(Boolean) as string[];
@@ -922,11 +883,11 @@ export async function resolveTasksOfReapedWorkers(
     if (otherActiveWorkers.length === 0) {
       const staleWorker = reaped.find(w => w.taskId === t.id);
       if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
-        await resolveAbandonedInteractiveTask(t.id, t.workspaceId, staleWorker);
+        await resolveUnexecutedTask(t.id, t.workspaceId, staleWorker);
         continue;
       }
       if (opts.undelivered) {
-        await resolveUndeliveredClaimTask(t.id, t.workspaceId, staleWorker);
+        await resolveUnexecutedTask(t.id, t.workspaceId, staleWorker, true);
         continue;
       }
       // Determine exit cause for this worker so reviewer tasks can distinguish
