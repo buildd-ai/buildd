@@ -48,6 +48,7 @@ import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-proj
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
+import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -1357,6 +1358,13 @@ export async function observeCiGreen(p: {
   const d = (await loadView({ deliveryId }, deps.exec)).delivery;
   // A green for another head (a late or out-of-order webhook) says nothing about this one.
   if (!d || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
+  // §4 merge holds: a check reported on the head that is landing. The merge GitHub held on a
+  // required check is made due and runs now; a reading is not recorded in LANDING anyway.
+  if (d.state === 'LANDING') {
+    const { postgresStore } = await import('./postgres-store');
+    if (await wakeHeldMergesOn(postgresStore(deps.exec ?? seamExec), deliveryId, p.headSha)) await drainDelivery(deliveryId, deps);
+    return { handled: true, result: null };
+  }
   const reader = readerFor(deps, p.installationId);
   const liveChecks = reader.checkRuns ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
   if (!liveChecks) return { handled: true, result: null };
