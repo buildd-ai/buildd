@@ -1470,9 +1470,13 @@ column outside the kernel; S3 and S4 remove or route each one.
   file is named by what it writes and classed as routed through a named kernel
   command, never reaching a kernel owner (in its own WHERE, or by a named code
   path), result or context only, or debt (it still sets a kernel owner's
-  status itself). A new attempt writer, or a new statement in one, fails CI
-  until it is classed, and the number of debt statements
-  (`ATTEMPT_SITE_CEILING`) only goes down.
+  status itself). A routed statement is checked on its own: every `status`
+  it sets must sit behind its own owner check (inside the spread an owner
+  skips, as a value that keeps an owner's status in SQL, or on a branch only
+  a non-owner reaches), so putting a direct status write back fails CI even
+  while the file still calls the command. A new attempt writer, or a new
+  statement in one, fails CI until it is classed, and the number of debt
+  statements (`ATTEMPT_SITE_CEILING`) only goes down.
   The kernel reads an owner attempt's end from its latest worker row, not
   from `tasks.status` (`ownerAttemptEndOf`, used by `forwardOwnerEnd` and the
   floor): a finished worker is an end even while the task is still
@@ -1640,8 +1644,11 @@ column outside the kernel; S3 and S4 remove or route each one.
     once-per-head marker. A delivery the kill switch released is legacy and
     is failed by that write as before.
   - Loop exits. On a merge T17 is the writer: the loop records only its own
-    fields (`loopState`, iteration, history), so a task T17 kept open (a local
-    session, another open PR) stays open. On green checks the loop re-sends
+    fields (`loopState`, iteration, history). T17 leaves a task a local session
+    ran to that session, but a loop task's session attempt has already ended
+    (the loop parked the task), so the loop exit completes it under the
+    projection below; a session still live on the task keeps it. On green
+    checks the loop re-sends
     the held attempt's end (`AttemptEnded` for the task's latest attempt, a
     duplicate when the hold already sent it), then completes the parked task
     under one guard (`projectLoopExit`): only the delivery's owner task, still
@@ -1668,9 +1675,9 @@ column outside the kernel; S3 and S4 remove or route each one.
     it is a repair task, never the delivery's owner, and with no worker row
     no attempt exists to requeue (`AttemptRequeued` names a worker). One with
     a worker row is requeued through the kernel (slice 6).
-  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): twelve attempt
-  statements still set a kernel owner task's status themselves, each listed
-  as debt in the guard: the worker PATCH's reactivation of a resumed worker,
+  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`, AC-1 slice 9, task
+  6ab39c29): twelve attempt statements still set a kernel owner task's
+  status themselves, each listed as debt in the guard: the worker PATCH's reactivation of a resumed worker,
   the output-contract and loop-exhausted overrides in its completion
   statement, a failed release, and a mount-gap requeue failed by its
   mission's budget; the claim's rollback of its own assigned claim and its

@@ -57,10 +57,24 @@ async function settleKernelLoopExit(p: { taskId: string; workspaceId: string; de
         source: 'webhook:loop_exit',
       }, { principal: systemPrincipal('system:loop-exit') }).catch((err) => console.error(`[loop-webhook] AttemptEnded for the loop exit of task ${p.taskId} failed:`, err));
     }
+    return await completeParkedOwner(p);
+  } catch (err) {
+    console.error(`[loop-webhook] loop exit of kernel owner task ${p.taskId} not settled:`, err);
+    return false;
+  }
+}
+
+/**
+ * The parked owner task of a satisfied loop completes under the kernel's guarded projection
+ * (`projectLoopExit`: the delivery's owner, still pending with the loop satisfied, no live attempt,
+ * never over a kernel-merged completion). A no-op on a task T17 already completed. Never throws.
+ */
+async function completeParkedOwner(p: { taskId: string; deliveryId: string }): Promise<boolean> {
+  try {
     const { projectLoopExit } = await import('@/lib/workflow/seam');
     return await projectLoopExit({ deliveryId: p.deliveryId, taskId: p.taskId });
   } catch (err) {
-    console.error(`[loop-webhook] loop exit of kernel owner task ${p.taskId} not settled:`, err);
+    console.error(`[loop-webhook] parked kernel owner task ${p.taskId} not completed:`, err);
     return false;
   }
 }
@@ -157,6 +171,11 @@ export async function evaluateAndAdvanceLoopOnMerge(
     // Another path already advanced this loop (concurrent webhook delivery).
     return false;
   }
+
+  // T17 completed a runner's task in its own statement. One it left open because a local session
+  // ran it (that session completes its own task) has no session left to do so: the loop parked it
+  // when that attempt ended. The guarded projection completes it; a live attempt keeps its task.
+  if (kernelDeliveryId) await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
 
   await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });
   await resolveCompletedTask(taskId, workspaceId);
@@ -264,6 +283,8 @@ export async function evaluateAndAdvanceLoopOnCiGreen(
 
   if (kernelDeliveryId && prLifecycleStatus !== 'merged') {
     await settleKernelLoopExit({ taskId, workspaceId: task.workspaceId ?? workspaceId, deliveryId: kernelDeliveryId, context: task.context });
+  } else if (kernelDeliveryId) {
+    await completeParkedOwner({ taskId, deliveryId: kernelDeliveryId });
   }
 
   await triggerEvent(channels.workspace(workspaceId), events.WORKER_PROGRESS, { taskId });

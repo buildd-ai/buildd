@@ -209,21 +209,47 @@ describe('a loop exit leaves a kernel owner\'s status to the kernel', () => {
     expect(await status(pr)).toBe('assigned');
   });
 
-  test('a merge: T17 completes the task in its own statement, and the loop writes only its own fields', async () => {
+  test('a merge: T17 completes a runner\'s task in its own statement, and the loop writes only its own fields', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/loop-merged', files: { 'src/a.ts': 'export const a = 52;\n' } });
     await held(pr, 'pr_merged');
-    // T17 leaves an interactive session's task open (it completes its own), so the merge is visible apart from the loop.
+    await w.approve(pr);
+    await w.land(pr, pr.head);
+    expect((await w.delivery(pr)).state).toBe('MERGED');
+    expect(await status(pr)).toBe('completed');
+    await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId);
+    const t = await taskRow(pr.ownerTaskId);
+    expect({ status: t.status, loop: t.loop_state }).toEqual({ status: 'completed', loop: 'satisfied' });
+  });
+
+  test('a merge of a task a local session ran: T17 leaves it to the session, whose attempt already ended, so the loop exit completes it', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/loop-merged-session', files: { 'src/a.ts': 'export const a = 54;\n' } });
+    await held(pr, 'pr_merged');
+    // T17 does not complete a task run from a local session (the session completes its own).
     await q(sql`UPDATE workers SET runner = 'mcp' WHERE id = ${pr.workerId}::uuid`);
     await w.approve(pr);
     await w.land(pr, pr.head);
     expect((await w.delivery(pr)).state).toBe('MERGED');
-    expect(await status(pr)).toBe('pending');
     // The merge's own fan-out may already have advanced the loop; either way it is advanced once.
     await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId);
     expect(await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId)).toBe(false);
     const t = await taskRow(pr.ownerTaskId);
-    expect({ status: t.status, loop: t.loop_state }).toEqual({ status: 'pending', loop: 'satisfied' });
+    expect({ status: t.status, loop: t.loop_state }).toEqual({ status: 'completed', loop: 'satisfied' });
+  });
+
+  test('a merge while the session that runs the task is still live: the loop exit leaves its task to it', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/loop-merged-live', files: { 'src/a.ts': 'export const a = 55;\n' } });
+    await held(pr, 'pr_merged');
+    await q(sql`UPDATE workers SET runner = 'mcp' WHERE id = ${pr.workerId}::uuid`);
+    await w.approve(pr);
+    // A session is running the task again when the merge lands.
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status)
+      VALUES (${w.workspaceId}::uuid, ${pr.ownerTaskId}::uuid, 'live', 'mcp', ${pr.branch}, 'running')`);
+    await w.land(pr, pr.head);
+    await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId);
+    expect(await status(pr)).toBe('pending');
   });
 
   test('a delivery the kill switch released is legacy: the green-checks exit completes the task itself', async () => {

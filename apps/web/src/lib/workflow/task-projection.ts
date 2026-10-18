@@ -442,8 +442,9 @@ export function escalationTaskProjectionCtes(decision: Pick<ApplyDecision, 'comm
 // ── AC-1 slice 8: a loop's exit settles the owner task it held ──────────────────────────
 
 /**
- * A loop task's exit condition held (its PR's checks went green): the owner task the loop parked
- * in the queue (`pending`, its attempt ended and recorded) completes. Outside a transition, because
+ * A loop task's exit condition held (its PR's checks went green, or its PR merged and T17 left the
+ * task open because a local session ran it): the owner task the loop parked in the queue
+ * (`pending`, its attempt ended and recorded) completes. Outside a transition, because
  * no delivery state moves: the kernel already has the held attempt's end, which the loop exit
  * re-sends (AttemptEnded, a duplicate when recorded). Moves only the delivery's owner task, only
  * while it is still `pending` with the loop satisfied (the exit's own compare-and-set wrote that),
