@@ -39,27 +39,33 @@ const storage = await import('../../src/lib/oauth/storage');
 const { authenticateApiKey, clearAccountCache, GRANT_WORKSPACE_HEADER } = await import('../../src/lib/api-auth');
 const { authenticateTaskScopedCaller } = await import('../../src/lib/task-token-auth');
 const { mintTaskToken } = await import('../../src/lib/task-token');
+
+// MCP reads run the route's own GET in process (lib/mcp-read-dispatch.ts), so
+// the self-call is observed at the handler, with the headers it was built with.
+const selfCalls: Array<{ path: string; bound: string | null }> = [];
+const realTaskRoute = await import('../../src/app/api/tasks/[id]/route');
+const realTaskGet = realTaskRoute.GET;
+mock.module('../../src/app/api/tasks/[id]/route', () => ({
+  ...realTaskRoute,
+  GET: (req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
+    selfCalls.push({ path: new URL(req.url).pathname, bound: req.headers.get(GRANT_WORKSPACE_HEADER) });
+    return realTaskGet(req as never, ctx as never);
+  },
+}));
 const { requestingPerson } = await import('../../src/lib/request-person');
 const mcpRoute = await import('../../src/app/api/mcp/route');
 const legacyRoute = await import('../../src/app/api/mcp-oauth/[workspace]/route');
-const taskRoute = await import('../../src/app/api/tasks/[id]/route');
 const closedPrsRoute = await import('../../src/app/api/missions/[id]/closed-prs/route');
 
 beforeAll(() => assertDbConfigured());
 
-// Self-calls from the MCP route go over HTTP to the app's own base URL. Route
-// them in-process to the real handlers so the binding they carry is what the
-// REST layer actually sees.
+// Writes from the MCP route still go over HTTP to the app's own base URL; none
+// is routed here, so one that slips through is recorded and answered 404.
 const realFetch = globalThis.fetch;
-const selfCalls: Array<{ path: string; bound: string | null }> = [];
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
   if (url.origin !== 'http://self.example') return realFetch(input as never, init);
-  const headers = new Headers(init?.headers);
-  selfCalls.push({ path: url.pathname, bound: headers.get(GRANT_WORKSPACE_HEADER) });
-  const req = new NextRequest(url, { method: init?.method ?? 'GET', headers, body: init?.body as BodyInit | undefined });
-  const m = /^\/api\/tasks\/([0-9a-f-]{36})$/.exec(url.pathname);
-  if (m && req.method === 'GET') return taskRoute.GET(req as never, { params: Promise.resolve({ id: m[1] }) }) as Promise<Response>;
+  selfCalls.push({ path: url.pathname, bound: new Headers(init?.headers).get(GRANT_WORKSPACE_HEADER) });
   return new Response(JSON.stringify({ error: 'not routed in this test' }), { status: 404 });
 }) as typeof fetch;
 
