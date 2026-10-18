@@ -145,3 +145,22 @@ export function formatWorkerMessages(messages: WorkerMessage[]): string {
     }
   }).join('\n\n');
 }
+
+/** The marker every rendered worker→worker message starts with. */
+export const AGENT_MESSAGE_MARKER = '**AGENT MESSAGE**';
+
+/**
+ * Who an injected follow-up came from, for the activity label. Structural: a
+ * message is an agent's only when it starts with the marker `formatWorkerMessages`
+ * writes; anything else is attributed to a person as before. No sender is
+ * inferred beyond what the envelope itself carries.
+ */
+export function describeInjectedMessage(text: string): { source: 'agent' | 'user'; label: string } {
+  if (text.startsWith(AGENT_MESSAGE_MARKER)) {
+    const head = /^\*\*AGENT MESSAGE\*\* \(([a-z_]+)(?:, from task ([^,)\s]+))?/.exec(text);
+    if (!head) return { source: 'agent', label: 'Agent message' };
+    const kind = head[1].replace(/_/g, ' ');
+    return { source: 'agent', label: head[2] ? `Agent message: ${kind}, from task ${head[2].slice(0, 8)}` : `Agent message: ${kind}` };
+  }
+  return { source: 'user', label: text.length > 30 ? `User: ${text.slice(0, 30)}...` : `User: ${text}` };
+}

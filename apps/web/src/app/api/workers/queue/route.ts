@@ -48,6 +48,7 @@ export async function GET(req: NextRequest) {
     const out = await loadRunnerQueue({
       workspaceIds,
       caller: { accountType: String((account as any).type ?? ''), runner, availableSkills, executor },
+      viewerUserId: (account as any).createdByUserId ?? null,
     });
     return NextResponse.json(out);
   } catch (err) {

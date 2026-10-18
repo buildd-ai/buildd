@@ -1,7 +1,6 @@
 import { db } from '@buildd/core/db';
-import { specRevisions, specs } from '@buildd/core/db/schema';
-import { and, eq, inArray, notInArray } from 'drizzle-orm';
-import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { artifactRevisions, specRevisions, specs } from '@buildd/core/db/schema';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { cardText, cardTokens, specCard, type SpecCard } from './card';
 
 /**
@@ -65,18 +64,21 @@ export type AreaClassification =
 
 export type AreaClassifier = (input: AreaClassifyInput) => Promise<AreaClassification>;
 
-/** The head revision's body of each spec, by id. */
+/**
+ * The head revision's body of each spec, by id: one statement for all of
+ * them, each spec's head revision joined to its body artifact's revision.
+ */
 export async function headBodies(rows: ReadonlyArray<{ id: string; bodyArtifactId: string; headRevision: number }>): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (rows.length === 0) return out;
-  const revs = await db.select({ specId: specRevisions.specId, revision: specRevisions.revision, artifactRevision: specRevisions.artifactRevision })
-    .from(specRevisions).where(inArray(specRevisions.specId, rows.map((r) => r.id)));
-  const byKey = new Map(revs.map((r) => [`${r.specId}#${r.revision}`, r.artifactRevision]));
-  for (const r of rows) {
-    const ar = byKey.get(`${r.id}#${r.headRevision}`);
-    if (ar === undefined) continue;
-    const body = await getArtifactRevision(r.bodyArtifactId, ar);
-    if (typeof body?.content === 'string') out.set(r.id, body.content);
+  const want = sql.join(rows.map((r) => sql`(${r.id}::uuid, ${r.headRevision}::int, ${r.bodyArtifactId}::uuid)`), sql`, `);
+  const found = await db.execute(sql`
+    select w.spec_id as "specId", ar.content as content
+    from (values ${want}) as w(spec_id, revision, artifact_id)
+    join ${specRevisions} sr on sr.spec_id = w.spec_id and sr.revision = w.revision
+    join ${artifactRevisions} ar on ar.artifact_id = w.artifact_id and ar.revision = sr.artifact_revision`);
+  for (const r of ((found as unknown as { rows?: Array<{ specId: string; content: string | null }> }).rows ?? [])) {
+    if (typeof r.content === 'string') out.set(r.specId, r.content);
   }
   return out;
 }
@@ -86,7 +88,11 @@ export async function headBodies(rows: ReadonlyArray<{ id: string; bodyArtifactI
  * its charter and members (R-30). Only this workspace (R-8).
  */
 export async function listAreas(workspaceId: string): Promise<AreaInfo[]> {
-  const rows = await db.select().from(specs)
+  const rows = await db.select({
+    id: specs.id, workspaceId: specs.workspaceId, title: specs.title, scope: specs.scope,
+    bodyArtifactId: specs.bodyArtifactId, headRevision: specs.headRevision,
+    domains: sql<string[] | null>`${specs.metadata}->'domains'`,
+  }).from(specs)
     .where(and(eq(specs.workspaceId, workspaceId), inArray(specs.scope, [...AREA_SCOPES]), notInArray(specs.status, [...AREA_GONE_STATUSES])));
   if (rows.length === 0) return [];
   const bodies = await headBodies(rows);
@@ -98,7 +104,7 @@ export async function listAreas(workspaceId: string): Promise<AreaInfo[]> {
       id: r.id, workspaceId: r.workspaceId, title: r.title, scope: r.scope as 'product' | 'domain',
       charter: specCard(r.title, bodies.get(r.id) ?? '').summary,
       memberCount: mine.length, memberTitles: mine.slice(0, 5).map((m) => m.title),
-      domains: r.metadata?.domains ?? [],
+      domains: Array.isArray(r.domains) ? r.domains : [],
     };
   });
 }

@@ -51,30 +51,29 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
-  const [teams, wsIds] = await Promise.all([
+  // The same resolver the shell, Home and chat use (cookie, else
+  // pickDefaultTeam), so a settings section can never act on a different team
+  // than the header shows. `teams[0]` used to stand in for the default here.
+  // Independent reads go out together: the teams, the active team, and the
+  // workspaces (their ids, then their rows).
+  const teamCookie = (await cookies()).get('buildd-team')?.value;
+  const [teams, currentTeamId, rows] = await Promise.all([
     getUserTeamsWithDetails(user.id).catch((e) => {
       console.error('Settings: teams query error:', e);
       return [] as UserTeam[];
     }),
-    getUserWorkspaceIds(user.id).catch(() => [] as string[]),
+    resolveActiveTeamId(user.id, teamCookie).catch(() => null),
+    getUserWorkspaceIds(user.id).catch(() => [] as string[]).then((wsIds) => (wsIds.length > 0
+      ? db.query.workspaces.findMany({
+          where: sqlWhere(inArray(workspaces.id, wsIds)),
+          columns: { id: true, name: true, repo: true, teamId: true, accessMode: true },
+        }).catch(() => [] as SettingsWorkspace[])
+      : [] as SettingsWorkspace[])),
   ]);
-
-  // The same resolver the shell, Home and chat use (cookie, else
-  // pickDefaultTeam), so a settings section can never act on a different team
-  // than the header shows. `teams[0]` used to stand in for the default here.
-  const teamCookie = (await cookies()).get('buildd-team')?.value;
-  const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
   const permsByTeam: Record<string, SettingsPermissions> = {};
   for (const t of teams) permsByTeam[t.id] = settingsPermissions(t, user.id);
   const perms = settingsPermissions(currentTeam, user.id);
-
-  const rows = wsIds.length > 0
-    ? await db.query.workspaces.findMany({
-        where: sqlWhere(inArray(workspaces.id, wsIds)),
-        columns: { id: true, name: true, repo: true, teamId: true, accessMode: true },
-      }).catch(() => [] as SettingsWorkspace[])
-    : [];
 
   return {
     user,

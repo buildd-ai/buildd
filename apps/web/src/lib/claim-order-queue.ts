@@ -21,14 +21,15 @@ import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
 import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { db } from '@buildd/core/db';
-import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
-import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
+import { missions, taskEstimates, tasks, taskSchedules, teams, users, workspaces } from '@buildd/core/db/schema';
+import { alias } from 'drizzle-orm/pg-core';
+import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueOwner, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
 import { claimOrderBy } from '@/lib/claim-order';
 import { claimCandidateWhere, type ClaimCandidateInput, type ClaimGateName } from '@/lib/claim-candidate-where';
 import { findBlockingPr, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { findHoldingLease, findHoldingOpenPr, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
-import type { OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
+import { advisoryBlockingPeer, advisoryMutexApplies, type OpenPrTask } from '@/app/api/workers/claim/coordination-gates';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -135,8 +136,23 @@ export interface RunnerQueueRow {
   ctxCredentialHold?: string | boolean | null;
   /** For the alongside read (`queueAlongside`); never sent to the runner. */
   pathManifest?: string[] | null;
+  /** For the one-undeclared-task-per-mission projection (`advisoryMutexApplies`); never sent to the runner. */
+  category?: string | null;
+  outputRequirement?: string | null;
   gitConfig?: unknown;
+  /** The task's owner: who filed it, else its mission's, else its schedule's (R-58). */
+  ownerUserId?: string | null;
+  /** That person's name; only its first word is sent. */
+  ownerName?: string | null;
   [gate: `g_${string}`]: unknown;
+}
+
+/** Whose work a row is, against the person behind the runner's key (R-58); never the runner or login. */
+export function ownerOf(row: RunnerQueueRow, viewerUserId: string | null): { owner: RunnerQueueOwner; ownerName?: string } {
+  if (!row.ownerUserId) return { owner: 'unattributed' };
+  if (viewerUserId && row.ownerUserId === viewerUserId) return { owner: 'you' };
+  const first = row.ownerName?.trim().split(/\s+/)[0];
+  return first ? { owner: 'teammate', ownerName: first } : { owner: 'teammate' };
 }
 
 /** What set a task's start time, from the context flags the read carries. */
@@ -149,7 +165,7 @@ export function holdCauseOf(row: RunnerQueueRow): RunnerQueueHoldCause {
 }
 
 /** One read row as a queue entry: its exclusion (never for this runner) or its holds. */
-export function classifyRunnerQueueRow(row: RunnerQueueRow): { task: RunnerQueueTask; exclusion: RunnerQueueExclusion | null } {
+export function classifyRunnerQueueRow(row: RunnerQueueRow, viewerUserId: string | null = null): { task: RunnerQueueTask; exclusion: RunnerQueueExclusion | null } {
   const has = (g: QueueGateName) => `g_${g}` in row;
   const failed = (g: QueueGateName) => has(g) && gateFailed(row[`g_${g}`]);
   const exclusion = EXCLUSION_ORDER.find(([g]) => failed(g))?.[1] ?? null;
@@ -175,12 +191,13 @@ export function classifyRunnerQueueRow(row: RunnerQueueRow): { task: RunnerQueue
       holdUntil,
       holdCause: holds.includes('deferred') ? holdCauseOf(row) : null,
       estimateMinutes: null,
+      ...ownerOf(row, viewerUserId),
     },
   };
 }
 
 /** Rows already in claim order -> teams, each keeping that order; teams by name. */
-export function groupRunnerQueue(rows: RunnerQueueRow[]): RunnerQueueTeam[] {
+export function groupRunnerQueue(rows: RunnerQueueRow[], viewerUserId: string | null = null): RunnerQueueTeam[] {
   const byTeam = new Map<string, RunnerQueueTeam>();
   for (const row of rows) {
     let team = byTeam.get(row.teamId);
@@ -188,7 +205,7 @@ export function groupRunnerQueue(rows: RunnerQueueRow[]): RunnerQueueTeam[] {
       team = { teamId: row.teamId, teamName: row.teamName ?? row.teamId.slice(0, 8), estimatesOn: false, queue: [], notForRunner: [] };
       byTeam.set(row.teamId, team);
     }
-    const { task, exclusion } = classifyRunnerQueueRow(row);
+    const { task, exclusion } = classifyRunnerQueueRow(row, viewerUserId);
     if (exclusion) team.notForRunner.push({ ...task, reason: exclusion });
     else team.queue.push(task);
   }
@@ -207,6 +224,43 @@ export interface RunnerQueueDeps {
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
   workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
+  /** missionId → its in-flight tasks that declare no files (the claim's `missionAdvisoryInFlight`). */
+  missionInFlight?: (missionIds: string[]) => Promise<Map<string, Set<string>>>;
+}
+
+async function readMissionInFlight(missionIds: string[]): Promise<Map<string, Set<string>>> {
+  const { loadMissionCoordination } = await import('@/app/api/workers/claim/coordination-snapshot');
+  return (await loadMissionCoordination(missionIds)).missionAdvisoryInFlight;
+}
+
+/**
+ * The claim's one-scope-undeclared-task-per-mission serialization
+ * (advisory_manifest, claim route step 4), projected onto the queue in claim
+ * order: a task it applies to waits on the mission's in-flight undeclared
+ * task, else on the first such task ahead of it here that nothing else holds
+ * (the claim starts that one and adds it to the set in the same batch). Rows
+ * are mutated in place. One known gap: under the planner's `apply` mode a
+ * task with a confident predicted scope skips the mutex at claim time, which
+ * this read cannot see, so such a task may start where the queue says it waits.
+ */
+export function markAdvisorySerialized(
+  teamsOut: RunnerQueueTeam[],
+  rowsById: Map<string, RunnerQueueRow>,
+  inFlight: Map<string, Set<string>>,
+): void {
+  const occupied = new Map([...inFlight].map(([m, set]) => [m, new Set(set)]));
+  for (const team of teamsOut) for (const t of team.queue) {
+    const r = rowsById.get(t.id);
+    // A task something else holds never starts, so it neither waits here nor occupies the slot.
+    if (!t.missionId || !r || t.holds.length > 0 || !advisoryMutexApplies(r)) continue;
+    const peer = advisoryBlockingPeer(t.id, occupied.get(t.missionId));
+    if (peer) {
+      t.holds = [...t.holds, 'advisory_manifest'];
+      t.holderTaskId = peer;
+    } else {
+      occupied.set(t.missionId, new Set([t.id]));
+    }
+  }
 }
 
 /**
@@ -245,6 +299,10 @@ async function readOverlaps(workspaceIds: string[]): Promise<QueueOverlapState> 
   return { openPrs, leases: new Map(leaseList) };
 }
 
+const ownerUser = alias(users, 'owner_user');
+/** Who owns a task: who filed it, else its mission's creator, else its schedule's. */
+const taskOwnerId = sql<string | null>`coalesce(${tasks.createdByUserId}, ${missions.createdByUserId}, ${taskSchedules.createdByUserId})`;
+
 /** The read, on any select builder (the db, or a QueryBuilder to render it in a test). */
 export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) {
   return builder
@@ -268,12 +326,18 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       pathManifest: tasks.pathManifest,
+      category: tasks.category,
+      outputRequirement: tasks.outputRequirement,
+      ownerUserId: taskOwnerId,
+      ownerName: ownerUser.name,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)
     .innerJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
     .leftJoin(teams, eq(teams.id, workspaces.teamId))
     .leftJoin(missions, eq(missions.id, tasks.missionId))
+    .leftJoin(taskSchedules, eq(taskSchedules.id, tasks.scheduleId))
+    .leftJoin(ownerUser, sql`${ownerUser.id} = ${taskOwnerId}`)
     .where(runnerQueueWhere(opts.workspaceIds))
     // The claim candidate query's own ORDER BY.
     .orderBy(...claimOrderBy(tasks, { desc, asc }))
@@ -323,7 +387,7 @@ export async function fetchBroadClaimCandidateIds(
 }
 
 export async function loadRunnerQueue(
-  input: { workspaceIds: string[]; caller: RunnerQueueCaller; now?: Date },
+  input: { workspaceIds: string[]; caller: RunnerQueueCaller; now?: Date; /** The person behind the runner's key (accounts.createdByUserId), for R-58's "you". */ viewerUserId?: string | null },
   deps: RunnerQueueDeps = {},
 ): Promise<RunnerQueueResponse> {
   if (input.workspaceIds.length === 0) return { teams: [], truncated: false };
@@ -332,7 +396,7 @@ export async function loadRunnerQueue(
   const rows = await (deps.read ?? readRows)({ workspaceIds: input.workspaceIds, gates });
   const truncated = rows.length > RUNNER_QUEUE_LIMIT;
   const kept = rows.slice(0, RUNNER_QUEUE_LIMIT);
-  const teamsOut = groupRunnerQueue(kept);
+  const teamsOut = groupRunnerQueue(kept, input.viewerUserId ?? null);
   // Overlaps are read only when some queued task declares files; a failed
   // read leaves every row without `alongside`.
   const declaring = kept.filter(r => Array.isArray(r.pathManifest) && r.pathManifest.length > 0);
@@ -355,6 +419,13 @@ export async function loadRunnerQueue(
         if (a) t.alongside = a;
       }
     }
+  }
+  // Undeclared-scope serialization; a failed read marks nothing.
+  const undeclared = kept.filter(r => r.missionId && advisoryMutexApplies(r));
+  if (undeclared.length > 0) {
+    const missionIds = [...new Set(undeclared.map(r => r.missionId!))];
+    const inFlight = await (deps.missionInFlight ?? readMissionInFlight)(missionIds).catch(() => null);
+    if (inFlight) markAdvisorySerialized(teamsOut, new Map(kept.map(r => [r.id, r])), inFlight);
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {

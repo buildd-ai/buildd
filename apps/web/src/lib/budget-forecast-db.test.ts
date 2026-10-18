@@ -19,8 +19,10 @@ const mockTenantBudgetsFindFirst = mock(() => Promise.resolve(null));
 const mockBackendPausesFindFirst = mock((_opts?: any) => Promise.resolve(null));
 
 // Builder chain for db.select().from().where() and db.select().from().innerJoin().where()
+// Mission spend is one grouped read: where(...).groupBy(...).
+const grouped = (rows: unknown[]) => ({ groupBy: () => Promise.resolve(rows) });
 const mockInnerJoinChain = {
-  where: mock(() => Promise.resolve([{ spend: '0' }])),
+  where: mock((): unknown => grouped([{ missionId: 'mission-1', spend: '0' }])),
 };
 const mockFromChain = {
   where: mock(() => Promise.resolve([])),
@@ -133,7 +135,7 @@ describe('getBudgetForecast — mission status filtering', () => {
   beforeEach(() => {
     mockMissionsFindMany.mockReset();
     mockInnerJoinChain.where.mockReset();
-    mockInnerJoinChain.where.mockImplementation(() => Promise.resolve([{ spend: '5.00' }]));
+    mockInnerJoinChain.where.mockImplementation(() => grouped([{ missionId: 'mission-1', spend: '5.00' }]));
   });
 
   it('excludes a mission with status completed', async () => {
@@ -182,7 +184,7 @@ describe('getBudgetForecast — team-level (null workspaceId) mission filtering'
   beforeEach(() => {
     mockMissionsFindMany.mockReset();
     mockInnerJoinChain.where.mockReset();
-    mockInnerJoinChain.where.mockImplementation(() => Promise.resolve([{ spend: '0' }]));
+    mockInnerJoinChain.where.mockImplementation(() => grouped([{ missionId: 'mission-1', spend: '0' }]));
   });
 
   it('includes a mission with workspaceId IS NULL on the caller team', async () => {

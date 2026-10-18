@@ -54,6 +54,8 @@ export interface ConformanceHost {
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
+  /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
+  passTime(ms: number): Promise<void>;
 }
 
 export interface ConformanceScenario {
@@ -2684,7 +2686,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    name: 'AC-76: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-77: never a stale success)',
     async run(host) {
       const s = await new Delivery(host, 81).open();
       const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;
@@ -2793,6 +2795,40 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq((await s.d()).version, v, 'nothing applied');
       applied(await s.merged('H1'), 'MERGED', 'merged');
       notApplied(await s.submit({ type: 'AttemptStarted', actor: 'claim', taskId: s.ownerTaskId, claimedBy: 'acct-1', claimedAt: '2026-10-18 09:00:02+00' }), 'stale', 'attempt_not_bound', 'terminal: a start after the merge');
+    },
+  },
+  {
+    name: 'AC-1 slice 9: a reopen of the owner task records in place; a re-send is a duplicate, the next end of the same worker is its own',
+    async run(host) {
+      const s = await new Delivery(host, 132).open();
+      const before = await s.d();
+      const reopen = (endedAt: string, o: Partial<Extract<Command, { type: 'AttemptReopened' }>> = {}) =>
+        s.submit({ type: 'AttemptReopened', actor: 'recovery', taskId: s.ownerTaskId, workerId: 'wk-1', endedAt, to: 'pending', reason: 'credential_restored', ...o });
+      applied(await reopen('2026-10-18T08:00:00.000Z'), 'WORKING', 'the reopen applies in place');
+      eq(pick(await s.d(), ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), pick(before, ['state', 'currentHeadSha', 'currentRound', 'boundAttemptId']), 'the delivery itself does not move');
+      notApplied(await reopen('2026-10-18T08:00:00.000Z'), 'duplicate', 'idempotency_key_seen', 'the same reopen re-sent');
+      applied(await reopen('2026-10-18T09:00:00.000Z', { to: 'assigned' }), 'WORKING', 'the worker\'s next end reopened is a reopen of its own');
+      notApplied(await reopen('2026-10-18T10:00:00.000Z', { to: 'assigned', workerId: null }), 'rejected', 'reopen_not_named', 'a resume names its worker');
+      eq((await host.transitions(s.deliveryId)).at(-1)?.command, 'AttemptReopened', 'the reopen is in the log');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'the reopened attempt\'s end hands on as usual');
+      notApplied(await reopen('2026-10-18T11:00:00.000Z'), 'stale', 'attempt_not_bound', 'a reopen after the hand-off records nothing');
+    },
+  },
+  {
+    name: 'AC-1 slice 9: a withdrawn claim records in place; a re-send is a duplicate, and once the delivery moved on it records nothing',
+    async run(host) {
+      const s = await new Delivery(host, 133).open();
+      const claim = { claimedBy: 'acct-1', claimedAt: '2026-10-18 08:00:00.000001+00' };
+      const withdraw = (o: Partial<Extract<Command, { type: 'AttemptWithdrawn' }>> = {}) =>
+        s.submit({ type: 'AttemptWithdrawn', actor: 'claim', taskId: s.ownerTaskId, claim, outcome: 'requeued', reason: 'claim_rollback', ...o });
+      const v = (await s.d()).version;
+      applied(await withdraw(), 'WORKING', 'the withdrawal applies in place');
+      eq((await s.d()).version, v + 1, 'one version for the withdrawal');
+      notApplied(await withdraw(), 'duplicate', 'idempotency_key_seen', 'the same withdrawal re-sent');
+      applied(await withdraw({ claim: null, outcome: 'failed', reason: 'workspace_mismatch' }), 'WORKING', 'a refusal of the queued task is its own');
+      notApplied(await withdraw({ claim: null }), 'rejected', 'claim_not_named', 'a requeue names its claim');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      notApplied(await withdraw({ claim: { ...claim, claimedAt: '2026-10-18 09:00:00+00' } }), 'stale', 'attempt_not_bound', 'a withdrawal after the hand-off records nothing');
     },
   },
 ];

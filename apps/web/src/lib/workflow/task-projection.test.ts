@@ -9,6 +9,7 @@ import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, reapedOwnerAtte
 import { projectRequeueSql, requeueingAttemptIsCurrentSql, requeueTaskProjectionCtes } from './task-projection';
 import { ownerClaimOpenSql, projectAttemptStartSql, startTaskProjectionCtes } from './task-projection';
 import { escalatesCi, escalationTaskProjectionCtes, projectLoopExitSql } from './task-projection';
+import { notOwnerTaskSql, projectReopenSql, projectWithdrawSql, reopenTaskProjectionCtes, withdrawTaskProjectionCtes } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -301,5 +302,83 @@ describe('AC-1 slice 8: an exhausted CI repair and a loop exit', () => {
     expect(t).toContain('od.owner_task_id = tk.id');
     expect(t).toMatch(/NOT EXISTS \(SELECT 1 FROM workers lw WHERE lw\.task_id = tk\.id AND .*lw\.status NOT IN/s);
     expect(params).toEqual(expect.arrayContaining(['t-1', 'd-1', 'completed', 'failed']));
+  });
+});
+
+// ── AC-1 slice 9: a settled owner task reopens; a claim withdraws its start ──────────────
+
+describe('AttemptReopened moves the owner task in the transition, guarded on the end it names', () => {
+  const ev = { reopen: true, taskId: 't1', workerId: 'w1', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending', reason: 'credential_restored' };
+
+  test('t_reopen: a failed task back to the queue with its claim released, only for the named worker\'s end with no live attempt', () => {
+    const [cte] = reopenTaskProjectionCtes({ command: 'AttemptReopened', evidence: ev }, 'd').map((c) => render(c));
+    expect(cte.sql).toContain('t_reopen AS (');
+    expect(cte.sql).toContain("status = 'pending', claimed_by = NULL, claimed_at = NULL, expires_at = NULL");
+    expect(cte.sql).toContain('FROM d');
+    expect(cte.sql).toContain("date_trunc('milliseconds', rw.completed_at)");
+    expect(cte.sql).toContain('lw.status NOT IN');
+    // A new attempt reopens only a failed task: the status list holds one entry.
+    expect(cte.sql).toMatch(/tk\.status IN \(\$\d+::text\)/);
+    expect(reopenTaskProjectionCtes({ command: 'AttemptRequeued', evidence: ev }, 'd')).toEqual([]);
+    expect(reopenTaskProjectionCtes({ command: 'AttemptReopened', evidence: { ...ev, reopen: false } }, 'd')).toEqual([]);
+  });
+
+  test('a resume (assigned) reopens a completed or failed task, never a cancelled one, and keeps the claim', () => {
+    const q = render(projectReopenSql({ deliveryId: 'd1', taskId: 't1', workerId: 'w1', endedAt: null, to: 'assigned' }));
+    expect(q.sql).toContain('-- workflow:project_reopen');
+    expect(q.sql).toContain("SET status = 'assigned', updated_at = now()");
+    expect(q.sql).not.toContain('claimed_by = NULL');
+    expect(q.params).toEqual(expect.arrayContaining(['completed', 'failed']));
+    expect(q.params).not.toContain('cancelled');
+    expect(q.sql).not.toContain('lw.status NOT IN');
+  });
+
+  test('with no worker named, only a task no attempt row ever ran', () => {
+    const q = render(projectReopenSql({ deliveryId: 'd1', taskId: 't1', workerId: null, endedAt: null, to: 'pending' }));
+    expect(q.sql).toContain('NOT EXISTS (SELECT 1 FROM workers rw WHERE rw.task_id = tk.id');
+  });
+});
+
+describe('AttemptWithdrawn gives a claim back, or refuses a queued task, guarded on exactly that claim', () => {
+  const claim = { claimedBy: 'a1', claimedAt: '2026-10-18 08:00:00.123456+00' };
+
+  test('t_withdraw with a claim: an assigned task under that exact claim with no attempt row since it', () => {
+    const [cte] = withdrawTaskProjectionCtes({ command: 'AttemptWithdrawn', evidence: { withdraw: true, taskId: 't1', claim, outcome: 'requeued', reason: 'account_cap' } }, 'd').map((c) => render(c));
+    expect(cte.sql).toContain('t_withdraw AS (');
+    expect(cte.sql).toContain("tk.status = 'assigned'");
+    expect(cte.sql).toContain('tk.claimed_at = $');
+    expect(cte.sql).toContain('cw.created_at >= tk.claimed_at');
+    expect(cte.params).toEqual(expect.arrayContaining(['a1', claim.claimedAt, 'pending']));
+    expect(cte.sql).not.toContain('set_config');
+  });
+
+  test('the claim route\'s own rollback tells the tasks trigger not to wake dispatch', () => {
+    const q = render(projectWithdrawSql({ deliveryId: 'd1', taskId: 't1', claim, outcome: 'requeued', reason: 'claim_rollback' }));
+    expect(q.sql).toContain("set_config('buildd.dispatch_hint'");
+    expect(q.params).toContain(JSON.stringify({ suppress: 'claim_rollback' }));
+  });
+
+  test('with no claim: a queued task no live claim holds and no attempt runs, failed', () => {
+    const q = render(projectWithdrawSql({ deliveryId: 'd1', taskId: 't1', claim: null, outcome: 'failed', reason: 'workspace_mismatch' }));
+    expect(q.sql).toContain("tk.status = 'pending' AND (tk.claimed_by IS NULL OR tk.expires_at < now())");
+    expect(q.sql).toContain('lw.status NOT IN');
+    expect(q.params).toContain('failed');
+    expect(withdrawTaskProjectionCtes({ command: 'AttemptWithdrawn', evidence: { withdraw: true, taskId: 't1', claim: null, outcome: 'requeued' } }, 'd')).toEqual([]);
+  });
+});
+
+describe('notOwnerTaskSql: an attempt writer\'s own status write skips every delivery owner', () => {
+  test('no delivery, or a role other than owner', () => {
+    const q = render(sql`SELECT 1 WHERE ${notOwnerTaskSql()}`);
+    expect(q.sql).toContain('"delivery_id" IS NULL OR');
+    expect(q.sql).toContain(`"delivery_role" IS DISTINCT FROM 'owner'`);
+  });
+});
+
+describe('projectLoopExitSql: T17\'s open-PR rule', () => {
+  test('a task with another PR still open stays parked', () => {
+    const q = render(projectLoopExitSql({ deliveryId: 'd1', taskId: 't1' }));
+    expect(q.sql).toContain('od.pr_number IS NULL OR NOT EXISTS (');
+    expect(q.sql).toContain('lower(ow.pr_url) <> lower(\'https://github.com/\' || od.repo_full_name');
   });
 });

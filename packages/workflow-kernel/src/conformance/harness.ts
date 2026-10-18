@@ -69,6 +69,7 @@ export function memoryHost(k: InMemoryKernel = new InMemoryKernel()): Conformanc
     transitions: async (deliveryId) => k.store.transitions(deliveryId).map((t) => ({
       fromVersion: t.fromVersion, toVersion: t.toVersion, command: t.command, toState: t.toState,
     })),
+    passTime: async (ms) => { k.clock.advance(ms); },
     setKernelEnabled: async (workspaceId, on) => { if (on) delete switchedOff[workspaceId]; else switchedOff[workspaceId] = { kernelEnabled: false }; },
   };
 }

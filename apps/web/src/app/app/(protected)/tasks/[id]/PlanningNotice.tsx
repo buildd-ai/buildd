@@ -2,7 +2,7 @@ import Notice from '@/components/ui/Notice';
 
 /**
  * Where a planning-mode task stands, as the shared `Notice`: a planning task
- * has no Build → Audit → Land delivery (it ends in a plan for review, not a
+ * has no Build → Verify → Deliver delivery (it ends in a plan for review, not a
  * PR), so this is a status line, not a `Lifecycle`. A finished plan awaiting
  * review renders nothing: `PlanReviewPanel` owns that state.
  */
