@@ -170,9 +170,15 @@ mock.module('@buildd/core/pr-facts', () => ({
 }));
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
-const mockObservePrState = mock(async (_input: any) => false);
+const mockObservePrState = mock(async (_input: any, _call?: any) => false);
 const mockRecordPrStateObserved = mock(async (_input: any) => true);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState, recordPrStateObserved: mockRecordPrStateObserved }));
+// T17 to T19 go through the kernel client (AC-9); the seam keeps only the render's fact record.
+mock.module('@/lib/workflow/seam', () => ({
+  observePrState: mock(async () => { throw new Error('called the seam\'s observePrState, not the kernel client\'s'); }),
+  recordPrStateObserved: mockRecordPrStateObserved,
+}));
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, observePrState: mockObservePrState }));
 
 // G6 (failure-incident-recovery): a healed merge releases the PR's paths,
 // like the webhook's merge work does.
@@ -475,7 +481,7 @@ describe('reconcileStalePrWorkers', () => {
     // A lost webhook: the kernel-owned delivery imports the same fact.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, installationId: 123, source: 'sweep:pr-reconcile',
-    }));
+    }), { principal: { kind: 'system', id: 'system:sweep:pr-reconcile' } });
   });
 
   it('G6: healing a missed merge releases the task\'s paths', async () => {
@@ -555,7 +561,7 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
     expect(written.prLifecycleStatus).toBeUndefined();
-    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 99, source: 'sweep:pr-reconcile' }));
+    expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 99, source: 'sweep:pr-reconcile' }), expect.anything());
   });
 
   it('leaves an open PR open, recording only that it was checked', async () => {

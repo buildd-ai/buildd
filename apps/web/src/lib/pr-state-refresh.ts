@@ -419,8 +419,8 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         await db.update(workers).set({ ...bookkeeping, updatedAt: now }).where(eq(workers.id, worker.id));
         if (pr.state === 'closed' && worker.prNumber != null) {
           // §11: a kernel-owned delivery imports the same close/merge from its own live read.
-          await import('@/lib/workflow/seam')
-            .then(({ observePrState }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }))
+          await import('@/lib/workflow/kernel-client')
+            .then(({ observePrState, systemPrincipal }) => observePrState({ workspaceId, repoFullName: repo, prNumber: worker.prNumber!, installationId, source: 'sweep:pr-state-refresh' }, { principal: systemPrincipal('system:sweep:pr-state-refresh') }))
             .catch((err) => console.error(`[pr-state-refresh] kernel close import failed for PR #${worker.prNumber}:`, err));
         }
         failedAt.delete(worker.id);

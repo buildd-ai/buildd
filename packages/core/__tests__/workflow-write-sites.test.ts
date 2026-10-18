@@ -190,8 +190,12 @@ describe('workflow kernel tables have one writer', () => {
  * And T6 and T9: `recordReviewVerdict` and `adoptReviewVerdict` (the worker PATCH reports a
  * reviewer's verdict) and `claimFix` (the claim route revalidates a fix at claim).
  * And T12: `observeConflict` (the conflict door reports a conflicted PR).
+ * And the last three (AC-9 met): `observePrState` (T17 to T19), `observeHead` (T3) and
+ * `observeBase` (T29), which the GitHub webhook, the reviewer's push subscriber, the reconcile and
+ * refresh sweeps and the dependency gate report. With them every seam command the web host reaches
+ * is a door op: no module outside the kernel imports one from the seam.
  */
-const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict'];
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery', 'attemptEnded', 'observeCiFailure', 'observeCiGreen', 'recordReviewVerdict', 'adoptReviewVerdict', 'claimFix', 'observeConflict', 'observePrState', 'observeHead', 'observeBase'];
 /** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
 const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
@@ -201,10 +205,12 @@ const SEAM_MEMBER = new RegExp(String.raw`\(\s*await\s+import\(\s*${SEAM_SPEC}\s
 const SEAM_NAMESPACE = new RegExp(String.raw`(?:import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s*from\s*${SEAM_SPEC}|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+import\(\s*${SEAM_SPEC}\s*\))`, 'g');
 /** `import('…/seam').then((m) => m.a)`. */
 const SEAM_THEN = new RegExp(String.raw`import\(\s*${SEAM_SPEC}\s*\)\s*\.then\(\s*\(?\s*([A-Za-z_$][\w$]*)`, 'g');
+/** `import('…/seam').then(({ a, b: c }) => a(p))`. */
+const SEAM_THEN_NAMED = new RegExp(String.raw`import\(\s*${SEAM_SPEC}\s*\)\s*\.then\(\s*(?:async\s*)?\(\s*\{([^}]*)\}`, 'g');
 
 function seamDoorImports(src: string): string[] {
   const names: string[] = [];
-  for (const m of src.matchAll(SEAM_NAMED)) {
+  for (const m of [...src.matchAll(SEAM_NAMED), ...src.matchAll(SEAM_THEN_NAMED)]) {
     for (const part of (m[1] ?? m[2] ?? '').split(',')) {
       const name = part.trim().replace(/^type\s+/, '').split(/\s+as\s+|\s*:\s*/)[0]?.trim();
       if (name) names.push(name);
@@ -251,7 +257,12 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`import { attemptEnded } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { observeCiFailure } from '@/lib/workflow/seam';`)).toEqual(['observeCiFailure']);
     expect(seamDoorImports(`const { observeCiFailure } = await import('@/lib/workflow/seam');`)).toEqual(['observeCiFailure']);
-    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeCiGreen']);
+    expect(seamDoorImports(`import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';`)).toEqual(['observeBase', 'observeCiGreen', 'observePrState']);
+    expect(seamDoorImports(`import { observeHead, policyFindingFor } from '@/lib/workflow/seam';`)).toEqual(['observeHead']);
+    expect(seamDoorImports(`await import('@/lib/workflow/seam').then(({ observePrState }) => observePrState(p));`)).toEqual(['observePrState']);
+    expect(seamDoorImports(`await import('@/lib/workflow/seam').then((m) => m.observePrState(p));`)).toEqual(['observePrState']);
+    expect(seamDoorImports(`const { recordPrStateObserved } = await import('@/lib/workflow/seam');`)).toEqual([]);
+    expect(seamDoorImports(`import { observeBase, observePrState } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { observeCiGreen } from '@/lib/workflow/kernel-client';`)).toEqual([]);
     expect(seamDoorImports(`import { adoptReviewVerdict, fixedElsewhereOf, recordReviewVerdict } from '@/lib/workflow/seam';`)).toEqual(['adoptReviewVerdict', 'recordReviewVerdict']);
     expect(seamDoorImports(`import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';`)).toEqual(['claimFix']);
