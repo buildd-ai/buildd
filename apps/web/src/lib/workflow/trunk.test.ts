@@ -6,12 +6,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { checkRunsSummary } from './github-facts';
+import { checkRunsSummary, failingTestEntries, pendingCheckRuns, type CheckRunRow } from './github-facts';
+import { failingEntries, failingTestsFromLog } from './failing-tests';
 import {
   blockedOnResolvedSql, linkTrunkFixSql, openIncidentsForBaseSql, openOrJoinIncidentSql, recentSignatureDeliveriesSql, repairingCiOnBaseSql,
-  resolveIncidentSql, trunkFixAnchorSql, trunkIncidentSql, unresolvedIncidentsSql,
-  DEFAULT_TRUNK_WINDOW_MINUTES, UNKNOWN_CI_SIGNATURE, ciSignature, signatureChecks, trunkBreakerConfig, trunkExplains, trunkRecovered,
+  resolveIncidentSql, touchIncidentSql, trunkFixAnchorSql, trunkIncidentSql, unresolvedIncidentsSql,
+  DEFAULT_TRUNK_WINDOW_MINUTES, UNKNOWN_CI_SIGNATURE, ciSignature, signatureCheckNames, signatureChecks, trunkBreakerConfig, trunkExplains, trunkRecovered,
+  trunkRecoveredOnRuns,
 } from './trunk';
+import { MAX_SIGNATURE_LENGTH, MAX_TESTS_PER_CHECK } from './trunk-signature';
 import { trunkFixDescription, trunkFixTitle } from '@buildd/workflow-kernel/handlers/trunk';
 
 describe('trunkBreakerConfig', () => {
@@ -44,6 +47,107 @@ describe('signatures', () => {
     expect(trunkRecovered('ci:unit', [])).toBe(true);
     expect(trunkRecovered('ci:unit', ['Lint'])).toBe(true);
     expect(trunkRecovered('ci:lint|unit', ['Unit'])).toBe(false);
+  });
+});
+
+describe('signatures at test level: a shared job name is not a shared failure', () => {
+  const SHARD1 = 'build · unit tests (1/3)';
+  const SHARD2 = 'build · unit tests (2/3)';
+
+  test("the trunk fails test A in shard 1/3 and the PR fails test B in shard 1/3: not the trunk's", () => {
+    const base = ciSignature([...failingEntries(SHARD1, ['a11y guard > no native <select>']), 'build']);
+    const pr = ciSignature([...failingEntries(SHARD1, ['module boundaries ratchet']), 'build']);
+    expect(trunkExplains(pr, base)).toBe(false);
+  });
+
+  test('the same failing test explains the PR, in whichever shard it ran', () => {
+    const base = ciSignature([...failingEntries(SHARD1, ['a11y guard']), 'build']);
+    const pr = ciSignature([...failingEntries(SHARD2, ['a11y guard']), 'build']);
+    expect(trunkExplains(pr, base)).toBe(true);
+    // A PR failing the trunk's test and one of its own is the PR's.
+    expect(trunkExplains(ciSignature([...failingEntries(SHARD2, ['a11y guard', 'jsonb casts ratchet']), 'build']), base)).toBe(false);
+  });
+
+  test("a shard name alone never matches: unread tests on either side are not the trunk's", () => {
+    const unread = ciSignature(failingEntries(SHARD1, null));
+    expect(trunkExplains(unread, unread)).toBe(false);
+    expect(trunkExplains(unread, ciSignature(failingEntries(SHARD1, ['a11y guard'])))).toBe(false);
+    expect(trunkExplains(ciSignature(failingEntries(SHARD1, ['a11y guard'])), unread)).toBe(false);
+    // Read with tests on one side, bare on the other: no test-level match.
+    expect(trunkExplains(ciSignature(failingEntries(SHARD1, ['a11y guard'])), ciSignature([SHARD1]))).toBe(false);
+    // One unread shard leaves the whole check unread.
+    expect(ciSignature([...failingEntries(SHARD1, ['a']), ...failingEntries(SHARD2, null)])).toBe('ci:build · unit tests (<n>/<n>)::?');
+  });
+
+  test('a check that failed with no test in its log (lint, a gate) still matches by name', () => {
+    expect(trunkExplains(ciSignature(failingEntries('Lint', [])), ciSignature(['lint', ...failingEntries(SHARD1, ['x'])]))).toBe(true);
+  });
+
+  test('test names normalise like check names; many failing tests collapse; the signature stays bounded', () => {
+    expect(ciSignature(['Unit::Suite > takes 120ms', 'Unit::Suite > takes 85ms'])).toBe('ci:unit::suite > takes <n>ms');
+    expect(ciSignature(['unit::a|b'])).toBe('ci:unit::a/b');
+    const many = Array.from({ length: MAX_TESTS_PER_CHECK + 1 }, (_, i) => `t${String.fromCharCode(97 + i)}`);
+    expect(ciSignature(failingEntries('unit', many))).toBe('ci:unit::*');
+    expect(trunkExplains(ciSignature(failingEntries('unit', many)), ciSignature(failingEntries('unit', [...many.slice(1), 'zz'])))).toBe(true);
+    const long = Array.from({ length: 40 }, (_, i) => failingEntries(`job ${String.fromCharCode(97 + (i % 26))}${i >= 26 ? 'x' : ''}`, ['y'.repeat(90)])).flat();
+    expect(ciSignature(long).length).toBeLessThanOrEqual(MAX_SIGNATURE_LENGTH);
+    expect(signatureCheckNames(ciSignature([...failingEntries('unit', ['a', 'b']), 'lint']))).toEqual(['lint', 'unit']);
+  });
+
+  test('recovery at test level: a different test failing in the same shard is a recovery; unread is not', () => {
+    const inc = ciSignature(failingEntries(SHARD1, ['a11y guard']));
+    expect(trunkRecovered(inc, failingEntries(SHARD1, ['other test']))).toBe(true);
+    expect(trunkRecovered(inc, failingEntries(SHARD2, ['a11y guard']))).toBe(false);
+    expect(trunkRecovered(inc, failingEntries(SHARD1, null))).toBe(false);
+    // A test-less incident check is red while the check fails at all.
+    expect(trunkRecovered('ci:lint', failingEntries('lint', ['x']))).toBe(false);
+  });
+
+  test("a base with runs still going recovers once the incident's own checks finished clean", () => {
+    const inc = ciSignature(failingEntries(SHARD1, ['a11y guard']));
+    expect(trunkRecoveredOnRuns(inc, { complete: true, failing: [], tests: [] })).toBe(true);
+    expect(trunkRecoveredOnRuns(inc, { complete: false, failing: [], tests: [], pending: ['deploy preview'] })).toBe(true);
+    expect(trunkRecoveredOnRuns(inc, { complete: false, failing: [], tests: [], pending: [SHARD2] })).toBe(false);
+    // No pending list (a partial read): unknown.
+    expect(trunkRecoveredOnRuns(inc, { complete: false, failing: [], tests: [] })).toBe(false);
+    expect(trunkRecoveredOnRuns(inc, null)).toBe(false);
+    expect(trunkRecoveredOnRuns(inc, { complete: true, failing: [SHARD1], tests: failingEntries(SHARD1, ['a11y guard']) })).toBe(false);
+  });
+});
+
+describe('failing tests from a job log', () => {
+  test('bun (fail) lines and jest/vitest marks, ANSI and timestamps stripped; nothing else', () => {
+    const log = [
+      '﻿2026-10-18T14:08:00.1234567Z bun test v1.2.0',
+      '2026-10-18T14:08:01.0000000Z \u001b[32m(pass)\u001b[0m fine > works [1.20ms]',
+      '2026-10-18T14:08:01.0000000Z \u001b[31m(fail)\u001b[0m a11y guard > no native <select> [12.34ms]',
+      '2026-10-18T14:08:02.0000000Z (fail) module boundaries ratchet',
+      '  ✕ jest thing (12 ms)',
+      '  × vitest thing 3ms',
+      '2026-10-18T14:08:03.0000000Z error: script "test" exited with code 1',
+    ].join('\n');
+    expect(failingTestsFromLog(log)).toEqual(['a11y guard > no native <select>', 'jest thing', 'module boundaries ratchet', 'vitest thing']);
+    expect(failingTestsFromLog('Process completed with exit code 1.')).toEqual([]);
+  });
+
+  test('entries: per test, bare when the log names none, unread when it could not be read', async () => {
+    expect(failingEntries('unit', ['a', 'b'])).toEqual(['unit::a', 'unit::b']);
+    expect(failingEntries('lint', [])).toEqual(['lint']);
+    expect(failingEntries('unit', null)).toEqual(['unit::?']);
+    const runs: CheckRunRow[] = [
+      { id: 1, name: 'unit', status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' } },
+      { id: 2, name: 'lint', status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' } },
+      { id: 3, name: 'vercel', status: 'completed', conclusion: 'failure', app: { slug: 'vercel' } },
+      { id: 4, name: 'gone', status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' } },
+      { id: 5, name: 'ok', status: 'completed', conclusion: 'success', app: { slug: 'github-actions' } },
+      { id: 6, name: 'slow', status: 'in_progress', conclusion: null, app: { slug: 'github-actions' } },
+    ];
+    const logs: Record<number, string> = { 1: '(fail) a\n(fail) b', 2: 'eslint: 3 problems' };
+    const read: number[] = [];
+    const entries = await failingTestEntries(runs, async (id) => { read.push(id); if (!(id in logs)) throw new Error('404'); return logs[id]; });
+    expect(entries).toEqual(['unit::a', 'unit::b', 'lint', 'vercel', 'gone::?']);
+    expect(read).toEqual([1, 2, 4]); // only the Actions jobs that failed
+    expect(pendingCheckRuns(runs)).toEqual(['slow']);
   });
 });
 
@@ -87,7 +191,7 @@ describe('incident SQL (rendered through PgDialect)', () => {
     const rep = render(repairingCiOnBaseSql({ workspaceId: W, repoFullName: 'acme/x', baseRef: 'dev', excludeDeliveryId: D }));
     expect(rep).toContain("d.state = 'REPAIRING' AND d.state_reason = 'ci'");
     expect(rep).toContain("wa.status IN ('queued', 'running')");
-    expect(render(unresolvedIncidentsSql(5))).toContain("WHERE status <> 'resolved' ORDER BY updated_at LIMIT $1::int");
+    expect(render(unresolvedIncidentsSql(5))).toContain("WHERE status <> 'resolved' ORDER BY updated_at, id LIMIT $1::int");
     expect(render(blockedOnResolvedSql(5))).toContain("d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved'");
   });
   test('the trunk-fix anchor: one fixer per unresolved base, never a resolved incident or a finished fixer', () => {
@@ -105,6 +209,9 @@ describe('incident SQL (rendered through PgDialect)', () => {
     const link = render(linkTrunkFixSql(D, D));
     expect(link).toContain("UPDATE trunk_incidents SET trunk_fix_task_id = $1::uuid, status = 'fixing'");
     expect(link).toContain("WHERE id = $2::uuid AND trunk_fix_task_id IS NULL AND status <> 'resolved' AND EXISTS (SELECT 1 FROM tasks WHERE id = $3::uuid)");
+  });
+  test('a recheck that leaves an incident unresolved sends it to the back of the sweep', () => {
+    expect(render(touchIncidentSql(D))).toContain("UPDATE trunk_incidents SET updated_at = now() WHERE id = $1::uuid AND status <> 'resolved'");
   });
   test('resolve is a CAS: only an unresolved incident resolves, once', () => {
     expect(render(resolveIncidentSql(D))).toContain("SET status = 'resolved', resolved_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'resolved' RETURNING id");
