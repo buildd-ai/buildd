@@ -101,9 +101,9 @@ export function inputsFromWorld(world: World, missionIds: readonly string[]): Ma
     const ownIds = new Set(own.map(t => t.id));
     const ws = world.workers.filter(w => ownIds.has(w.taskId)).map(w => ({ ...w }));
     out.set(id, {
-      missionRows: [{ ...m }],
-      taskRows: own as MissionSummaryInput['taskRows'],
-      workerRows: ws as MissionSummaryInput['workerRows'],
+      missionRows: [{ ...m }] as unknown as MissionSummaryInput['missionRows'],
+      taskRows: own as unknown as MissionSummaryInput['taskRows'],
+      workerRows: ws as unknown as MissionSummaryInput['workerRows'],
       deliveries: new Map(),
       deliveryViews: new Map([...world.deliveryViews].filter(([k]) => ownIds.has(k))),
       foreignIdsByMission: new Map(),
