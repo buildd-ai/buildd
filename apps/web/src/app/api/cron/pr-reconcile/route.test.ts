@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const ZERO = { total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0 };
 const MISSION_ZERO = {
@@ -97,6 +97,10 @@ mock.module('@/lib/workflow/command-ledger', () => ({
   postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 30_000, COMMAND_HEARTBEAT_MS: 10_000, COMMAND_RETENTION_DAYS: 7,
 }));
 
+// …and re-submitting the door commands the control plane never answered (lib/workflow/command-outbox.ts).
+const realCommandOutbox = await import('@/lib/workflow/command-outbox');
+mock.module('@/lib/workflow/command-outbox', () => ({ ...realCommandOutbox, drainParkedCommands: async () => ({ claimed: 0, done: 0, retried: 0, dead: 0, pruned: 0 }) }));
+
 // When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
 let lastFloorAt: Date | null = null;
 const realKernelFloor = await import('@/lib/workflow/kernel-floor');
@@ -125,6 +129,27 @@ mock.module('@buildd/core/db', () => ({
   }),
 }));
 
+let capturedCronReports: any[] = [];
+const mockWithCronRun = mock(async (job: string, req: any, handler: any) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
+  }
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (token !== cronSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  const mockReport = (outcome: any) => { capturedCronReports.push(outcome); };
+  try {
+    return await handler(mockReport);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[cron:${job}] handler threw:`, err);
+    return NextResponse.json({ error }, { status: 500 });
+  }
+});
+mock.module('@/lib/cron-run', () => ({ withCronRun: mockWithCronRun }));
+
 import { GET, SWEEP_CONTROL_PLANE_BUDGET_MS } from './route';
 import { controlPlaneBudgetLeft } from '@/lib/workflow/kernel-client';
 
@@ -138,6 +163,8 @@ describe('GET /api/cron/pr-reconcile', () => {
   const originalEnv = process.env.CRON_SECRET;
 
   beforeEach(() => {
+    capturedCronReports = [];
+    mockWithCronRun.mockClear();
     mockReconcile.mockReset();
     mockMissionPrSweep.mockReset();
     mockMissionPrSweep.mockResolvedValue(MISSION_ZERO);
@@ -479,6 +506,19 @@ describe('GET /api/cron/pr-reconcile', () => {
     const line = lines.find((l) => l.startsWith('[ClosedPrSupersession]'));
     expect(line).toContain('budgetStopped=1');
     expect(line).toContain('prs=org/a#2:19000ms:deferred,org/a#1:120ms:suggested');
+  });
+
+  it('includes timings and controlPlane in the run report (for cron_runs result)', async () => {
+    await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(capturedCronReports.length).toBeGreaterThan(0);
+    const report = capturedCronReports[0];
+    expect(report.result).toBeDefined();
+    expect(report.result.timings).toBeDefined();
+    expect(report.result.controlPlane).toBeDefined();
+    expect(report.result.timings).toHaveProperty('reconcile');
+    expect(report.result.timings).toHaveProperty('heldReleases');
+    expect(report.result.controlPlane).toHaveProperty('label');
+    expect(report.result.controlPlane).toHaveProperty('budgetMs');
   });
 
   it('a closed-PR backfill failure does not fail the run', async () => {

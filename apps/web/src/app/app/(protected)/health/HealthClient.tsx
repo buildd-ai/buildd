@@ -47,6 +47,7 @@ import { RunningNow } from '@/components/fleet/RunningNow';
 import Disclosure from '@/components/ui/Disclosure';
 import Segmented from '@/components/ui/Segmented';
 import type { FleetSnapshot } from '@buildd/shared';
+import { runnerBusyLine } from '@/lib/fleet-view';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
@@ -345,6 +346,8 @@ export function HealthClient({
   const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
   const showsState = (['capacity', 'budget', 'credentials', 'dispatch'] as const).some(show);
   const hasLanes = !!runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0;
+  // A host runner's fleet row carries its heartbeat id, so the runner list joins on it.
+  const fleetById = new Map((runnerLanes?.fleet.runners ?? []).map(r => [r.id, r]));
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
 
   const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
@@ -784,8 +787,9 @@ export function HealthClient({
       {show('capacity') && (
         <div data-testid="health-section-slot-history">
           <OccupancyChart
-            capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-            busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+            // From the fleet when it loaded, so "in use now" and "slots online" match Running now above.
+            capacityNow={runnerLanes ? runnerLanes.fleet.capacity : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+            busyNow={runnerLanes ? runnerLanes.fleet.runners.reduce((n, r) => n + (r.online ? r.slots.filter(s => s.worker).length : 0), 0) : runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
             workspaceId={wsFilter}
           />
         </div>
@@ -815,8 +819,17 @@ export function HealthClient({
           ) : (
             <div className="divide-y divide-border-default">
               {runners.map((hb) => {
-                const online = isRunnerOnline(hb.lastHeartbeatAt, now);
-                const idle = online && hb.activeWorkerCount === 0;
+                // The fleet row for this heartbeat (same id): its name, online
+                // state and count are the ones Running now and Settings print.
+                const fleetRow = fleetById.get(hb.id) ?? null;
+                const online = fleetRow ? fleetRow.online : isRunnerOnline(hb.lastHeartbeatAt, now);
+                const busyNow = fleetRow ? fleetRow.slots.filter(s => s.worker).length : hb.activeWorkerCount;
+                const idle = online && busyNow === 0;
+                const name = fleetRow?.name ?? hb.accountName ?? 'Runner';
+                const tokenName = fleetRow && hb.accountName && hb.accountName !== fleetRow.name ? hb.accountName : null;
+                const busyLine = fleetRow
+                  ? runnerBusyLine({ ...fleetRow, online: true })
+                  : `${hb.activeWorkerCount} of ${hb.maxConcurrentWorkers} busy`;
                 const health = runnerHealth.get(hb.id);
                 const statusLabel = online ? (idle ? 'idle' : 'working') : 'offline';
                 const statusClass = online
@@ -833,7 +846,7 @@ export function HealthClient({
                     ? 'text-status-warning'
                     : 'text-text-muted';
                 return (
-                  <div key={hb.id}>
+                  <div key={hb.id} data-testid="health-runner-row">
                     <div className="flex items-center gap-3 px-4 py-3">
                       <span
                         className={`glow-dot ${online ? 'glow-dot-success' : ''}`}
@@ -841,9 +854,10 @@ export function HealthClient({
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm text-text-primary truncate">
-                            {hb.accountName || 'Runner'}
-                          </p>
+                          <p data-testid="health-runner-name" className="text-sm text-text-primary truncate">{name}</p>
+                          {tokenName && (
+                            <span className="text-meta text-text-muted truncate" title="The runner token it signs in with">{tokenName}</span>
+                          )}
                           <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
@@ -857,7 +871,7 @@ export function HealthClient({
                           )}
                         </div>
                         <p className="text-xs text-text-muted">
-                          {hb.activeWorkerCount} of {hb.maxConcurrentWorkers} agents running ·{' '}
+                          {busyLine} ·{' '}
                           {online ? `checked ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
                         </p>
                       </div>

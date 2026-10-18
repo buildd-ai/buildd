@@ -20,6 +20,7 @@ import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/co
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { withSpecSourceBlock } from '@/lib/specs/provisional-text';
 import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
+import { findLeakedInstructionFiles } from '@/lib/agent-instruction-guard';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
@@ -1154,6 +1155,17 @@ export async function POST(req: NextRequest) {
       stackedBaseMissing,
     });
 
+    // A runner's injected instruction block must never ship: refuse a branch
+    // whose diff adds it (CI's check-no-agent-instructions step is the backstop if GitHub cannot answer, and covers later pushes).
+    const leaked = await findLeakedInstructionFiles(repo.installation.installationId, repo.fullName, prBase.base ?? 'main', head);
+    if (leaked.length > 0) {
+      return NextResponse.json({
+        error: `PR not opened: the diff adds the runner's auto-generated agent instructions block (${leaked.join(', ')}). Remove those lines from the branch (git checkout origin/<base> -- <file>), commit, push, and call create_pr again.`,
+        code: 'agent_instructions_leaked',
+        files: leaked,
+      }, { status: 400 });
+    }
+
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
     // Early release's stacking mechanics (docs/design/early-release.md): a
@@ -1448,9 +1460,15 @@ export async function PATCH(req: NextRequest) {
     const isBodyUpdate = newPrBody !== undefined;
     // `draft: false` marks a draft PR ready for review (GraphQL only; the REST
     // PATCH cannot flip it). `draft: true` is not supported.
-    const isReadyUpdate = !isBodyUpdate && draftUpdate === false;
-    const capability = isReadyUpdate ? 'pr.mark_ready' as const
-      : isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
+    // Sent together with `body`, both apply: the body first, then ready.
+    const isReadyUpdate = draftUpdate === false;
+    const capability = isBodyUpdate ? 'pr.update_body' as const
+      : isReadyUpdate ? 'pr.mark_ready' as const : 'pr.close' as const;
+
+    // A draft flag we cannot apply must not fall through to the close branch.
+    if (draftUpdate !== undefined && draftUpdate !== false) {
+      return NextResponse.json({ error: 'draft: only false (mark ready for review) is supported' }, { status: 400 });
+    }
 
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
@@ -1512,7 +1530,10 @@ export async function PATCH(req: NextRequest) {
     const repo = repoAccess.repo;
 
     void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
-    if (isReadyUpdate) {
+    if (isBodyUpdate && isReadyUpdate) {
+      void recordCapabilityDecision({ capability: 'pr.mark_ready', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
+    }
+    if (isReadyUpdate && !isBodyUpdate) {
       const current = await githubApi(
         repo.installation.installationId,
         `/repos/${repo.fullName}/pulls/${prNumber}`,
@@ -1540,6 +1561,19 @@ export async function PATCH(req: NextRequest) {
       }
     );
 
+    let isDraft: boolean | undefined;
+    if (isBodyUpdate && isReadyUpdate) {
+      // Errors here surface as a 500 naming the field that failed, not a silent skip.
+      if (prData.draft && prData.node_id) {
+        await githubGraphQL(
+          repo.installation.installationId,
+          'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { number isDraft } } }',
+          { id: prData.node_id },
+        );
+      }
+      isDraft = false;
+    }
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1547,6 +1581,7 @@ export async function PATCH(req: NextRequest) {
         url: prData.html_url,
         state: prData.state,
         title: prData.title,
+        ...(isDraft === undefined ? {} : { draft: isDraft }),
       },
     });
   } catch (error) {

@@ -548,6 +548,18 @@ describe('deriveMissionStateView — precedence chain', () => {
     expect(view.displayState).toBe('held');
   });
 
+  it('a held mission reads Not started, or Paused once it ran: never held or arm', () => {
+    const fresh = deriveMissionStateView({ ...base, isHeld: true, armedAt: null });
+    expect(fresh.chip.label).toBe('NOT STARTED');
+    expect(fresh.waitingOn?.label).toBe('Not started. Its tasks are available once you start it.');
+    const paused = deriveMissionStateView({ ...base, isHeld: true, armedAt: '2026-10-01T00:00:00Z' });
+    expect(paused.chip.label).toBe('PAUSED');
+    expect(paused.waitingOn?.label).toBe('Paused. Its tasks are available again once you resume it.');
+    for (const v of [fresh, paused]) {
+      expect(`${v.chip.label} ${v.waitingOn?.label} ${v.situation.headline}`).not.toMatch(/\bheld\b|\barm/i);
+    }
+  });
+
   it('infra-stalled failures are reported as such', () => {
     const view = deriveMissionStateView({
       ...base,
@@ -838,7 +850,7 @@ describe('deriveMissionStateView — local executor', () => {
   it('held beats local', () => {
     const view = deriveMissionStateView({ ...local, isHeld: true });
     expect(view.kind).toBe('held');
-    expect(view.chip.label).toBe('HELD');
+    expect(view.chip.label).toBe('NOT STARTED');
   });
 
   it('a failed task still reads as failing on a local mission', () => {

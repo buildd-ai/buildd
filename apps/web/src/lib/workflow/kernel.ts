@@ -26,7 +26,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
-import { mergeTaskPayloadSql, mergeTaskProjectionCtes } from './task-projection';
+import { attemptEndTaskProjectionCtes, mergeTaskPayloadSql, mergeTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -294,6 +294,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   // effect what it did (task-projection.ts), so runMergedPrWork performs only side effects.
   const projectsTask = projected === 'merged';
   if (projectsTask) ctes.push(...mergeTaskProjectionCtes('d'));
+  // AC-1 slice 3: T4 for an owner sets the owner task from the attempt's end, in this statement.
+  ctes.push(...attemptEndTaskProjectionCtes(d, 'd'));
 
   ctes.push(sql`t AS (
   INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)

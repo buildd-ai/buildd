@@ -169,7 +169,9 @@ describe('syncInstallationRepos', () => {
     expect(backLinkStatement).toContain('w.team_id IN (');
     expect(backLinkStatement).toContain('i1.account_id = i2.account_id');
     expect(backLinkStatement).toContain('i3.installed_by_user_id = tm.user_id');
-    expect(backLinkStatement).toContain("'personal-' || i4.installed_by_user_id::text");
+    // The personal team is the one marked for the installer, never a slug match.
+    expect(backLinkStatement).toContain('t.personal_user_id = i4.installed_by_user_id');
+    expect(backLinkStatement).not.toContain("'personal-'");
   });
 
   it('falls back to full_name for owner/name when the payload omits them', async () => {

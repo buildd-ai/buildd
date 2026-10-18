@@ -11,9 +11,10 @@ import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
 import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionList, missionMeta, missionStageLine, missionStageWord, planOf,
+  busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
+  DELIVERED_DAYS,
   providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
-  NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
+  isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
 export interface FrameOptions {
@@ -125,7 +126,8 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, w
     tailToken = 'text';
   } else if (row.kind === 'running') {
     tail = fit(row.action ?? '', tailW);
-    tailToken = 'text';
+    // Work another runner or a local session runs reads quieter than this runner's own.
+    tailToken = row.elsewhere ? 'muted' : 'text';
   } else {
     tail = fit(row.reason ?? '', tailW);
   }
@@ -138,7 +140,7 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, w
   const primary: PaletteToken = selected ? 'selectedText' : 'text';
   if (tailToken === 'text') tailToken = primary;
   const line =
-    (selected ? p.fg('accent', '›') : ' ') + p.fg(g.token, g.ch) + ' ' +
+    (selected ? p.fg('accent', '›') : ' ') + p.fg(row.elsewhere && row.kind === 'running' ? 'muted' : g.token, g.ch) + ' ' +
     p.fg(primary, title) +
     p.fg('muted', role) +
     (route ? p.fg('muted', route) : '') +
@@ -187,13 +189,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'h hold', '+- slots', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', '+- slots', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
-const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
+const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 's talk', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
+const HINT_DROP_ORDER = ['s talk', '+- slots', 'p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -252,14 +254,13 @@ function foldTitle(m: MissionRow, room: number): string {
  * missions (building and verifying first, then on hold), then one dimmed
  * "Delivered this week · N" row. Opened, it lists the missions delivered in
  * the last 7 days under it, dimmed, each with its day on its own row ("Oct
- * 14"), so a full pane cannot drop the day. A second, dimmed line carries
- * "local session"; when the pane is too short those lines go first (except
- * the selected mission's), then the pane scrolls to keep the selected
- * mission in view.
+ * 14"), so a full pane cannot drop the day. A mission managed from a local
+ * session says so in its stage words ("building locally"), on its own row.
+ * When the pane is too short it scrolls to keep the selected mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
   const hasTeams = missions.some(m => m.team !== null);
-  const build = (withMeta: boolean) => {
+  const build = () => {
     const lines: string[] = [];
     let selected = 0;
     missions.forEach((m, i) => {
@@ -277,26 +278,26 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       // Done over total always (R-31), with the stage word beside it (R-18).
       // The title gives way first; only when it would vanish does the stage
       // word go, and the heading still says it.
-      const tally = m.key === NO_MISSION || m.total > 0 ? `${m.done}/${m.total}` : '';
-      const stage = missionStageWord(m);
+      // Loose tasks count what is still open: their done total says nothing.
+      const tally = isLooseKey(m.key) ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
+      const stage = missionRowStage(m);
       const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? 'on hold' : '');
-      const count = delivered ? deliveredDay(m.deliveredAt!) : lw - 3 - (fullCount.length + 2) >= MIN_MISSION_TITLE || !tally ? fullCount : tally;
+      // Widest that leaves the title room: the stage with "locally", then without it, then the tally alone.
+      const fits = (c: string) => lw - 3 - (c.length + 2) >= MIN_MISSION_TITLE;
+      const plain = [missionStageWord(m), tally].filter(Boolean).join(' ');
+      const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
       const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
       const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
       if (isCurrent) selected = lines.length;
       lines.push(isCurrent && focused ? p.selectedBg(line) : line);
-      // A delivered mission's day is on its row already.
-      const meta = delivered ? null : missionMeta(m);
-      if (meta && (withMeta || isCurrent)) lines.push(p.fg('muted', fit('   ' + meta, lw)));
     });
     // Without team headings the pane keeps its MISSIONS label.
     if (!hasTeams) return { lines: [p.fg('muted', fit(' MISSIONS', lw)), ...lines], selected: selected + 1 };
     return { lines, selected };
   };
-  let built = build(true);
-  if (built.lines.length > height) built = build(false);
+  const built = build();
   let lines = built.lines;
   if (lines.length > height) {
     const offset = Math.min(Math.max(0, built.selected - height + 1), lines.length - height);
@@ -320,25 +321,29 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const right: string[] = [];
   const nRunning = rows.filter(r => r.group === 'running').length;
   const nWaiting = rows.filter(r => r.group === 'waiting').length;
-  // A mission with no rows has nothing to count; its heading gets the room.
-  const counts = rows.length === 0 && mission.key !== NO_MISSION ? '' : `${nRunning} running · ${nWaiting} waiting `;
+  // Live work in words, only when there is some: an empty pane says so below.
+  const counts = [nRunning > 0 ? `${nRunning} running` : null, nWaiting > 0 ? `${nWaiting} waiting` : null].filter(Boolean).join(' · ');
+  const countsCol = counts ? counts + ' ' : '';
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
   const ws = currentWorkspace(state);
-  const meta = missionMeta(mission);
-  const status = mission.deliveredAt !== undefined && meta ? ` · ${meta}` : missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : meta ? ` · ${meta}` : '';
-  const heading = (ws ? `${ws.name} · ` : '') + (mission.fold ? `${mission.title} · ${mission.fold.count}` : mission.title + status) + filterNote;
-  const titleW = rw - textWidth(counts) - 1;
+  const delivered = mission.fold ? deliveredMissions(state, mission, now) : [];
+  const title = mission.fold ? `${mission.fold.count} delivered in the last ${DELIVERED_DAYS} days` : mission.title;
+  const heading = (ws ? `${ws.name} · ` : '') + title + filterNote;
+  const titleW = rw - textWidth(countsCol) - 1;
   // One space always separates a cut heading from the counts (R-21).
-  right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
+  right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', countsCol));
+  // Under the title: the stage, how far it got, who runs it.
+  const statusLine = missionStatusLine(mission);
+  if (statusLine) right.push(p.fg('muted', fit(' ' + statusLine, rw)));
   // R-29: the whole mission as squares, done first, under its heading.
-  const progress = mission.key === NO_MISSION ? null : progressRow(mission, rw, p);
+  const progress = isLooseKey(mission.key) ? null : progressRow(mission, rw, p);
   if (progress) right.push(progress);
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
-    { key: 'running', label: 'RUNNING' },
-    { key: 'waiting', label: 'WAITING' },
-    { key: 'done', label: 'DONE TODAY' },
+    { key: 'running', label: 'Running now' },
+    { key: 'waiting', label: 'Waiting' },
+    { key: 'done', label: 'Done today' },
   ];
   const lines: Array<{ text: string; rowIndex?: number }> = [];
   const withRoute = rows.some(r => !!r.route);
@@ -350,13 +355,11 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
       lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p, withRoute), rowIndex: i });
     }
   }
-  if (rows.length === 0) {
-    const empty = mission.fold ? ` Delivered in the last 7 days. ${mission.fold.open ? '⏎ or Esc folds them.' : '⏎ lists them.'}`
-      : mission.deliveredAt !== undefined ? ` Delivered ${deliveredDay(mission.deliveredAt)}. Its finished work is not listed here.`
-      : state.filter ? ' Nothing matches the filter.'
-      : mission.local ? ' A person runs this mission from their own session.'
-      : ' Nothing here yet. Work this runner takes shows up as it happens.';
-    lines.push({ text: p.fg('muted', fit(empty, rw)) });
+  if (mission.fold) {
+    // The deliveries themselves, newest first: the day, then the mission.
+    for (const m of delivered) lines.push({ text: p.fg('muted', fit(` ${fit(deliveredDay(m.deliveredAt!), 7)}`, 9)) + p.fg('text', fit(m.title, rw - 9)) });
+  } else if (rows.length === 0) {
+    lines.push({ text: p.fg('muted', fit(' ' + emptyMissionWords(mission, state.filter), rw)) });
   }
 
   // Scroll so the selected row stays in view.
@@ -479,7 +482,7 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
 
 const HELP_KEYS: Array<[string, string]> = [
   ['↑↓ j k', 'move; ← → switch between missions and tasks'],
-  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them'],
+  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them on the left too'],
   ['a', 'answer the question an agent is asking'],
   ['m', 'send a message to a running agent'],
   ['p', 'pause a running agent'],
@@ -487,7 +490,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['c', 'claim a waiting task onto this runner'],
   ['tab', 'switch between Missions and Queue (what this runner takes next)'],
   ['h', 'hold: running agents finish, nothing new starts; h again resumes'],
-  ['o', 'open the task on buildd'],
+  ['o', 'open the task on buildd, or the mission when no task is picked'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
   ['/', 'filter missions and tasks by title, delivered ones too; esc clears it'],
@@ -646,7 +649,7 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
     }
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
     if (section.held.length > 0) {
-      lines.push({ text: p.fg('muted', fit(' Held, each on its own', cols)) });
+      lines.push({ text: p.fg('muted', fit(' Not yet', cols)) });
       for (const r of section.held) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
     }
     if (section.notFor.length > 0) {

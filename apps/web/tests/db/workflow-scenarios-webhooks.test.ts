@@ -211,7 +211,8 @@ describe('a CI-failure hint that is no longer true (task 438517a9, spec §6.3 T1
 
     const v = await w.view(pr);
     expect(v.delivery).toMatchObject({ state: 'APPROVED', currentHeadSha: pr.head });
-    expect((await w.commands(pr)).slice(before)).toEqual([]);
+    // The late hint may record the head's green reading (CiObserved); it must move nothing else.
+    expect((await w.commands(pr)).slice(before).filter((c) => c !== 'CiObserved')).toEqual([]);
     expect(v.attempts.filter((a) => a.family === 'ci')).toEqual([]);
     expect((await w.effects(pr)).filter((e) => e.kind === 'dispatch_ci_fix')).toEqual([]);
     expect(await w.tasksOf(pr, 'ci_fix')).toEqual([]);

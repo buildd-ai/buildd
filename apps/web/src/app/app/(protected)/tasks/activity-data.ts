@@ -20,6 +20,8 @@ import {
   buildActivityHistory, buildActivityNow, reviewOf,
   type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { LocalHold } from '@/lib/local-session-display';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -40,6 +42,21 @@ export interface ActivityTaskRow {
 export interface ActivityData {
   now: ActivityNow;
   history: Episode[];
+}
+
+/**
+ * The rows Activity projects, with each kernel-owned delivery's merged/open/closed
+ * reading in place of its PR worker's columns. Pure; tasks without a delivery are untouched.
+ */
+export function overlayActivityRows<W extends object, M extends { tasks?: unknown[] | null }>(input: {
+  workersByTask: ReadonlyMap<string, readonly W[]>;
+  missions: readonly M[];
+  views: Parameters<typeof overlayDeliveryLifecycle>[1];
+}): { workersByTask: Map<string, W[]>; missions: M[] } {
+  const rows = [...input.workersByTask].map(([id, workers]) => ({ id, workers: [...workers] as unknown as Array<Record<string, unknown>> }));
+  const workersByTask = new Map(overlayDeliveryLifecycle(rows, input.views).map(t => [t.id, t.workers as unknown as W[]] as const));
+  const missions = input.missions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle((m.tasks ?? []) as Array<{ id: string }>, input.views) as unknown as M['tasks'] }));
+  return { workersByTask, missions };
 }
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
@@ -87,10 +104,10 @@ export async function loadLiveRootIds(workspaceIds: readonly string[]): Promise<
  * The mission projection exactly as the Missions page builds it
  * (missions/page.tsx): same fields, same rules.
  */
-export function missionDeliveryOf(obj: { id: string; title: string; status: string; isHeld?: boolean | null; integrationBranchEnabled?: boolean | null; tasks?: unknown[] }, rules: MissionTaskRules): MissionDelivery {
+export function missionDeliveryOf(obj: { id: string; title: string; status: string; isHeld?: boolean | null; armedAt?: Date | string | null; integrationBranchEnabled?: boolean | null; tasks?: unknown[] }, rules: MissionTaskRules): MissionDelivery {
   return projectMissionDelivery({
     id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
-    isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
+    isHeld: obj.isHeld ?? false, armedAt: obj.armedAt ?? null, integrationBranch: obj.integrationBranchEnabled === true,
     tasks: (obj.tasks ?? []) as never,
   }, rules);
 }
@@ -123,13 +140,13 @@ export async function loadActivity(input: {
     }),
     missionIds.length === 0 ? [] : db.query.missions.findMany({
       where: sqlWhere(and(inArray(missions.id, missionIds), ne(missions.status, 'completed'))),
-      columns: { id: true, title: true, status: true, isHeld: true, integrationBranchEnabled: true },
+      columns: { id: true, title: true, status: true, isHeld: true, armedAt: true, integrationBranchEnabled: true },
       with: {
         tasks: {
           columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, taskClass: true },
           with: {
             workers: {
-              columns: { status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true },
+              columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true },
               limit: 5,
               orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)]),
             },
@@ -139,10 +156,17 @@ export async function loadActivity(input: {
     }),
   ]);
 
+  // A kernel-owned delivery's merged/open/closed reading replaces its PR worker's columns
+  // (workflow-kernel-library §7); work without one keeps the worker rows.
+  const missionTaskIds = (missionRows as any[]).flatMap(m => (m.tasks ?? []).map((t: { id: string }) => t.id));
+  const views = await getDeliveryViewsForTasks([...new Set([...ids, ...missionTaskIds])]).catch(() => new Map());
+
   const byTask = new Map<string, typeof workerRows>();
   for (const w of workerRows) if (w.taskId) byTask.set(w.taskId, [...(byTask.get(w.taskId) ?? []), w]);
+  const overlaid = overlayActivityRows({ workersByTask: byTask, missions: missionRows as any[], views });
+  for (const [id, ws] of overlaid.workersByTask) byTask.set(id, ws as typeof workerRows);
 
-  const deliveries = (missionRows as any[]).map(m => missionDeliveryOf(m, rules));
+  const deliveries = overlaid.missions.map(m => missionDeliveryOf(m, rules));
 
   const tasks: ActivityTaskInput[] = input.tasks.map(t => {
     const ws = byTask.get(t.id) ?? [];

@@ -156,6 +156,19 @@ describe('fixWork (Work, role fix)', () => {
     expect(mockAppend.mock.calls[0][0]).toMatchObject({ entry: { kind: 'review_changes_requested', iteration: 1, maxIterations: 3, note: 'check the caller task' } });
   });
 
+  test("a repair of a scope-undeclared owner carries the PR's changed files as a concrete manifest", async () => {
+    ownerRow = { ...ownerRow, pathManifest: ['**'] };
+    const pr = { state: 'open', head: { sha: 'H1' }, base: { sha: 'B1', ref: 'dev' }, changed_files: 2 };
+    ghApi = (path) => path.includes('/files') ? [{ filename: 'a.ts' }, { filename: 'lib/b.ts' }] : pr;
+    const b = await fixWork(fixReq() as any) as any;
+    expect(b.values.pathManifest).toEqual(['a.ts', 'lib/b.ts']);
+  });
+
+  test("an unreadable PR file list keeps the owner's manifest", async () => {
+    const b = await fixWork(fixReq() as any) as any;
+    expect(b.values.pathManifest).toEqual(['a.ts']);
+  });
+
   test('a second attempt on the same head leaves the (PR, head) dedupe column empty; the ledger dedupes it', async () => {
     const b = await fixWork(fixReq({ firstAtHead: false }) as any) as any;
     expect(b.values.reviewerRetryHeadSha).toBeNull();

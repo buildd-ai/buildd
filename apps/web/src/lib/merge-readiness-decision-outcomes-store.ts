@@ -8,7 +8,7 @@ import { decisionOutcomes, decisionRecords, githubRepos, prReverts, workers, wor
 import type { PrCommitFact, PrFileDiff } from '@buildd/core/merge-readiness-outcome';
 import { and, asc, eq, gt, inArray, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { MERGE_READINESS_KIND, MERGE_READINESS_SUBJECT_TYPE, parseMergeAdviceSubjectId } from './merge-advice';
 import {
   PR_REVERT_SOURCE,
@@ -238,11 +238,11 @@ export interface MergeReadinessSweepResult {
 export async function sweepMergeReadinessOutcomes(now = new Date()): Promise<MergeReadinessSweepResult> {
   const out: MergeReadinessSweepResult = { prs: 0, recorded: 0, errors: 0, reverts: { checked: 0, reverted: 0, notReverted: 0, errors: 0 } };
   const prs = await findSweepPrs(now);
-  const installations = new Map<string, Promise<number | null>>();
+  // Each PR is read through its own workspace's team's installation only.
+  const installations = createTeamInstallationResolver();
   for (const p of prs) {
     out.prs++;
-    if (!installations.has(p.repoFullName)) installations.set(p.repoFullName, installationIdForRepo(p.repoFullName).catch(() => null));
-    const installationId = await installations.get(p.repoFullName)!;
+    const { installationId } = await installations.forWorkspace(p.repoFullName, p.workspaceId);
     if (installationId == null) { out.errors++; continue; }
     const r = await attachMergeReadinessOutcomes({ workspaceIds: [p.workspaceId], repoFullName: p.repoFullName, prNumber: p.prNumber, installationId }, MERGE_READINESS_OUTCOME_DEPS);
     out.recorded += r.recorded;

@@ -27,6 +27,7 @@ import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import { quietLabel } from './local-strand';
+import { MISSION_START_COPY, missionStartState, type MissionStartState } from './mission-start-state';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -54,7 +55,8 @@ export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string;
   repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
   build: { label: 'Building', glyph: '▶', tone: 'ink' },
   waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
-  held: { label: 'Held', glyph: '‖', tone: 'muted' },
+  // A held start gate; deliveryKindLabel says Paused for one that ran before.
+  held: { label: 'Not started', glyph: '‖', tone: 'muted' },
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
   notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
@@ -298,6 +300,8 @@ export interface MissionDeliveryInput {
   status: string;
   href: string;
   isHeld?: boolean;
+  /** `missions.armedAt`: a held mission that ran before reads Paused. */
+  armedAt?: Date | string | null;
   /** Mission-branch strategy: task PRs land on the integration branch, trunk is later. */
   integrationBranch?: boolean;
   /** Whether a release carried the mission; null/absent when unknown. */
@@ -341,6 +345,8 @@ export interface MissionDelivery {
   title: string;
   href: string;
   kind: DeliveryKind;
+  /** Kind `held`: not started, or paused after it ran. Null otherwise. */
+  startState: MissionStartState | null;
   open: boolean;
   /** Same numerator/denominator as `computeMissionProgress` on every surface. */
   landed: number;
@@ -573,6 +579,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
 
   return {
     id: m.id,
+    startState: kind === 'held' ? startState(m) : null,
     title: m.title,
     href: m.href,
     kind,
@@ -644,7 +651,9 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
       }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
-      return { evidence: 'Held by its owner.', next: 'Starts when armed' };
+      return startState(m) === 'paused'
+        ? { evidence: 'Paused.', next: 'You resume it' }
+        : { evidence: 'Not started.', next: 'You start it' };
     case 'planning':
       return { evidence: 'No tasks planned yet.', next: 'A plan' };
     case 'landed':
@@ -653,6 +662,16 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
         ? { evidence: 'The mission PR merged to trunk.', next: m.released === false ? 'Release' : 'Mission completes' }
         : { evidence: 'Every task landed.', next: 'Mission completes' };
   }
+}
+
+/** A held mission input's start state (never null: held is not_started or paused). */
+function startState(m: MissionDeliveryInput): MissionStartState {
+  return missionStartState({ isHeld: true, armedAt: m.armedAt ?? null }) ?? 'not_started';
+}
+
+/** A delivery's word: the kind's own, except a held mission that ran before reads Paused. */
+export function deliveryKindLabel(d: { kind: DeliveryKind; startState?: MissionStartState | null }): string {
+  return d.kind === 'held' && d.startState ? MISSION_START_COPY[d.startState].label : DELIVERY_KIND[d.kind].label;
 }
 
 // ── Home selection ──────────────────────────────────────────────────────────
@@ -684,7 +703,7 @@ export interface QuietMissionCause { cause: string; count: number }
 
 function quietCause(m: MissionDelivery): string {
   if (m.kind === 'planning') return 'being planned';
-  if (m.kind === 'held') return 'on hold';
+  if (m.kind === 'held') return MISSION_START_COPY[m.startState ?? 'not_started'].label.toLowerCase();
   // `next` is the line the mission's card shows: read it, never re-derive it, so
   // Home and the card name the same cause (spec 8e137fdb I-1). A visual review is
   // the cause only when the card says so, and then with its hold (I-4).

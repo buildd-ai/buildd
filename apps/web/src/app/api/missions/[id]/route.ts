@@ -50,6 +50,7 @@ import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } fro
 import type { SpecCaller } from '@/lib/specs/store';
 import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
+import { armedAtForStartGate } from '@/lib/mission-start-state';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -167,13 +168,6 @@ export async function GET(
       }
     }
 
-    const blockStatus = await isMissionBlocked({
-      id: mission.id,
-      dependsOnMissionId: mission.dependsOnMissionId ?? null,
-      gateCondition: mission.gateCondition,
-      dependencyMetAt: mission.dependencyMetAt ?? null,
-    });
-
     // Stale-while-revalidate: fire PR state refresh in the background so the
     // open view gets corrected state via WORKER_PROGRESS without blocking render.
     const prCandidates = (mission.tasks || []).flatMap((task: any) =>
@@ -203,11 +197,34 @@ export async function GET(
 
     // Delivery records and scope decisions (workflow-kernel-library.md §6): the
     // mission's state and its deliveries' states are separate facts.
-    const [deliveryRows, scopeRows] = await Promise.all([missionEpochsOf(id), scopeAmendmentsOf(id)]);
-    const deliveries = deliveryRows.map((e) => ({
-      delivery: e.epoch, branch: e.branch, state: e.state, prNumber: e.prNumber, mergedAt: e.mergedAt,
-      scopeVersion: e.scopeVersion, retired: e.retiredAt != null, held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
-    }));
+    const [blockStatus, deliveryRows, scopeRows] = await Promise.all([
+      isMissionBlocked({
+        id: mission.id,
+        dependsOnMissionId: mission.dependsOnMissionId ?? null,
+        gateCondition: mission.gateCondition,
+        dependencyMetAt: mission.dependencyMetAt ?? null,
+      }),
+      missionEpochsOf(id),
+      scopeAmendmentsOf(id),
+    ]);
+    const deliveries = deliveryRows.map((e) => {
+      // Find the owner task and its worker to get prLifecycleStatus
+      const ownerTask = e.ownerTaskId ? (mission.tasks || []).find((t: any) => t.id === e.ownerTaskId) : null;
+      const ownerWorker = ownerTask?.workers?.[0];
+      return {
+        delivery: e.epoch,
+        branch: e.branch,
+        state: e.state,
+        prNumber: e.prNumber,
+        mergedAt: e.mergedAt,
+        scopeVersion: e.scopeVersion,
+        retired: e.retiredAt != null,
+        held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
+        repoFullName: e.repoFullName,
+        ownerTaskId: e.ownerTaskId,
+        prLifecycleStatus: ownerWorker?.prLifecycleStatus ?? null,
+      };
+    });
     const scopeUpdates = scopeRows.filter((r) => r.status !== 'recorded').map((r) => ({
       taskId: r.sourceTaskId, decision: r.decision, status: r.status, scopeVersion: r.scopeVersionAfter, reason: r.reason, at: r.createdAt,
     }));
@@ -672,6 +689,11 @@ export async function PATCH(
       updateData.isHeld = false;
     } else if (startMode !== undefined) {
       updateData.isHeld = startMode === 'held';
+    }
+    // Record the first release, so a held mission reads Not started or Paused.
+    if (updateData.isHeld !== undefined) {
+      const armedAt = armedAtForStartGate(existing, updateData.isHeld, new Date());
+      if (armedAt) updateData.armedAt = armedAt;
     }
     // executor: who claims the tasks — runners, or a person's local session.
     // Independent of isHeld: arming does not change it, and held still pauses.

@@ -37,9 +37,20 @@
  * force, retired or superseded by another, and put it back: a person's act,
  * an agent run or API key gets the route's 403, passed through.
  *
+ * copy (POST /api/specs/[id]/copy) is the cross-workspace handoff: one
+ * revision copied into another workspace as a draft, never approved by
+ * copying. The reply is the verified destination spec id, revision and hash,
+ * or the refusal; a get that 404s says the route's text (the copy to use, or
+ * how to make one) instead of throwing.
+ *
  * diff (read-only) says what changed between two revisions, over
- * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
- * unified line diff of them.
+ * GET /api/specs/[id]/diff: the change summary, the criteria added, changed,
+ * removed, moved and replacing, the other text by section and the summary
+ * check, then sections added, removed and changed and a capped unified line
+ * diff of them.
+ *
+ * history (read-only) lists one criterion's wordings over
+ * GET /api/specs/[id]/criteria/[criterionId].
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { criteriaUnreadText, type CriterionIdProblems } from '@buildd/spec-contract/requirements';
@@ -256,6 +267,77 @@ export function confirmImportText(r: ConfirmReply): string {
     ...no.map((x) => `  not confirmed: ${x.path ?? x.specId}: ${x.reason}, ${x.message}`)].join('\n');
 }
 
+type CopyReply = {
+  reused: boolean;
+  source: { specId: string; revision: number; contentHash: string; approved: boolean };
+  destination: { workspaceId: string; specId: string; revision: number; contentHash: string; version: number; approved: boolean };
+  notCarried?: string[];
+};
+
+/** The acknowledgement a destination runner waits on: the verified spec id, revision and hash, nothing vaguer. */
+export function copyText(r: CopyReply, specUrl: (id: string) => string): string {
+  const d = r.destination;
+  return [
+    `${r.reused ? 'Already copied (nothing new written)' : 'Copied'} and verified: spec ${r.source.specId} revision ${r.source.revision} is spec ${d.specId} revision ${d.revision} in workspace ${d.workspaceId}.`,
+    `sha256 ${d.contentHash} (matches the source). Version ${d.version}.`,
+    `Spec URL: ${specUrl(d.specId)}`,
+    d.approved
+      ? `Approved in the destination at revision ${d.revision}.`
+      : `Not approved in the destination: copying never approves. A person there approves it; until then work can pin revision ${d.revision} only provisionally (context.specSource { specId: "${d.specId}", revision: ${d.revision} }).`,
+    ...(r.notCarried?.length ? [`Not carried: ${r.notCarried.join('; ')}.`] : []),
+  ].join('\n');
+}
+
+type ChangeLineView =
+  | { kind: 'added'; id: string; text: string }
+  | { kind: 'changed'; id: string; text: string; words: Array<{ op: string; text: string }>; movedFrom?: string; section: string }
+  | { kind: 'moved'; id: string; section: string; movedFrom: string }
+  | { kind: 'removed'; id: string; oldText: string }
+  | { kind: 'replacing'; id: string; text: string; replaces: Array<{ id: string }> }
+  | { kind: 'added-range'; label: string; items: Array<{ id: string; text: string }> };
+
+const oneLine = (t: string, max = 200) => { const s = t.replace(/\s*\n\s*/g, ' '); return s.length > max ? `${s.slice(0, max)}…` : s; };
+
+/** The per-criterion change list of a diff, as text: changed words in [-old-]{+new+}. Empty without one. */
+export function changesText(c: { summary?: string | null; lines?: ChangeLineView[]; otherText?: Array<{ kind: string; section: string }>; mismatch?: string | null } | null | undefined): string[] {
+  if (!c) return [];
+  const words = (ws: Array<{ op: string; text: string }>) => ws.map((w) => (w.op === '+' ? `{+${w.text}+}` : w.op === '-' ? `[-${w.text}-]` : w.text)).join('');
+  const lines = (c.lines ?? []).map((l) => {
+    switch (l.kind) {
+      case 'added': return `  Added     ${l.id}: ${oneLine(l.text)}`;
+      case 'added-range': return `  Added     ${l.label}`;
+      case 'changed': return `  Changed   ${l.id}: ${oneLine(words(l.words), 400)}${l.movedFrom !== undefined ? ` (moved from "${l.movedFrom}" to "${l.section}")` : ''}`;
+      case 'moved': return `  Moved     ${l.id}: from "${l.movedFrom}" to "${l.section}", words unchanged`;
+      case 'removed': return `  Removed   ${l.id}: ${oneLine(l.oldText)}`;
+      case 'replacing': return `  Replacing ${l.id} replaces ${l.replaces.map((r) => r.id).join(', ')}: ${oneLine(l.text)}`;
+    }
+  });
+  const other = (c.otherText ?? []).map((o) => `  ${o.kind.charAt(0).toUpperCase()}${o.kind.slice(1)} "${o.section || '(before the first heading)'}"`);
+  return [
+    `Summary: ${c.summary?.trim() ? c.summary.trim() : '(none written)'}`,
+    ...(c.mismatch ? [c.mismatch] : []),
+    'Requirements and acceptance:',
+    ...(lines.length ? lines : ['  none changed']),
+    'Other text:',
+    ...(other.length ? other : ['  none changed']),
+    '',
+  ];
+}
+
+type HistoryView = {
+  criterionId: string; head: number; retiredIn: number | null; replacedBy: string | null; replaces: string[];
+  entries: Array<{ criterionId: string; revision: number; kind: string; text: string; changeSummary: string | null; author: string; approved: boolean }>;
+};
+
+/** One criterion's history, oldest first. */
+export function historyText(h: HistoryView): string {
+  return [
+    `History of ${h.criterionId}${h.replaces.length ? ` (continues ${h.replaces.join(', ')})` : ''}: ${h.entries.length} wording(s).`,
+    ...h.entries.map((e) => `  r${e.revision} ${e.criterionId} ${e.kind} by ${e.author}${e.approved ? ', approved' : ''}${e.changeSummary ? ` (summary: ${oneLine(e.changeSummary, 160)})` : ''}\n    ${oneLine(e.text, 400)}`),
+    ...(h.retiredIn ? [`Retired in revision ${h.retiredIn}${h.replacedBy ? `, replaced by ${h.replacedBy}` : ''}; the id is not reused.`] : [`In force through revision ${h.head}.`]),
+  ].join('\n');
+}
+
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
   const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
   const op = params.action as SpecOp;
@@ -290,7 +372,15 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'get': {
       const specId = need(params.specId, 'specId');
       const rev = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
-      const view = await api(`/api/specs/${encodeURIComponent(specId)}${rev}`);
+      let view;
+      try {
+        view = await api(`/api/specs/${encodeURIComponent(specId)}${rev}`);
+      } catch (err) {
+        // Not readable here: the route names a copy this caller can read, or how one is made.
+        const e = apiError(err);
+        if (e?.status === 404) return errorResult(String(e.body?.error ?? 'Spec not found.'));
+        throw err;
+      }
       const s = view.spec as SpecRow;
       const body: string = view.body ?? '';
       const reqs = (view.requirements ?? []).map((r: { id: string }) => r.id);
@@ -513,6 +603,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
           .map((x) => `  ${x.kind} ${x.path} (+${x.linesAdded} −${x.linesRemoved})`).join('\n');
         return text([
           `${head}: ${d.sections.length} section(s) changed.`,
+          ...changesText(d.changes),
           sections,
           '',
           d.diff,
@@ -521,6 +612,19 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'history': {
+      const specId = need(params.specId, 'specId');
+      const criterionId = need(params.criterionId, 'criterionId (a criterion id such as R-3 or AC-2)');
+      try {
+        const { history: h } = await api(`/api/specs/${encodeURIComponent(specId)}/criteria/${encodeURIComponent(criterionId)}`);
+        return text(historyText(h));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
@@ -607,6 +711,20 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'copy': {
+      const specId = need(params.specId, 'specId');
+      const payload: Record<string, unknown> = { targetWorkspaceId: need(params.targetWorkspaceId, 'targetWorkspaceId (the workspace to copy into)') };
+      for (const k of ['revision', 'expectedContentHash'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/copy`, { method: 'POST', body: JSON.stringify(payload) });
+        return text(copyText(r, specUrl));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409, 502].includes(e.status)) return errorResult(`Not copied${e.body?.code ? ` (${String(e.body.code)})` : ''}: ${String(e.body?.error ?? `refused (${e.status})`)}`);
         throw err;
       }
     }

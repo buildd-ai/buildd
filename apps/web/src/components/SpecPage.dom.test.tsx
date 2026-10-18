@@ -96,7 +96,7 @@ describe('readingLine', () => {
   });
   it('names the approved revision when reading another one', () => {
     expect(readingLine({ ...base, reading: { revision: 2, approved: false, isHead: true } }))
-      .toBe('This is revision 2. Revision 1 is the approved one.');
+      .toBe("You're reading revision 2. Revision 1 is approved.");
   });
 });
 
@@ -125,7 +125,7 @@ describe('SpecPage', () => {
     expect(revs[0].textContent).toContain('by an agent');
     expect(revs[0].textContent).toContain('Pick the currency');
     expect(revs[1].querySelector('[data-testid="spec-page-approved-by"]')!.textContent).toContain('Approved by Max');
-    expect(revs[1].textContent).toContain('in force');
+    expect(revs[1].textContent).toContain('approved');
     expect(revs[0].textContent).toContain('waiting');
     expect(revs[1].querySelector('a')!.getAttribute('aria-current')).toBe('page');
     expect(revs[0].querySelector('a')!.getAttribute('aria-current')).toBeNull();
@@ -163,6 +163,7 @@ describe('SpecPage', () => {
     const items = [...container.querySelectorAll('[data-testid="spec-page-nearby-item"]')];
     expect(items.map((i) => [i.getAttribute('data-kind'), i.querySelector('a')!.getAttribute('href'), i.querySelector('span')!.textContent]))
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
+    expect(q('spec-page-nearby')!.textContent!.startsWith('Related')).toBe(true);
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-nearby')).toBeNull();
   });
@@ -176,6 +177,7 @@ describe('SpecPage', () => {
     const list = q('spec-page-related-list')!;
     expect(list.querySelector('[data-testid="spec-page-parent"]')!.textContent).toContain('Shop');
     expect([...list.querySelectorAll('[data-testid="spec-page-siblings"] a')].map((a) => a.textContent)).toEqual(['Refunds', 'Invoices']);
+    expect(list.querySelector('[data-testid="spec-page-siblings"]')!.textContent).toMatch(/^Also under /);
     const radio = [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Graph') as HTMLElement;
     expect(container.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toBe('List');
     act(() => radio.click());
@@ -266,7 +268,7 @@ describe('SpecPage', () => {
     expect(q('spec-approval-diff')).not.toBeNull();
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(calls).toEqual([{ url: `/api/specs/${SPEC}/approve`, body: { revision: 2, expectedVersion: 4 } }]);
-    expect(q('spec-page-approve-result')!.textContent).toContain('Revision 2 is in force');
+    expect(q('spec-page-approve-result')!.textContent).toContain('Approved revision 2.');
     expect(refreshes).toBe(1);
   });
 
@@ -282,11 +284,11 @@ describe('SpecPage', () => {
     const approveAt = kids.findIndex((k) => k.querySelector('[data-testid="spec-page-approve"]'));
     expect(approveAt).toBe(1);
     await act(async () => { q('spec-page-approve')!.click(); });
-    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved revision 2.');
     expect(q('spec-page-approve')).toBeNull();
     expect(refreshes).toBe(0);
     await act(async () => { answer(new Response(JSON.stringify({ spec: {}, revision: {} }), { status: 200 })); });
-    expect(q('spec-page-approve-result')!.textContent).toBe('Approved. Revision 2 is in force.');
+    expect(q('spec-page-approve-result')!.textContent).toBe('Approved revision 2.');
     expect(refreshes).toBe(1);
   });
 
@@ -321,13 +323,27 @@ describe('SpecPage', () => {
     expect(q('spec-page-approve')).toBeNull();
   });
 
-  it('names the one source and says when the repo copy is behind (living-specs.md §18, R-13, AC-79)', () => {
+  it('shows a landed copy as its linked path, and words only when there is something to do (living-specs.md §18, R-13, AC-79)', () => {
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-source')).toBeNull();
-    const source = { source: 'Source: buildd, repo copy at docs/specs/checkout.md', copy: 'Repo copy is behind: Lint specs failed on PR #9.', behind: true };
-    act(() => root.render(<SpecPage view={{ ...base, source }} />));
-    expect(q('spec-page-source')!.textContent).toBe('Source: buildd, repo copy at docs/specs/checkout.md');
-    expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
+    const landed = { source: null, path: 'docs/specs/checkout.md', href: 'https://github.com/o/r/blob/HEAD/docs/specs/checkout.md', copy: null, behind: false };
+    act(() => root.render(<SpecPage view={{ ...base, source: landed }} />));
+    expect(q('spec-page-source')!.textContent).toBe('docs/specs/checkout.md');
+    expect(q('spec-page-source')!.querySelector('a')!.getAttribute('href')).toBe(landed.href);
+    expect(q('spec-page-repo-copy')).toBeNull();
+    expect(container.textContent).not.toMatch(/Source: buildd/);
+    const red = { source: null, copy: 'PR #9 failed Lint specs. Fix it in a new revision.', behind: true };
+    act(() => root.render(<SpecPage view={{ ...base, source: red }} />));
+    expect(q('spec-page-repo-copy')!.textContent).toBe('PR #9 failed Lint specs. Fix it in a new revision.');
+  });
+
+  it('a kept-private spec shows no explanation, only Add to repo where a person may (R-57)', () => {
+    act(() => root.render(<SpecPage view={{ ...base, source: { source: null, copy: null, behind: false, publishAnyway: true }, canPublishAnyway: true }} />));
+    expect(q('spec-page-repo-copy')).toBeNull();
+    expect(q('spec-page-publish-anyway')!.textContent).toBe('Add to repo');
+    expect(container.textContent).not.toMatch(/Not published|Not in the repo|policy|measured|decision model/i);
+    act(() => root.render(<SpecPage view={{ ...base, source: { source: null, copy: null, behind: false, publishAnyway: false }, canPublishAnyway: false }} />));
+    expect(q('spec-page-publish-anyway')).toBeNull();
   });
 
   it('shows a failing repo check on review, after the panel, and still offers Approve (R-34, AC-96, R-9)', async () => {
@@ -356,7 +372,7 @@ describe('SpecPage', () => {
     globalThis.fetch = (async () => new Response('{}', { status: 502 })) as unknown as typeof fetch;
     const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
     await act(async () => { root.render(<SpecPage view={{ ...base, review, repoChecks: true }} />); });
-    expect(q('spec-repo-checks-unread')!.textContent).toContain('could not be run');
+    expect(q('spec-repo-checks-unread')!.textContent).toContain("Couldn't run the repo checks");
     expect(q('spec-page-approve')).not.toBeNull();
   });
 
@@ -468,5 +484,76 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     expect(rows[0].querySelector('[data-testid="spec-delivery-link"]')?.getAttribute('href')).toBe(`/app/missions/${M}`);
     act(() => (rows[0].querySelector('button') as HTMLButtonElement).click());
     expect(rows[0].querySelector('[data-testid="spec-delivery-criterion"]')?.textContent).toContain('Waived');
+  });
+
+  it('Review leads with the summary and the change list; the full diff is closed until asked (R-1 to R-5, AC-1)', async () => {
+    const changes = {
+      summary: 'R-26 names the slot; adds R-44 to R-46.',
+      mismatch: 'The summary does not mention R-25, which changed.',
+      lines: [
+        { kind: 'changed' as const, id: 'R-26', text: 'reads now at once', oldText: 'reads now', section: 'Slots', words: [{ op: '=' as const, text: 'reads now' }, { op: '+' as const, text: ' at once' }] },
+        { kind: 'added-range' as const, label: 'R-44 – R-46', items: ['R-44', 'R-45', 'R-46'].map((id) => ({ kind: 'added' as const, id, text: `text of ${id}`, section: 'Slots' })) },
+        { kind: 'removed' as const, id: 'R-3', oldText: 'gone', section: 'Slots' },
+        { kind: 'moved' as const, id: 'R-24', text: 'same', section: 'Slots > Runner', movedFrom: 'Slots > Queue' },
+        { kind: 'replacing' as const, id: 'R-50', text: 'next', section: 'Slots', replaces: [{ id: 'R-27', oldText: 'old' }] },
+      ],
+      otherText: [{ kind: 'changed' as const, section: 'Slots > Queue view' }],
+    };
+    const review = {
+      replaces: 1, revision: 2, omittedLines: 0, sectionCount: 1, linesAdded: 1, linesRemoved: 1, body: base.body, changes,
+      hunks: [{ kind: 'changed' as const, path: 'Checkout', linesAdded: 1, linesRemoved: 1, rows: [{ op: '+' as const, oldLine: null, newLine: 3, text: 'new' }] }],
+    };
+    act(() => root.render(<SpecPage view={{ ...base, review }} />));
+    const panel = q('spec-page-review-panel')!;
+    // The summary comes first under the heading, then the mismatch line, then the list.
+    const order = ['spec-review-summary', 'spec-review-mismatch', 'spec-review-criteria', 'spec-review-other', 'spec-page-approve', 'spec-page-full-diff']
+      .map((id) => panel.innerHTML.indexOf(`data-testid="${id}"`));
+    expect(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1]))).toBe(true);
+    expect(q('spec-review-summary')!.textContent).toBe(changes.summary);
+    expect(q('spec-review-mismatch')!.textContent).toContain('R-25');
+    const rows = [...container.querySelectorAll('[data-testid="spec-review-change"]')];
+    expect(rows.map((r) => r.getAttribute('data-kind'))).toEqual(['changed', 'added-range', 'removed', 'moved', 'replacing']);
+    expect(q('spec-review-word-added')!.textContent).toBe(' at once');
+    expect(rows[3].textContent).toContain('Slots › Queue');
+    expect(rows[4].textContent).toContain('Replaces R-27.');
+    // The range expands on click.
+    expect(container.querySelectorAll('[data-testid="spec-review-range-item"]')).toHaveLength(0);
+    act(() => { q('spec-review-range')!.click(); });
+    expect(container.querySelectorAll('[data-testid="spec-review-range-item"]')).toHaveLength(3);
+    expect(q('spec-review-other-row')!.textContent).toContain('Queue view');
+    // The line diff is never the default view.
+    expect(q('spec-approval-diff')).toBeNull();
+    act(() => { (q('spec-page-full-diff')!.closest('button') as HTMLButtonElement).click(); });
+    expect(q('spec-approval-diff')).not.toBeNull();
+  });
+
+  it('each criterion links to its history, and the history shows on the page (R-12)', () => {
+    const criterionHistory = {
+      criterionId: 'R-1',
+      history: {
+        criterionId: 'R-1', head: 2, retiredIn: null, replacedBy: null, replaces: [],
+        entries: [
+          { criterionId: 'R-1', revision: 1, kind: 'added' as const, text: 'Totals in the shopper currency.', textHash: 'a', section: 'Checkout', changeSummary: null, author: 'person' as const, approved: true },
+          { criterionId: 'R-1', revision: 2, kind: 'changed' as const, text: 'Totals in the cart currency.', textHash: 'b', section: 'Checkout', changeSummary: 'Pick the currency', author: 'agent' as const, approved: false },
+        ],
+      },
+    };
+    act(() => root.render(<SpecPage view={{ ...base, criterionHistory }} />));
+    expect(q('spec-criterion-history-link')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?history=R-1#criterion-history`);
+    const entries = [...container.querySelectorAll('[data-testid="spec-criterion-history-entry"]')];
+    // Newest first, the changed words marked against the wording before.
+    expect(entries.map((e) => e.getAttribute('data-revision'))).toEqual(['2', '1']);
+    expect(entries[0].querySelector('[data-testid="spec-review-word-added"]')!.textContent).toBe('cart');
+    expect(entries[0].textContent).toContain('not approved');
+    expect(entries[1].textContent).toContain('approved');
+  });
+
+  it('on the revision in force, work built to an older wording reads "Passed an earlier wording" under the criterion (R-13)', () => {
+    const delivery = { next: null, entries: [{
+      kind: 'task' as const, id: 't1', title: 'Build totals', href: '/app/tasks/t1', builtTo: 0, provisional: false, delivered: true, deliveredText: '', standing: { tone: 'muted' as const, text: '' },
+      criteria: [{ criterionId: 'R-1', text: '', mark: 'earlier-pass' as const, evidence: [] }], links: [], at: iso,
+    }] };
+    act(() => root.render(<SpecPage view={{ ...base, delivery }} />));
+    expect(q('spec-criterion-verdict')!.textContent).toBe('Passed an earlier wording');
   });
 });

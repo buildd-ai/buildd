@@ -22,8 +22,9 @@ import {
   RecordingRails, RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
-import { deriveDeliveryView } from '../projections';
+import { deliveryPrState, deriveDeliveryView, repairLabelOf } from '../projections';
 import { landingStatusOf, reviewGate } from '../landing-gate';
+import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
@@ -763,32 +764,6 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'deploy skew: a merge_call queued by the reducer before S3b (no fromState) merges as it would have, after the fresh read',
-    async run(host) {
-      const s = await (await new Delivery(host, 42).open()).approvedAt('H1');
-      applied(await s.land('H1'), 'LANDING', 'landing');
-      const f = fakePorts(host);
-      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
-      f.rails.reading = { passed: false, lasting: true, reasons: ['would refuse'] };
-      const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'merge_call')!;
-      const { fromState: _f, ...oldPayload } = row.payload;
-      const out = await kernelEffectHandlers(f.ports).merge_call!({ ...(await direct(host, s, 'merge_call')), payload: oldPayload });
-      eq(out, { outcome: 'ok:merged:applied:pre_gate_row' }, 'merged without the gate it was never shaped for');
-      eq(f.rails.calls, [], 'no rails asked');
-      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'one pinned merge');
-      // Still behind the fresh read: an old row for a head that moved merges nothing.
-      const m = await (await new Delivery(host, 43).open()).approvedAt('H1');
-      applied(await m.land('H1'), 'LANDING', 'landing');
-      const fm = fakePorts(host);
-      fm.github.setPr(m.repo, m.prNumber, m.live('H2'));
-      const mrow = (await host.effects(m.deliveryId)).find((e) => e.kind === 'merge_call')!;
-      const { fromState: _g, ...oldM } = mrow.payload;
-      const outM = await kernelEffectHandlers(fm.ports).merge_call!({ ...(await direct(host, m, 'merge_call')), payload: oldM });
-      ok(String(outM?.outcome).startsWith('skipped:head_moved'), `head moved: ${outM?.outcome}`);
-      eq(fm.github.merges, [], 'nothing merged');
-    },
-  },
-  {
     name: 'gate at merge time: a base retarget under the call is recorded like a moved head, and nothing merges',
     async run(host) {
       const s = await (await new Delivery(host, 39).open()).approvedAt('H1');
@@ -833,7 +808,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'buildd/landing: failure while review is pending, success once approved, failure again on a new head; an older or duplicate effect never overwrites the newer answer',
+    name: 'Buildd / Review approval: pending while review runs, failure once changes are asked, success once approved, pending again on a new head; an older or duplicate effect never overwrites the newer answer',
     async run(host) {
       const s = await new Delivery(host, 29).open();
       const f = fakePorts(host);
@@ -841,17 +816,18 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const lastDesc = () => String(f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.description ?? '');
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'review missing: failure');
+      eq(published().at(-1), { sha: 'H1', state: 'pending', context: 'Buildd / Review approval' }, 'review pending: pending, not failure');
+      ok(published().some((x) => x.context === 'buildd/landing' && x.sha === 'H1'), 'the legacy name carries the same answer');
       ok(lastDesc().includes('review of H1 is pending'), `names the wait: ${lastDesc()}`);
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'changes asked: failure');
+      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'Buildd / Review approval' }, 'changes asked: failure');
       const fix = await s.startFix();
       applied(await s.push('H2', { attribution: { descendsFromBound: true } }), 'FIXING', 'fix pushed');
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'approved: success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
       const count = published().length;
       // Every version owes one effect, and only the newest publishes: no older answer was written after a newer one.
@@ -863,10 +839,10 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: older.payload, dedupeKey: older.dedupeKey }), { outcome: 'skipped:older_version' }, 'a late older effect publishes nothing');
       eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:unchanged:success' }, 'a duplicate of the newest finds GitHub already showing it');
       eq(published().length, count, 'no second write of the same answer');
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'still success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'still success at H2');
       applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new head');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H3', state: 'failure', context: 'buildd/landing' }, 'a new head starts at failure');
+      eq(published().at(-1), { sha: 'H3', state: 'pending', context: 'Buildd / Review approval' }, 'a new head starts pending');
     },
   },
   {
@@ -1113,7 +1089,9 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
         { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: moved },
         { role: 'ci_fix', reason: moved }, { role: 'conflict_fix', reason: moved }, { role: 'fix', reason: moved }, { role: 'fix', reason: moved },
       ], 'each family cancels its own pending tasks; no family named is the review fix');
-      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged' })), { outcome: 'skipped:legacy_owns' }, 'a merge\'s cancellation is legacy\'s');
+      // b6cfdbb9: a merge's or a close's cancellation is the kernel's too; it names its tasks.
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged', taskIds: [] })), { outcome: 'ok:cancelled_0' }, 'a merge\'s cancellation');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', {})), { outcome: 'skipped:no_reason' }, 'a row from before b6cfdbb9 names nothing');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'ok' }, 'a conflict family\'s exhaustion');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'ok' }, 'a review family\'s exhaustion');
       // Each through its own family's path: the conflict path would hand the review family over in its own words.
@@ -1914,6 +1892,43 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '6900a317: the CI reading is per head: a failure outranks runs still going, a re-run withdraws it, green is recorded without a repair, and an old head says nothing',
+    async run(host) {
+      const s = await new Delivery(host, 77).open();
+      const reading = async () => deliveryPrState(await s.d());
+      const obs = (headSha: string, verdict: 'red' | 'green' | 'running', failing: string[] = [], complete = verdict === 'green') =>
+        s.submit({ type: 'CiObserved', actor: 'webhook', headSha, verdict, liveChecks: { complete, failing }, ...(verdict === 'green' ? { allPassing: true } : {}) });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed H1');
+      eq(await reading(), 'awaiting_ci', 'no reading on H1 yet: running');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 failed: a CI fix is filed');
+      eq(await reading(), 'ci_failed', 'repairing H1: red');
+      const fix = (await s.view()).attempts.find((x) => x.family === 'ci')!;
+      applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: fix.id, revalidation: { live: s.live('H1'), approved: false, ciGreen: false } }), 'REPAIRING', 'the fix is claimed');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the fix pushed H2; review is owed on it');
+      eq(await reading(), 'awaiting_ci', 'H1\'s red does not carry to H2');
+      // One check fails on H2 while others still run. T10 defers to the fix still open,
+      // and before 6900a317 nothing else recorded the failure: the PR read "Checking".
+      notApplied(await s.ciRed('H2'), 'rejected', 'fix_in_flight', 'T10 defers to the open fix');
+      applied(await obs('H2', 'red', ['check']), 'AWAITING_REVIEW', 'the red on H2 is recorded with no state change');
+      eq(await reading(), 'ci_failed', 'failed outranks still running');
+      notApplied(await obs('H1', 'green'), 'stale', 'head_not_current', 'a late green for the old head');
+      eq(await reading(), 'ci_failed', 'H2 still red');
+      // The failed run is re-run: nothing failing, not finished.
+      applied(await obs('H2', 'running'), 'AWAITING_REVIEW', 'the re-run withdraws the red');
+      eq(await reading(), 'awaiting_ci', 'H2 is being checked again');
+      // A late webhook for the superseded failure reads nothing failing now.
+      notApplied(await obs('H2', 'red', []), 'rejected', 'ci_not_red', 'the superseded failure records nothing');
+      applied(await obs('H2', 'green'), 'AWAITING_REVIEW', 'green on H2 is recorded without a repair to end');
+      eq(await reading(), 'ci_passed', 'H2 passed');
+      notApplied(await obs('H2', 'green'), 'stale', 'already_recorded', 'the same green again');
+      // A new commit runs CI again: the last head's reading does not carry.
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new commit, H3');
+      eq(await reading(), 'awaiting_ci', 'H3 is running');
+      applied(await obs('H3', 'red', ['unit tests'], true), 'AWAITING_REVIEW', 'a second failure, on H3');
+      eq(await reading(), 'ci_failed', 'H3 failed');
+    },
+  },
+  {
     name: '38442d17: an infrastructure CI failure files a CI repair; a green re-run on the same head cancels it and returns the approved PR to APPROVED, spending nothing',
     async run(host) {
       const s = await new Delivery(host, 75).open();
@@ -2062,6 +2077,21 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await drainKernel(host, t, g.ports);
       eq(g.work.cancelled.map((x) => x.taskId), [fixTask], 'exactly the moot fix is cancelled');
       eq(g.work.cancelledPending.filter((x) => x.role === 'fix'), [], 'no role-wide cancel');
+
+      // a81a100f: a mechanical refresh has no task, so a head that leaves it behind cancels nothing,
+      // never every pending conflict fix of the delivery.
+      const m = await new Delivery(host, 118).open();
+      await m.approvedAt('H1');
+      applied(await m.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 }), 'REPAIRING', 'a behind refresh');
+      eq((await m.view()).attempts.map((a) => pick(a, ['mode', 'taskId'])), [{ mode: 'mechanical', taskId: null }], 'mechanical, no task');
+      applied(await m.push('H2', { attribution: { descendsFromBound: false } }), 'AWAITING_REVIEW', 'a rebase the refresh cannot land on');
+      const mc = (await host.effects(m.deliveryId)).find((e) => e.kind === 'cancel_open_attempts' && e.payload.reason === 'head_moved')!;
+      eq(mc.payload.taskIds, [], 'it names no task');
+      const gm = fakePorts(host);
+      gm.github.setPr(m.repo, m.prNumber, m.live('H2'));
+      await drainKernel(host, m, gm.ports);
+      eq((await host.effects(m.deliveryId)).filter((e) => e.kind === 'cancel_open_attempts' && e.payload.reason === 'head_moved').map((e) => e.outcome), ['ok:cancelled_0'], 'nothing cancelled');
+      eq(gm.work.cancelledPending.filter((x) => x.role === 'conflict_fix'), [], 'no role-wide cancel');
 
       // attestComposition found a novel delta but started no round for it: the open round still gets its reviewer.
       const c = await new Delivery(host, 88).open();
@@ -2274,6 +2304,247 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.push('H2', { proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the push arrives');
       eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2' }, 'a person\'s, at the new head');
       eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+    },
+  },
+  {
+    // Task 79649a80: the close cleared the hold and the reopen started a fresh round, so closing and
+    // reopening the PR escaped a spent review budget.
+    name: '79649a80: closing and reopening a PR whose review budget is spent returns it to the person with no round; one closed mid-repair too',
+    async run(host) {
+      const s = await new Delivery(host, 115).open({ maxRounds: 1 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'the budget is spent');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the hold rides through the close');
+      applied(await s.submit({ type: 'PrReopened', actor: 'webhook', live: s.live('H2', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'ESCALATED', 'reopened');
+      eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha', 'resumeState']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2', resumeState: null }, 'a person\'s, at the reopened head');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t1', headSha: 'H2', live: s.live('H2'), forced: false }), 'rejected', 'review_budget_spent', 'an agent asks again after the reopen');
+      // The person is told it is back with them: the exhaustion notice, once for the spend and once for the reopen.
+      eq(await s.count('escalate_exhaustion'), 2, 'one notice per escalation');
+      const fs = fakePorts(host);
+      fs.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      await drainKernel(host, s, fs.ports);
+      eq(fs.escalate.calls.map((x) => x.detail), ['after 1 review rounds', 'reopened after 1 review rounds; the review budget is still spent'], 'the reopen notice says what happened');
+
+      // Closed while a CI repair out of the spent escalation runs: the reopen still goes to the person.
+      const r = await new Delivery(host, 116).open({ maxRounds: 1 });
+      applied(await r.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (repair)');
+      applied(await r.verdict('request_changes'), 'ESCALATED', 'the budget is spent (repair)');
+      applied(await r.ciRed('H1'), 'REPAIRING', 'CI red on the escalated PR');
+      applied(await r.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: r.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed mid-repair');
+      eq((await r.view()).attempts.filter((a) => a.family === 'ci').map((a) => a.status), ['cancelled'], 'the repair is cancelled');
+      applied(await r.submit({ type: 'PrReopened', actor: 'webhook', live: r.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'ESCALATED', 'reopened (repair)');
+      eq(pick(await r.d(), ['stateReason', 'currentRound']), { stateReason: 'review_exhausted', currentRound: 1 }, 'a person\'s again');
+      eq(await r.count('dispatch_review'), 1, 'no reviewer for the reopen');
+      eq(await r.count('escalate_exhaustion'), 2, 'the person is told again on the reopen');
+
+      // Without a spent budget a reopen is reviewed, as before.
+      const n = await new Delivery(host, 117).open();
+      applied(await n.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (fresh)');
+      applied(await n.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: n.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed (fresh)');
+      applied(await n.submit({ type: 'PrReopened', actor: 'webhook', live: n.live('H1', { updatedAt: '2026-01-01T03:00:00Z' }) }), 'AWAITING_REVIEW', 'reopened (fresh)');
+      eq(await n.count('dispatch_review'), 2, 'the reopen dispatches a reviewer');
+      eq(await n.count('escalate_exhaustion'), 0, 'and tells nobody it is theirs');
+    },
+  },
+  {
+    // Task c1d66a6a, the #4948 sequence: two requests for changes, an approval, a re-check that approved,
+    // then a re-check that asked for changes. It escalated review_exhausted on a PR approved twice.
+    name: 'c1d66a6a: re-checks after an approval spend no review budget; a re-check asking for changes gets one repair cycle, then the budget is final again',
+    async run(host) {
+      const s = await new Delivery(host, 119).open({ maxRounds: 3 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 1 asks for changes');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the fix');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 2 asks for changes');
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'the second fix');
+      applied(await s.verdict('approve'), 'APPROVED', 'round 3 approves');
+      applied(await s.push('H4'), 'AWAITING_REVIEW', 'a repair changes the approved head');
+      applied(await s.verdict('approve'), 'APPROVED', 'round 4 re-checks it and approves');
+      applied(await s.push('H5'), 'AWAITING_REVIEW', 'another repair');
+      // Round 5 is past maxRounds by number, but rounds 4 and 5 are re-checks: it gets a repair cycle.
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 5 re-checks and asks for changes');
+      eq(pick(await s.d(), ['currentRound', 'stateReason']), { currentRound: 5, stateReason: null }, 'not escalated');
+      eq(await s.count('dispatch_fix'), 3, 'a fix for it, like rounds 1 and 2');
+      eq(await s.count('escalate_exhaustion'), 0, 'nobody is told the budget is spent');
+      // The repair's review counts: asking for changes again is the person's, and final (2ded4e88).
+      applied(await s.push('H6'), 'AWAITING_REVIEW', 'the fix of round 5');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'scope.ts', title: 'out of scope' }, { path: 'other.ts', title: 'also wrong' }] }), 'ESCALATED', 'round 6 asks for changes again');
+      eq((await s.d()).stateReason, 'review_exhausted', 'the budget is spent');
+      // A fix pushed after the escalation that rewrites a finding's file marks it addressed (AC-17), so a
+      // person can see a fix waiting for a re-review. No review is queued for it: the hold is final.
+      applied(await s.push('H7', { changedPaths: ['scope.ts'] }), 'ESCALATED', 'a push after it');
+      eq(await s.findingStates(), { 'scope.ts': 'addressed', 'other.ts': 'open', 'the review asked for changes': 'open' }, 'the touched finding is addressed; the others (one with no path) stay open');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 6, dispatched: 6 }, 'no new round: the hold is final');
+      // Review of #5017: the head is put back to round 5's (a re-check whose free cycle was used), CI
+      // goes red there and its repair turns out not needed. Re-entering round 5's request for changes
+      // is the person's again, never a second free fix and through it a reviewer.
+      applied(await s.push('H5'), 'ESCALATED', 'a force-push back to the re-check\'s head');
+      applied(await s.ciRed('H5'), 'REPAIRING', 'CI red there');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the repair carries the hold');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.submit({ type: 'RepairNotNeeded', actor: 'kernel', attemptId: ci.id, reason: 'ci_green' }), 'ESCALATED', 'the repair was not needed');
+      eq(pick(await s.d(), ['stateReason', 'resumeState']), { stateReason: 'review_exhausted', resumeState: null }, 'a person\'s, the budget still spent');
+      eq({ fixes: await s.count('dispatch_fix'), reviews: await s.count('dispatch_review') }, { fixes: 3, reviews: 6 }, 'no second free fix, no reviewer');
+
+      // Without an approval nothing changes: the third request for changes escalates.
+      const n = await new Delivery(host, 120).open({ maxRounds: 3 });
+      applied(await n.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed (no approval)');
+      applied(await n.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 1');
+      applied(await n.push('H2'), 'AWAITING_REVIEW', 'fix 1');
+      applied(await n.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 2');
+      applied(await n.push('H3'), 'AWAITING_REVIEW', 'fix 2');
+      applied(await n.verdict('request_changes'), 'ESCALATED', 'round 3 escalates');
+      eq((await n.d()).stateReason, 'review_exhausted', 'as before');
+    },
+  },
+  {
+    // Task b6cfdbb9 (audit case: a PR closed while its review repair was still queued): the close
+    // cancelled the ledger row, but its effect left the task to a legacy path that skips kernel PRs,
+    // so the repair stayed pending on a closed PR.
+    name: 'b6cfdbb9: closing a PR unmerged cancels its queued repair task; a merge cancels a queued CI fix',
+    async run(host) {
+      const s = await new Delivery(host, 118).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const fixTask = (await s.view()).attempts.find((a) => a.family === 'review_fix')?.taskId;
+      ok(fixTask, 'the review fix was filed and linked');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      eq((await s.view()).attempts.filter((a) => a.family === 'review_fix').map((a) => a.status), ['cancelled'], 'the ledger row is cancelled');
+      await drainKernel(host, s, f.ports);
+      eq(f.work.cancelled.map((x) => x.taskId), [fixTask], 'and so is its task');
+      eq(await outcomesOf(host, s, 'cancel_open_attempts'), ['ok:cancelled_1'], 'the close owns the cancel, not legacy');
+
+      const m = await new Delivery(host, 119).open();
+      await m.approvedAt('H1');
+      await m.ciRed('H1');
+      const g = fakePorts(host);
+      g.github.setPr(m.repo, m.prNumber, m.live('H1'));
+      await drainKernel(host, m, g.ports);
+      const ciTask = (await m.view()).attempts.find((a) => a.family === 'ci')?.taskId;
+      ok(ciTask, 'the CI fix was filed and linked');
+      applied(await m.merged('H1'), 'MERGED', 'merged');
+      await drainKernel(host, m, g.ports);
+      eq(g.work.cancelled.map((x) => x.taskId), [ciTask], 'the merge cancels the CI fix nobody started');
+    },
+  },
+  {
+    // Task 295486ba (seen on a PR whose own builder fixed CI): CI-fix tasks a person cancelled before
+    // anyone claimed them each spent the budget, the next was filed as "4 of 3", and the delivery
+    // stayed ESCALATED(ci_exhausted) after CI went green on its head.
+    name: '295486ba: a CI fix cancelled before it started spends nothing and files no next one; "N of M" never runs past the budget; a green head clears ci_exhausted',
+    async run(host) {
+      const s = await new Delivery(host, 121).open();
+      await s.approvedAt('H1');
+      const ci = async () => (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => a.attemptNo - b.attemptNo);
+      const queued = async () => (await ci()).find((a) => a.status === 'queued')!;
+      const claim = async () => {
+        const a = await queued();
+        applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a.id, revalidation: { live: s.live('H1'), approved: true, ciGreen: false } }), 'REPAIRING', `CI fix ${a.attemptNo} claimed`);
+        return a;
+      };
+      const fails = async (a: { id: string }) => s.fixEnded(a.id, { outcome: 'failed', taskId: undefined });
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
+      applied(await fails(await claim()), 'REPAIRING', 'fix 1 failed: fix 2 is filed');
+      const second = await queued();
+      // A person cancels fix 2 before anyone picked it up.
+      applied(await s.fixEnded(second.id, { outcome: 'lost', cancelled: true, taskId: undefined, workerId: `cancel:${second.id}` }), 'APPROVED', 'the cancel ends the repair: back to the approval');
+      eq(pick((await ci()).find((a) => a.id === second.id), ['status', 'outcome']), { status: 'skipped', outcome: 'noop' }, 'fix 2 spent nothing');
+      eq((await ci()).filter((a) => a.status === 'queued').length, 0, 'and no fix 3 was filed behind the cancel');
+      eq(pick(await s.d(), ['ci', 'ciHeadSha', 'boundAttemptId']), { ci: 'red', ciHeadSha: 'H1', boundAttemptId: null }, 'H1 still reads red');
+      // CI is still red, so the platform files again: the budget has two of three left.
+      applied(await s.ciRed('H1', { trigger: 'human', actor: 'human:u' }), 'REPAIRING', 'Fix CI files the next fix');
+      applied(await fails(await claim()), 'REPAIRING', 'it fails: one more');
+      const last = await queued();
+      const rows = await ci();
+      eq({ no: last.attemptNo, of: attemptOrdinal(rows, last), max: last.maxAttempts }, { no: 4, of: 3, max: 3 }, 'row 4 is "CI fix 3 of 3", never "4 of 3"');
+      eq(rows.map((a) => repairLabelOf(a, rows)), ['CI fix 1 of 3', 'CI fix, not started', 'CI fix 2 of 3', 'CI fix 3 of 3'], 'every label counts only the fixes that ran');
+      applied(await fails(await claim()), 'ESCALATED', 'the third fix that ran fails: the budget is spent');
+      eq((await s.d()).stateReason, 'ci_exhausted', 'a person\'s');
+      // The PR's own builder fixed CI from elsewhere and the head re-ran green.
+      const green = { type: 'CiObserved' as const, actor: 'webhook:ci_reading', headSha: 'H1', verdict: 'green' as const, liveChecks: { complete: true, failing: [] }, allPassing: true };
+      notApplied(await s.submit({ ...green, headSha: 'H0' }), 'stale', 'head_not_current', 'green on another head says nothing');
+      applied(await s.submit(green), 'APPROVED', 'green on the head clears ci_exhausted');
+      eq(pick(await s.d(), ['stateReason', 'ci']), { stateReason: null, ci: 'green' }, 'no escalation left, CI green');
+      applied(await s.land('H1'), 'LANDING', 'and it lands');
+
+      // A spent review budget under the CI escalation stays with the person (2ded4e88).
+      const t = await new Delivery(host, 122).open({ maxRounds: 1 });
+      applied(await t.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await t.verdict('request_changes'), 'ESCALATED', 'one round, changes requested: the review budget is spent');
+      eq((await t.d()).stateReason, 'review_exhausted', 'review budget spent');
+      applied(await t.ciRed('H1', { maxAttempts: 1 }), 'REPAIRING', 'CI is red: the fix runs first, carrying the review hold');
+      const only = (await t.view()).attempts.find((a) => a.family === 'ci')!;
+      applied(await t.submit({ type: 'FixClaimed', actor: 'runner', attemptId: only.id, revalidation: { live: t.live('H1'), approved: false, ciGreen: false } }), 'REPAIRING', 'claimed');
+      applied(await t.fixEnded(only.id, { outcome: 'failed', taskId: undefined }), 'ESCALATED', 'it fails: the CI budget of one is spent');
+      eq(pick(await t.d(), ['stateReason', 'resumeState']), { stateReason: 'ci_exhausted', resumeState: 'ESCALATED' }, 'ci_exhausted over the spent review budget');
+      applied(await t.submit(green), 'ESCALATED', 'green does not reopen a spent review budget');
+      eq(pick(await t.d(), ['stateReason', 'resumeState', 'ci']), { stateReason: 'review_exhausted', resumeState: null, ci: 'green' }, 'the person still owes the review decision, and is told so');
+      eq((await t.view()).rounds.length, 1, 'no new round');
+    },
+  },
+  {
+    // Review of #5038: the CI fix's title counted dispatched attempts, but a review, conflict or
+    // migration fix's title still used the raw attempt_no, so after one skipped row its title said
+    // "#2" while the checks list said "1 of 3".
+    name: '295486ba: review and conflict fix titles count dispatched attempts: a skipped row in front does not number the next one',
+    async run(host) {
+      // Review fix: the first is skipped at claim (the PR was approved meanwhile); the second is fix 1.
+      const s = await new Delivery(host, 123).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const first = (await s.view()).attempts.find((a) => a.family === 'review_fix')!;
+      notApplied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: first.id, revalidation: { live: s.live('H1'), approved: true } }), 'rejected', 'fix_not_needed', 'skipped at claim');
+      eq((await s.view()).attempts.find((a) => a.id === first.id)!.status, 'skipped', 'the first review fix spent nothing');
+      eq(await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix')), { outcome: 'ok' }, 'the next review fix is filed');
+      const fixes = f.work.filed.filter((w) => w.role === 'fix');
+      const second = (await s.view()).attempts.find((a) => a.family === 'review_fix' && a.status === 'queued')!;
+      eq({ row: second.attemptNo, title: fixes.at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1, as the checks list counts it');
+
+      // Agent conflict fix: the first is skipped at claim (the conflict resolved itself); the next is fix 1.
+      const c = await new Delivery(host, 124).open();
+      applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const g = fakePorts(host);
+      const h = kernelEffectHandlers(g.ports);
+      g.github.setPr(c.repo, c.prNumber, c.live('H1', { mergeableState: 'dirty' }));
+      g.conflicts.refreshAnswer = { kind: 'refused', refusal: { reason: 'merge conflict', mode: 'textual' } };
+      const toAgent = async (label: string) => {
+        applied(await c.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', `conflict (${label})`);
+        eq(await h.refresh_branch!(await direct(host, c, 'refresh_branch')), { outcome: 'ok:refused:merge conflict' }, `refused to an agent (${label})`);
+        return (await c.view()).attempts.find((x) => x.mode === 'agent' && x.status === 'queued')!;
+      };
+      const a1 = await toAgent('first');
+      eq((await c.submit({ type: 'FixClaimed', actor: 'runner', attemptId: a1.id, revalidation: { live: c.live('H1'), approved: false, conflictResolved: true } })).result, 'applied', 'resolved before it started: skipped');
+      eq((await c.view()).attempts.find((x) => x.id === a1.id)!.status, 'skipped', 'the first conflict fix spent nothing');
+      const a2 = await toAgent('second');
+      eq(await h.dispatch_conflict_fix!(await direct(host, c, 'dispatch_conflict_fix')), { outcome: 'ok' }, 'filed');
+      eq({ row: a2.attemptNo, title: g.work.filed.filter((w) => w.role === 'conflict_fix').at(-1)!.detail?.attemptNo }, { row: 2, title: 1 }, 'row 2 is titled fix 1');
+    },
+  },
+  {
+    // Task 38ed99bc: the dispatch-time "CI fix N of M" activity entry reads detail.attemptNo, so the
+    // kernel must hand the host the dispatched count, not the ledger row's own number.
+    name: '38ed99bc: a CI fix filed behind a skipped row carries its dispatched count, so its activity entry never reads past the budget',
+    async run(host) {
+      const s = await new Delivery(host, 125).open();
+      await s.approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'H1 is red: CI fix 1 is filed');
+      const first = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.fixEnded(first.id, { outcome: 'lost', cancelled: true, taskId: undefined, workerId: `cancel:${first.id}` }), 'APPROVED', 'cancelled before it started');
+      applied(await s.ciRed('H1', { trigger: 'human', actor: 'human:u' }), 'REPAIRING', 'Fix CI files the next fix');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      const next = (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => b.attemptNo - a.attemptNo)[0];
+      eq(next!.attemptNo, 2, 'the ledger row is number 2');
+      eq(f.work.filed.filter((w) => w.role === 'ci_fix').at(-1)!.detail?.attemptNo, 1, 'but it is CI fix 1');
     },
   },
   {

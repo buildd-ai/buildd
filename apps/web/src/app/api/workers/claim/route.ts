@@ -5,11 +5,11 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { TASK_ISOLATION_CONTEXT_KEY, type TaskIsolationStamp } from '@buildd/shared';
-import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials, NEEDS_INPUT_ERROR_PREFIX, workerHoldsRunnerSlot, RUNNER_LIVE_WINDOW_MS } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -61,7 +61,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { callerSeatKeys } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -95,11 +95,21 @@ import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
-import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { cancelSkippedTask, isRepairRole } from '@/lib/workflow/seam';
+// T9 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { claimFix as claimKernelFix, KernelCommandRefusedError, kernelPrincipalOf, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+
+/**
+ * One claim request's whole control-plane budget for its fix claims (T9), every candidate included.
+ * A door alone may take DOOR_BUDGET_MS (20 s); summed over several fix candidates that outlasts the
+ * runner's claim deadline. Once it is spent the next fix candidate defers at once (nothing is sent)
+ * and the rest of the batch is claimed as usual.
+ */
+export const CLAIM_FIX_CONTROL_PLANE_BUDGET_MS = 5_000;
 import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
-import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
+import { BudgetWalls, accountLimitRefusal, accountWorkerSlotLimit, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -175,6 +185,20 @@ const ROLE_ENV_WINDOW_MAX_PAGES = 4;
 
 
 export async function POST(req: NextRequest) {
+  const claimStarted = performance.now();
+  let phaseStarted = claimStarted;
+  let pathChecksMs = 0;
+  const timingId = crypto.randomUUID();
+  const claimTiming = (stage: string, counts: Record<string, number> = {}) => {
+    const now = performance.now();
+    console.info('[claim-timing]', {
+      requestId: timingId, stage,
+      phaseMs: Math.round(now - phaseStarted), elapsedMs: Math.round(now - claimStarted),
+      ...counts,
+    });
+    phaseStarted = now;
+  };
+  claimTiming('request_started');
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
@@ -299,7 +323,9 @@ export async function POST(req: NextRequest) {
   // hit is recorded under that runner's key and holds only its claims. Null —
   // a session on its own seat (exempt from walls anyway), a cloud run, or a
   // caller that names no runner — reads every wall, seat-scoped ones included.
-  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
+  // A runner that reports its login's identity (`claudeLoginId`, a one-way
+  // hash) is also held by a wall another runner on the same login recorded.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : callerSeatKeys(runner, body.claudeLoginId);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
@@ -381,9 +407,10 @@ export async function POST(req: NextRequest) {
   if (capabilities.length === 0 && body.environment) {
     const env = body.environment;
     capabilities = [
-      ...env.tools.map(t => t.name),
-      ...env.envKeys,
-      ...env.mcp.map(m => `mcp:${m}`),
+      // A partial environment (e.g. only an isolation probe) derives nothing rather than throwing.
+      ...(env.tools ?? []).map(t => t.name),
+      ...(env.envKeys ?? []),
+      ...(env.mcp ?? []).map(m => `mcp:${m}`),
     ];
   }
 
@@ -408,9 +435,30 @@ export async function POST(req: NextRequest) {
   // slot (workerHoldsRunnerSlot, the same rule the runner's heartbeat counts by).
   const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER && workerHoldsRunnerSlot(w));
 
-  if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
+  // The limit is the slots the account's live runners report, added up; the
+  // account's own number only when none reports (accountWorkerSlotLimit). A
+  // failed read keeps the account's number, which is what applied before.
+  const liveRunnerSlots = await db.query.workerHeartbeats.findMany({
+    where: sqlWhere(and(
+      eq(workerHeartbeats.accountId, account.id),
+      gte(workerHeartbeats.lastHeartbeatAt, new Date(Date.now() - RUNNER_LIVE_WINDOW_MS)),
+    )),
+    columns: { maxConcurrentWorkers: true },
+  }).then(rows => rows.map(r => r.maxConcurrentWorkers)).catch((err) => {
+    console.warn('[claim] could not read live runner slots, using the account limit:', err);
+    return [] as number[];
+  });
+  const workerSlotLimit = accountWorkerSlotLimit(account.maxConcurrentWorkers, liveRunnerSlots);
+
+  // A person chose this named task for this runner (`c` in top): the runner
+  // claims only into a free slot of its own, so another runner's busy workers
+  // never refuse it (task 69f5b7cd's rule, for the runner path).
+  const personRequested = body.requestedByPerson === true && !!taskId;
+  const slotLimitApplies = !interactiveSession && !personRequested;
+
+  if (slotLimitApplies && runnerSlotWorkers.length >= workerSlotLimit) {
     return NextResponse.json(
-      accountLimitRefusal({ code: 'max_concurrent_workers', limit: account.maxConcurrentWorkers, current: runnerSlotWorkers.length }),
+      accountLimitRefusal({ code: 'max_concurrent_workers', limit: workerSlotLimit, current: runnerSlotWorkers.length }),
       { status: 429 }
     );
   }
@@ -509,16 +557,16 @@ export async function POST(req: NextRequest) {
   const accountBudgetExhausted = account.authType === 'oauth'
     && isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt);
 
-  const availableSlots = interactiveSession
+  const availableSlots = !slotLimitApplies
     ? maxTasks
-    : Math.min(maxTasks, account.maxConcurrentWorkers - runnerSlotWorkers.length);
+    : Math.min(maxTasks, workerSlotLimit - runnerSlotWorkers.length);
 
   if (availableSlots === 0) {
     return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
         activeWorkers: runnerSlotWorkers.length,
-        maxConcurrent: account.maxConcurrentWorkers,
+        maxConcurrent: workerSlotLimit,
       } satisfies ClaimDiagnostics,
     });
   }
@@ -1004,7 +1052,7 @@ export async function POST(req: NextRequest) {
         });
 
         oauthPressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
-        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: account.maxConcurrentWorkers });
+        const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: workerSlotLimit });
         if (seatCap !== null) {
           oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));
         }
@@ -1086,6 +1134,8 @@ export async function POST(req: NextRequest) {
     duplicate_worker: 0,
     sibling_retry_open: 0,
     fix_not_needed: 0,
+    kernel_unavailable: 0,
+    kernel_refused: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -1280,6 +1330,7 @@ export async function POST(req: NextRequest) {
   // Workspaces whose lease read failed: their lease state is unknown, so the
   // hold/start shadow below never asks about them.
   const leaseReadFailedWorkspaces = new Set<string>();
+  claimTiming('before_lease_snapshot');
   if (openPrWorkspaceIds.length > 0) {
     await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
       try {
@@ -1291,6 +1342,13 @@ export async function POST(req: NextRequest) {
       }
     }));
   }
+
+  claimTiming('lease_snapshot', {
+    candidates: filteredTasks.length,
+    leaseReadFailures: leaseReadFailedWorkspaces.size,
+    leasePaths: [...activePathClaimsByWorkspace.values()].reduce((sum, byTask) =>
+      sum + [...byTask.values()].reduce((n, paths) => n + paths.length, 0), 0),
+  });
 
   // Open-PR and lease holders that cannot start themselves (future startAt,
   // held mission) hold nobody (./overlap-policy). A failed read leaves the set
@@ -1504,6 +1562,8 @@ export async function POST(req: NextRequest) {
   }
   const claimOrder: Iterable<(typeof filteredTasks)[number]> = applyTasks.length > 0 ? plannedClaimOrder() : filteredTasks;
 
+  // Started by the first fix candidate, shared by every one after it (CLAIM_FIX_CONTROL_PLANE_BUDGET_MS).
+  let fixClaimDeadline: number | null = null;
   for (const task of claimOrder) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
@@ -1644,7 +1704,9 @@ export async function POST(req: NextRequest) {
         },
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
+      const prCheckStarted = performance.now();
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
+      pathChecksMs += performance.now() - prCheckStarted;
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
@@ -1731,7 +1793,9 @@ export async function POST(req: NextRequest) {
       // concrete paths left and stays advisory.
       const concreteManifest = taskManifest.filter(p => p !== REPO_WIDE_SENTINEL);
       // A fix attempt's own ancestors never block it (§13.11 rule 4).
+      const leaseCheckStarted = performance.now();
       const leaseBlock = findActiveClaimBlocker(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds);
+      pathChecksMs += performance.now() - leaseCheckStarted;
       if (leaseBlock) {
         // Overlap policy (./overlap-policy): a live lease on mergeable files
         // does not hold, the task starts alongside it; an unmergeable one does,
@@ -2745,7 +2809,9 @@ export async function POST(req: NextRequest) {
       .update(tasks)
       .set({
         claimedBy: account.id,
-        claimedAt: now,
+        // The database's clock, the one workers.created_at uses: the kernel tells a claim in
+        // flight from a finished attempt by comparing the two (endingWorkerIsCurrentSql).
+        claimedAt: sql`now()`,
         expiresAt,
         status: 'assigned',
         predictedModel: resolvedModel,
@@ -2771,12 +2837,18 @@ export async function POST(req: NextRequest) {
     // resolved while it queued (approved, merged, head moved, round superseded)
     // is cancelled as skipped — never started, and not a worker failure.
     if (isRepairRole((task as any).deliveryRole) && (task as any).deliveryId) {
-      const fixDecision = await claimKernelFix({
+      fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
+      const { value: fixDecision } = await withControlPlaneBudget('claim', Math.max(0, fixClaimDeadline - Date.now()), () => claimKernelFix({
         id: task.id, workspaceId: task.workspaceId, deliveryId: (task as any).deliveryId, deliveryRole: (task as any).deliveryRole, context: task.context,
-      }).catch((err): { action: 'defer'; reason: string } => {
+      }, { principal: kernelPrincipalOf({ account }) }).catch((err): { action: 'defer'; reason: string; code: 'kernel_unavailable' | 'kernel_refused' } => {
         console.error(`[claim] workflow kernel FixClaimed failed for task ${task.id}:`, err);
-        return { action: 'defer', reason: 'kernel_error' };
-      });
+        // A refusal (auth, the principal's reach, a malformed input) is not an outage: asking again on
+        // the next poll gets the same answer, so it reads as its own code in claim diagnostics.
+        if (err instanceof KernelCommandRefusedError) {
+          return { action: 'defer', reason: `refused ${err.status}${err.body.code ? ` ${String(err.body.code)}` : ''}`, code: 'kernel_refused' };
+        }
+        return { action: 'defer', reason: 'kernel_error', code: 'kernel_unavailable' };
+      }));
       if (fixDecision.action !== 'proceed') {
         if (gatedStartLeaseIds.length > 0) {
           await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
@@ -2790,7 +2862,9 @@ export async function POST(req: NextRequest) {
             .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
             .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
         }
-        deferTask(task, 'fix_not_needed', { reason: fixDecision.reason });
+        // The kernel could not answer (the control plane down or slow, or the claim budget spent), or it
+        // refused the claim: each its own code, so neither reads as fixes nobody needs.
+        deferTask(task, 'code' in fixDecision ? fixDecision.code : 'fix_not_needed', { reason: fixDecision.reason });
         continue;
       }
     }
@@ -2919,9 +2993,9 @@ export async function POST(req: NextRequest) {
     // account, so this is what keeps one member's agent off another's claim.
     // NULL for a bld_ key.
     const claimedByUserId = claimingUserId(account);
-    // Same rule as the pre-check: a session is not limited, and a runner's
-    // count leaves the person's own sessions out.
-    const accountSlotPredicate = interactiveSession
+    // Same rule as the pre-check: a session or a person's named pick is not
+    // limited, and a runner's count leaves the person's own sessions out.
+    const accountSlotPredicate = !slotLimitApplies
       ? sql`TRUE`
       : sql`(
           SELECT count(*) FROM ${workers}
@@ -2933,7 +3007,7 @@ export async function POST(req: NextRequest) {
             coalesce(error, '') LIKE ${NEEDS_INPUT_ERROR_PREFIX + '%'}
             OR waiting_for->>'type' = 'pause'
           ))
-        ) < ${account.maxConcurrentWorkers}`;
+        ) < ${workerSlotLimit}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
@@ -2992,7 +3066,7 @@ export async function POST(req: NextRequest) {
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
-          detail: `This account reached its limit of ${account.maxConcurrentWorkers} concurrent workers while the claim ran. Finish or release one, then retry.`,
+          detail: `This account reached its limit of ${workerSlotLimit} concurrent workers while the claim ran. Finish or release one, then retry.`,
         };
       }
       break;
@@ -3170,6 +3244,7 @@ export async function POST(req: NextRequest) {
   scheduleClaimHoldShadow(holdStart);
   scheduleClaimDeferralWaiters(deferralWaiters);
 
+  claimTiming('claim_arbitration', { workers: claimedWorkers.length, pathChecksMs: Math.round(pathChecksMs) });
   if (claimedWorkers.length === 0) {
     // When the account's OAuth budget is exhausted, every non-tenant Claude task
     // above was skipped by the budget gate (and none could fail over to Codex).
@@ -3382,6 +3457,7 @@ export async function POST(req: NextRequest) {
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
+  claimTiming('before_optional_context');
   const taskAreaPredictions = await runDependentContextInjections(
     claimedWorkers,
     filteredTasks,
@@ -3394,6 +3470,7 @@ export async function POST(req: NextRequest) {
         }
       : null,
   );
+  claimTiming('optional_context');
   await attachArtifactReferences(claimedWorkers, filteredTasks);
   await VISUAL_AUDIT_ROUTES(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
@@ -3505,6 +3582,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  claimTiming('response_ready', { workers: claimedWorkers.length });
   return jsonResponse({
     // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
     workers: claimedWorkers.map((cw) => (cw.task

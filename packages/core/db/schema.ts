@@ -36,6 +36,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
 
+  // Set on the one team created for a user at sign-up: that user's personal
+  // team. NULL = an ordinary team. This column, never the slug, is what marks
+  // a team as personal (apps/web/src/lib/personal-team.ts); the `personal-`
+  // slug prefix is reserved and refused on create and rename. Unique, so a
+  // user has at most one personal team.
+  personalUserId: uuid('personal_user_id').references(() => users.id, { onDelete: 'set null' }).unique('teams_personal_user_id_unique'),
+
   // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
   // teams that never set one behave exactly as before. Used for anything rendered to a
   // shared or external surface — PR activity comments, new schedule defaults, mission
@@ -1366,6 +1373,11 @@ export const missions = pgTable('missions', {
   // task bypasses this gate via context.bypassHeldGate. Distinct from orchestrationMode
   // (which controls organizer initiative) — held is purely about worker claim eligibility.
   isHeld: boolean('is_held').default(false).notNull(),
+  // When the start gate was first released (created armed, or armed later).
+  // Null on a held mission means it never started; set on a held one means a
+  // person held it again after it ran, so it reads as Paused, not Not started
+  // (lib/mission-start-state.ts). Never read by a claim gate.
+  armedAt: timestamp('armed_at', { withTimezone: true }),
   // Who executes the mission's tasks. 'runner' (default): background runners
   // auto-claim them. 'local': a person runs them from their own interactive
   // session — runners never auto-claim, but a verified interactive session may
@@ -2816,7 +2828,7 @@ export type SpecStatus = (typeof SPEC_STATUSES)[number];
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
 export interface SpecMetadataBlock {
   owner?: string;
-  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  /** The repo copy's `summary`: one sentence, at most 220 characters; editable or imported. */
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
@@ -2843,6 +2855,12 @@ export interface SpecMetadataBlock {
    * Cleared by a re-import that finds none.
    */
   criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+  /**
+   * Set by a copy from another workspace (apps/web/src/lib/specs/copy.ts): the
+   * source revision this spec's head is byte for byte, by hash. Server-written
+   * only (not a metadata field a change can set). It never carries approval.
+   */
+  copied_from?: { workspaceId: string; specId: string; revision: number; contentHash: string; copiedAt: string; copiedBy: string };
 }
 
 /**
@@ -2855,8 +2873,13 @@ export interface SpecPublicationDecision {
   publish: boolean;
   source: 'rule' | 'model' | 'fallback' | 'person';
   reasonCode: string;
+  /** The sentence as worded when decided; the page words it afresh (publicationSentence). */
   reason: string;
   line?: string;
+  /** rule_prod_data: the hit it named. */
+  hit?: string;
+  /** rule_marked_private: whose mark it was. */
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence?: number | null;
   model?: string | null;
@@ -2982,12 +3005,63 @@ export const specRevisions = pgTable('spec_revisions', {
   // approving statement, next to approved_at; reference attachments are never
   // in it. NULL: not approved, or approved before attachments existed.
   approvedAttachments: jsonb('approved_attachments').$type<SpecApprovedAttachment[]>(),
+  // How many spec_criteria rows were derived from this revision's body; NULL
+  // until they are (a revision with no criteria reads 0, not missing).
+  criteriaCount: integer('criteria_count'),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specRevisionIdx: uniqueIndex('spec_revisions_spec_revision_idx').on(t.specId, t.revision),
+}));
+
+/**
+ * One criterion (R-n or AC-n) of one spec revision, derived from the body when
+ * the revision is written ("Reviewing a spec revision" R-11): its words, their
+ * sha256, the heading path it sits under, and its check, screen and replaces
+ * lines. Never edited on its own: the body is the source, and a missing row is
+ * derived again from it. A criterion's history, verdicts on a wording and the
+ * Review change list read these. Only apps/web/src/lib/specs/criteria.ts writes it.
+ */
+export const specCriterionRecords = pgTable('spec_criteria', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  criterionId: text('criterion_id').notNull(),
+  position: integer('position').notNull(),
+  text: text('text').notNull(),
+  textHash: text('text_hash').notNull(),
+  section: text('section').notNull(),
+  checks: jsonb('checks').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  screens: jsonb('screens').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  replaces: jsonb('replaces').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  revisionCriterionIdx: uniqueIndex('spec_criteria_revision_criterion_idx').on(t.specRevisionId, t.criterionId),
+  specCriterionIdx: index('spec_criteria_spec_criterion_idx').on(t.specId, t.criterionId, t.revision),
+}));
+
+/**
+ * What one revision changes against another, computed once and kept
+ * ("Reviewing a spec revision" R-8): the per-criterion change list, the other
+ * text by section, the summary check and the capped line diff. Written when the
+ * later revision is written (against the one before it and the approved one),
+ * or on first read of a pair. `from_revision` 0 is the empty text (nothing
+ * approved yet). `algo` is the version of the computation: a row of an older
+ * one is computed again.
+ */
+export const specRevisionReviews = pgTable('spec_revision_reviews', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  fromRevision: integer('from_revision').notNull(),
+  toRevision: integer('to_revision').notNull(),
+  algo: integer('algo').notNull(),
+  review: jsonb('review').$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pairIdx: uniqueIndex('spec_revision_reviews_pair_idx').on(t.specId, t.fromRevision, t.toRevision, t.algo),
 }));
 
 // Derived neighbours of a Living Spec (living-specs.md §14, decisions D-11/D-12):
@@ -3161,6 +3235,9 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
   criterionId: text('criterion_id').notNull(),
   verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
+  // sha256 of the criterion's words it judged (spec_criteria.text_hash). A
+  // verdict counts only for that wording; NULL: recorded before wordings were kept.
+  criterionTextHash: text('criterion_text_hash'),
   headSha: text('head_sha'),
   // The check's evidence refs and the artifact reads (F4 ledger ids) behind it.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
@@ -3337,6 +3414,9 @@ export const evidenceObjects = pgTable('evidence_objects', {
   // Task lineage: find all evidence for a task and its retry chain
   taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
   scoutRunIdx: index('evidence_objects_scout_run_idx').on(t.scoutRunId),
+  // One row per (object, task). A retried CI job log capture writes the same
+  // object and upserts on this; Scout rows (task_id NULL) never collide.
+  objectTaskUnique: uniqueIndex('evidence_objects_object_task_unique').on(t.objectKey, t.taskId),
   oneOwner: check(
     'evidence_objects_one_owner',
     sql`(${t.scoutRunId} IS NULL AND ${t.taskId} IS NOT NULL AND ${t.rootTaskId} IS NOT NULL AND ${t.workerId} IS NOT NULL)
@@ -3595,6 +3675,8 @@ export const githubInstallations = pgTable('github_installations', {
 }, (t) => ({
   installationIdIdx: uniqueIndex('github_installations_installation_id_idx').on(t.installationId),
   accountLoginIdx: index('github_installations_account_login_idx').on(t.accountLogin),
+  // installationBelongsToTeam / getInstallationOwnerTeamIds: a reinstall on the same account.
+  accountIdIdx: index('github_installations_account_id_idx').on(t.accountId),
   installedByIdx: index('github_installations_installed_by_idx').on(t.installedByUserId),
 }));
 
@@ -5656,6 +5738,36 @@ export const workflowCommands = pgTable('workflow_commands', {
 }));
 
 export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
+
+// §3 of docs/specs/workflow-kernel-library.md — a door command the control plane
+// never answered, kept by its idempotency key so the kernel floor re-submits it
+// (the same key, so the ledger above applies it once) until it is answered.
+// Only ops with no other re-sender are kept (command-outbox.ts `PARK_ON_UNAVAILABLE`).
+export const workflowCommandOutbox = pgTable('workflow_command_outbox', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  /** The op's input, as the door sent it. */
+  commandInput: jsonb('command_input').$type<Record<string, unknown>>().notNull(),
+  /** The principal the door vouched for, as sent: the control plane re-checks its reach on every re-submission. */
+  principal: jsonb('principal').$type<Record<string, unknown>>().notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'done' | 'dead'>(),
+  /** A submission may have reached the control plane: never run on the web host without the ledger's word. */
+  priorUnknown: boolean('prior_unknown').default(false).notNull(),
+  /** What the answer said: the kernel's result (applied, duplicate, stale, rejected), `replayed`, or why it was given up. */
+  outcome: text('outcome'),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, (t) => ({
+  dueIdx: index('workflow_command_outbox_due_idx').on(t.notBefore).where(sql`${t.status} = 'pending'`),
+  createdIdx: index('workflow_command_outbox_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandOutboxRow = typeof workflowCommandOutbox.$inferSelect;
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.

@@ -53,6 +53,7 @@ const EXPECTED: Record<Permission, Row> = {
   delegate_schedule_access: { roles: OA, keys: ADMIN_KEY },
   steer_workers: { roles: OA, keys: ADMIN_KEY },
   force_reassign_task: { roles: OA, keys: ANY_KEY },
+  view_work_diagnostics: { roles: OA, keys: NONE },
   manage_releases: { roles: OA, keys: ADMIN_KEY },
   approve_specs: { roles: OA, keys: NONE },
   manage_connectors: { roles: OA, keys: ADMIN_KEY },
@@ -166,10 +167,10 @@ describe('can: no per-team grants (AC-14)', () => {
 
   it('a role holds the same permissions in every team, whatever a team row stores', async () => {
     // Legacy per-team grants on the rows: team-a widens, team-b narrows. The
-    // personal-team lookup (by slug) finds nothing.
+    // personal-team lookup (by teams.personal_user_id) finds nothing.
     mockTeamsFindFirst.mockImplementation(async (q: { where?: unknown }) => {
       const values = boundValues(capturedWhere(q?.where));
-      if (values.some(v => v.startsWith('personal-'))) return null;
+      if (values.includes(caller.userId)) return null;
       const everyone = Object.fromEntries(ALL.map(p => [p, ['owner', 'admin', 'member']]));
       const ownersOnly = Object.fromEntries(ALL.map(p => [p, ['owner']]));
       return values.includes('team-a') ? { id: 'team-a', permissionOverrides: everyone } : { id: 'team-b', permissionOverrides: ownersOnly };
@@ -189,7 +190,8 @@ describe('can: no per-team grants (AC-14)', () => {
     for (const p of ALL) await can(caller, p, 'team-a');
     expect(mockTeamsFindFirst).toHaveBeenCalled();
     for (const [q] of mockTeamsFindFirst.mock.calls as unknown as [{ where?: unknown }][]) {
-      expect(boundValues(capturedWhere(q?.where)).every(v => v.startsWith('personal-'))).toBe(true);
+      // Keyed on the user id (teams.personal_user_id), never a personal- slug.
+      expect(boundValues(capturedWhere(q?.where))).toEqual([caller.userId]);
     }
   });
 });

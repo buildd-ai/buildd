@@ -3,6 +3,7 @@ import {
   isFailingCheckRun,
   isPassingCheckRun,
   isPassingStatus,
+  latestRunPerName,
   listAllCheckRuns,
   listAllCommitStatuses,
 } from './ci-verdict';
@@ -79,5 +80,76 @@ describe('reading every page', () => {
     const r = await listAllCommitStatuses(api, 1, 'o/r', 'sha');
     expect({ n: r.items.length, complete: r.complete }).toEqual({ n: 101, complete: true });
     expect(paths[0]).toBe('/repos/o/r/commits/sha/status?per_page=100&page=1');
+  });
+});
+
+describe('latestRunPerName keys a superseded run on (workflow, app, name)', () => {
+  const r = (id: number, over: Record<string, unknown> = {}) => ({
+    id, name: 'integration', status: 'completed', conclusion: 'success', app: { id: 15368 }, workflow_id: 1, ...over,
+  });
+
+  it('a newer pass in one workflow does not hide an older failure of a same-named job in another', () => {
+    const kept = latestRunPerName([r(1, { conclusion: 'failure', workflow_id: 1 }), r(2, { workflow_id: 2 })]);
+    expect(kept.map((k) => k.id).sort()).toEqual([1, 2]);
+    expect(kept.some(isFailingCheckRun)).toBe(true);
+  });
+
+  it('a different app with the same check name is a different check', () => {
+    expect(latestRunPerName([r(1, { conclusion: 'failure' }), r(2, { app: { id: 7 } })])).toHaveLength(2);
+  });
+
+  it('a genuine re-run in the same workflow still replaces the earlier run, in either order', () => {
+    expect(latestRunPerName([r(1, { conclusion: 'failure' }), r(2)]).map((k) => k.id)).toEqual([2]);
+    expect(latestRunPerName([r(2), r(1, { conclusion: 'failure' })]).map((k) => k.id)).toEqual([2]);
+  });
+
+  it('runs without workflow or app info keep the name-only behaviour', () => {
+    const bare = (id: number, conclusion: string) => ({ id, name: 'x', status: 'completed', conclusion });
+    expect(latestRunPerName([bare(1, 'failure'), bare(2, 'success')]).map((k) => k.id)).toEqual([2]);
+  });
+
+  it('unorderable same-workflow runs are both kept (fails closed)', () => {
+    const u = (conclusion: string) => ({ name: 'x', status: 'completed', conclusion, workflow_id: 1 });
+    expect(latestRunPerName([u('failure'), u('success')])).toHaveLength(2);
+  });
+});
+
+describe('listAllCheckRuns annotates each run with its workflow', () => {
+  const runs = [
+    { id: 1, name: 'integration', check_suite: { id: 10 } },
+    { id: 2, name: 'integration', check_suite: { id: 20 } },
+    { id: 3, name: 'third-party', check_suite: { id: 99 } },
+  ];
+  const mk = (workflowRuns: unknown, fail = false) => async (_i: number, path: string) => {
+    if (path.includes('/check-runs')) return { total_count: runs.length, check_runs: runs };
+    if (path.includes('/actions/runs')) {
+      if (fail) throw new Error('GitHub API error: 502');
+      return workflowRuns;
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+
+  it('maps check suite to workflow_id; a run with no workflow run stays unannotated', async () => {
+    const api = mk({ total_count: 2, workflow_runs: [{ check_suite_id: 10, workflow_id: 5 }, { check_suite_id: 20, workflow_id: 6 }] });
+    const r = await listAllCheckRuns<{ id: number; workflow_id?: number }>(api, 1, 'o/r', 'sha');
+    expect(r.items.map((x) => x.workflow_id)).toEqual([5, 6, undefined]);
+  });
+
+  it('an unreadable workflow-run read degrades to no collapsing, so every failing run still counts', async () => {
+    for (const api of [mk(null, true), mk({ nope: [] })]) {
+      const r = await listAllCheckRuns<{ id: number; name: string; status: string; conclusion: string }>(api, 1, 'o/r', 'sha');
+      expect(r.items).toHaveLength(3);
+      const failing = [
+        { id: 1, name: 'integration', status: 'completed', conclusion: 'failure', check_suite: { id: 10 } },
+        { id: 2, name: 'integration', status: 'completed', conclusion: 'success', check_suite: { id: 20 } },
+      ];
+      const kept = latestRunPerName(
+        (await listAllCheckRuns<(typeof failing)[number]>(
+          async (_i, path) => (path.includes('/actions/runs') ? Promise.reject(new Error('502')) : { total_count: 2, check_runs: failing }),
+          1, 'o/r', 'sha',
+        )).items,
+      );
+      expect(kept).toHaveLength(2);
+    }
   });
 });

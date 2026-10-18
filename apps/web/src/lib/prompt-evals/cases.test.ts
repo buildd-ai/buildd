@@ -102,6 +102,22 @@ function collectedDeps(inputs: DecisionReplayInput[], outcomes: Record<string, O
 const at = (iso: string) => new Date(iso);
 
 describe('collectedFromReplay', () => {
+  it('lists the requested kinds on their own, so a busy kind cannot push a graded one out of the window', async () => {
+    // Newest-first across everything fills the window with another capability; the graded kind is only reachable by its own listing.
+    const busy = Array.from({ length: 5 }, (_, i) => replayInput(`busy${i}`, { capability: 'busy', promptRef: { id: 'busy', version: null, contentHash: null } }));
+    const graded = replayInput('old1', { capability: 'buildd.fake' });
+    const all = [...busy, graded];
+    const deps: CollectedDeps = {
+      listReplayable: async o => (o.capability ? all.filter(i => i.capability === o.capability) : all).slice(0, o.limit).map(i => ({ decisionId: i.decisionId, capability: i.capability })),
+      loadReplay: async o => new Map(all.filter(i => o.decisionIds.includes(i.decisionId)).map(i => [i.decisionId, i])),
+      loadOutcomes: async ids => new Map(ids.filter(id => id === 'old1').map(id => [id, [{ source: 'task_terminal', label: 'good', value: null, observedAt: at('2026-10-02') }]])),
+      kinds: () => [fakeKind()],
+    };
+    const { groups } = await collectedFromReplay({ teamId: 't', since: new Date(0), limit: 3, kinds: ['buildd.fake'] }, deps);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cases.map(c => c.id)).toEqual(['old1']);
+  });
+
   it('rebuilds the question from the stored features and judges through the kind objective', async () => {
     const deps = collectedDeps([replayInput('d1')], { d1: [{ source: 'task_terminal', label: 'good', value: null, observedAt: at('2026-10-02') }] });
     const { groups, unscored } = await collectedFromReplay({ teamId: 't', since: new Date(0), limit: 100 }, deps);

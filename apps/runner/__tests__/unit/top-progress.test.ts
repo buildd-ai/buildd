@@ -29,19 +29,26 @@ describe('progressMark', () => {
 
 describe('progressCounts', () => {
   test('counts in words, groups with no task left out', () => {
-    expect(progressCounts(AC14)).toBe('8 done · 2 in progress · 3 waiting · 2 checks');
+    expect(progressCounts(AC14)).toBe('8 done · 2 in progress · 3 ready · 2 checks');
     expect(progressCounts([...cells(1, 'done'), ...cells(1, 'checks')])).toBe('1 done · 1 check');
+  });
+
+  test('waiting says for what: ready, blocked, closed unmerged; never a bare "waiting"', () => {
+    const waiting = [...cells(2, 'waiting', 'ready'), ...cells(1, 'waiting', 'blocked'), ...cells(1, 'waiting', 'not_landed')];
+    expect(progressCounts([...cells(1, 'done'), ...waiting])).toBe('1 done · 2 ready, 1 blocked, 1 closed unmerged');
+    expect(progressCounts(cells(1, 'waiting', 'blocked'))).toBe('1 blocked');
+    expect(progressCounts(waiting)).not.toMatch(/waiting/);
   });
 });
 
 describe('progressPieces', () => {
   test('AC-14: done squares first, then in progress, then waiting, then checks', () => {
-    expect(text(progressPieces(AC14, 90, textWidth))).toBe('■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 waiting · 2 checks');
+    expect(text(progressPieces(AC14, 90, textWidth))).toBe('■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks');
   });
 
   test('settled runs collapse first, the way the small strip does', () => {
     const many = [...cells(14, 'done'), ...cells(2, 'active'), ...cells(3, 'waiting')];
-    expect(text(progressPieces(many, 50, textWidth))).toBe('■×14 ▶▶ ▢×3   14 done · 2 in progress · 3 waiting');
+    expect(text(progressPieces(many, 50, textWidth))).toBe('■×14 ▶▶ ▢×3   14 done · 2 in progress · 3 ready');
   });
 
   test('AC-15: 30 tasks fit one line of an 80-column right pane with the counts whole', () => {
@@ -49,8 +56,8 @@ describe('progressPieces', () => {
     const room = 56; // 80 columns: 22-column missions pane, divider, one-space indent.
     const t = text(progressPieces(thirty, room, textWidth));
     expect(textWidth(t)).toBeLessThanOrEqual(room);
-    for (const words of ['20 done', '3 in progress', '5 waiting', '2 checks']) expect(t).toContain(words);
-    expect(t).toBe('■ 20 done · ▶ 3 in progress · ▢ 5 waiting · ◐ 2 checks');
+    for (const words of ['20 done', '3 in progress', '5 ready', '2 checks']) expect(t).toContain(words);
+    expect(t).toBe('■ 20 done · ▶ 3 in progress · ▢ 5 ready · ◐ 2 checks');
   });
 
   test('a failure stays visible when a group shrinks to one glyph', () => {

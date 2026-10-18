@@ -14,7 +14,7 @@
  */
 import { applyCommandOn } from '../command-runner';
 import { EFFECT_MAX_ATTEMPTS, type EffectHandler, type EffectHandlers } from '../effects';
-import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate } from '../landing-gate';
+import { LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate } from '../landing-gate';
 import { githubOf, type KernelPorts } from '../ports';
 import { hasPr, need } from './ports-of';
 
@@ -75,20 +75,6 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
       return { outcome: `skipped:head_moved:${r.result}` };
     }
-    // Deploy skew (one release): a merge_call queued by the reducer before this one carries no
-    // `fromState`; its T15 already trusted the door's rails and nothing else asked again. Such a
-    // row merges as it would have, after the fresh read above, rather than meet a gate its
-    // landing was never shaped for (a person's override would read as a missing review).
-    // TODO(S3b follow-up): remove with the `rails: { passed: true }` door compatibility.
-    if (!('fromState' in e.payload)) {
-      const method0 = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
-      const ans0 = await writes.mergeAtHead({ repoFullName: d.repoFullName, prNumber: d.prNumber, headSha, method: method0 });
-      const r0 = await apply(d.id, {
-        type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: ans0.outcome, detail: ans0.detail,
-        ...lv, ...(ans0.retryAt ? { retryAt: ans0.retryAt } : {}),
-      });
-      return { outcome: `ok:${ans0.outcome}:${r0.result}:pre_gate_row` };
-    }
     const ov = e.payload.override;
     const override = ov && typeof ov === 'object' && !Array.isArray(ov)
       ? {
@@ -128,7 +114,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
   };
 
   /**
-   * §4: the `buildd/landing` commit status on the delivery's current head. One
+   * §4: the `Buildd / Review approval` commit status on the delivery's current head. One
    * effect per version; only the newest version's effect publishes (an older
    * one is superseded by the one its successor queued), so a late or duplicate
    * effect never overwrites a newer answer. On the last attempt a failure to
@@ -147,8 +133,12 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const github = await githubOf(ports, d.workspaceId);
     const writes = github?.writes;
     if (!github || !writes) throw new Error(NO_INSTALLATION);
-    const publish = (s: { state: 'success' | 'failure'; description: string; sha: string }) =>
-      writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context: LANDING_STATUS_CONTEXT, state: s.state, description: s.description });
+    // Under both names (legacy first) until nothing reads the old one.
+    const publish = async (s: { state: 'success' | 'failure' | 'pending'; description: string; sha: string }) => {
+      for (const context of LANDING_STATUS_CONTEXTS) {
+        await writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context, state: s.state, description: s.description });
+      }
+    };
     let wrote = false;
     try {
       // Newest wins across drains (the cron's and a door's inline one): publish what this version
@@ -156,10 +146,11 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       // slower drain holding an older read can never be the last write.
       let seen = d.version;
       for (let pass = 0; pass < 3; pass++) {
-        const current = github.statusOf ? await github.statusOf(d.repoFullName, status.sha, LANDING_STATUS_CONTEXT).catch(() => null) : null;
-        // Nothing to say that GitHub does not already show: no write (statuses pile up per commit).
-        if (!current || current.state !== status.state || current.description !== status.description) {
-          await publish(status);
+        // Nothing to say that GitHub does not already show, under every name: no write (statuses pile up per commit).
+        const want = status;
+        const shown = await Promise.all(LANDING_STATUS_CONTEXTS.map((c) => (github.statusOf ? github.statusOf(d.repoFullName, want.sha, c).catch(() => null) : null)));
+        if (shown.some((current) => !current || current.state !== want.state || current.description !== want.description)) {
+          await publish(want);
           wrote = true;
         }
         const again = await ports.store.loadView({ deliveryId: e.deliveryId });
@@ -170,7 +161,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
         status = next;
       }
     } catch (err) {
-      if (e.attemptCount >= EFFECT_MAX_ATTEMPTS && status.state === 'success') {
+      if (e.attemptCount >= EFFECT_MAX_ATTEMPTS && status.state !== 'failure') {
         // Exhausted: never leave a success the kernel could not re-confirm. Best effort.
         await publish(landingStatusUnknown(status.sha)).catch(() => {});
       }

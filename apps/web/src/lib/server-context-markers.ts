@@ -11,13 +11,29 @@
 
 export const MISSION_VERIFICATION_CONTEXT_KEYS = ['finalVerification', 'specRepair'] as const;
 
-/** `context` without the server-only outcome-spec markers; anything else passes through unchanged. */
+/**
+ * Context keys only the release flow writes. `releaseCandidateFix` is stamped
+ * by the CI-retry path when it files the dev-side fix for a red release
+ * candidate (lib/release-candidate-ci.ts, inserted directly, never through a
+ * create route); `releaseCandidateAmendPr` is the amendment's compare-and-set
+ * marker (lib/release/candidate-amend.ts). A caller's copy is dropped on the
+ * same create paths as the outcome-spec markers.
+ */
+export const RELEASE_CANDIDATE_CONTEXT_KEYS = ['releaseCandidateFix', 'releaseCandidateAmendPr'] as const;
+
+/** Every context key a caller-supplied context may not carry into a new task. */
+export const SERVER_OWNED_CONTEXT_KEYS = [...MISSION_VERIFICATION_CONTEXT_KEYS, ...RELEASE_CANDIDATE_CONTEXT_KEYS] as const;
+
+/**
+ * `context` without the server-only markers (outcome-spec and release-candidate
+ * keys, SERVER_OWNED_CONTEXT_KEYS); anything else passes through unchanged.
+ */
 export function withoutMissionVerificationMarkers<T>(context: T): T {
   if (!context || typeof context !== 'object' || Array.isArray(context)) return context;
   const ctx = context as Record<string, unknown>;
-  if (!MISSION_VERIFICATION_CONTEXT_KEYS.some((k) => k in ctx)) return context;
+  if (!SERVER_OWNED_CONTEXT_KEYS.some((k) => k in ctx)) return context;
   const rest: Record<string, unknown> = { ...ctx };
-  for (const k of MISSION_VERIFICATION_CONTEXT_KEYS) delete rest[k];
+  for (const k of SERVER_OWNED_CONTEXT_KEYS) delete rest[k];
   return rest as T;
 }
 

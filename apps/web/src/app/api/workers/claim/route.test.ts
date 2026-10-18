@@ -17,6 +17,7 @@ const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 const mockTasksFindMany = mock(() => [] as any[]);
 const mockTeamsFindFirst = mock(() => null as any);
 const mockHeartbeatsFindFirst = mock(() => null as any);
+const mockHeartbeatsFindMany = mock(async () => [] as any[]);
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) }));
 const mockTasksUpdate = mock(() => ({
   set: mock(() => ({
@@ -132,7 +133,7 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
-      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
+      workerHeartbeats: { findFirst: mockHeartbeatsFindFirst, findMany: mockHeartbeatsFindMany },
       secrets: { findMany: mockSecretsFindMany },
       tenantBudgets: { findFirst: mock(() => null as any) },
       // Provider pause log (backend_pauses) — empty means every pool is open.
@@ -339,10 +340,16 @@ mock.module('@/lib/supersession', () => ({
 // Workflow kernel T9 (lib/workflow/seam.ts; real-SQL suite in
 // apps/web/tests/db/workflow-seam.test.ts). Here only the wiring: a kernel fix
 // is revalidated after the claim CAS, and one the kernel skips is cancelled.
-const mockClaimKernelFix = mock(async (_t: any): Promise<any> => ({ action: 'proceed' }));
+const mockClaimKernelFix = mock(async (_t: any, _c?: any): Promise<any> => ({ action: 'proceed' }));
 const mockCancelSkippedTask = mock(async (_id: string, _reason: string) => undefined);
+// T9 goes through the one client (AC-9): the kernel's door, never the seam's own on this host.
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+// Captured before the mock: the namespace is live, so after mock.module its claimFix is the mock.
+const realClaimFix = realKernelClient.claimFix;
+const realResetKernelModeCache = realKernelClient.resetKernelModeCache;
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, claimFix: mockClaimKernelFix }));
 mock.module('@/lib/workflow/seam', () => ({
-  claimFix: mockClaimKernelFix,
+  claimFix: mock(async () => { throw new Error('the claim route called the seam\'s claimFix, not the kernel client\'s'); }),
   cancelSkippedTask: mockCancelSkippedTask,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
 }));
@@ -580,11 +587,11 @@ mock.module('@/lib/hosted-runner-usage-store', () => ({
   }),
 }));
 import { POST } from './route';
-import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
+import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
-import { runnerSeatKey } from '@/lib/runner-seat-wall';
+import { claudeLoginSeatKey, runnerSeatKey } from '@/lib/runner-seat-wall';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -634,6 +641,9 @@ describe('POST /api/workers/claim', () => {
     mockSecretsFindMany.mockResolvedValue([]);
     // Default: fresh heartbeat exists (runner is online)
     mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    // Default: no live runner reports its own slots (the account's limit applies)
+    mockHeartbeatsFindMany.mockReset();
+    mockHeartbeatsFindMany.mockResolvedValue([]);
     // Default: no workspace permissions
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     // Default: no role overrides
@@ -825,6 +835,62 @@ describe('POST /api/workers/claim', () => {
     // Task e7e8740a: the refusal names its limit and what lifts it.
     expect(data.code).toBe('max_concurrent_workers');
     expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
+  });
+
+  it('the account limit is the slots its live runners report, not the account default', async () => {
+    // The account default is 3, but its two runners report 9 and 5 slots:
+    // three busy workers leave room (the runner caps its own slots).
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 9 }, { maxConcurrentWorkers: 5 }]);
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+      { id: 'w3', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    const data = await res.json();
+    expect(data.code).not.toBe('max_concurrent_workers');
+  });
+
+  it('live runners reporting fewer slots than are busy still get the 429, naming their total', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockHeartbeatsFindMany.mockResolvedValue([{ maxConcurrentWorkers: 2 }, { maxConcurrentWorkers: 2 }]);
+    mockWorkersFindMany.mockResolvedValueOnce(
+      ['w1', 'w2', 'w3', 'w4'].map(id => ({ id, status: 'running', runner: 'r' })),
+    );
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(429);
+    const data = await res.json();
+    expect(data.limit).toBe(4);
+  });
+
+  it('a claim a person asked for is not refused by the account-wide worker count', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'r', taskId: '11111111-1111-4111-8111-111111111111', requestedByPerson: true },
+    }));
+    const data = await res.json();
+    expect(res.status).not.toBe(429);
+    expect(data.code).not.toBe('max_concurrent_workers');
+    expect(data.diagnostics?.reason).not.toBe('no_slots');
+  });
+
+  it('requestedByPerson without a named task is an ordinary claim', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([
+      { id: 'w1', status: 'running', runner: 'r' },
+      { id: 'w2', status: 'running', runner: 'r' },
+    ]);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'r', requestedByPerson: true },
+    }));
+    expect(res.status).toBe(429);
   });
 
   it('a question whose session ended does not count against max concurrent workers', async () => {
@@ -1246,7 +1312,7 @@ describe('POST /api/workers/claim', () => {
   // apply (lib/personal-workspace-links), so these prove the end-to-end rule.
   describe("fresh user's login token and their auto-created workspace", () => {
     const userId = 'user-fresh';
-    const personalTeam = { id: 'team-personal', slug: personalTeamSlug(userId) };
+    const personalTeam = { id: 'team-personal', personalUserId: userId };
     const myWorkspace = { id: 'ws-mine', teamId: 'team-personal', accessMode: 'restricted' };
     const pendingTask = () => ({
       id: 'task-1',
@@ -2192,6 +2258,37 @@ describe('POST /api/workers/claim', () => {
         && n.args.some((a: any) => a.type === 'eq' && a.value === runnerSeatKey(RUNNER_B)));
       expect(seatOr).toBeTruthy();
       expect(nodes.some(n => n.type === 'eq' && n.value === runnerSeatKey(RUNNER_A))).toBe(false);
+    });
+
+    // Two runners on one Claude login share its limit: a wall keyed on the
+    // login holds every runner that reports that login, and no other.
+    it('holds two runners on one login identity, and not a runner on another login', async () => {
+      const LOGIN = 'a'.repeat(32);
+      const claimOn = (runner: string, claudeLoginId: string) => POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner, claudeLoginId, capabilities: ['backend:codex'] },
+      }));
+      for (const runner of [RUNNER_A, RUNNER_B]) {
+        wallOn(claudeLoginSeatKey(LOGIN));
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        const data = await (await claimOn(runner, LOGIN)).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics.budgetBlock.walls[0].kind).toBe('runner_seat');
+      }
+      wallOn(claudeLoginSeatKey(LOGIN));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const other = await (await claimOn(RUNNER_B, 'b'.repeat(32))).json();
+      expect(other.workers).toHaveLength(1);
+    });
+
+    it("still holds a runner that reports a login on a wall keyed to its own runner id", async () => {
+      wallOn(runnerSeatKey(RUNNER_A));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const data = await (await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: RUNNER_A, claudeLoginId: 'a'.repeat(32), capabilities: ['backend:codex'] },
+      }))).json();
+      expect(data.workers).toHaveLength(0);
     });
 
     // Fail-safe: a wall whose login identity is unknown (an old runner, a team
@@ -9675,6 +9772,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(mockClaimKernelFix).toHaveBeenCalledTimes(1);
     expect((mockClaimKernelFix.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' });
+    // Through the kernel client, for the runner that claims it (AC-9): the control plane applies T9 in own mode.
+    expect((mockClaimKernelFix.mock.calls[0] as any[])[1]).toMatchObject({ principal: { kind: 'account', id: account().id, grant: null } });
     expect(mockCancelSkippedTask).toHaveBeenCalledWith('task-1', 'fix_not_needed');
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
     expect(data.diagnostics.taskExclusion.code).toBe('fix_not_needed');
@@ -9690,6 +9789,87 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(mockCancelSkippedTask).not.toHaveBeenCalled();
     expect(data.diagnostics.deferrals.fix_not_needed).toBe(1);
+  });
+
+  it('T9 at claim shares one control-plane budget: with a control plane that never answers, two fix candidates defer within it as kernel_unavailable and the other task is still claimed', async () => {
+    const saved = process.env.KERNEL_CLAIM_BUDGET_MS;
+    process.env.KERNEL_CLAIM_BUDGET_MS = '300';
+    // The real door, in own mode, against a control plane that accepts the connection and never answers.
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => {
+      init.signal?.addEventListener('abort', () => rej(init.signal!.reason));
+    })) as unknown as typeof fetch;
+    realResetKernelModeCache();
+    mockClaimKernelFix.mockReset();
+    mockClaimKernelFix.mockImplementation((t: any, c: any) => realClaimFix(t, {
+      ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: hanging },
+    }));
+    mockCancelSkippedTask.mockClear();
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) } as any);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValue([
+      task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+      task({ id: 'fix-2', taskClass: 'attempt', deliveryId: 'delivery-2', deliveryRole: 'fix', context: { workflowAttemptId: 'a-2' } }),
+      task({ id: 'task-3' }),
+    ]);
+    try {
+      const started = Date.now();
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 3 } }));
+      const elapsed = Date.now() - started;
+      const data = await res.json();
+
+      // The whole request, both fix candidates included, stays near the one budget (a door alone may take 20 s).
+      expect(elapsed).toBeLessThan(3_000);
+      expect(mockClaimKernelFix).toHaveBeenCalledTimes(2);
+      // Both roll back to pending, under the outage's own code; neither is cancelled.
+      expect(sets.filter((v) => v.status === 'pending' && v.claimedBy === null)).toHaveLength(2);
+      expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+      // The non-fix task in the batch is still claimed.
+      expect(data.workers).toHaveLength(1);
+
+      // With only the fix candidates (an empty claim reports its deferrals): the outage's own code.
+      mockTasksFindMany.mockResolvedValue([
+        task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+        task({ id: 'fix-2', taskClass: 'attempt', deliveryId: 'delivery-2', deliveryRole: 'fix', context: { workflowAttemptId: 'a-2' } }),
+      ]);
+      const empty = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 3 } }))).json();
+      expect(empty.workers).toHaveLength(0);
+      expect(empty.diagnostics.deferrals).toEqual({ kernel_unavailable: 2 });
+    } finally {
+      if (saved === undefined) delete process.env.KERNEL_CLAIM_BUDGET_MS; else process.env.KERNEL_CLAIM_BUDGET_MS = saved;
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockTasksFindMany.mockResolvedValue([]);
+      realResetKernelModeCache();
+    }
+  });
+
+  it('T9 at claim: a control plane that refuses the claim (403, auth or reach) defers it as kernel_refused, not as an outage, and nothing is cancelled', async () => {
+    const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
+    realResetKernelModeCache();
+    mockClaimKernelFix.mockReset();
+    mockClaimKernelFix.mockImplementation((t: any, c: any) => realClaimFix(t, {
+      ...c, deps: { env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', fetch: refusing },
+    }));
+    mockCancelSkippedTask.mockClear();
+    const sets: any[] = [];
+    mockTasksUpdate.mockReturnValue({ set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) }; }) } as any);
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValue([
+      task({ id: 'fix-1', taskClass: 'attempt', deliveryId: 'delivery-1', deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } }),
+    ]);
+    try {
+      const data = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp', maxTasks: 1 } }))).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.deferrals).toEqual({ kernel_refused: 1 });
+      expect(sets.filter((v) => v.status === 'pending' && v.claimedBy === null)).toHaveLength(1);
+      expect(mockCancelSkippedTask).not.toHaveBeenCalled();
+    } finally {
+      mockClaimKernelFix.mockReset();
+      mockClaimKernelFix.mockImplementation(async () => ({ action: 'proceed' }));
+      mockTasksFindMany.mockResolvedValue([]);
+      realResetKernelModeCache();
+    }
   });
 
   it('a task with no kernel delivery never consults the kernel at claim', async () => {
@@ -9777,6 +9957,16 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('Install bubblewrap');
     const deferred = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'isolation_unenforced');
     expect(deferred?.detail).toMatchObject({ code: 'confinement_not_enforced', requirement: 'protected', reason: 'bwrap_missing' });
+  });
+
+  it('an environment with only an isolation probe (no tools, envKeys or mcp) claims instead of failing with a 500', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const environment = { isolation: { platform: 'linux' } };
+
+    const res = await claim({ runner: 'test-runner', environment });
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toBeDefined();
   });
 
   it('an admin force claim does not lift the isolation gate', async () => {

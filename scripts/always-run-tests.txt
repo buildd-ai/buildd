@@ -71,6 +71,11 @@ scripts/no-em-dash-copy.test.ts
 # Counts inline task/worker status-literal arrays across every tracked source
 # file (ratchet); the file that adds a copy is never the test itself.
 scripts/status-literal-ratchet.test.ts
+
+# Parses every tracked web .tsx and fails on a raw task/worker status rendered
+# as a JSX child.
+scripts/raw-status-jsx.test.ts
+
 # Greps every tracked source for task:assigned senders and imports of the
 # deleted pre-outbox dispatch module.
 scripts/dispatch-authority-guard.test.ts
@@ -133,3 +138,6 @@ apps/web/src/lib/grant-scope.test.ts
 # Enumerates every tracked source file for a session.all call or a positional
 # drizzle(client, ...) init, both of which drizzle v1 breaks at runtime only.
 packages/core/__tests__/migrate-driver-contract.test.ts
+# Runs real git (ls-files, update-index) over temp repos for the Codex AGENTS.md
+# restore, so no diff of its own can select it.
+apps/runner/__tests__/unit/codex-instructions.test.ts

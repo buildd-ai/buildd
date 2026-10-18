@@ -22,7 +22,7 @@ import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceRepoIdentity,
-  installationIdForRepo,
+  createTeamInstallationResolver,
 } from '@/lib/workspace-installation';
 import { listDue, markDue, clearDue, reseedDue } from '@/lib/redis';
 import {
@@ -124,7 +124,7 @@ async function listFloor(limit: number): Promise<PrRef[]> {
 export function createLandingSweepDeps(): LandingSweepDeps {
   type WorkspaceRow = NonNullable<Awaited<ReturnType<typeof loadWorkspace>>>;
   const workspaceCache = new Map<string, WorkspaceRow | null>();
-  const installationByRepo = new Map<string, number | null>();
+  const installations = createTeamInstallationResolver();
 
   async function loadWorkspace(id: string) {
     return db.query.workspaces.findFirst({
@@ -138,12 +138,6 @@ export function createLandingSweepDeps(): LandingSweepDeps {
     return workspaceCache.get(id) ?? null;
   }
 
-  async function installationFor(repo: string): Promise<number | null> {
-    if (!installationByRepo.has(repo)) {
-      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
-    }
-    return installationByRepo.get(repo) ?? null;
-  }
 
   return {
     listFloor,
@@ -194,11 +188,14 @@ export function createLandingSweepDeps(): LandingSweepDeps {
           return { ok: false, skip: 'not_approved' };
         }
       }
-      const installationId =
-        (repo === identity.fullName ? identity.installationId : null)
-        ?? (await installationFor(repo))
-        ?? identity.installationId;
-      if (!installationId) return { ok: false, skip: 'no_installation' };
+      // A PR acts only through its own team's installation.
+      const picked = await installations.resolve(
+        repo,
+        { teamId: workspace.teamId, fullName: identity.fullName, installationId: identity.installationId },
+        { fallbackToWorkspace: true },
+      );
+      if (picked.installationId === null) return { ok: false, skip: picked.reason };
+      const installationId = picked.installationId;
 
       const target: LandingTarget = {
         workspaceId: ref.workspaceId,

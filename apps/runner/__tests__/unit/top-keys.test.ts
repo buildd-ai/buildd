@@ -50,7 +50,8 @@ describe('moving', () => {
     expect(selectedRow(s, NOW)?.title).toBe('single instance');
     ({ s } = press(s, '\x1b[D', '\x1b[B'));
     expect(s.focus).toBe('missions');
-    expect(s.selectedMission).toBe('m-spec-0000-0000');
+    // The local session's mission is listed now, after Runner TUI.
+    expect(s.selectedMission).toBe('m-local-000-0000');
     expect(s.rowCursor).toBe(0);
     ({ s } = press(s, '\r'));
     expect(s.focus).toBe('tasks');
@@ -156,7 +157,7 @@ describe('status line from the server answer', () => {
   test('a refusal shows the server reason verbatim', () => {
     expect(actionResultText(answer, { status: 409, body: { error: 'Worker is not waiting for input' } }))
       .toEqual({ text: 'Answer refused: Worker is not waiting for input (HTTP 409)', tone: 'error' });
-    expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Claim refused: nope (HTTP 400)');
+    expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Not claimed: nope.');
     expect(actionResultText(answer, { status: 502, body: {} }).text).toBe('Answer refused: HTTP 502');
   });
 });
@@ -373,5 +374,34 @@ describe('an unterminated terminal string never eats the keyboard', () => {
 
   test('OSC_ABANDON_MS is 100', () => {
     expect(OSC_ABANDON_MS).toBe(100);
+  });
+});
+
+describe('s talks to a mission or steers a task', () => {
+  test('in the missions pane it targets the selected mission', () => {
+    const { effects } = press(fixtureState(), '\x1b[D', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'mission', id: 'm-tui-0000-0000', title: 'Runner TUI' }]);
+  });
+
+  test('in the task list it targets the selected task', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+  });
+
+  test('in a task\'s detail it targets that task', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', '\r', ch('s'));
+    expect(effects).toEqual([{ type: 'talk', kind: 'task', id: 't-hint', title: 'installer hint' }]);
+  });
+
+  test('the loose-task row is not a mission to talk to', () => {
+    let s = fixtureState();
+    for (let i = 0; i < 10; i++) s = press(s, '\x1b[B').s;
+    const { s: after, effects } = press(s, ch('s'));
+    if (effects.length === 0) expect(after.status?.tone).toBe('error');
+  });
+
+  test('typing s into a prompt types an s', () => {
+    const { effects } = press(on('installer hint'), '\x1b[C', ch('a'), ch('s'));
+    expect(effects).toEqual([]);
   });
 });

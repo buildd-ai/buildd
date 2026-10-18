@@ -1,3 +1,4 @@
+import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
@@ -41,7 +42,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isCredentialExpiredError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
+import { parseClaudeLoginId, parseRunLoginUsed, resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -77,7 +78,9 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, projectOwnerEnd, recordLocalHead, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+// T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -101,7 +104,7 @@ import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_RE
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
-import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
+import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, isWorktreeSetupTimeoutError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -2874,6 +2877,10 @@ export async function PATCH(
   // login or key, and the claim delivered none (model credentials spec R-5).
   // The machine's setup, not the task: it rides the infra retry budget below,
   // so the task goes back to the queue for a runner that has a login.
+  // The runner timed out creating the session's worktree. Nothing ran; rides
+  // the infra retry budget so a reviewer or any non-mission task is requeued
+  // with backoff instead of staying failed (a green PR stuck in review_failed).
+  const isWorktreeSetupTimeout = status === 'failed' && isWorktreeSetupTimeoutError(error);
   const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
@@ -2900,6 +2907,7 @@ export async function PATCH(
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       githubThrottled: isGithubThrottled,
+      worktreeSetupTimeout: isWorktreeSetupTimeout,
       modelAuthMissing: isModelAuthMissing,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
@@ -3060,6 +3068,12 @@ export async function PATCH(
       accountId: account.id,
       teamId,
       workspaceId: taskForBudget?.workspaceId,
+      // Which Claude login this run used, as its runner reports it (newer
+      // runners): a machine login walls only that runner.
+      loginUsed: parseRunLoginUsed(body.claudeLoginUsed),
+      // The login's identity (a one-way hash), so the wall holds every runner
+      // on the same login, not only this one.
+      loginId: parseClaudeLoginId(body.claudeLoginId),
     });
     const runnerSeatWall = seatWall.seatKey;
     if (runnerSeatWall) {
@@ -3623,7 +3637,7 @@ export async function PATCH(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isWorktreeSetupTimeout || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -4185,6 +4199,17 @@ export async function PATCH(
         }
       }
 
+      // AC-1 slice 3 (workflow-kernel-library.md §9): the plain end of a kernel delivery's owner
+      // attempt is the kernel's to project onto the task (`t_attempt`, task-projection.ts), so this
+      // statement writes its result, loop and context fields but not its status. Everything else
+      // keeps writing the status here: a requeue (a retry, a loop hold) is no attempt end, and a
+      // contract or loop failure overrides what the worker row says, which the floor re-sends from.
+      const terminalRow = terminalTaskRow[0];
+      const intendedTaskStatus = taskUpdate.status;
+      const ownerEndProjects = !!terminalRow?.deliveryId && terminalRow.deliveryRole === 'owner'
+        && !shouldAutoRetry && !contractViolation && loop?.kind !== 'fail' && loop?.kind !== 'hold';
+      if (ownerEndProjects) delete taskUpdate.status;
+
       // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
       // its terminal status overridden by a worker that was aborted mid-flight. Nor may a
       // late failure or retry move a task the kernel already finished (completed, its
@@ -4195,7 +4220,7 @@ export async function PATCH(
         .where(and(
           eq(tasks.id, worker.taskId),
           not(eq(tasks.status, 'cancelled')),
-          ...(taskUpdate.status === 'completed' ? [] : [notKernelMergedTaskSql()]),
+          ...(intendedTaskStatus === 'completed' ? [] : [notKernelMergedTaskSql()]),
         ));
 
       // The routing-outcome analytics row this report produces, minus the
@@ -4222,8 +4247,9 @@ export async function PATCH(
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
       // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
-      if (status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail') {
-        const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      const releaseRuns = status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail';
+      const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      if (releaseRuns) {
         try {
           const release = await COMPLETION_POLICIES.release.evaluate(releaseInput);
           const releaseResult = release.record;
@@ -4296,10 +4322,73 @@ export async function PATCH(
         } catch (releaseErr) {
           console.error(`[Worker ${id}] Release execution failed:`, releaseErr);
         }
-        // Whatever the verdict: the release policy's follow-up (the mission-level
-        // release once every mission task is terminal). Fire-and-forget.
-        COMPLETION_POLICIES.release.settled(releaseInput);
       }
+
+      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
+      // or fix attempt of a kernel delivery ended. The kernel decides what is
+      // next (review round, push recovery, re-dispatch, escalation) from a live
+      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
+      const workflowAttemptEnd = async () => {
+        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
+        const row = terminalTaskRow[0];
+        const end = attemptEndFromPatch({
+          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
+          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
+          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+          fallbackCommitCount: worker.commitCount ?? 0,
+        });
+        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
+        // a completed owner worker still ended its kernel attempt, or a verdict
+        // recorded while the delivery was WORKING is never re-entered. A
+        // non-completed end under a hold stays the loop's to retry.
+        const loopHold = loop?.kind === 'hold';
+        if (loopHold && end.status !== 'completed') return;
+        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
+        if (!row?.deliveryId || retryCovers || releaseHeld) return;
+        await workflowAttemptEnded({
+          task: { id: worker.taskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          workerId: id,
+          ...end,
+          source: 'runner',
+          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
+          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
+          ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
+        }, { principal: kernelPrincipalOf({ account }) });
+      };
+
+      // AC-1 slice 3: an owner's end goes to the kernel here, before anything in
+      // this request reads the task's status (the mission release below, the
+      // terminal evidence record, dependency resolution, mission completion), so
+      // they read the status the end projected. A repair's or reviewer's end
+      // keeps its place after the reviewer outcome.
+      if (terminalRow?.deliveryRole === 'owner') {
+        try {
+          await workflowAttemptEnd();
+        } catch (endErr) {
+          const msg = endErr instanceof Error ? endErr.message : String(endErr);
+          console.error(`[Worker ${id}] post-completion workflow-attempt-ended failed:`, endErr);
+          void reportOps({ source: 'worker-completion:workflow-attempt-ended', severity: 'error', message: 'workflow-attempt-ended failed', detail: msg });
+        }
+      }
+      // The status this statement left out: when the end did not reach a
+      // control plane that projects it (down, refusing, an older build), or no
+      // end was sent (a release held for CI), project it here from the
+      // kernel's recorded end, else this report's. A no-op once it is settled.
+      if (ownerEndProjects && terminalRow?.deliveryId) {
+        try {
+          await projectOwnerEnd({
+            deliveryId: terminalRow.deliveryId, taskId: worker.taskId, workerId: id,
+            status: slotFailure || status !== 'completed' ? 'failed' : 'completed',
+          });
+        } catch (projErr) {
+          console.error(`[Worker ${id}] owner end projection failed:`, projErr);
+          void reportOps({ source: 'worker-completion:owner-end-projection', severity: 'error', message: 'owner end projection failed', detail: projErr instanceof Error ? projErr.message : String(projErr) });
+        }
+      }
+
+      // Whatever the verdict: the release policy's follow-up (the mission-level
+      // release once every mission task is terminal). Fire-and-forget.
+      if (releaseRuns) COMPLETION_POLICIES.release.settled(releaseInput);
 
       // The outcome is settled: not going back to the queue, and not a release
       // still waiting on CI (its resolution emits this, once, when the status
@@ -4543,43 +4632,14 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         // A kernel round that broke its contract has no verdict to act on (T27 below).
         if (status !== 'completed' || loop?.kind === 'hold' || kernelReviewFailure) return;
-        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput, kernelPrincipalOf({ account }));
         // AFTER the outcome is applied, so an on=merge callback sees the merge
         // this verdict may just have triggered. Single-fire and best-effort.
         await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
-      // Workflow kernel T4 (docs/specs/workflow-state-kernel.md §6.5): the owner
-      // or fix attempt of a kernel delivery ended. The kernel decides what is
-      // next (review round, push recovery, re-dispatch, escalation) from a live
-      // GitHub read; an infra requeue is not an attempt end (§5.7 rule 2).
-      await runStep('workflow-attempt-ended', async () => {
-        // A runner hand-off failure says `outcome: 'unproven'` (S30, §6.6); an old runner omits it.
-        const row = terminalTaskRow[0];
-        const end = attemptEndFromPatch({
-          status: (contractViolation || slotFailure ? 'failed' : status) === 'completed' ? 'completed' : 'failed',
-          outcome: body.outcome, localHeadSha: body.localHeadSha, commitCount,
-          fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
-          fallbackCommitCount: worker.commitCount ?? 0,
-        });
-        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
-        // a completed owner worker still ended its kernel attempt, or a verdict
-        // recorded while the delivery was WORKING is never re-entered. A
-        // non-completed end under a hold stays the loop's to retry.
-        const loopHold = loop?.kind === 'hold';
-        if (loopHold && end.status !== 'completed') return;
-        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
-        if (!row?.deliveryId || retryCovers || releaseHeld) return;
-        await workflowAttemptEnded({
-          task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
-          workerId: id,
-          ...end,
-          source: 'runner',
-          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
-          ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
-          ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
-        });
-      });
+      // T4 for a repair or a reviewer (an owner's end went to the kernel above).
+      if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
       await runStep('notify', async () => {
@@ -5573,6 +5633,8 @@ async function handleReviewerOutcomeIfNeeded(
   reviewerTaskId: string,
   workspaceId: string,
   structuredOutput: unknown,
+  /** Who reported the verdict: the principal its kernel command is submitted for (AC-9). */
+  principal: KernelPrincipal | null,
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: sqlWhere(eq(tasks.id, reviewerTaskId)),
@@ -5670,7 +5732,8 @@ async function handleReviewerOutcomeIfNeeded(
   let serverOverrideReason: string | null = null;
   let serverOverrideSource: 'files' | 'confidence' | null = null;
   if (output.verdict === 'approve' && reviewPolicy) {
-    let currentFiles: Array<{ filename: string }> = [];
+    // Null until read: an unreadable list escalates, an empty one (nothing changed) does not.
+    let currentFiles: Array<{ filename: string }> | null = null;
     let migrationSafety: MigrationSafety | undefined;
     try {
       const { githubApi } = await import('@/lib/github');
@@ -5691,11 +5754,11 @@ async function handleReviewerOutcomeIfNeeded(
         repoFullName,
         prNumber,
         headSha,
-        files: currentFiles as never,
+        files: (currentFiles ?? []) as never,
         ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
-      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // Leave currentFiles null: the helper treats an unreadable file list as
       // grounds to escalate, so a transient GitHub failure cannot grant a merge.
       console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
     }
@@ -5802,13 +5865,14 @@ async function handleReviewerOutcomeIfNeeded(
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
     const kv = await recordReviewVerdict({
+      workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
       output,
-    }).catch((err) => {
+    }, { principal }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
       return null;
@@ -5838,8 +5902,8 @@ async function handleReviewerOutcomeIfNeeded(
       // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
       // review (applied when the owner ends, never asked for again); any other head's is stale.
       const adopted = await adoptReviewVerdict({
-        deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
-      }).catch((err: unknown) => {
+        workspaceId, deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+      }, { principal }).catch((err: unknown) => {
         console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
         return null;
       });
@@ -6228,6 +6292,8 @@ async function handleReviewerOutcomeIfNeeded(
       });
       const reviewerLastCommitSha = priorWorker?.lastCommitSha ?? null;
 
+      const repairFiles = await readRepairPrFiles((path) => githubApi(installationId, path), { repoFullName, prNumber, headSha });
+
       // Insert with dedup guard — reviewerRetryPrNumber + reviewerRetryHeadSha form a
       // partial unique index so a second reviewer completion on the same headSha is a
       // no-op. A new headSha after the fix push starts a fresh cycle (new row).
@@ -6272,7 +6338,7 @@ async function handleReviewerOutcomeIfNeeded(
             workerBranch,
             ...lineageStamp(originalTask, [prNumber]),
           },
-          pathManifest: originalTask.pathManifest,
+          pathManifest: repairPathManifest(originalTask.pathManifest as string[] | null, repairFiles),
           release: 'false',
           priority: 8,
           status: 'pending',

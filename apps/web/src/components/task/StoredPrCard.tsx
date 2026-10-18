@@ -1,4 +1,4 @@
-import PrCard, { type PrOutcome } from '@/components/task/PrCard';
+import PrCard, { type PrOutcome, type RepairLinks } from '@/components/task/PrCard';
 import type { OpenAttemptInfo } from '@/lib/explain';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 
@@ -17,6 +17,8 @@ export type StoredPrFacts = {
   outcome?: PrOutcome | null;
   /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — already live, never re-derived here. */
   openAttempt?: OpenAttemptInfo | null;
+  /** Parent and repair-child links (PrCardProps.repairLinks). */
+  repairLinks?: RepairLinks | null;
   /** The page's header already offers the PR's one action. */
   hideAction?: boolean;
   /** The status row already names and links this PR (PrCardProps.statedAbove). */

@@ -43,4 +43,12 @@ describe('outputRequirementNudge', () => {
     expect(outputRequirementNudge({ outputRequirement: 'pr_required', roleSlug: 'visual-auditor', hasPR: false, toolCalls: [] }))
       .toBeNull();
   });
+
+  test('complete_task with alreadyShippedIn satisfies pr_required', () => {
+    const call = { name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: { alreadyShippedIn: 4958 } } };
+    expect(outputRequirementNudge({ outputRequirement: 'pr_required', roleSlug: null, hasPR: false, toolCalls: [call] })).toBeNull();
+    const plain = { name: 'mcp__buildd__buildd_work', input: { action: 'complete_task', params: {} } };
+    expect(outputRequirementNudge({ outputRequirement: 'pr_required', roleSlug: null, hasPR: false, toolCalls: [plain] }))
+      .toContain('requires a pull request');
+  });
 });

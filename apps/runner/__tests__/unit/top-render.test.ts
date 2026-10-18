@@ -204,10 +204,9 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       expect(row).toContain('verifying');
       // R-31: done over total stays beside the stage word.
       expect(row.split('│')[0]).toMatch(/verifying 2\/8 $/);
-      // A cut heading ends in … and keeps a space before the counts.
-      expect(lines[3]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
-      expect(lines[3]).toMatch(/\s\d+ running/);
-      expect(lines[3]).not.toMatch(/…\d/);
+      // The title, then the live counts; the stage and what it waits on on the line under it.
+      expect(lines[3]).toMatch(/│ Runner TUI +\d+ running · \d+ waiting $/);
+      expect(lines[4].split('│')[1]).toBe(' Verifying · 2 checks left'.padEnd(cols - (cols >= 110 ? 28 : 22) - 1));
       for (const l of lines) expect(textWidth(l)).toBeLessThanOrEqual(cols);
     }
   });
@@ -215,7 +214,9 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
   test('without a stage the row shows done/total only', () => {
     const lines = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(lines.find(l => l.includes('▸'))!).toContain('2/8');
-    expect(lines[3]).not.toMatch(/building|verifying|delivering|delivered|on hold/);
+    expect(lines[3]).not.toMatch(/building|verifying|delivering|delivered|on hold/i);
+    // Without a stage, the status line counts the tasks in words.
+    expect(lines[4]).toContain('│ 2 of 8 tasks done');
   });
 
   test('a selected workspace is named in the heading', () => {
@@ -257,6 +258,26 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
     expect(text(lines).match(/waits for the plan limit/g)!.length).toBe(1);
   });
 
+  // Spec "A runner" R-12, AC-5: whose access waits, and that others are free.
+  test("this machine's own login limit says it is this machine's, and that other runners are free", () => {
+    const own = reduce({ ...fixtureState(), selectedMission: NO_MISSION }, {
+      type: 'claim_outcome',
+      outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'runner_seat', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
+    });
+    const t = text(frame(own, 120, 24)).split('\n');
+    expect(t[2]).toContain(`This machine's Claude login waits for its limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h) · other runners can take Claude work`);
+    expect(text(frame(own, 120, 24))).not.toContain('rate limit');
+  });
+
+  test('a shared limit is named as shared, not as a rate limit', () => {
+    const shared = reduce({ ...fixtureState(), selectedMission: NO_MISSION }, {
+      type: 'claim_outcome',
+      outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'provider_pause', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
+    });
+    const t = text(frame(shared, 120, 24)).split('\n');
+    expect(t[2]).toContain('Claude work waits for a limit every runner shares: resumes');
+  });
+
   test('no limit, no extra line', () => {
     const t = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(t[2]).toMatch(/^─+$/);
@@ -285,9 +306,9 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
     expect(text(lines)).toMatchSnapshot();
   });
 
-  test('AC-14: under the heading, 8 done squares before 2 in progress and 3 waiting, with the same counts', () => {
-    const row = text(frame(withProgress(AC14), 120, 40)).split('\n')[4];
-    expect(row).toContain('│ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 waiting · 2 checks');
+  test('AC-14: under the status line, 8 done squares before 2 in progress and 3 waiting, with the same counts', () => {
+    const row = text(frame(withProgress(AC14), 120, 40)).split('\n')[5];
+    expect(row).toContain('│ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 ready · 2 checks');
   });
 
   test('AC-15: at 80 columns a 30-task mission keeps its row on one line, the counts whole', () => {
@@ -295,20 +316,20 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
     const lines = frame(withProgress(thirty), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines).split('\n');
-    expect(t[4]).toContain('20 done · ▶ 3 in progress · ▢ 5 waiting · ◐ 2 checks');
-    expect(t[4].split('│')[1]).not.toContain('…');
-    expect(t[5]).toMatch(/│─+$/);
+    expect(t[5]).toContain('20 done · ▶ 3 in progress · ▢ 5 blocked · ◐ 2 checks');
+    expect(t[5].split('│')[1]).not.toContain('…');
+    expect(t[6]).toMatch(/│─+$/);
   });
 
   test('colours: done in success, in progress in the accent, failed ✗ in error; NO_COLOR keeps the glyphs', () => {
     const p = createPalette('night', 'truecolor');
     const cells = [cell('landed', 'done'), cell('running', 'active'), cell('failed', 'active'), cell('ready', 'waiting')];
-    const row = frame(withProgress(cells), 120, 40, p)[4];
+    const row = frame(withProgress(cells), 120, 40, p)[5];
     expect(row).toContain(p.fgCode('success') + '■');
     expect(row).toContain(p.fgCode('accent') + '▶');
     expect(row).toContain(p.fgCode('error') + '✗');
-    const plainRow = text(frame(withProgress(cells), 120, 40)).split('\n')[4];
-    expect(plainRow).toContain('■ ▶✗ ▢   1 done · 2 in progress · 1 waiting');
+    const plainRow = text(frame(withProgress(cells), 120, 40)).split('\n')[5];
+    expect(plainRow).toContain('■ ▶✗ ▢   1 done · 2 in progress · 1 ready');
     // eslint-disable-next-line no-control-regex
     expect(frame(withProgress(cells), 120, 40).join('')).not.toMatch(/\x1b/);
   });
@@ -327,6 +348,7 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
 
   test('no progress from the server, no row', () => {
     const t = text(frame(fixtureState(), 80, 24)).split('\n');
-    expect(t[4]).toMatch(/│─+$/);
+    expect(t[4]).toContain('│ 2 of 8 tasks done');
+    expect(t[5]).toMatch(/│─+$/);
   });
 });

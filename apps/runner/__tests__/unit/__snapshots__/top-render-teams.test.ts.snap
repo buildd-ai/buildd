@@ -4,16 +4,16 @@ exports[`teams and missions (R-23, R-24) 80x24: the filter line, team headings, 
 " buildd · laptop-1234 · 2 workspaces · 2 teams           0 of 3 busy · ● online 
  [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
- Acme                 │ Pair on the parser · local session                      
- ▸ Pair on the parser │─────────────────────────────────────────────────────────
-   local session      │ A person runs this mission from their own session.      
-   Ship the… building │                                                         
-   Docs refr… on hold │                                                         
+ Acme                 │ Pair on the parser                                      
+ ▸ Pair on the… local │ Managed from a local session                            
+   Ship the… building │─────────────────────────────────────────────────────────
+   Docs refr… on hold │ No activity yet.                                        
    Delivered · 1      │                                                         
  Initech              │                                                         
    Billing… verifying │                                                         
                       │                                                         
-   (no mission)   0/0 │                                                         
+                      │                                                         
+                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         

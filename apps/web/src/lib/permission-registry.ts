@@ -179,6 +179,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'trigger',
   },
+  view_work_diagnostics: {
+    description: "See the diagnostics behind the team's work: gate codes, runner scheduling, overrides and exact timings.",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: null,
+  },
   manage_releases: {
     description: 'Read release preflight and trigger a release.',
     defaultRoles: OWNER_ADMIN,

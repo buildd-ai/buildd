@@ -10,34 +10,35 @@
 // disconnecting are all bounded by this set.
 
 import { db } from '@buildd/core/db';
-import { githubInstallations, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { workspaces } from '@buildd/core/db/schema';
+import { eq, sql } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { teamIdsWhere } from '@/lib/permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
+/**
+ * The teams that own the installation with row id `installationDbId`, by the same rule
+ * `installationBelongsToTeam` reads for one team (one read): teams with a workspace linked
+ * to an installation of the same GitHub account, through the workspace's repo or its
+ * direct pointer, and the teams the user who installed it is a member of.
+ */
 export async function getInstallationOwnerTeamIds(installationDbId: string): Promise<string[]> {
-  const installation = await db.query.githubInstallations.findFirst({
-    where: sqlWhere(eq(githubInstallations.id, installationDbId)),
-    columns: { id: true, accountId: true, installedByUserId: true },
-  });
-  if (!installation) return [];
-
-  const sameAccount = await db.query.githubInstallations.findMany({
-    where: sqlWhere(eq(githubInstallations.accountId, installation.accountId)),
-    columns: { id: true },
-  });
-  const installationIds = [...new Set([installation.id, ...sameAccount.map(i => i.id)])];
-
-  const [linked, installerTeams] = await Promise.all([
-    db.query.workspaces.findMany({
-      where: sqlWhere(inArray(workspaces.githubInstallationId, installationIds)),
-      columns: { teamId: true },
-    }),
-    installation.installedByUserId ? getUserTeamIds(installation.installedByUserId) : Promise.resolve([] as string[]),
-  ]);
-
-  return [...new Set([...linked.map(w => w.teamId), ...installerTeams])];
+  const r = await db.execute(sql`
+    SELECT DISTINCT t.team_id FROM github_installations gi
+    CROSS JOIN LATERAL (
+      SELECT w.team_id FROM github_installations s
+      JOIN workspaces w ON w.github_installation_id = s.id
+      WHERE s.account_id = gi.account_id
+      UNION
+      SELECT w.team_id FROM github_installations s
+      JOIN github_repos r ON r.installation_id = s.id
+      JOIN workspaces w ON w.github_repo_id = r.id
+      WHERE s.account_id = gi.account_id
+      UNION
+      SELECT m.team_id FROM team_members m WHERE m.user_id = gi.installed_by_user_id
+    ) t
+    WHERE gi.id = ${installationDbId}::uuid AND t.team_id IS NOT NULL`);
+  return (((r as unknown as { rows?: Array<{ team_id: string }> }).rows ?? [])).map((row) => row.team_id);
 }
 
 export interface InstallationAccess {
@@ -72,4 +73,38 @@ export async function getInstallationAccessForUser(
     canManage: isInstaller || ownerTeamIds.some(t => managerTeamIds.includes(t)),
     otherTeamsUsingIt: [...new Set(direct.map(w => w.teamId))].filter(t => !managerTeamIds.includes(t)),
   };
+}
+
+/**
+ * Whether the installation with GitHub's numeric id `installationId` belongs to
+ * `teamId`, by the ownership rule above, in one read: an installation on a GitHub
+ * account the team already has a workspace linked to (through the workspace's repo,
+ * which follows a reinstall, or its direct installation pointer), or one a member
+ * of the team installed.
+ *
+ * Every command acts only through its own team's installation: the control plane
+ * (lib/workflow/command-installation.ts) and the doors that pick an installation
+ * for a PR in a repo other than the workspace's own (pr-supersession.ts,
+ * ci-red-sweep-deps.ts) refuse any other.
+ */
+export async function installationBelongsToTeam(installationId: number, teamId: string): Promise<boolean> {
+  const r = await db.execute(sql`
+    SELECT 1 FROM github_installations gi
+    WHERE gi.installation_id = ${installationId}
+      AND (
+        EXISTS (
+          SELECT 1 FROM github_installations s
+          WHERE s.account_id = gi.account_id
+            AND (
+              EXISTS (SELECT 1 FROM workspaces w WHERE w.team_id = ${teamId}::uuid AND w.github_installation_id = s.id)
+              OR EXISTS (
+                SELECT 1 FROM workspaces w JOIN github_repos r ON r.id = w.github_repo_id
+                WHERE w.team_id = ${teamId}::uuid AND r.installation_id = s.id
+              )
+            )
+        )
+        OR EXISTS (SELECT 1 FROM team_members m WHERE m.team_id = ${teamId}::uuid AND m.user_id = gi.installed_by_user_id)
+      )
+    LIMIT 1`);
+  return (((r as { rows?: unknown[] }).rows ?? []) as unknown[]).length > 0;
 }

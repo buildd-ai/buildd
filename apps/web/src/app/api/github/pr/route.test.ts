@@ -83,6 +83,9 @@ mock.module('@/lib/workflow/visual-review-state-load', () => ({
 }));
 mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
 
+// The real seam is loaded before landing is mocked: conflict-retry used to pull it in at import, and the
+// code under test imports it lazily, where a partial landing mock would fail its re-exports.
+await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -133,6 +136,9 @@ mock.module('@/lib/ci-failure-excerpts', () => ({
 
 // Mock github
 const mockGithubGraphQL = mock(async (..._args: unknown[]) => ({}));
+const mockFindLeaked = mock(async (..._a: any[]): Promise<string[]> => []);
+mock.module('@/lib/agent-instruction-guard', () => ({ findLeakedInstructionFiles: mockFindLeaked }));
+
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   githubGraphQL: mockGithubGraphQL,
@@ -363,6 +369,8 @@ describe('POST /api/github/pr', () => {
     process.env.NODE_ENV = 'production';
     mockAuthenticateApiKey.mockReset();
     mockGithubApi.mockReset();
+    mockFindLeaked.mockReset();
+    mockFindLeaked.mockResolvedValue([]);
     mockWorkersFindFirst.mockReset();
     mockWorkersFindMany.mockReset();
     mockGithubReposFindFirst.mockReset();
@@ -559,6 +567,16 @@ describe('POST /api/github/pr', () => {
     it('a clean body opens the PR', async () => {
       const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
       expect(res.status).toBe(200);
+    });
+
+    it('refuses a branch whose diff adds the runner instruction block, and opens no PR', async () => {
+      mockFindLeaked.mockResolvedValue(['CLAUDE.md']);
+      const res = await post({ title: 'fix: thing', lede: 'Fixes the thing.', body: 'Task `8237cfa9`.' });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.code).toBe('agent_instructions_leaked');
+      expect(json.files).toEqual(['CLAUDE.md']);
+      expect(mockGithubApi.mock.calls.some((c: any[]) => String(c[1]).endsWith('/pulls'))).toBe(false);
     });
 
     it('off by default: a workspace that did not opt in is not scanned', async () => {
@@ -3709,6 +3727,42 @@ describe('PATCH /api/github/pr', () => {
     expect(mockGithubApi).toHaveBeenCalledTimes(1); // read only, no state:closed PATCH
   });
 
+  it('body + draft:false applies both: updates the body and marks ready', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubGraphQL.mockClear();
+    mockGithubApi.mockResolvedValue({
+      number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'T', draft: true, node_id: 'PR_node',
+    });
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, body: 'new body', draft: false },
+    }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pr.draft).toBe(false);
+    expect(JSON.parse(mockGithubApi.mock.calls[0][2].body)).toEqual({ body: 'new body' });
+    expect(mockGithubGraphQL).toHaveBeenCalledTimes(1);
+    expect(String(mockGithubGraphQL.mock.calls[0][1])).toContain('markPullRequestReadyForReview');
+  });
+
+  it('draft:true is refused instead of closing the PR', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', prNumber: 42, workspace: WORKSPACE_OK });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockClear();
+
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, draft: true },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
   it('closes PR successfully and returns closed PR data', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -6222,7 +6276,7 @@ describe('GET /api/github/pr', () => {
     expect(data.delivery).toMatchObject({
       state: 'AWAITING_REVIEW', headline: 'Review queued',
       review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
-      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+      repairs: [{ label: 'Review fix 1 of up to 3', phase: 'pushed', taskId: 'fx' }],
     });
   });
 

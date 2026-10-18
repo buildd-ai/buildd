@@ -23,29 +23,34 @@
  *                     `deferred` gate event. No edge.
  *   nothing         → the scan is stamped so the sweep does not re-ask hourly.
  *
- * Three doors: the pull_request.closed webhook (merged=false) for a legacy PR;
+ * Four doors: the pull_request.closed webhook (merged=false) for a legacy PR;
  * the workflow kernel's `scan_supersession` effect for a PR it owns (T18), so
  * the scan is owed durably rather than run in a request; and the hourly
  * pr-reconcile backfill (`sweepClosedUnsupersededPrs`) for webhook misses and
- * PRs that closed before this existed. Whichever door finds the proof, the
+ * PRs that closed before this existed; and a merge (`rescanOnMerge`), which
+ * looks again at the closed PRs the merged one may carry, because a scan at
+ * close time cannot see a re-land that did not exist yet. Whichever door finds the proof, the
  * edge is written by `recordPrSupersession`, which hands a kernel-owned PR to
  * T20 (docs/specs/workflow-state-kernel.md §13.8).
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { prShipState, type SupersessionScan, type SupersessionSignal, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
-import { and, asc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersession';
 import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
-import { installationIdForRepo } from '@/lib/workspace-installation';
+import { createTeamInstallationResolver } from '@/lib/workspace-installation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-/** `kernel`: the workflow kernel's `scan_supersession` effect for a PR it owns (T18). */
-export type DetectVia = 'webhook' | 'sweep' | 'kernel';
+/**
+ * `kernel`: the workflow kernel's `scan_supersession` effect for a PR it owns (T18).
+ * `merge`: a candidate merged, so a closed PR it may carry is looked at again (`rescanOnMerge`).
+ */
+export type DetectVia = 'webhook' | 'sweep' | 'kernel' | 'merge';
 
 export type SupersessionMethod = 'patch-id' | 'content';
 
@@ -210,18 +215,18 @@ const SURFACE: Record<DetectVia, string> = {
   webhook: 'webhook pull_request.closed',
   sweep: 'cron pr-reconcile',
   kernel: 'workflow scan_supersession',
+  merge: 'webhook pull_request.closed (merged)',
 };
 
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 
-/** Installation per repo, cached for one detection run. */
-function installationResolver() {
-  const cache = new Map<string, Promise<number | null>>();
-  return (repo: string) => {
-    const k = repo.toLowerCase();
-    if (!cache.has(k)) cache.set(k, installationIdForRepo(repo).catch(() => null));
-    return cache.get(k)!;
-  };
+/**
+ * Installation per repo, cached for one detection run: only the workspace's own team's
+ * installation, so a candidate in a repo another team's installation covers is never read.
+ */
+function installationResolver(workspaceId: string | null) {
+  const { forWorkspace } = createTeamInstallationResolver();
+  return async (repo: string): Promise<number | null> => (await forWorkspace(repo, workspaceId)).installationId;
 }
 
 async function listFiles(gh: GhReader, inst: number, repo: string, n: number): Promise<DiffFile[]> {
@@ -337,6 +342,11 @@ export async function detectPrSupersession(opts: {
   delivery?: { state: string } | null;
   /** Opt-in time limits (the sweep's); absent, GitHub calls wait as long as they take. */
   limits?: DetectLimits;
+  /**
+   * A merged PR the caller already knows may carry this one (`rescanOnMerge`): judged with the
+   * candidates this PR's own signals find, by the same content check. Naming it proves nothing.
+   */
+  nominee?: { repo: string; prNumber: number; signal: SupersessionSignal; why: string };
 }): Promise<DetectResult> {
   const gh = new GhReader(opts.limits);
   try {
@@ -368,7 +378,7 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
   const prNumber = worker.prNumber;
   if (!closedRepo || !prNumber) return { outcome: 'skipped', reason: 'no parsable PR url' };
 
-  const installationFor = installationResolver();
+  const installationFor = installationResolver(worker.workspaceId);
   const closedInst = await installationFor(closedRepo);
   if (!closedInst) return { outcome: 'skipped', reason: `no installation for ${closedRepo}` };
 
@@ -445,6 +455,8 @@ async function detectOnce(opts: Parameters<typeof detectPrSupersession>[0], gh: 
     const prev = candidates.get(key(c.repo, c.prNumber));
     if (!prev || prev.score < c.score) candidates.set(key(c.repo, c.prNumber), c);
   };
+
+  if (opts.nominee) add({ ...opts.nominee, score: SIGNAL_SCORE[opts.nominee.signal] });
 
   // (a) Claims: the PR body and its comments, then GitHub's cross-references.
   for (const c of parseSupersessionClaims(closed.body, closedRepo)) {
@@ -822,4 +834,112 @@ function shortPrRef(prUrl: string | null): string {
   const repo = repoFullNameFromPrUrl(prUrl);
   const n = prUrl?.match(/\/pull\/(\d+)/)?.[1];
   return repo && n ? `${repo}#${n}` : String(prUrl);
+}
+
+// ─── Re-check on merge (b6cfdbb9) ────────────────────────────────────────────
+
+/** Closed PRs looked at again per merge. Each is a full scan (several GitHub reads), run in after(). */
+export const RESCAN_ON_MERGE_CAP = 5;
+
+const PR_URL_RE = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/gi;
+const PR_REF_RE = /(?:^|[^\w/#])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+
+/** Every PR a text names: `#n`, `owner/repo#n` and pull URLs, deduplicated. Not a claim of supersession. */
+export function prRefsIn(text: string | null | undefined, defaultRepo: string): Array<{ repo: string; prNumber: number }> {
+  const out: Array<{ repo: string; prNumber: number }> = [];
+  const seen = new Set<string>();
+  const push = (repo: string, n: number) => {
+    if (!Number.isInteger(n) || n <= 0) return;
+    const k = `${repo.toLowerCase()}#${n}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ repo, prNumber: n });
+  };
+  const t = text ?? '';
+  for (const m of t.matchAll(PR_URL_RE)) push(m[1], Number(m[2]));
+  for (const m of t.replace(PR_URL_RE, ' ').matchAll(PR_REF_RE)) push(m[1] ?? defaultRepo, Number(m[2]));
+  return out;
+}
+
+/**
+ * A PR merged: look again at the closed-unmerged PRs whose work it may carry. The scan at close
+ * time runs before a re-land exists (audit case: the re-land opened and merged after the close,
+ * so its scan deferred and nothing re-ran it for days). Nominated, never assumed:
+ *  - a closed PR the merged one names in its title or body ("re-land of #n"),
+ *  - a closed PR whose last scan already suggested this one,
+ *  - a closed PR of a sibling task in the merged task's mission.
+ * Each is then scanned in full, so an edge is still recorded only when the content verifies.
+ * Never throws.
+ */
+export async function rescanOnMerge(p: {
+  workspaceId: string;
+  repoFullName: string;
+  prNumber: number;
+  taskId: string | null;
+  now?: Date;
+}): Promise<{ nominated: number; results: Array<{ prUrl: string; outcome: DetectResult['outcome'] | 'error' }> }> {
+  const repo = normalizeRepoFullName(p.repoFullName) ?? p.repoFullName;
+  const selfUrl = prUrlFor(repo, p.prNumber);
+  const results: Array<{ prUrl: string; outcome: DetectResult['outcome'] | 'error' }> = [];
+  try {
+    const inst = (await createTeamInstallationResolver().forWorkspace(repo, p.workspaceId)).installationId;
+    const merged: GhPr | null = inst
+      ? await githubApi(inst, `/repos/${repo}/pulls/${p.prNumber}`, { signal: AbortSignal.timeout(SWEEP_LIMITS.requestTimeoutMs) }).catch(() => null)
+      : null;
+    const named = prRefsIn(`${merged?.title ?? ''}\n${merged?.body ?? ''}`, repo)
+      .map(r => prUrlFor(r.repo, r.prNumber))
+      .filter(u => u.toLowerCase() !== selfUrl.toLowerCase());
+    const missionId = p.taskId
+      ? (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.taskId)), columns: { missionId: true } }))?.missionId ?? null
+      : null;
+    const suggestedThis = and(
+      sql`${workers.supersessionScan}->'suggestion'->>'prNumber' = ${String(p.prNumber)}`,
+      sql`lower(${workers.supersessionScan}->'suggestion'->>'repo') = ${repo.toLowerCase()}`,
+    );
+    const nominee = or(
+      and(eq(workers.workspaceId, p.workspaceId), or(suggestedThis, ...(named.length ? [inArray(workers.prUrl, named)] : []))),
+      ...(missionId ? [eq(tasks.missionId, missionId)] : []),
+    );
+    const rows = await db
+      .select({ id: workers.id, prUrl: workers.prUrl, missionId: tasks.missionId })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(and(
+        eq(workers.prLifecycleStatus, 'closed'),
+        isNotNull(workers.prUrl),
+        isNull(workers.mergedAt),
+        isNull(workers.supersededByPrNumber),
+        isNull(workers.abandonedAt),
+        nominee,
+      ))
+      .orderBy(desc(workers.updatedAt))
+      .limit(RESCAN_ON_MERGE_CAP * 3);
+    const seen = new Set<string>([selfUrl.toLowerCase()]);
+    const picked = rows.filter(r => {
+      const k = r.prUrl?.toLowerCase();
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, RESCAN_ON_MERGE_CAP);
+    const namedSet = new Set(named.map(u => u.toLowerCase()));
+    for (const r of picked) {
+      const sibling = !namedSet.has(r.prUrl!.toLowerCase()) && missionId != null && r.missionId === missionId;
+      const ref = refOf({ repo, prNumber: p.prNumber }, repoFullNameFromPrUrl(r.prUrl) ?? repo);
+      const nominee = {
+        repo, prNumber: p.prNumber,
+        signal: (sibling ? 'sibling_task' : 'cross_reference') as SupersessionSignal,
+        why: sibling ? `${ref} merged in the same mission after this PR closed` : `${ref} names this PR or was suggested for it, and merged after it closed`,
+      };
+      const out = await detectPrSupersession({ workerId: r.id, via: 'merge', now: p.now, nominee, limits: { requestTimeoutMs: SWEEP_LIMITS.requestTimeoutMs } })
+        .catch(err => {
+          console.error(`[pr-supersession-detect] re-check on merge of ${repo}#${p.prNumber} failed for ${r.prUrl}:`, err);
+          return null;
+        });
+      results.push({ prUrl: r.prUrl!, outcome: out?.outcome ?? 'error' });
+    }
+    return { nominated: picked.length, results };
+  } catch (err) {
+    console.error(`[pr-supersession-detect] re-check on merge of ${repo}#${p.prNumber} failed:`, err);
+    return { nominated: 0, results };
+  }
 }

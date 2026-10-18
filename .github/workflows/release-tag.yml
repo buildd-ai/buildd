@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write # dispatch publish-runner-image.yml for the new tag
     steps:
       - uses: actions/checkout@v7
         with:
@@ -188,3 +189,14 @@ jobs:
           fi
 
           echo "CHANGELOG verification complete."
+
+      - name: Publish the runner image for this tag
+        # The tag above was pushed with GITHUB_TOKEN, which starts no workflow,
+        # so publish-runner-image.yml's `push: tags` never sees it.
+        # workflow_dispatch is the one event GITHUB_TOKEN may start. Last step:
+        # a failed dispatch turns this run red without skipping the checks above.
+        if: steps.version.outputs.needs_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh workflow run publish-runner-image.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$VERSION"

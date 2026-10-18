@@ -14,6 +14,7 @@ import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 import { DECISION_MODEL_PROBE, IS_PLATFORM_OPERATOR_CALLER, OPERATOR_ONLY_RESPONSE } from '@/modules';
 import { detachTeamStoredFiles, removeTeamStoredFiles } from '@/lib/artifact-team-files';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { isPersonalTeam, isReservedTeamSlug, RESERVED_TEAM_SLUG_ERROR } from '@/lib/personal-team';
 
 /** Written only through /api/admin/teams/[id]/experiment-flags; refused here for everyone. */
 const PLATFORM_ONLY_TEAM_FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes'] as const;
@@ -320,6 +321,18 @@ export async function PATCH(
         return NextResponse.json({ error: 'Slug must contain only lowercase letters, numbers, and hyphens' }, { status: 400 });
       }
 
+      // The personal- prefix is reserved for the slug sign-up gives a personal
+      // team. Keeping the slug a team already has is not a rename.
+      if (isReservedTeamSlug(slug)) {
+        const current = await db.query.teams.findFirst({
+          where: sqlWhere(eq(teams.id, id)),
+          columns: { slug: true },
+        });
+        if (current?.slug !== slug) {
+          return NextResponse.json({ error: RESERVED_TEAM_SLUG_ERROR }, { status: 400 });
+        }
+      }
+
       // Check slug uniqueness (excluding current team)
       const existing = await db.query.teams.findFirst({
         where: sqlWhere(eq(teams.slug, slug)),
@@ -373,10 +386,10 @@ export async function DELETE(
     // Check if it's a personal team
     const team = await db.query.teams.findFirst({
       where: sqlWhere(eq(teams.id, id)),
-      columns: { slug: true },
+      columns: { personalUserId: true },
     });
 
-    if (team?.slug.startsWith('personal-')) {
+    if (isPersonalTeam(team)) {
       return NextResponse.json({ error: 'Cannot delete personal team' }, { status: 400 });
     }
 

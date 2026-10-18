@@ -44,6 +44,18 @@ async function expandToken() {
 }
 
 describe('RunnerTokensSection token details', () => {
+  it('says what an unlinked token cannot do in the words of whoever is reading', async () => {
+    await mount({ accountWorkspaces: [], canManageHostRunner: true });
+    await expandToken();
+    expect(host.textContent).toContain("No workspace linked. This token can't claim or create tasks.");
+
+    act(() => root.unmount()); host.remove();
+    await mount({ accountWorkspaces: [], canManageHostRunner: false });
+    await expandToken();
+    expect(host.textContent).toContain("No workspace linked. This runner can't start or create tasks.");
+    expect(host.textContent).not.toMatch(/\bclaim/);
+  });
+
   it('links token creation to the creation page from populated and empty states', async () => {
     await mount({});
     const newToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('+ New token'));
@@ -79,17 +91,17 @@ describe('RunnerTokensSection token details', () => {
   it('shows maxConcurrentWorkers in the detail', async () => {
     await mount({ maxConcurrentWorkers: 7 });
     await expandToken();
-    expect(host.textContent).toContain('Workers: 7');
+    expect(host.textContent).toContain('Default slots: 7');
   });
 
   it('shows maxConcurrentWorkers as editable when canManageHostRunner is true', async () => {
     await mount({ maxConcurrentWorkers: 3, canManageHostRunner: true });
     await expandToken();
 
-    expect(host.textContent).toContain('Workers: 3');
+    expect(host.textContent).toContain('Default slots: 3');
 
     // Verify the Workers display is clickable (cursor-pointer class applied)
-    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.includes('Workers: 3'));
+    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.includes('Default slots: 3'));
     expect(workersSpan).toBeTruthy();
     expect((workersSpan as HTMLElement).className).toContain('cursor-pointer');
 
@@ -110,7 +122,7 @@ describe('RunnerTokensSection token details', () => {
     await mount({ maxConcurrentWorkers: 3, canManageHostRunner: false });
     await expandToken();
 
-    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.startsWith('Workers: 3'));
+    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.startsWith('Default slots: 3'));
     expect(workersSpan).toBeTruthy();
 
     await act(async () => {
@@ -152,7 +164,7 @@ describe('RunnerTokensSection: a member without manage_team_keys', () => {
   it('reads every token detail as text; New token is the one control', async () => {
     await mount({ maxConcurrentWorkers: 3, hostRunner: true, canManageHostRunner: false });
     await expandToken();
-    expect(host.textContent).toContain('Workers: 3');
+    expect(host.textContent).toContain('Default slots: 3');
     expect(host.textContent).toContain('Trusted');
     expect(describeControls(host)).toEqual(['a "+ New token"']);
     expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);

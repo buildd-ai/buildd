@@ -438,7 +438,8 @@ export function preflightEscalationCheck(
  */
 export function enforceServerSideEscalation(params: {
   verdict: ReviewerTaskOutput['verdict'];
-  prFiles: Array<{ filename: string }>;
+  /** The PR's files as read at verdict time; null when they could not be read. */
+  prFiles: Array<{ filename: string }> | null;
   policy: MergePolicy;
   policyConfig?: WorkspacePolicyConfig;
   migrationSafety?: MigrationSafety;
@@ -447,9 +448,10 @@ export function enforceServerSideEscalation(params: {
 
   if (verdict !== 'approve') return { verdict, overrideReason: null };
 
-  // A real PR always has at least one file, so an empty list means the fetch
-  // failed. Failing open would let a transient GitHub 502 grant a merge.
-  if (prFiles.length === 0) {
+  // Unreadable is not empty: failing open would let a transient GitHub 502 grant
+  // a merge. A list that was read and is empty is a PR that changes nothing (a
+  // redundant refresh, #4913): no gate applies to no files, so it is not escalated.
+  if (prFiles === null) {
     return {
       verdict: 'escalate',
       overrideReason:
@@ -1192,7 +1194,8 @@ function renderLedeSection(lede: string): string {
 
 /** Doctrine bullets used when the task declared a concrete file scope. */
 const CONCRETE_MANIFEST_DOCTRINE = [
-  '- ONE-WORK-UNIT: The PR should touch only files in the pathManifest (plus lock files). Flag scope creep.',
+  '- ONE-WORK-UNIT: The PR should touch mostly files in the pathManifest (plus lock files). Flag genuine scope creep: changes the task description does not call for.',
+  '- OUT-OF-MANIFEST FILES ARE A NOTE, NOT request-changes, when they are (a) derived/generated files such as docs/specs/INDEX.md or bun.lock, (b) tests, docs or supporting files the task description plainly calls for or the change needs to work. No one can extend the manifest after the task is claimed, so a request-changes whose only ask is "add these files to the manifest" can never be satisfied: mention them in the summary and judge the change on its merits.',
   '- PATH-MANIFEST CONFORMANCE: Every file in pathManifest must be present in the diff. Missing = incomplete delivery.',
 ].join('\n');
 
