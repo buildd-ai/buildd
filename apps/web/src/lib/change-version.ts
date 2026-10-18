@@ -21,6 +21,11 @@
  *
  * The ETag is a hash of: the counters, the request's path and query, who asked
  * (a list's rows depend on the caller's reach), and a one-minute time bucket.
+ *
+ * The caller's reach (the workspaces or teams it may list) is never cached:
+ * each route resolves it fresh, and the scope ids are part of the hash, so an
+ * unlinked, restricted or deleted workspace, or a team the caller left, is
+ * out of the very next read and its cached body is unreachable.
  * The bucket is the floor for what the counter cannot see: a write path that
  * forgets to note, and answers that move with the clock (the 24 h window of
  * finished tasks, a deferred task coming due, a 7-day delivered window). So a
@@ -114,6 +119,12 @@ export interface ChangeTagInput {
   scopes: readonly string[];
   /** Who asked: a list depends on the caller's reach and identity (account or user id). */
   caller: string;
+  /**
+   * Anything else the body depends on that no counter sees (e.g. the
+   * account's own budget reset time in `/api/tasks` budgetWindows): part of
+   * the ETag and the cache key, so a change to it is never answered from cache.
+   */
+  vary?: readonly unknown[];
   now?: number;
 }
 
@@ -142,7 +153,7 @@ async function changeKey(req: Request, input: ChangeTagInput): Promise<{ etag: s
   const query = [...url.searchParams.entries()].sort(([a, av], [b, bv]) => (a === b ? av.localeCompare(bv) : a.localeCompare(b)));
   const bucket = Math.floor((input.now ?? Date.now()) / CHANGE_VERSION_BUCKET_MS);
   const h = createHash('sha256')
-    .update(JSON.stringify([url.pathname, query, input.caller, ids.map((id, i) => `${id}:${versions![i]}`), bucket]))
+    .update(JSON.stringify([url.pathname, query, input.caller, ids.map((id, i) => `${id}:${versions![i]}`), bucket, ...(input.vary?.length ? [input.vary] : [])]))
     .digest('base64url')
     .slice(0, 27);
   return { etag: `W/"cv1-${h}"`, key: h };
@@ -213,11 +224,6 @@ export async function withChangeVersion<R extends Response>(
   return res;
 }
 
-/** How long a caller's reach (the scopes it may list) is reused by list reads. */
-export const REACH_CACHE_TTL_SEC = 30;
-
-const reachCacheKey = (caller: string) => `reach:${caller}`;
-
 /**
  * Who is asking, as the list cache sees it. Several credentials share one
  * account row (a per-task token, a grant session, a workspace-restricted key
@@ -236,27 +242,6 @@ export function listCallerKey(caller: { account: Record<string, any> } | { userI
     a.taskScope ?? null, a.oauthGrantId ?? null, a.oauthUserId ?? a.userId ?? null, a.hostRunner ?? null,
   ]);
   return `a:${a.id}:${createHash('sha256').update(narrowing).digest('base64url').slice(0, 16)}`;
-}
-
-/**
- * The scopes a caller may list, reused for `REACH_CACHE_TTL_SEC` (R-35: a
- * repeat list read at the same version makes no database query, and the reach
- * is the one read left before the version check). Keyed by caller, so it is
- * never shared (`listCallerKey`). A revoked link stops widening a list
- * within that TTL. Fail-open: no Redis computes it.
- */
-export async function cachedReach(caller: string, compute: () => Promise<string[]>): Promise<string[]> {
-  const key = reachCacheKey(caller);
-  try {
-    const hit = await store.getBody(key);
-    if (hit !== null) {
-      const ids = JSON.parse(hit);
-      if (Array.isArray(ids) && ids.every(x => typeof x === 'string')) return ids;
-    }
-  } catch { /* compute it */ }
-  const ids = await compute();
-  try { await store.setBody(key, JSON.stringify(ids), REACH_CACHE_TTL_SEC); } catch { /* best effort */ }
-  return ids;
 }
 
 // ── Bumping from noted work ───────────────────────────────────────────────

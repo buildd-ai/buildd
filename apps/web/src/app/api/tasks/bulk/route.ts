@@ -11,6 +11,7 @@ import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-ac
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { applyTaskCancelSideEffects, applyTaskDeleteSideEffects } from '@/lib/task-cancel';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 // TERMINAL_TASK_STATUSES: @buildd/shared.
 const SIDE_EFFECT_BATCH = 10;
@@ -33,7 +34,7 @@ interface BulkCleanupBody {
  * `result` rather than replacing it) and runs the shared cancel side effects
  * for each row it actually changed. `dryRun` in the response echoes the caller.
  */
-export async function POST(req: NextRequest) {
+async function postHandler(req: NextRequest) {
   // Auth: session or admin API key
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
@@ -195,3 +196,6 @@ export async function POST(req: NextRequest) {
     dryRun: false,
   });
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const POST = settlesWorkChanges(postHandler);

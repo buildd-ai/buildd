@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -20,7 +21,7 @@ const resolveTeamIds = resolveAccountTeamIds;
  * Builds rich mission context (task history, active tasks, failures)
  * and creates + dispatches a planning task.
  */
-export async function POST(
+async function postHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -110,3 +111,6 @@ export async function POST(
     return NextResponse.json({ error: 'Failed to run mission' }, { status: 500 });
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const POST = settlesWorkChanges(postHandler);

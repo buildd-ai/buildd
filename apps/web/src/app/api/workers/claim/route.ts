@@ -179,6 +179,7 @@ import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
 import { claimCandidateWhere } from '@/lib/claim-candidate-where';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -265,7 +266,7 @@ async function startKernelOwnerAttempt(p: {
   return started;
 }
 
-export async function POST(req: NextRequest) {
+async function postHandler(req: NextRequest) {
   const claimStarted = performance.now();
   let phaseStarted = claimStarted;
   let pathChecksMs = 0;
@@ -3756,3 +3757,6 @@ function scheduleClaimDeferralWaiters(byWorkspace: Map<string, ClaimDeferralWait
     void run();
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const POST = settlesWorkChanges(postHandler);

@@ -21,7 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { cachedReach, listCallerKey, withChangeVersion } from '@/lib/change-version';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
 import { isUuid } from '@/lib/uuid';
 import type { MissionStage } from '@buildd/shared';
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
   try {
     const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
     const caller = listCallerKey(accessCaller);
-    const workspaceIds = await cachedReach(caller, () => listReachableWorkspaceIds(accessCaller));
+    const workspaceIds = await listReachableWorkspaceIds(accessCaller);
     // R-20/R-35: unchanged since this caller's last read → 304, or the cached body.
     return await withChangeVersion(req, { scopes: workspaceIds, caller }, async () => {
       const stages = await loadMissionStagesFromSummaries(ids, workspaceIds);

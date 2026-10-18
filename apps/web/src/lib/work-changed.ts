@@ -19,6 +19,14 @@
  * each isolated. At most once: a listener that must be right owns its own
  * floor (the summary's reconcile cron).
  *
+ * The change version (lib/change-version.ts, spec 3ef37387 R-20) is not
+ * coalesced with the listeners. Every note also queues its ids for a version
+ * bump, and that queue never waits behind another request's flush: a write
+ * route awaits `settleWorkChangeVersions()` before it answers (one SQL lookup
+ * and one Upstash pipeline, fail-open, capped), so the same caller's next
+ * list read already sees the new version. A write that does not await it is
+ * bumped by its own request's `after()`, and the flush settles whatever is left.
+ *
  * A test process notes nothing unless a test installs listeners
  * (`setWorkChangeListenersForTests`), so a route test never loads the
  * composition root or writes through a module it did not mock.
@@ -61,40 +69,100 @@ let scheduledAt = 0;
 const inflight = new Set<Promise<void>>();
 let testListeners: readonly WorkChangeListener[] | null = null;
 
-const pendingSize = () => pending.missionIds.size + pending.taskIds.size + pending.workerIds.size + pending.prs.size + pending.workspacePrs.size;
+/** Ids noted since the last version bump took them (never waits on the listeners' flush). */
+const pendingVersion = {
+  missionIds: new Set<string>(), taskIds: new Set<string>(), workerIds: new Set<string>(),
+  prs: new Map<string, { repoFullName: string; prNumber: number }>(),
+  workspacePrs: new Map<string, { workspaceId: string; prNumber: number }>(),
+};
+const versionInflight = new Set<Promise<void>>();
+type VersionBumper = (batch: WorkChangeBatch) => Promise<void>;
+let testVersionBumper: VersionBumper | null = null;
+/** The longest a write route waits for its version bump before answering anyway (fail-open). */
+export const SETTLE_VERSION_CAP_MS = 1_500;
 
-function take(): WorkChangeBatch {
+type Pending = typeof pending;
+const sizeOf = (p: Pending) => p.missionIds.size + p.taskIds.size + p.workerIds.size + p.prs.size + p.workspacePrs.size;
+const pendingSize = () => sizeOf(pending);
+
+function takeFrom(p: Pending): WorkChangeBatch {
   const batch: WorkChangeBatch = {
-    missionIds: [...pending.missionIds], taskIds: [...pending.taskIds], workerIds: [...pending.workerIds],
-    prs: [...pending.prs.values()], workspacePrs: [...pending.workspacePrs.values()],
+    missionIds: [...p.missionIds], taskIds: [...p.taskIds], workerIds: [...p.workerIds],
+    prs: [...p.prs.values()], workspacePrs: [...p.workspacePrs.values()],
   };
-  pending.missionIds.clear(); pending.taskIds.clear(); pending.workerIds.clear(); pending.prs.clear(); pending.workspacePrs.clear();
+  p.missionIds.clear(); p.taskIds.clear(); p.workerIds.clear(); p.prs.clear(); p.workspacePrs.clear();
   return batch;
+}
+const take = () => takeFrom(pending);
+
+function addTo(p: Pending, change: WorkChange): void {
+  const add = (set: Set<string>, xs?: Ids) => { for (const x of xs ?? []) if (typeof x === 'string' && x) set.add(x); };
+  add(p.missionIds, change.missionIds);
+  add(p.taskIds, change.taskIds);
+  add(p.workerIds, change.workerIds);
+  for (const pr of change.prs ?? []) if (pr?.repoFullName && pr.prNumber != null) p.prs.set(`${pr.repoFullName}#${pr.prNumber}`, pr);
+  for (const pr of change.workspacePrs ?? []) if (pr?.workspaceId && pr.prNumber != null) p.workspacePrs.set(`${pr.workspaceId}#${pr.prNumber}`, pr);
 }
 
 /**
- * Core's own listener runs first: the change version of the batch's
- * workspaces and teams (lib/change-version.ts, spec 3ef37387 R-20), so a list
- * poll that sent the old version reads again. It is core, not a module, as
- * the list routes that answer with it are.
+ * Core's own bump: the change version of the batch's workspaces and teams
+ * (lib/change-version.ts), so a list poll that sent the old version reads
+ * again. Core, not a module, as the list routes that answer with it are.
  */
-const coreChangeVersion: WorkChangeListener = async (batch) => {
+const coreChangeVersion: VersionBumper = async (batch) => {
   const { changeVersionWorkListener } = await import('./change-version');
   await changeVersionWorkListener(batch);
 };
+
+/** In a test process: only a bumper the test installed, and only while it notes. */
+const versionBumper = (): VersionBumper | null => (testListeners ? testVersionBumper : coreChangeVersion);
+
+/**
+ * Bump the change version for every id noted so far, and wait for any bump
+ * already in flight (another caller's may hold this caller's ids). Never
+ * throws; returns after `SETTLE_VERSION_CAP_MS` at most. A write route awaits
+ * this before it answers, so its caller's next list read sees the write.
+ */
+export async function settleWorkChangeVersions(): Promise<void> {
+  try {
+    if (sizeOf(pendingVersion) > 0) {
+      const batch = takeFrom(pendingVersion);
+      const bump = versionBumper();
+      if (bump) {
+        const p: Promise<void> = Promise.resolve()
+          .then(() => bump(batch))
+          .catch(err => { console.error('[work-changed] change-version bump failed:', err); })
+          .finally(() => { versionInflight.delete(p); });
+        versionInflight.add(p);
+      }
+    }
+    if (versionInflight.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...versionInflight]),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, SETTLE_VERSION_CAP_MS); }),
+    ]);
+    if (timer) clearTimeout(timer);
+  } catch (err) {
+    console.error('[work-changed] settle failed:', err);
+  }
+}
 
 async function listeners(): Promise<readonly WorkChangeListener[]> {
   if (testListeners) return testListeners;
   // Loaded when a flush runs, not when core loads: the composition root imports every module.
   const modules = (await import('@/modules')) as Record<string, unknown>;
-  return [coreChangeVersion, ...((modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [])];
+  return (modules.WORK_CHANGE_LISTENERS as readonly WorkChangeListener[] | undefined) ?? [];
 }
 
 function runFlush(): Promise<void> {
   scheduledAt = 0;
-  if (pendingSize() === 0) return Promise.resolve();
+  if (pendingSize() === 0 && sizeOf(pendingVersion) === 0) return Promise.resolve();
   const batch = take();
   const p: Promise<void> = (async () => {
+    // Whatever no write route settled (it cannot be lost behind the listeners).
+    await settleWorkChangeVersions();
+    if (isEmptyWorkChange(batch)) return;
     for (const listen of await listeners()) {
       try {
         await listen(batch);
@@ -118,16 +186,26 @@ function schedule(): void {
   }
 }
 
+/**
+ * This request's own version bump, after its response at the latest. Asked on
+ * every note, not once per coalesced flush: a flush another request scheduled
+ * runs after THAT request's response, which can be long after this one's.
+ */
+function scheduleVersion(): void {
+  try {
+    after(settleWorkChangeVersions);
+  } catch {
+    setTimeout(() => { void settleWorkChangeVersions(); }, 0);
+  }
+}
+
 /** Tell the listeners, after the response, that these rows changed. Never throws, never waits. */
 export function noteWorkChanged(change: WorkChange): void {
   if (!testListeners && process.env.NODE_ENV === 'test') return;
   try {
-    const add = (set: Set<string>, xs?: Ids) => { for (const x of xs ?? []) if (typeof x === 'string' && x) set.add(x); };
-    add(pending.missionIds, change.missionIds);
-    add(pending.taskIds, change.taskIds);
-    add(pending.workerIds, change.workerIds);
-    for (const pr of change.prs ?? []) if (pr?.repoFullName && pr.prNumber != null) pending.prs.set(`${pr.repoFullName}#${pr.prNumber}`, pr);
-    for (const pr of change.workspacePrs ?? []) if (pr?.workspaceId && pr.prNumber != null) pending.workspacePrs.set(`${pr.workspaceId}#${pr.prNumber}`, pr);
+    addTo(pending, change);
+    addTo(pendingVersion, change);
+    if (sizeOf(pendingVersion) > 0) scheduleVersion();
     if (pendingSize() === 0) return;
     const now = Date.now();
     if (scheduledAt && now - scheduledAt < LOST_FLUSH_MS) return;
@@ -144,13 +222,20 @@ export async function flushWorkChanges(): Promise<void> {
     if (pendingSize() > 0) void runFlush();
     await Promise.allSettled([...inflight]);
   }
+  await settleWorkChangeVersions();
 }
 
 /** Tests: listen in place of the composition root (null restores it). Clears anything pending. */
 export function setWorkChangeListenersForTests(next: readonly WorkChangeListener[] | null): void {
   testListeners = next;
   take();
+  takeFrom(pendingVersion);
   scheduledAt = 0;
+}
+
+/** Tests: the change-version bump while listeners are installed (null = none). */
+export function setWorkChangeVersionBumperForTests(next: VersionBumper | null): void {
+  testVersionBumper = next;
 }
 
 const str = (xs: Array<unknown>) => xs.filter((x): x is string => typeof x === 'string' && x.length > 0);

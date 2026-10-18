@@ -54,6 +54,7 @@ import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 import { REVIEW_BLOCKER_KINDS, type ReviewBlocker } from './attention-line';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -967,6 +968,8 @@ export async function createReviewerTask(
   // A review is now asked for: a verified release candidate's `Buildd / Review approval` turns
   // pending at once (R-41, AC-78), instead of standing at success until the hourly floor.
   if (reviewerTask) await republishReviewRequested({ installationId, repoFullName, prNumber, headSha });
+  // A new task in the workspace's lists (spec 3ef37387 R-20).
+  if (reviewerTask) noteWorkChanged({ taskIds: [reviewerTask.id], missionIds: [originalTask.missionId] });
 
   return reviewerTask ?? null;
 }

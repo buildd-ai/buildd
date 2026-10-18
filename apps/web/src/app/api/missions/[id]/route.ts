@@ -53,6 +53,7 @@ import { missionStatusNoteBody, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { armedAtForStartGate } from '@/lib/mission-start-state';
 import { noteWorkChanged } from '@/lib/work-changed';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -241,7 +242,7 @@ export async function GET(
 }
 
 // PATCH /api/missions/[id]
-export async function PATCH(
+async function patchHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -1127,7 +1128,7 @@ export async function PATCH(
 }
 
 // DELETE /api/missions/[id]
-export async function DELETE(
+async function delHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -1172,3 +1173,7 @@ export async function DELETE(
     return NextResponse.json({ error: 'Failed to delete mission' }, { status: 500 });
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const PATCH = settlesWorkChanges(patchHandler);
+export const DELETE = settlesWorkChanges(delHandler);

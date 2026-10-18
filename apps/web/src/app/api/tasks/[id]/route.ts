@@ -49,6 +49,7 @@ import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { leanContextSql, leanResultSql, taskReadColumns, taskReadShape } from '@/lib/task-read-shape';
 import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -282,7 +283,7 @@ export async function GET(
  */
 const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl']);
 
-export async function PATCH(
+async function patchHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -878,7 +879,7 @@ export async function PATCH(
 }
 
 // DELETE /api/tasks/[id] - Delete a task (only pending tasks)
-export async function DELETE(
+async function delHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -945,3 +946,7 @@ export async function DELETE(
     return NextResponse.json({ error: 'Failed to delete task' }, { status: 500 });
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const PATCH = settlesWorkChanges(patchHandler);
+export const DELETE = settlesWorkChanges(delHandler);

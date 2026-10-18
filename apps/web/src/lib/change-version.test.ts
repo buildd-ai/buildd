@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   CHANGE_VERSION_BUCKET_MS, changeTag, listCallerKey, matchesIfNoneMatch, memoryChangeVersionStore,
-  setChangeVersionStoreForTests, withChangeVersion, cachedReach, type ChangeVersionStore,
+  setChangeVersionStoreForTests, withChangeVersion, type ChangeVersionStore,
 } from './change-version';
 
 afterEach(() => setChangeVersionStoreForTests(null));
@@ -38,6 +38,15 @@ describe('changeTag', () => {
     expect(await changeTag(req('http://x/api/tasks?a=1&b=2'), { scopes: ['w1'], caller: 'a:1', now: now + CHANGE_VERSION_BUCKET_MS })).not.toBe(base);
     await store.bump(['w1']);
     expect(await changeTag(req('http://x/api/tasks?a=1&b=2'), { scopes: ['w1'], caller: 'a:1', now })).not.toBe(base);
+  });
+
+  it('moves with `vary` (what the body reads that no counter sees)', async () => {
+    setChangeVersionStoreForTests(memoryChangeVersionStore());
+    const now = 10 * CHANGE_VERSION_BUCKET_MS;
+    const at = (vary?: unknown[]) => changeTag(req('http://x/api/tasks'), { scopes: ['w1'], caller: 'a:1', now, vary });
+    expect(await at([])).toBe(await at());
+    expect(await at(['2026-01-01T00:00:00.000Z'])).not.toBe(await at([null]));
+    expect(await at(['2026-01-01T00:00:00.000Z'])).toBe(await at(['2026-01-01T00:00:00.000Z']));
   });
 
   it('is null when the counters cannot be read', async () => {
@@ -83,14 +92,22 @@ describe('listCallerKey', () => {
   });
 });
 
-describe('cachedReach', () => {
-  it('computes once per caller, and never hands one caller another\'s reach', async () => {
+describe('reach', () => {
+  it('a narrower reach never gets the wider reach\'s cached body (the scopes are in the key)', async () => {
     setChangeVersionStoreForTests(memoryChangeVersionStore());
-    let calls = 0;
-    const compute = (ids: string[]) => async () => { calls++; return ids; };
-    expect(await cachedReach('a:1', compute(['w1']))).toEqual(['w1']);
-    expect(await cachedReach('a:1', compute(['w9']))).toEqual(['w1']);
-    expect(await cachedReach('a:2', compute(['w2']))).toEqual(['w2']);
-    expect(calls).toBe(2);
+    let loads = 0;
+    const load = (body: unknown) => async () => { loads++; return ok(body)(); };
+    const wide = await withChangeVersion(req('http://x/api/tasks'), { scopes: ['w1', 'w2'], caller: 'a:1' }, load({ w: ['w1', 'w2'] }));
+    const narrow = await withChangeVersion(req('http://x/api/tasks', wide.headers.get('etag')!), { scopes: ['w1'], caller: 'a:1' }, load({ w: ['w1'] }));
+    expect(narrow.status).toBe(200);
+    expect(narrow.headers.get('x-buildd-list-cache')).toBeNull();
+    expect(await narrow.json()).toEqual({ w: ['w1'] });
+    expect(loads).toBe(2);
+  });
+
+  it('is not cached here: the module has no reach cache to go stale', async () => {
+    const mod = await import('./change-version') as Record<string, unknown>;
+    expect(mod.cachedReach).toBeUndefined();
+    expect(mod.REACH_CACHE_TTL_SEC).toBeUndefined();
   });
 });

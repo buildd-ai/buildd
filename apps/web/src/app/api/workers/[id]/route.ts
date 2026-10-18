@@ -139,6 +139,7 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -774,7 +775,7 @@ export async function GET(
 }
 
 // PATCH /api/workers/[id] - Update worker status
-export async function PATCH(
+async function patchHandler(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -6622,3 +6623,6 @@ function legacyRepairGateDeps(): LegacyRepairGateDeps {
     },
   };
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const PATCH = settlesWorkChanges(patchHandler);

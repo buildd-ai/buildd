@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
-import { cachedReach, listCallerKey, withChangeVersion } from '@/lib/change-version';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { loadMissionStages } from '@/lib/mission-stage-load';
 import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
 import { loadRecentMissions } from '@/lib/missions-recent';
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   try {
     const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
     const caller = listCallerKey(accessCaller);
-    const workspaceIds = await cachedReach(caller, () => listReachableWorkspaceIds(accessCaller));
+    const workspaceIds = await listReachableWorkspaceIds(accessCaller);
     if (workspaceIds.length === 0) return NextResponse.json({ missions: [] });
 
     // R-20/R-35: unchanged since this caller's last read → 304, or the cached body.

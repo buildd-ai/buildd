@@ -9,7 +9,7 @@ import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, i
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
-import { cachedReach, listCallerKey, withChangeVersion } from '@/lib/change-version';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
@@ -74,6 +74,7 @@ import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -131,10 +132,11 @@ export async function GET(req: NextRequest) {
     // Same reach rule as workspace listing and task/mission creation
     // (lib/workspace-access.ts): an account sees its own team's open
     // workspaces plus its explicit links; a user sees their teams' workspaces.
-    // Reused for a few seconds per caller (R-35, lib/change-version.ts cachedReach).
+    // Resolved fresh on every read, never cached: an unlink, a switch to
+    // restricted access or a team removal must drop the workspace from the very next read.
     const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
     const listCaller = listCallerKey(accessCaller);
-    let workspaceIds: string[] = await cachedReach(listCaller, () => listReachableWorkspaceIds(accessCaller));
+    let workspaceIds: string[] = await listReachableWorkspaceIds(accessCaller);
     if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
 
     // Optional query filters to scope the list and shrink the payload.
@@ -179,7 +181,8 @@ export async function GET(req: NextRequest) {
     }
 
     // R-20: a poll that sent the current change version gets 304 before any row is read.
-    return await withChangeVersion(req, { scopes: workspaceIds, caller: listCaller }, async () => {
+    // budgetWindows reads the account's own reset time, which no counter sees: it varies the key.
+    return await withChangeVersion(req, { scopes: workspaceIds, caller: listCaller, vary: [apiAccount?.budgetResetsAt ?? null] }, async () => {
     const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
@@ -439,7 +442,7 @@ async function withTaskListAggregates<T extends { id: string; status: string; mi
   }
 }
 
-export async function POST(req: NextRequest) {
+async function postHandler(req: NextRequest) {
   // Dev mode returns mock
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ id: 'dev-task', title: 'Dev Task' });
@@ -2083,3 +2086,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const POST = settlesWorkChanges(postHandler);

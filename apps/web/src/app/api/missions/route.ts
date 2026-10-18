@@ -1,6 +1,6 @@
 import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
 import { readMissionSummaries, refreshMissionSummary } from '@/lib/mission-summary-store';
-import { cachedReach, listCallerKey, teamChangeScope, withChangeVersion } from '@/lib/change-version';
+import { listCallerKey, teamChangeScope, withChangeVersion } from '@/lib/change-version';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -35,6 +35,8 @@ import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/li
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { settlesWorkChanges } from '@/lib/settle-work-changes';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -48,9 +50,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Reused for a few seconds per caller (R-35, lib/change-version.ts cachedReach).
+    // Resolved fresh on every read, never cached: a team removal drops the team's missions from the very next read.
     const caller = `teams:${apiAccount ? listCallerKey({ account: apiAccount }) : listCallerKey({ userId: user!.id })}`;
-    const teamIds = await cachedReach(caller, () => resolveAccountTeamIds(user, apiAccount));
+    const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     if (teamIds.length === 0) {
       return NextResponse.json({ missions: [] });
@@ -165,7 +167,7 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/missions — create mission
-export async function POST(req: NextRequest) {
+async function postHandler(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -433,6 +435,8 @@ export async function POST(req: NextRequest) {
       .returning();
     // Stored summary, and through it the mission lists' change version (R-13, R-20).
     refreshMissionSummary(mission.id);
+    // Bumped before the response too (settlesWorkChanges), so the creator's next list read sees it.
+    noteWorkChanged({ missionIds: [mission.id] });
 
     // Every new auto mission gets a check-in (heartbeat) schedule by default.
     // Events plan its next step as work finishes; the check-in is the hourly
@@ -628,3 +632,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });
   }
 }
+
+// Read-your-writes: the change version is bumped before the write answers (spec 3ef37387 R-20).
+export const POST = settlesWorkChanges(postHandler);

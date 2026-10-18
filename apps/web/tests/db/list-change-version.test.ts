@@ -3,9 +3,15 @@
  * R-20, R-35, AC-4).
  *
  *  - AC-4: a list read sent with the current change version gets 304 and
- *    reads no list rows (counted at the neon-http wire: no query at all).
+ *    reads no list rows (counted at the neon-http wire: only the caller's
+ *    reach, which is resolved fresh on every read).
  *  - R-35: a second reader at the same version, sending no version, gets the
- *    first reader's body from the cache, again with no query.
+ *    first reader's body from the cache, again reading no list rows.
+ *  - Reach is never cached: after an unlink, a switch to restricted access, a
+ *    move to another team or a team removal, the very next read drops the
+ *    workspace (or team).
+ *  - Read-your-writes: a task created through the API is in the same
+ *    caller's very next list read, cached body or not.
  *  - A write of work bumps the version (the work-change listener resolves the
  *    task to its workspace in SQL), so the next read reads again.
  *  - Another caller never gets the first caller's cached body.
@@ -15,7 +21,6 @@
  */
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { NextRequest } from 'next/server';
 import { sql } from 'drizzle-orm';
 import { recordNeonQueries } from '@buildd/core/db';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
@@ -23,35 +28,53 @@ import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 assertDbConfigured();
 
 const realAuthHelpers = await import('../../src/lib/auth-helpers');
-mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
+// `after()` as in a live request: queued until the response is long gone (the
+// test runs the queue only when it says so), so nothing a write defers can
+// stand in for a bump the write should have made before answering.
+const afterQueue: Array<() => unknown> = [];
+const realNextServer = await import('next/server');
+mock.module('next/server', () => ({ ...realNextServer, after: (task: () => unknown) => { afterQueue.push(task); } }));
 
+let sessionUser: { id: string } | null = null;
+mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => sessionUser }));
+
+const { NextRequest } = realNextServer;
 const recentRoute = await import('../../src/app/api/missions/recent/route');
 const tasksRoute = await import('../../src/app/api/tasks/route');
 const missionsRoute = await import('../../src/app/api/missions/route');
 const cv = await import('../../src/lib/change-version');
+const workChanged = await import('../../src/lib/work-changed');
+const { invalidateAccountWorkspaceCache } = await import('../../src/lib/account-workspace-cache');
 
 const DB_TIMEOUT_MS = 30_000;
 const store = cv.memoryChangeVersionStore();
 cv.setChangeVersionStoreForTests(store);
 
-async function serviceKey(teamId: string): Promise<{ id: string; key: string }> {
+async function serviceKey(teamId: string, level: 'worker' | 'admin' = 'worker'): Promise<{ id: string; key: string }> {
   const key = `bld_${crypto.randomUUID().replace(/-/g, '')}`;
   const hashed = createHash('sha256').update(key).digest('hex');
   const [a] = await q<{ id: string }>(sql`
     INSERT INTO accounts (type, name, api_key, team_id, level, max_concurrent_workers)
-    VALUES ('service', ${`svc-${key.slice(4, 12)}`}, ${hashed}, ${teamId}::uuid, 'worker', 10) RETURNING id`);
+    VALUES ('service', ${`svc-${key.slice(4, 12)}`}, ${hashed}, ${teamId}::uuid, ${level}, 10) RETURNING id`);
   return { id: a.id, key };
 }
 
-const get = (route: { GET: (req: any) => Promise<Response> }, url: string, key: string, etag?: string) =>
-  route.GET(new NextRequest(url, { headers: { authorization: `Bearer ${key}`, ...(etag ? { 'if-none-match': etag } : {}) } }));
+const get = (route: { GET: (req: any) => Promise<Response> }, url: string, key: string | null, etag?: string) =>
+  route.GET(new NextRequest(url, { headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...(etag ? { 'if-none-match': etag } : {}) } }));
 
-/** Call and count every query that reached the database. */
+/** What the caller's reach reads (resolved fresh on every list read); no list row lives here. */
+const REACH_TABLES = new Set(['accounts', 'account_workspaces', 'workspaces', 'teams', 'team_members']);
+
+/** Call and count every query that reached the database, and those that read list rows. */
 async function counted(fn: () => Promise<Response>) {
   let res!: Response;
   const rec = await recordNeonQueries(async () => { res = await fn(); });
-  return { res, queries: rec.count };
+  const listQueries = rec.queries.filter(qq => !REACH_TABLES.has(String(qq.table)));
+  return { res, queries: rec.count, listQueries: listQueries.length, tables: rec.queries.map(qq => qq.table) };
 }
+
+const taskIdsOf = async (res: Response) => ((await res.json()) as { tasks: Array<{ id: string }> }).tasks.map(t => t.id);
+const missionIdsOf = async (res: Response) => ((await res.json()) as { missions: Array<{ id: string }> }).missions.map(m => m.id);
 
 let teamId: string;
 let workspaceId: string;
@@ -88,12 +111,14 @@ describe.each([
 
     const again = await counted(() => get(route, url, a.key, etag!));
     expect(again.res.status).toBe(304);
-    expect(again.queries).toBe(0);
+    expect(again.listQueries).toBe(0);
+    expect(again.queries).toBeLessThan(first.queries);
     expect(await again.res.text()).toBe('');
 
     const second = await counted(() => get(route, url, a.key));
     expect(second.res.status).toBe(200);
-    expect(second.queries).toBe(0);
+    expect(second.res.headers.get('x-buildd-list-cache')).toBe('hit');
+    expect(second.listQueries).toBe(0);
     expect(second.res.headers.get('etag')).toBe(etag);
     expect(await second.res.text()).toBe(body);
   }, DB_TIMEOUT_MS);
@@ -130,5 +155,118 @@ describe('scopesOfWorkChange', () => {
     });
     expect(rec.count).toBe(1);
     expect(await cv.scopesOfWorkChange({ missionIds: [], taskIds: [], workerIds: [], prs: [], workspacePrs: [] })).toEqual([]);
+  }, DB_TIMEOUT_MS);
+});
+
+// ── Reach is resolved fresh: an access change takes effect on the next read ──
+
+describe('access changes take effect on the very next list read', () => {
+  const TASKS = 'http://localhost/api/tasks';
+  const MISSIONS = 'http://localhost/api/missions';
+
+  test('an account_workspaces unlink drops the linked workspace', async () => {
+    const home = await seedWorkspace();
+    const other = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${home.workspaceId}::uuid`);
+    const homeTask = await seedTask(home.workspaceId);
+    const linkedTask = await seedTask(other.workspaceId);
+    const k = await serviceKey(home.teamId);
+    await q(sql`INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create) VALUES (${k.id}::uuid, ${other.workspaceId}::uuid, true, false)`);
+
+    const before = await get(tasksRoute, TASKS, k.key);
+    expect(await taskIdsOf(before)).toEqual(expect.arrayContaining([homeTask, linkedTask]));
+    const etag = before.headers.get('etag')!;
+
+    await q(sql`DELETE FROM account_workspaces WHERE account_id = ${k.id}::uuid AND workspace_id = ${other.workspaceId}::uuid`);
+    // What the unlink routes do with the link cache (lib/account-workspace-cache.ts, its own clear hook).
+    invalidateAccountWorkspaceCache(k.id);
+    const fresh = await get(tasksRoute, TASKS, k.key);
+    expect(fresh.headers.get('x-buildd-list-cache')).toBeNull();
+    const ids = await taskIdsOf(fresh);
+    expect(ids).toContain(homeTask);
+    expect(ids).not.toContain(linkedTask);
+    // The old ETag is no longer current either.
+    expect((await get(tasksRoute, TASKS, k.key, etag)).status).toBe(200);
+  }, DB_TIMEOUT_MS);
+
+  test('a switch to restricted access drops a home-team workspace the account has no link to', async () => {
+    const home = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${home.workspaceId}::uuid`);
+    const t = await seedTask(home.workspaceId);
+    const k = await serviceKey(home.teamId);
+    expect(await taskIdsOf(await get(tasksRoute, TASKS, k.key))).toContain(t);
+
+    await q(sql`UPDATE workspaces SET access_mode = 'restricted' WHERE id = ${home.workspaceId}::uuid`);
+    expect(await taskIdsOf(await get(tasksRoute, TASKS, k.key))).not.toContain(t);
+  }, DB_TIMEOUT_MS);
+
+  test('a workspace moved to another team drops out', async () => {
+    const home = await seedWorkspace();
+    const elsewhere = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${home.workspaceId}::uuid`);
+    const t = await seedTask(home.workspaceId);
+    const k = await serviceKey(home.teamId);
+    expect(await taskIdsOf(await get(tasksRoute, TASKS, k.key))).toContain(t);
+
+    await q(sql`UPDATE workspaces SET team_id = ${elsewhere.teamId}::uuid WHERE id = ${home.workspaceId}::uuid`);
+    expect(await taskIdsOf(await get(tasksRoute, TASKS, k.key))).not.toContain(t);
+  }, DB_TIMEOUT_MS);
+
+  test('a person removed from a team loses its workspaces and missions', async () => {
+    const team = await seedWorkspace();
+    const t = await seedTask(team.workspaceId);
+    const [m] = await q<{ id: string }>(sql`INSERT INTO missions (team_id, workspace_id, title, status) VALUES (${team.teamId}::uuid, ${team.workspaceId}::uuid, 'Team mission', 'active') RETURNING id`);
+    const [u] = await q<{ id: string }>(sql`INSERT INTO users (email) VALUES (${`p-${crypto.randomUUID()}@example.test`}) RETURNING id`);
+    await q(sql`INSERT INTO team_members (team_id, user_id, role) VALUES (${team.teamId}::uuid, ${u.id}::uuid, 'member')`);
+    sessionUser = { id: u.id };
+    try {
+      expect(await taskIdsOf(await get(tasksRoute, TASKS, null))).toContain(t);
+      expect(await missionIdsOf(await get(missionsRoute, MISSIONS, null))).toContain(m.id);
+
+      await q(sql`DELETE FROM team_members WHERE team_id = ${team.teamId}::uuid AND user_id = ${u.id}::uuid`);
+      expect(await taskIdsOf(await get(tasksRoute, TASKS, null))).not.toContain(t);
+      expect(await missionIdsOf(await get(missionsRoute, MISSIONS, null))).not.toContain(m.id);
+    } finally {
+      sessionUser = null;
+    }
+  }, DB_TIMEOUT_MS);
+});
+
+// ── Read-your-writes: the version moves before the create answers ─────────
+
+describe('create then list', () => {
+  test('a task created through the API is in the same caller\'s next list read', async () => {
+    const home = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET access_mode = 'open' WHERE id = ${home.workspaceId}::uuid`);
+    const admin = await serviceKey(home.teamId, 'admin');
+    // Noting on (a test process notes nothing otherwise), with the real bump.
+    workChanged.setWorkChangeListenersForTests([]);
+    workChanged.setWorkChangeVersionBumperForTests(cv.changeVersionWorkListener);
+    try {
+      const url = `http://localhost/api/tasks?workspaceId=${home.workspaceId}`;
+      const before = await get(tasksRoute, url, admin.key);
+      expect(before.status).toBe(200);
+      const etag = before.headers.get('etag')!;
+      // Primed: the same read again is a cache hit.
+      expect((await get(tasksRoute, url, admin.key)).headers.get('x-buildd-list-cache')).toBe('hit');
+
+      const title = `ryw-${crypto.randomUUID()}`;
+      const created = await tasksRoute.POST(new NextRequest('http://localhost/api/tasks', {
+        method: 'POST', headers: { authorization: `Bearer ${admin.key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: home.workspaceId, title, description: 'd', kind: 'engineering' }),
+      }));
+      expect(created.status).toBeLessThan(300);
+      const { id } = (await created.json()) as { id: string };
+
+      // No waiting, no flush, nothing deferred has run: the bump landed before POST answered.
+      const after = await get(tasksRoute, url, admin.key, etag);
+      expect(after.status).toBe(200);
+      expect(after.headers.get('x-buildd-list-cache')).toBeNull();
+      expect(await taskIdsOf(after)).toContain(id);
+    } finally {
+      workChanged.setWorkChangeListenersForTests(null);
+      workChanged.setWorkChangeVersionBumperForTests(null);
+      afterQueue.length = 0;
+    }
   }, DB_TIMEOUT_MS);
 });
