@@ -5,7 +5,7 @@
  * changes requested".
  */
 import { describe, expect, test } from 'bun:test';
-import { GITHUB_COMMENTED_NOTE, reviewRoundsOf } from './pr-activity-rounds';
+import { GITHUB_COMMENTED_NOTE, githubReviewStatesLine, reviewRoundsOf } from './pr-activity-rounds';
 import type { RoundSnapshot } from './workflow/types';
 
 const R = (n: number, o: Partial<RoundSnapshot> = {}): RoundSnapshot => ({
@@ -44,5 +44,17 @@ describe('reviewRoundsOf', () => {
 
   test('no note until buildd has posted a verdict', () => {
     expect(reviewRoundsOf([R(1, { status: 'queued', verdict: null, effectiveVerdict: null })])!.githubNote).toBeNull();
+  });
+});
+
+describe('githubReviewStatesLine (AC-24): GitHub\'s formal states, kept apart from buildd\'s verdict', () => {
+  test('counts in words, GitHub\'s own state names', () => {
+    expect(githubReviewStatesLine({ approved: 0, changesRequested: 0, commented: 2 })).toBe('On GitHub: two reviews Commented');
+    expect(githubReviewStatesLine({ approved: 1, changesRequested: 1, commented: 1 })).toBe('On GitHub: one review Approved, one Changes requested, one Commented');
+  });
+  test('null when GitHub has no review', () => {
+    expect(githubReviewStatesLine({ approved: 0, changesRequested: 0, commented: 0 })).toBeNull();
+    expect(githubReviewStatesLine(null)).toBeNull();
+    expect(githubReviewStatesLine({ approved: 0, changesRequested: 0 })).toBeNull();
   });
 });

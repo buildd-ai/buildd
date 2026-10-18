@@ -19,8 +19,8 @@ const DONE: Partial<Record<EscalationActionId, string>> = {
 
 /**
  * The task page's decision surface for a review escalation (#task-decision), spec r7
- * §7 AC-43 / AC-48: the question, why automation stopped, each unresolved finding by
- * name, and only the actions this person may take. Choosing one opens a sheet that
+ * §7 AC-43 / AC-48: each unresolved finding by name, and only the actions this person
+ * may take. The verdict row above it carries the question and why automation stopped. Choosing one opens a sheet that
  * says what it does before anything runs; nothing here runs on its own. Each confirm
  * calls the existing human-triggered route, which re-checks access, and the page
  * refreshes so the verdict row reconciles.
@@ -86,11 +86,10 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
   ];
 
   return (
-    <section ref={ref} id="task-decision" data-testid="task-decision" data-cause={brief.cause} aria-label="Decision" className="card-decision mb-6 scroll-mt-4 px-4 py-3 md:px-5">
-      <h2 data-testid="decision-question" className="text-body font-semibold">{copy.question}</h2>
-      <p data-testid="decision-why" className="mt-1 text-body text-text-secondary">{copy.why}</p>
-      {named.filter(([, list]) => list.length > 0).map(([label, list]) => (
-        <div key={label} data-testid="decision-unresolved" className="mt-3">
+    <section ref={ref} id="task-decision" data-testid="task-decision" data-cause={brief.cause} aria-label={copy.question} className="card-decision mb-6 scroll-mt-4 px-4 py-3 md:px-5">
+      {/* The verdict row right above carries the question and why it stopped; the card names what is left and the choices (say it once). */}
+      {named.filter(([, list]) => list.length > 0).map(([label, list], i) => (
+        <div key={label} data-testid="decision-unresolved" className={i === 0 ? '' : 'mt-3'}>
           <h3 className="text-meta font-medium text-text-muted">{label}</h3>
           <ul className="mt-1 flex list-disc flex-col gap-1 pl-5">
             {list.map((t, i) => <li key={`${label}-${i}`} className="text-body [overflow-wrap:anywhere]">{t}</li>)}

@@ -100,6 +100,7 @@ export default async function PrDetailsCard({
           approved: reviewStates.filter(s => s === 'APPROVED').length,
           changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
           pending: reviewStates.filter(s => s === 'PENDING').length,
+          commented: reviewList.filter((r: any) => r.state === 'COMMENTED').length,
         }}
         mergeable={typeof pr.mergeable === 'boolean' ? pr.mergeable : null}
         mergeableState={typeof pr.mergeable_state === 'string' ? pr.mergeable_state : null}

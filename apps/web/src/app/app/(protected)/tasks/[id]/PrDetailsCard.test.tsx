@@ -105,7 +105,7 @@ describe('PrDetailsCard', () => {
         { name: 'lint', conclusion: null, status: 'in_progress', detailsUrl: null },
       ],
     });
-    expect(props.reviews).toEqual({ approved: 1, changesRequested: 1, pending: 0 });
+    expect(props.reviews).toEqual({ approved: 1, changesRequested: 1, pending: 0, commented: 0 });
     expect(props.mergeable).toBe(true);
     expect(props.mergeableState).toBe('clean');
     // Stored facts survive the enrichment.
@@ -170,7 +170,7 @@ describe('PrDetailsCard', () => {
     ]);
     githubResponses.set('/pulls/7', { head: { sha: 'abc' } });
     const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
-    expect(props.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0 });
+    expect(props.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0, commented: 1 });
   });
 
   const degradations: Array<[string, () => void]> = [

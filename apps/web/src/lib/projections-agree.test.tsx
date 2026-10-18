@@ -130,3 +130,49 @@ describe('AC-43: get_pr names what a stuck PR waits on and what the reader may d
     expect(formatGetPrDelivery({ reviews: null, delivery: prDeliveryReport(dv) }).decisionLine).toBe('');
   });
 });
+
+describe('AC-24: GitHub COMMENTED is shown beside, never as, buildd\'s changes requested', () => {
+  // Both rounds were posted on GitHub as COMMENTED reviews (the App opened the PR).
+  const github = { approved: 0, changesRequested: 0, commented: 2 };
+  test('get_pr prints both, apart', () => {
+    const { reviewLine, roundsLine } = formatGetPrDelivery({ reviews: github, delivery: prDeliveryReport(dv) });
+    expect(reviewLine).toBe(`Reviews: ${LINE}`);
+    expect(roundsLine).toContain('Round 2 at H2: changes requested');
+    expect(roundsLine).toContain('On GitHub: two reviews Commented');
+  });
+  test('the task page\'s PR card prints both', () => {
+    const checks = deriveTaskChecks(dv);
+    const card = renderToStaticMarkup(
+      <PrCard prUrl="https://github.com/acme/app/pull/42" prNumber={42} prLifecycleStatus="pr_open" prState={dv.prState} reviewRounds={checks.review} reviews={{ ...github, pending: 0 }} ciChecks={{ total: 0, passed: 0, failed: 0, pending: 0, runs: [] }} />,
+    );
+    expect(card).toContain(LINE);
+    expect(card).toContain('On GitHub: two reviews Commented');
+  });
+  test('the activity comment, which sits beside those reviews, says how GitHub lists them', () => {
+    expect(renderDeliveryActivity({ view, transitions: [] })).toContain(NOTE);
+  });
+});
+
+describe('AC-43 / AC-44 / AC-48: the PR activity comment carries the decision', () => {
+  test('the #4996 shape: question, why, named findings, actions open now, no approval', () => {
+    const esc: KernelView = {
+      delivery: { ...delivery, state: 'ESCALATED', stateReason: 'review_exhausted', currentHeadSha: 'H3', currentRound: 3 },
+      rounds: [round(1, 'H1'), round(2, 'H2'), round(3, 'H3')],
+      attempts: [1, 2].map((n) => ({
+        id: `a${n}`, family: 'review_fix' as const, attemptNo: n, mode: 'agent' as const, boundHeadSha: `H${n}`, triggerReason: `r${n}`, taskId: `ft${n}`,
+        status: 'ended' as const, outcome: 'delivered' as const, maxAttempts: 2, reportedShas: [],
+      })),
+      findings: [
+        finding('r1:0', { title: 'Mutation tests do not cover the new guard' }),
+        finding('r1:1', { ordinal: 1, title: 'Verify against a real Postgres', status: 'addressed', addressedBySha: 'H3' }),
+      ],
+    };
+    const body = renderDeliveryActivity({ view: esc, transitions: [] });
+    expect(body).toContain('**How should the two unresolved findings be settled?**');
+    expect(body).toContain('Automation stopped after three review rounds');
+    expect(body).toContain('Still open: Mutation tests do not cover the new guard');
+    expect(body).toContain('Fixed, waiting for a review to confirm: Verify against a real Postgres');
+    expect(body).toContain('Open on the task page: Review findings, Request another fix, Request a forced re-review');
+    expect(body).not.toMatch(/Approve and override/);
+  });
+});

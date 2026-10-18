@@ -135,6 +135,9 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
   };
 }
 
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+const countWords = (n: number): string => COUNT_WORDS[n] ?? String(n);
+
 /** `items` cut to `max`, with the count of what was left out. */
 /**
  * get_pr's delivery lines (docs/specs/workflow-kernel-library.md §7). A
@@ -144,7 +147,7 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
  * GitHub's review counts.
  */
 export function formatGetPrDelivery(data: {
-  reviews?: { approved?: number; changesRequested?: number } | null;
+  reviews?: { approved?: number; changesRequested?: number; commented?: number } | null;
   delivery?: {
     headline: string; detail: string | null;
     review: { line: string } | null;
@@ -164,6 +167,10 @@ export function formatGetPrDelivery(data: {
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
   if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
+  const githubStates = (() => {
+    const parts = ([[approved, 'Approved'], [changes, 'Changes requested'], [r.commented ?? 0, 'Commented']] as const).filter(([n]) => n > 0);
+    return parts.length > 0 ? `On GitHub: ${parts.map(([n, s], i) => (i === 0 ? `${countWords(n)} ${n === 1 ? 'review' : 'reviews'} ${s}` : `${countWords(n)} ${s}`)).join(', ')}` : '';
+  })();
   const dec = d.decision;
   const decisionLine = dec
     ? [
@@ -177,7 +184,11 @@ export function formatGetPrDelivery(data: {
     standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
     reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
     decisionLine,
-    roundsLine: d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
+    // AC-24: GitHub's formal states beside buildd's verdicts, never in place of them.
+    roundsLine: [
+      d.rounds ? `Review rounds: ${d.rounds.line}.${d.rounds.githubNote ? ` ${d.rounds.githubNote}` : ''}` : '',
+      githubStates,
+    ].filter(Boolean).join('\n'),
     repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
     // R-43: the review gate is its own line, never folded into CI.
     approvalLine: d.reviewApproval ? `Review approval: ${d.reviewApproval.description}` : '',
