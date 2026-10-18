@@ -5,6 +5,8 @@ import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask, hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { readMissionSpecStanding } from './specs/mission-outcome';
 import { ensureFinalVerification } from './specs/mission-verification';
+import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
+import { systemActor } from '@/lib/mission-feed';
 import type {
   GoalCriterion,
   LivingSpecGoalCriterion,
@@ -511,6 +513,13 @@ export async function evaluateCriteriaNow(
       cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
       if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch) {
         const fv = await ensureFinalVerification(missionId, criterion, standing);
+        if (fv.kind === 'dispatched') {
+          // A new check of the integrated result is work filed against the
+          // blocking criterion: an escalation raised by an earlier fail clears
+          // (c5a2c67b R-4). A no-op when the mission never escalated.
+          await resolveCriteriaEscalation(missionId, 'work_filed', systemActor('final verification filed'))
+            .catch((e) => console.error(`[criteria-eval] escalation clear failed for mission ${missionId}:`, e));
+        }
         if (fv.kind !== 'unavailable') {
           cs.verdict = 'PENDING';
           cs.workerTaskId = fv.taskId;
