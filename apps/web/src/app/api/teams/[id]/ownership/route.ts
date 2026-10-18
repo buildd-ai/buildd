@@ -8,6 +8,7 @@ import { isUuid } from '@/lib/uuid';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { isPersonalTeam } from '@/lib/personal-team';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 /**
  * POST /api/teams/[id]/ownership { userId } — hand ownership to an existing
@@ -99,6 +100,8 @@ export async function POST(
     if (promoted.length === 0) {
       return NextResponse.json({ error: 'That member is no longer in the team. Nothing changed.' }, { status: 409 });
     }
+    // Both sessions act at their new roles on the next call (lib/caller-cache.ts).
+    await clearCallerCache(callerDep.user(targetUserId), callerDep.user(user.id));
 
     const clampedKeys = demoted.length > 0
       ? await clampCreatorKeys({ teamId, userId: user.id, role: 'admin' })

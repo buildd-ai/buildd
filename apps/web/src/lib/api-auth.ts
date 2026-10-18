@@ -7,31 +7,19 @@ import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { findTeamSessionAccount } from './oauth/session-account';
-import { grantPrincipal, grantTokenScopes, grantedWorkspace, resolveTokenGrant } from './mcp-grants';
-import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
+import { grantPrincipal, grantTokenScopes, grantedWorkspace, resolveTokenGrant, type ResolvedGrant } from './mcp-grants';
+import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
+import { cachedCaller, clearCallerCache, callerDep, CALLER_CACHE_MAX_TTL_SEC } from './caller-cache';
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { noteBearerTenant } from './request-tenant';
 
 /**
- * Cache API key hash → account record.
- *
- * API keys are immutable after creation (only regeneration replaces them),
- * so a 5-minute TTL gives a good balance between DB savings and freshness.
- *
- * Max 500 entries covers all active accounts with room to spare.
- * Each entry is ~1-2 KB (account record), so worst case ~1 MB memory.
- */
-const accountCache = new TTLCache<NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>>({
-  maxSize: 500,
-  ttlMs: 5 * 60 * 1000, // 5 minutes
-});
-
-/**
- * Negative cache: track hashed keys that returned no result.
- * Prevents repeated DB lookups for invalid keys (e.g., scanners, typos).
- * Shorter TTL (1 min) so newly created keys are found quickly.
+ * Negative cache: hashed bld_ keys that matched no account, and JWTs whose
+ * signature did not verify. Neither can start to match later (a new key is a
+ * new hash), so this is the one refusal kept, and only in process. A JWT
+ * refused for any other reason (membership, grant) is never kept here.
  */
 const negativeCache = new TTLCache<true>({
   maxSize: 1000,
@@ -64,19 +52,41 @@ async function dbLookupAccount(hashedKey: string) {
 type CachedAccount = NonNullable<Awaited<ReturnType<typeof dbLookupAccount>>>;
 
 /**
- * OAuth session cache TTLs. A session's level follows the caller's current
- * team role, and a removed member must stop authenticating, so these entries
- * are kept short: 30s in-process (L1) plus 30s in Redis (L2). An L1 refill
- * from L2 can stack the two, so a role change or membership removal takes
- * effect within 60s. (bld_ API keys keep the 5-minute accountCache above.)
+ * What a verified OAuth access token grants, cached (lib/caller-cache.ts) for
+ * at most 60 s, or until the grant, the user's memberships or a granted
+ * workspace changes (each has a clear hook), or the grant expires, whichever
+ * comes first. A grant reaching no workspace is a refusal and never cached.
  */
-const OAUTH_L1_TTL_MS = 30 * 1000;
-const OAUTH_L2_TTL_SEC = 30;
+export async function resolveCallerGrant(claims: AnyAccessTokenClaims): Promise<ResolvedGrant | null> {
+  const key = isGrantClaims(claims)
+    ? `grant:${claims.grant_id}:${claims.sub}:${claims.client_id}`
+    : `legacy-grant:${claims.sub}:${claims.workspace_id}:${claims.client_id}`;
+  const known = isGrantClaims(claims)
+    ? [callerDep.grant(claims.grant_id), callerDep.user(claims.sub)]
+    : [callerDep.user(claims.sub), callerDep.workspace(claims.workspace_id)];
+  return cachedCaller(key, async () => {
+    const grant = await resolveTokenGrant(claims);
+    return grant && grant.workspaces.length > 0 ? grant : null;
+  }, {
+    known,
+    depsOf: (g) => g.workspaces.map((w) => callerDep.workspace(w.workspaceId)),
+    ttlSec: (g) => (g.expiresAt ? (new Date(g.expiresAt).getTime() - Date.now()) / 1000 : CALLER_CACHE_MAX_TTL_SEC),
+  });
+}
 
-const oauthAccountCache = new TTLCache<CachedAccount>({
-  maxSize: 500,
-  ttlMs: OAUTH_L1_TTL_MS,
-});
+/**
+ * The account a team's OAuth sessions act as (lib/oauth/session-account.ts),
+ * cached until that account changes (every account hook clears by its key
+ * hash or id). No account is a refusal and never cached, so one provisioned
+ * after connecting is found on the next call.
+ */
+async function cachedTeamSessionAccount(teamId: string): Promise<CachedAccount | null> {
+  return cachedCaller(`session-account:${teamId}`, () => findTeamSessionAccount(teamId), {
+    known: [callerDep.team(teamId)],
+    depsOf: (a) => [callerDep.account(a.id), callerDep.keyHash(a.apiKey)],
+    valid: isCurrentShape,
+  });
+}
 
 /**
  * OAuth JWT path — verify the token, resolve what it grants against CURRENT
@@ -86,9 +96,9 @@ const oauthAccountCache = new TTLCache<CachedAccount>({
  *  - legacy `workspace_id` claim: an implicit single-workspace 'person' grant;
  *    behaviour unchanged from before grants existed.
  *  - `grant_id` claim: the grant's workspaces ∩ the user's current
- *    memberships, resolved on every request (never cached, see resolveApiKey),
- *    so a revoked grant or a removed membership stops authenticating on the
- *    next call. The session is confined to those workspaces (`workspaceIds`).
+ *    memberships (resolveCallerGrant: cached at most 60 s, cleared when the
+ *    grant or a membership changes, so a revoked grant or a removed
+ *    membership stops authenticating on the next call). The session is confined to those workspaces (`workspaceIds`).
  *    A grant reaching workspaces in more than one team has no single team
  *    account to act as, so with no bound workspace it does not authenticate.
  *    A request that names one (GRANT_WORKSPACE_HEADER: the canonical /api/mcp
@@ -111,9 +121,12 @@ const oauthAccountCache = new TTLCache<CachedAccount>({
  */
 async function authenticateOauthJwt(jwt: string, boundWorkspaceId: string | null = null) {
   const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
-  if (!claims) return null;
+  if (!claims) {
+    negativeCache.set(hashApiKey(jwt), true);
+    return null;
+  }
 
-  const grant = await resolveTokenGrant(claims);
+  const grant = await resolveCallerGrant(claims);
   if (!grant || grant.workspaces.length === 0) return null;
 
   // A bound workspace applies to a grant token only; a legacy token keeps its
@@ -127,7 +140,7 @@ async function authenticateOauthJwt(jwt: string, boundWorkspaceId: string | null
 
   // Deterministic: the same token must act as the same account on every
   // request, or a session is refused on the workers it claimed.
-  const account = await findTeamSessionAccount(teamId);
+  const account = await cachedTeamSessionAccount(teamId);
   if (!account) return null;
 
   const principal = grantPrincipal(grant);
@@ -171,13 +184,15 @@ function isCurrentShape(account: CachedAccount): boolean {
  * Returns the account if found, null otherwise.
  *
  * Two paths:
- *  - OAuth JWT (looks like `eyJ...`): verify signature, check team membership,
- *    level from the caller's team role (short-lived cache, see OAUTH_L1_TTL_MS).
- *    The MCP-OAuth route additionally enforces workspace.
- *  - Regular `bld_*` key: hash + DB lookup (cached).
+ *  - OAuth JWT (looks like `eyJ...`): verify signature, then what it grants and
+ *    the team account it acts as (resolveCallerGrant, cachedTeamSessionAccount);
+ *    level from the caller's team role. The MCP-OAuth route additionally
+ *    enforces workspace.
+ *  - Regular `bld_*` key: hash + DB lookup.
  *
- * Uses an in-memory TTL cache to avoid hitting the DB on every request.
- * Cache is invalidated on key regeneration and account deletion.
+ * Both are cached in Redis for at most 60 s (lib/caller-cache.ts) and cleared
+ * by invalidateAccountCache / invalidateAccountCacheByHash and the membership
+ * and grant hooks.
  */
 async function resolveApiKey(apiKey: string | null, boundWorkspaceId: string | null = null) {
   if (!apiKey) return null;
@@ -189,105 +204,44 @@ async function resolveApiKey(apiKey: string | null, boundWorkspaceId: string | n
   // (lib/presence-token.ts).
   if (isPresenceToken(apiKey)) return null;
 
-  // OAuth bearer path — verify the JWT before any DB work.
-  if (tokensModule.looksLikeJwt(apiKey)) {
-    const hashed = hashApiKey(apiKey);
-    if (negativeCache.get(hashed)) return null;
-
-    // A grant token is resolved on every request, never from a cache, so a
-    // revoked grant or a removed membership takes effect on the next call.
-    if (tokensModule.looksLikeGrantToken(apiKey)) return authenticateOauthJwt(apiKey, boundWorkspaceId);
-
-    const cached = oauthAccountCache.get(hashed);
-    if (cached) return cached;
-
-    // L1 miss — check Redis (L2) before expensive JWT verify + DB round-trips
-    const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
-    if (redisAccount) {
-      oauthAccountCache.set(hashed, redisAccount);
-      return redisAccount;
-    }
-
-    const account = await authenticateOauthJwt(apiKey);
-    if (account) {
-      oauthAccountCache.set(hashed, account);
-      await setCachedApiKey(hashed, account, OAUTH_L2_TTL_SEC);
-    } else {
-      negativeCache.set(hashed, true);
-    }
-    return account;
-  }
-
   const hashed = hashApiKey(apiKey);
+  if (negativeCache.get(hashed)) return null;
 
-  // Check negative cache first (invalid keys)
-  if (negativeCache.get(hashed)) {
-    return null;
-  }
+  // OAuth bearer path — verify the JWT before any DB work. What it grants
+  // and the account it acts as are cached; the token itself is verified on
+  // every call.
+  if (tokensModule.looksLikeJwt(apiKey)) return authenticateOauthJwt(apiKey, boundWorkspaceId);
 
-  // Check positive cache (L1)
-  const cached = accountCache.get(hashed);
-  if (cached && isCurrentShape(cached)) {
-    return cached;
-  }
-
-  // L1 miss — check Redis (L2) before hitting the DB
-  const redisAccount = await getCachedApiKey<CachedAccount>(hashed);
-  if (redisAccount && isCurrentShape(redisAccount)) {
-    accountCache.set(hashed, redisAccount);
-    return redisAccount;
-  }
-
-  // L2 miss — query DB
-  const account = await dbLookupAccount(hashed);
-
-  if (account) {
-    accountCache.set(hashed, account);
-    await setCachedApiKey(hashed, account);
-  } else {
-    negativeCache.set(hashed, true);
-  }
-
-  return account || null;
+  const account = await cachedCaller(`key:${hashed}`, () => dbLookupAccount(hashed), {
+    known: [callerDep.keyHash(hashed)],
+    depsOf: (a) => [callerDep.account(a.id)],
+    valid: isCurrentShape,
+  });
+  if (!account) negativeCache.set(hashed, true);
+  return account;
 }
 
 /**
- * Invalidate the auth cache for a specific account.
- * Call this when:
- * - An API key is regenerated (old hash removed, new hash not yet cached)
- * - An account is deleted
- * - Account fields used in auth decisions change (e.g., maxConcurrentWorkers, level)
+ * An account changed: its key, level, scopes, workspace list, flags, links,
+ * or it was deleted. Every cached caller resting on it (its key, a task
+ * token it minted, an OAuth session acting as it) is re-read on the next
+ * call, on every instance. Await it after the write that changed the row.
  */
-export function invalidateAccountCache(accountId: string): void {
-  // We can't look up by account ID directly since the cache is keyed by hashed API key.
-  // Delete all entries where the cached account matches the given ID.
-  accountCache.deleteWhere((key) => {
-    const entry = accountCache.get(key);
-    return entry?.id === accountId;
-  });
-  oauthAccountCache.deleteWhere((key) => {
-    const entry = oauthAccountCache.get(key);
-    return entry?.id === accountId;
-  });
+export async function invalidateAccountCache(accountId: string): Promise<void> {
+  await clearCallerCache(callerDep.account(accountId));
 }
 
 /**
- * Invalidate auth cache by hashed API key.
- * Use this when you know the old hashed key (e.g., during key regeneration).
+ * As invalidateAccountCache, by the account's stored key hash: what most
+ * account routes have at hand. Call after the write.
  */
-export function invalidateAccountCacheByHash(hashedKey: string): void {
-  accountCache.delete(hashedKey);
-  oauthAccountCache.delete(hashedKey);
+export async function invalidateAccountCacheByHash(hashedKey: string): Promise<void> {
   negativeCache.delete(hashedKey);
-  void invalidateCachedApiKey(hashedKey);
+  await clearCallerCache(callerDep.keyHash(hashedKey));
 }
 
-/**
- * Clear the entire auth cache. Use sparingly — mainly for testing.
- */
+/** Clear the in-process negative cache. Mainly for testing. */
 export function clearAccountCache(): void {
-  accountCache.clear();
-  oauthAccountCache.clear();
   negativeCache.clear();
 }
 

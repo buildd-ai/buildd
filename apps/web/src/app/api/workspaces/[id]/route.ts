@@ -17,6 +17,8 @@ import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
 import { validateEarlyReleaseConfig } from '@/lib/early-release-mode';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
+import { invalidateWorkspacePermissionsCache } from '@/lib/account-workspace-cache';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -522,6 +524,13 @@ export async function PATCH(
     }
 
     await db.update(workspaces).set(updates).where(eq(workspaces.id, id));
+    // Who reaches it and how sensitive it is are cached per caller
+    // (lib/caller-cache.ts): an access-mode or data-class change, and a restricted
+    // workspace dropping same-team keys without a link, apply on the next call.
+    if ('accessMode' in updates || 'dataClass' in updates) {
+      invalidateWorkspacePermissionsCache(id);
+      await clearCallerCache(callerDep.workspace(id));
+    }
 
     // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec §1.1).
     if (repoValue !== undefined && repoValue !== null && repoValue !== previousRepo) {
@@ -565,6 +574,8 @@ export async function DELETE(
 
     // Delete the workspace (cascade will handle tasks, workers, etc.)
     await db.delete(workspaces).where(eq(workspaces.id, id));
+    invalidateWorkspacePermissionsCache(id);
+    await clearCallerCache(callerDep.workspace(id));
 
     return NextResponse.json({ success: true });
   } catch (error) {
