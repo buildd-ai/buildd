@@ -289,8 +289,7 @@ export async function POST(req: NextRequest) {
             files: completedWorker.filesChanged ?? 0,
             added: completedWorker.linesAdded ?? 0,
             removed: completedWorker.linesRemoved ?? 0,
-            prUrl: completedWorker.prUrl ?? undefined,
-            prNumber: completedWorker.prNumber ?? undefined,
+            // The PR is derived on read from the worker row (workflow/task-pr.ts).
           },
           updatedAt: now,
         })

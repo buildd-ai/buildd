@@ -24,6 +24,7 @@ import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { isWorktreeSetupTimeoutError } from '@/lib/worker-exit-taxonomy';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
 import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
@@ -271,6 +272,21 @@ function hasOpenAsk(t: { status: string; workers?: Array<{ status: string }> | n
 }
 
 /** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
+/**
+ * A failed task whose failure is the host's, not the work's: retries spent on
+ * infra (`infra_stalled`), or the runner could not build the session's
+ * worktree (it refuses the shared clone, so nothing ran). Read from the error
+ * text as well as `errorType`, because a setup failure reported before the
+ * retry budget is spent carries only the text.
+ */
+export function isInfraFailedTask(t: { result?: unknown; context?: unknown }): boolean {
+  const result = (t.result ?? null) as Record<string, unknown> | null;
+  if (result?.errorType === 'infra_stalled') return true;
+  const ctx = (t.context ?? null) as { failureContext?: { summary?: unknown } } | null;
+  const texts = [result?.error, ctx?.failureContext?.summary];
+  return texts.some(x => typeof x === 'string' && (isWorktreeSetupTimeoutError(x) || /Worktree setup failed for branch .*refusing to run in the shared clone/s.test(x)));
+}
+
 export interface OpenAttemptInfo {
   taskId: string;
   title: string;
@@ -625,7 +641,7 @@ async function viewForMission(missionId: string): Promise<{
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
-      infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
+      infra: isInfraFailedTask(t),
     })),
     deferrals,
     // `merged` carries no outstanding fact — the mission is on its way to
@@ -997,7 +1013,7 @@ async function viewForTask(taskId: string): Promise<{
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
-      infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
+      infra: isInfraFailedTask(t),
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,

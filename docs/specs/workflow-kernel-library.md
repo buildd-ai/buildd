@@ -925,6 +925,12 @@ push, refresh, completion or owner change can make it disappear.
   round is a round like any other: it uses one of the delivery's `maxRounds`
   (unless it re-checks a head after an approval, which spends none:
   workflow-state-kernel.md §8.2, c1d66a6a).
+  The kept approval covers only the head it judged: approved at H1, and the
+  owner pushes H2 and ends, H2 is reviewed and does not land on H1's word. When the
+  owner's end leaves the delivery `APPROVED` at the same head, the seam marks the PR
+  due on the landing sweep's queue, so landing is re-evaluated at once instead of
+  waiting for a person or the floor (the landing door had deferred while the delivery
+  was `WORKING`, and nothing else woke it).
   It does not skip a CI repair: an owner hand-off on a red head goes to
   `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
   own open round at that head is never answered from outside (its reviewer
@@ -1368,6 +1374,21 @@ column outside the kernel; S3 and S4 remove or route each one.
   that is down or too old to project, a delivery the kill switch released, or
   a release held for CI (no end is sent) still leaves the task settled. A
   release that fails still writes `failed` itself.
+  A task's PR is derived on read, never snapshotted (`task-pr.ts`): its own
+  delivery's PR when it owns one, else its newest attempt worker row that
+  carries a PR, else a placeholder row (an adopted PR, a person's attach),
+  else what `result` stored before this. The sibling row a second PR from one
+  worker gets is a placeholder, so it never displaces the attempt's own PR.
+  No attempt writer puts `prUrl` / `prNumber` into `result` (the worker
+  PATCH's completion, the cleanup promotion, the reaper's promotion); the
+  guard fails on one that does. So an end that lands late on a task that was
+  requeued and claimed again cannot put the old attempt's PR back, and a loop
+  exit that replaces `result` no longer erases the PR. Every reader goes
+  through it: `get_task` and the task page, the mission sheet, the terminal
+  audit list, mission and heartbeat context, the completion callback, the
+  evidence record and the attach guard. No write statement dropped with it:
+  each still writes `status` or other `result` keys, so the attempt ceiling
+  is unchanged until the reaper, requeue and claim families move.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the other attempt writers (the worker PATCH's requeues and failure
   overrides, claim, cleanup, the reaper, interactive detach, credential and
@@ -1375,8 +1396,7 @@ column outside the kernel; S3 and S4 remove or route each one.
   exits) still set the owner task's status directly;
   person writers (task PATCH, bulk, reassign, attach-PR, visual-review
   decisions, waivers, tracker webhooks) still write it as a person's act. Also
-  not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
-  worker PATCH still copies them from the worker row). Also not implemented
+  not implemented
   (AC-9): the worker PATCH and the claim route still apply the review verdict
   (record and adopt) and FixClaimed on the web host through the seam, with no
   door op of their own like `attempt_ended`.

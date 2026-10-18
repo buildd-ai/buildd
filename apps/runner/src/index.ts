@@ -267,7 +267,11 @@ if (ONCE_TASK_ID === null) {
         return Response.json(runnerIdentity());
       }
       return socketHandler ? socketHandler(req) : Response.json({ error: 'starting' }, { status: 503 });
-    }, { error: (err) => localServerError(err) });
+    }, {
+      error: (err) => localServerError(err),
+      // Manual update runs git + install + a health probe, minutes by design.
+      noDeadline: (req) => new URL(req.url).pathname === '/api/update',
+    });
   } catch (err: any) {
     // Lost a race with another start that bound first: that one is the runner.
     // serveRunnerSocket never unlinks an existing file, so the bind fails here
