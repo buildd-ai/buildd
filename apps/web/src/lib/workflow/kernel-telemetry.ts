@@ -23,7 +23,7 @@ import type { KernelPrincipal } from './command-api';
 export const KERNEL_SPAN = {
   /** One door call (kernel-client.ts `door` and the short doors). */
   door: 'kernel.door',
-  /** The AttemptStarted breaker opening or closing. */
+  /** A breaker opening or closing: the AttemptStarted one or the webhook doors' one. */
   breaker: 'kernel.breaker',
   /** A kernel command the web host ran itself. Zero once the control plane owns the kernel. */
   webCommand: 'kernel.web_command',
@@ -98,9 +98,13 @@ export function doorSpanAttributes(p: {
   };
 }
 
-export function breakerSpanAttributes(p: { state: 'open' | 'closed'; op: string; skipMs: number; openMs?: number; host: KernelHost }): SpanAttributes {
+/** Which breaker: the AttemptStarted one (claims, withdrawals, reopens) or the webhook doors' one. */
+export type KernelBreaker = 'attempt_start' | 'webhook';
+
+export function breakerSpanAttributes(p: { state: 'open' | 'closed'; breaker: KernelBreaker; op: string; skipMs: number; openMs?: number; host: KernelHost }): SpanAttributes {
   return {
     'kernel.breaker.state': p.state,
+    'kernel.breaker': p.breaker,
     'kernel.op': p.op,
     'kernel.breaker.skip_ms': ms(p.skipMs),
     ...(p.state === 'closed' && p.openMs !== undefined ? { 'kernel.breaker.open_ms': ms(p.openMs) } : {}),

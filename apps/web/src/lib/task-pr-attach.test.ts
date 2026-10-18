@@ -21,6 +21,9 @@ mock.module('@buildd/core/db', () => ({
 mock.module('./github', () => ({ githubApi: mockGithubApi }));
 mock.module('./pr-review-request', () => ({ insertPrOwnerWorker: mockInsertPrOwnerWorker }));
 
+const mockNote = mock((_c: any) => {});
+mock.module('@/lib/work-changed', () => ({ noteWorkChanged: mockNote }));
+
 import { attachPrToTask, parsePrReference } from './task-pr-attach';
 
 function pr(overrides: Record<string, unknown> = {}) {
@@ -76,6 +79,12 @@ describe('attachPrToTask', () => {
     mockInsertPrOwnerWorker.mockResolvedValue({ id: 'worker-new' });
     mockSet.mockClear();
     mockUpdate.mockClear();
+  });
+
+  it('notes the task and worker so the mission summary sees the attached PR', async () => {
+    mockNote.mockClear();
+    await attachPrToTask({ task: TASK, repo: REPO, prNumber: 17, accountId: 'acct-1' });
+    expect(mockNote).toHaveBeenCalledWith({ taskIds: ['task-1'], workerIds: ['worker-new'] });
   });
 
   it('creates an external placeholder worker and fills result.prUrl', async () => {

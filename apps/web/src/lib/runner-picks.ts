@@ -14,6 +14,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { accounts, accountWorkspaces, teamMembers, teams, users, workspaces } from '@buildd/core/db/schema';
 import { extractApiKeyPrefix, hashApiKey, invalidateAccountCacheByHash } from './api-auth';
 import { invalidateAccountWorkspaceCache } from './account-workspace-cache';
+import { clearTeamCache } from './team-cache';
 import { consentTeamsForUser } from './mcp-grant-admin';
 import { getUserDefaultTeamId } from './team-access';
 import type { ApiKeyLevel } from './key-level-policy';
@@ -114,7 +115,8 @@ export async function mintRunnerKey(args: {
     await db.delete(accounts).where(eq(accounts.id, created.id)).catch(() => {});
     throw err;
   }
-  invalidateAccountWorkspaceCache(created.id);
+  await invalidateAccountWorkspaceCache(created.id);
+  await clearTeamCache(home.id, 'runners');
   return { ok: true, plaintextKey, accountId: created.id, level, teamId: home.id, workspaceIds: check.workspaceIds };
 }
 
@@ -181,8 +183,8 @@ export async function replaceRunnerPicks(args: {
     .set({ workspaceIds: [...new Set([...check.workspaceIds, ...unmarked])] })
     .where(eq(accounts.id, account.id));
 
-  invalidateAccountCacheByHash(account.apiKey);
-  invalidateAccountWorkspaceCache(account.id);
+  await invalidateAccountCacheByHash(account.apiKey);
+  await invalidateAccountWorkspaceCache(account.id);
   return { ok: true, workspaceIds: check.workspaceIds };
 }
 

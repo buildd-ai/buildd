@@ -6,6 +6,7 @@ import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, type TeamRole } from '@/lib/permissions';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 
 export async function GET(
   req: NextRequest,
@@ -140,6 +141,8 @@ export async function POST(
         userId,
         role: role as TeamRole,
       });
+    // Cached callers of this person re-read their memberships (lib/caller-cache.ts).
+    await clearCallerCache(callerDep.user(userId));
 
     return NextResponse.json({ success: true });
   } catch (error) {

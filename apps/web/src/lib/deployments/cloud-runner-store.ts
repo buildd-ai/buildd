@@ -10,6 +10,7 @@ import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema'
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { mintApiKeyAccount } from '@/lib/api-key-mint';
+import { clearWorkspaceSettingsCache } from '@/lib/team-cache';
 import { recordDeploymentAudit } from './store';
 import type { CloudRunnerDeployDeps, MintedRunnerKey, StoredWebhook } from './cloud-runner-deploy';
 
@@ -38,6 +39,7 @@ export async function saveWebhook(workspaceId: string, config: { url: string; to
   if (config.enabled && !token) throw new Error('a dispatching webhook needs a token');
   const value = { ...stored, url: config.url, token, enabled: config.enabled, events: [...new Set(config.events)] };
   await db.update(workspaces).set({ webhookConfig: value as never, updatedAt: new Date() }).where(eq(workspaces.id, workspaceId));
+  await clearWorkspaceSettingsCache(workspaceId);
 }
 
 async function findRunnerKey(teamId: string, script: string): Promise<MintedRunnerKey | null> {

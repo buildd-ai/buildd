@@ -3,7 +3,9 @@ import { beforeEach, expect, it, mock } from 'bun:test';
 /** The mission page already holds the waiver and the visual-review model: the state load reuses them. */
 mock.module('server-only', () => ({}));
 const reads: string[] = [];
-mock.module('@buildd/core/db', () => ({ db: { query: {
+// The audit ledger's select: the chain resolves to no audits.
+const selectChain: any = { from: () => selectChain, where: () => selectChain, orderBy: () => selectChain, limit: () => selectChain, then: (res: (v: unknown) => unknown) => { reads.push('ledger'); return Promise.resolve([]).then(res); } };
+mock.module('@buildd/core/db', () => ({ db: { select: () => selectChain, query: {
   missions: { findFirst: async () => { reads.push('missions'); return { id: 'm1', status: 'active', workspaceId: 'ws', autoSurfaceAudit: true, workingBranch: null, primaryPrNumber: null }; } },
   workspaces: { findFirst: async () => { reads.push('workspaces'); return { gitConfig: null, githubRepoId: null }; } },
   tasks: { findMany: async () => { reads.push('tasks'); return []; } },
@@ -53,4 +55,19 @@ it('a page passes what it holds: no mission, workspace, task or ledger read, and
   expect(state).not.toBeNull();
   expect(reads).toEqual([]);
   expect(evaluateSurfaceAuditGate.mock.calls[0][2]).toMatchObject({ render: true, waived: false });
+});
+
+it('a caller that names the UI change (the scheduler, from the classifier) gets no gate read', async () => {
+  await getMissionVisualReviewState('m1', { uiChange: { state: 'yes', source: 'diff', uiFiles: 1 }, waiver: Promise.resolve(null), model: { audit: null } as any });
+  expect(evaluateSurfaceAuditGate).not.toHaveBeenCalled();
+});
+
+it('a caller holding the delivery, ledger and claim holds reads none of them', async () => {
+  const state = await getMissionVisualReviewState('m1', {
+    mission: { id: 'm1', status: 'active', workspaceId: 'ws', autoSurfaceAudit: true, workingBranch: null, primaryPrNumber: 7 },
+    gitConfig: null, tasks: [], ledger: [], waiver: Promise.resolve(null), model: { audit: null } as any,
+    delivery: { state: 'OPEN', currentHeadSha: 'abc1234', baseRef: 'dev' }, holdReasons: new Map(),
+  });
+  expect(reads).toEqual([]);
+  expect(state?.branch.headSha).toBe('abc1234');
 });

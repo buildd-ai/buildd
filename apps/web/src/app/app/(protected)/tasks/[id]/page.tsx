@@ -81,7 +81,7 @@ import { evidenceViewOf } from '@/lib/task-evidence';
 import { TaskTitle as TaskTitleText } from '@/components/tasks/TaskTitle';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
-import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { auditTaskIdFor, loadTaskFailure } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadServiceStatus } from '@/lib/service-status-loader';
 import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
@@ -357,7 +357,7 @@ export default async function TaskDetailPage({
   // The team's service status for this viewer, kept to the causes this task waits on. Never throws.
   const serviceStatusPromise = loadServiceStatus({ userId: user?.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId })
     .then((v) => v.statuses.filter((s) => s.work.some((w) => w.taskId === task.id)));
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec, taskServiceStatus] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
@@ -446,7 +446,7 @@ export default async function TaskDetailPage({
     loadTaskAccess(id).catch(() => []),
     // Worker vs verification failure. Costs no query unless the task failed;
     // joined here rather than awaited after the phase is derived.
-    loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
+    loadTaskFailure({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
     serviceStatusPromise,
@@ -815,7 +815,9 @@ export default async function TaskDetailPage({
     isSubjectDead: subjectDead,
     isMissionBudgetExhausted: missionBudgetExhausted,
   });
-  const failureKind = phase === 'failed' ? failureKindRaw : null;
+  const failureKind = phase === 'failed' ? failureRaw?.kind ?? null : null;
+  // Never ran: a task it depends on failed. Its action zone names that task instead of offering a retry (spec 072de598 I-14).
+  const failureWaitingOn = failureKind === 'dependency' ? failureRaw?.waitingOn ?? null : null;
   // Triage metadata (priority / runner / backend) only earns top-level space in
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
@@ -921,6 +923,7 @@ export default async function TaskDetailPage({
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
   }), review: reviewOutcome,
+    waitingOnFailed: failureWaitingOn,
     escalation: deliveryView?.escalation
       ? {
           title: deliveryView.escalation.title,
@@ -1567,6 +1570,7 @@ export default async function TaskDetailPage({
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
               deliveryReading={deliveryPillLabel(deliveryPill)}
               failureKind={failureKind}
+              waitingOn={failureWaitingOn}
               auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}

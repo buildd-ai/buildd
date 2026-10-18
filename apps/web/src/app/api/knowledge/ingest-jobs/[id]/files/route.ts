@@ -17,6 +17,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
 import { isUuid } from '@/lib/uuid';
+import { dbLeaseUntil, liveness } from '@/lib/liveness';
 import { ingestFileBatch } from '@/lib/knowledge-ingest-batch';
 import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
@@ -97,16 +98,24 @@ export async function POST(
   // Heartbeat: an accepted batch is proof of forward progress, so push the lease
   // out. A long full ingest would otherwise outrun its TTL and be reclaimed
   // mid-flight (harmless but wasteful — ingest upserts are idempotent).
+  //
+  // The beat lands in Redis; the row is written at most once per
+  // LIVENESS_DB_WRITE_INTERVAL_MS (every batch when Redis is absent), with the
+  // lease pushed out by that interval too, so the stored lease never lapses
+  // under a job that keeps sending batches (lib/liveness.ts).
   const beat = new Date();
-  await db
-    .update(knowledgeIngestJobs)
-    .set({ heartbeatAt: beat, leaseExpiresAt: new Date(beat.getTime() + FULL_LEASE_MS) })
-    .where(and(eq(knowledgeIngestJobs.id, id), eq(knowledgeIngestJobs.status, 'running')))
-    .returning({ id: knowledgeIngestJobs.id })
-    .catch(err => {
-      console.error(`[knowledge-ingest] lease renewal failed for job ${id}:`, err);
-      return [];
-    });
+  if (await liveness.beat('ingest', id, beat, FULL_LEASE_MS)) {
+    await db
+      .update(knowledgeIngestJobs)
+      .set({ heartbeatAt: beat, leaseExpiresAt: dbLeaseUntil(beat, FULL_LEASE_MS) })
+      .where(and(eq(knowledgeIngestJobs.id, id), eq(knowledgeIngestJobs.status, 'running')))
+      .returning({ id: knowledgeIngestJobs.id })
+      .catch(async err => {
+        console.error(`[knowledge-ingest] lease renewal failed for job ${id}:`, err);
+        await liveness.writeFailed('ingest', id);
+        return [];
+      });
+  }
 
   try {
     const result = await ingestFileBatch(job.workspaceId, files, deletions);

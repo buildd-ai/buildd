@@ -107,3 +107,63 @@ describe('waitForPrReviewStatus', () => {
     expect(result.timedOut).toBe(true);
   });
 });
+
+describe('waitForPrReviewStatus: the fingerprint between polls (spec 3ef37387 R-10)', () => {
+  const pending = { state: 'reviewing', terminal: false } as any;
+  const done = { state: 'approved', terminal: true } as any;
+
+  function clock() {
+    let t = 0;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  }
+
+  it('an unchanged print skips the full read; a changed one reads again', async () => {
+    const c = clock();
+    const prints = ['a', 'a', 'a', 'b'];
+    let reads = 0;
+    const result = await waitForPrReviewStatus({
+      workspaceId: 'ws', prNumber: 1, waitSeconds: 30,
+      deps: {
+        ...c,
+        fingerprint: async () => prints.shift() ?? 'b',
+        read: async () => (++reads === 1 ? pending : done),
+      },
+    });
+    expect(result.status.state).toBe('approved');
+    // One read up front, none while the print held, one when it moved.
+    expect(reads).toBe(2);
+  });
+
+  it('a held print still gets a full read every REVIEW_FULL_READ_MS', async () => {
+    const { REVIEW_FULL_READ_MS } = await import('./pr-review-request');
+    const c = clock();
+    let reads = 0;
+    const result = await waitForPrReviewStatus({
+      workspaceId: 'ws', prNumber: 1, waitSeconds: 30,
+      deps: { ...c, fingerprint: async () => 'same', read: async () => { reads++; return pending; } },
+    });
+    expect(result.timedOut).toBe(true);
+    const fullReadsBound = Math.ceil((30_000) / REVIEW_FULL_READ_MS) + 1;
+    expect(reads).toBeLessThanOrEqual(fullReadsBound);
+    expect(reads).toBeGreaterThan(1);
+  });
+
+  it('a print that cannot be taken falls back to a full read each poll', async () => {
+    const c = clock();
+    let reads = 0;
+    await waitForPrReviewStatus({
+      workspaceId: 'ws', prNumber: 1, waitSeconds: 10,
+      deps: { ...c, fingerprint: async () => null, read: async () => { reads++; return pending; } },
+    });
+    expect(reads).toBe(Math.floor(10_000 / REVIEW_POLL_INTERVAL_MS) + 1);
+  });
+
+  it('no wait, no print', async () => {
+    let prints = 0;
+    await waitForPrReviewStatus({
+      workspaceId: 'ws', prNumber: 1, waitSeconds: 0,
+      deps: { fingerprint: async () => { prints++; return 'x'; }, read: async () => pending },
+    });
+    expect(prints).toBe(0);
+  });
+});

@@ -66,19 +66,32 @@ export async function loadTokenDelegations(
   account: { teamId?: string | null; workspaceIds?: string[] | null },
 ): Promise<ScheduleDelegationGrant[]> {
   try {
-    const task = await db.query.tasks.findFirst({
-      where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, taskId)) },
-      columns: { id: true, workspaceId: true, scheduleId: true, delegation: true },
-    });
-    if (!task || task.workspaceId !== workspaceId) return [];
-    const grants = await loadRawTaskGrants(task);
-    if (!grants.length) return [];
-    const teams = await teamsOf([workspaceId, ...grants.map(g => g.workspaceId)]);
-    const ownTeam = teams.get(workspaceId);
-    if (!ownTeam || (account.teamId && ownTeam !== account.teamId)) return [];
-    return grants.filter(g => teams.get(g.workspaceId) === ownTeam && tokenWorkspaceAllowed(account.workspaceIds, g.workspaceId));
+    return await loadTokenDelegationsOrThrow(taskId, workspaceId, account);
   } catch (err) {
     console.warn('[task-delegation] delegation lookup failed; none applied:', (err as Error)?.message ?? err);
     return [];
   }
+}
+
+/**
+ * loadTokenDelegations, throwing on a lookup error instead of answering none,
+ * for a caller that must not mistake an error for "no delegation" (the token
+ * auth cache, which would otherwise keep that answer).
+ */
+export async function loadTokenDelegationsOrThrow(
+  taskId: string,
+  workspaceId: string,
+  account: { teamId?: string | null; workspaceIds?: string[] | null },
+): Promise<ScheduleDelegationGrant[]> {
+  const task = await db.query.tasks.findFirst({
+    where: { RAW: sqlWhereFn((t, { eq: eqOp }) => eqOp(t.id, taskId)) },
+    columns: { id: true, workspaceId: true, scheduleId: true, delegation: true },
+  });
+  if (!task || task.workspaceId !== workspaceId) return [];
+  const grants = await loadRawTaskGrants(task);
+  if (!grants.length) return [];
+  const teams = await teamsOf([workspaceId, ...grants.map(g => g.workspaceId)]);
+  const ownTeam = teams.get(workspaceId);
+  if (!ownTeam || (account.teamId && ownTeam !== account.teamId)) return [];
+  return grants.filter(g => teams.get(g.workspaceId) === ownTeam && tokenWorkspaceAllowed(account.workspaceIds, g.workspaceId));
 }

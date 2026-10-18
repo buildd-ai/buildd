@@ -49,10 +49,10 @@ describe('attribute contract', () => {
   });
 
   it('the breaker', () => {
-    expect(breakerSpanAttributes({ state: 'open', op: 'attempt_started', skipMs: 45_000, host: 'web' })).toEqual({
-      'kernel.breaker.state': 'open', 'kernel.op': 'attempt_started', 'kernel.breaker.skip_ms': 45_000, 'kernel.host': 'web',
+    expect(breakerSpanAttributes({ state: 'open', breaker: 'attempt_start', op: 'attempt_started', skipMs: 45_000, host: 'web' })).toEqual({
+      'kernel.breaker.state': 'open', 'kernel.breaker': 'attempt_start', 'kernel.op': 'attempt_started', 'kernel.breaker.skip_ms': 45_000, 'kernel.host': 'web',
     });
-    expect(breakerSpanAttributes({ state: 'closed', op: 'attempt_started', skipMs: 45_000, openMs: 60_000, host: 'web' })).toMatchObject({
+    expect(breakerSpanAttributes({ state: 'closed', breaker: 'webhook', op: 'attempt_started', skipMs: 45_000, openMs: 60_000, host: 'web' })).toMatchObject({
       'kernel.breaker.state': 'closed', 'kernel.breaker.open_ms': 60_000,
     });
   });
@@ -314,5 +314,40 @@ describe('control-plane command spans', () => {
     const spans = capture();
     await handleCommandRequest(new Request('https://x/v1/commands', { method: 'POST', body: '{}' }), { env: OWN, host: () => 'web' });
     expect(spans).toEqual([]);
+  });
+});
+
+describe('webhook door spans (the webhook budget)', () => {
+  afterEach(async () => { (await import('./kernel-client')).resetWebhookBreaker(); });
+  const green = (n: number) => ({ workspaceId: WS, repoFullName: 'acme/w', prNumber: n, headSha: `H${n}` });
+  const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
+
+  it('a capped door reads the webhook door cap as its budget; the first unanswered one opens the webhook breaker, the rest read breaker_open (still parked), and an answer closes it', async () => {
+    const spans = capture();
+    const { observeCiGreen, withWebhookBudget, WEBHOOK_DOOR_BUDGET_MS, WEBHOOK_SKIP_MS } = await import('./kernel-client');
+    let t = 1_000_000;
+    const deps = local({ env: OWN, fetch: (async () => { throw refusedErr(); }) as never, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; }, park: async () => true }).deps;
+    await withWebhookBudget('delivery-1', async () => {
+      for (const n of [1, 2]) await observeCiGreen(green(n) as never, { principal: webhook, deps }).catch(() => null);
+    }, { now: () => t });
+    expect(doors(spans).map((s) => s.attributes['kernel.outcome'])).toEqual(['parked', 'breaker_open']);
+    expect(doors(spans)[0].attributes).toMatchObject({ 'kernel.budget_ms': WEBHOOK_DOOR_BUDGET_MS, 'kernel.caller': 'webhook', 'kernel.pass': 'webhook' });
+    expect(doors(spans)[1].attributes['kernel.error_code']).toBe('parked');
+    const breaker = () => spans.filter((s) => s.name === 'kernel.breaker');
+    expect(breaker().map((s) => [s.attributes['kernel.breaker'], s.attributes['kernel.breaker.state']])).toEqual([['webhook', 'open']]);
+    t += WEBHOOK_SKIP_MS + 1;
+    const answered = (async () => answer({ op: 'observe_ci_green', result: { handled: true } })) as never;
+    await withWebhookBudget('delivery-2', () => observeCiGreen(green(3) as never, { principal: webhook, deps: { ...deps, fetch: answered } }), { now: () => t });
+    expect(breaker().map((s) => s.attributes['kernel.breaker.state'])).toEqual(['open', 'closed']);
+    expect(doors(spans).at(-1)!.attributes['kernel.outcome']).toBe('applied');
+  });
+
+  it('a door the webhook does not cap runs on its own budget, outside the pass, with exactly one door span', async () => {
+    const spans = capture();
+    const { landThroughKernel, withWebhookBudget, DOOR_BUDGET_MS } = await import('./kernel-client');
+    await withWebhookBudget('delivery-3', () => landThroughKernel(input as never, { principal, deps: local({ env: OWN, fetch: (async () => answer()) as never }).deps }));
+    expect(doors(spans)).toHaveLength(1);
+    expect(doors(spans)[0].attributes['kernel.budget_ms']).toBe(DOOR_BUDGET_MS);
+    expect('kernel.pass' in doors(spans)[0].attributes).toBe(false);
   });
 });
