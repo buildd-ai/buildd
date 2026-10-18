@@ -28,7 +28,7 @@ describe('stranded local mission', () => {
   it('reads STRANDED and asks the owner, instead of LOCAL', () => {
     const view = deriveMissionStateView(stranded);
     expect(view.kind).toBe('awaiting_decision');
-    expect(view.chip.label).toBe('STRANDED');
+    expect(view.chip.label).toBe('Stranded');
     expect(view.derivedFrom.kind).toBe('deriveLocalStrand');
     expect(missionNeedsYou(view)).toBe(true);
   });
@@ -70,7 +70,7 @@ describe('stranded local mission', () => {
       localStrand: { stranded: false, quietMs: 5 * 60_000, claimableTaskIds: ['t1'], flipBlockedReason: null },
     });
     expect(view.kind).toBe('running');
-    expect(view.chip.label).toBe('LOCAL');
+    expect(view.chip.label).toBe('Run from your session');
     expect(view.situation.headline).toBe('Ready to start from a local session.');
   });
 

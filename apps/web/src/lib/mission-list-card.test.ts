@@ -236,7 +236,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.sentence).toBe('2 tasks ready to start from a local session.');
     expect(card.sentence).not.toMatch(/no live worker|stall/i);
     expect(summary.group).toBe('running');
-    expect(summary.state.chip.label).toBe('LOCAL');
+    expect(summary.state.chip.label).toBe('Run from your session');
     // The same mission on runners is the genuine stall.
     const runnerCard = build({ ...row, id: 'm8', executor: 'runner' });
     expect(runnerCard.status.label).toBe('Stalled');
@@ -255,7 +255,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.status).toEqual({ label: 'Stranded', tone: 'warning' });
     expect(card.sentence).toBe('Stranded: no local session for 2h. Continue on a runner?');
     expect(card.strand).toMatchObject({ missionId: 'm7s', taskId: 'b', claimable: 1, blockedReason: null });
-    expect(summary.state.chip.label).toBe('STRANDED');
+    expect(summary.state.chip.label).toBe('Stranded');
     // Needs you, from the same view the CTA reads: grouped as an ask, not as running.
     expect(summary.group).toBe('attention');
   });

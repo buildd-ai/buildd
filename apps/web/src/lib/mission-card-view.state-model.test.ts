@@ -48,7 +48,7 @@ describe('F1: waiting on you is active, whatever the health says', () => {
     const row = mission({ status: 'paused', tasks: doneWork(), ...failingNoOpenTasks });
     const v = view(row);
     const s = summarizeMissionForCard(row, { now: NOW });
-    expect(v.chip.label).toBe('AWAITING VERIFICATION');
+    expect(v.chip.label).toBe('Verifying');
     expect(v.group).toBe('attention');
     expect(s.group).toBe('attention');
     expect(countActiveMissions([v.group])).toBe(1);

@@ -25,7 +25,7 @@ describe('a red PR whose fix chain has ended', () => {
 
     expect(view.kind).toBe('blocked');
     expect(view.displayState).toBe('blocked');
-    expect(view.chip.label).toBe('BLOCKED');
+    expect(view.chip.label).toBe('Blocked');
     expect(view.chip.label).not.toBe('READY FOR REVIEW');
     const waiting = gated(view);
     expect(waiting.kind).toBe('ci_red');
@@ -74,13 +74,13 @@ describe('a red PR whose fix chain has ended', () => {
     });
     expect(view.kind).toBe('awaiting_merge');
     expect(gated(view).kind).toBe('merge');
-    expect(view.chip.label).toBe('READY FOR REVIEW');
+    expect(view.chip.label).toBe('In review');
   });
 
   it('a green PR is still ready for review', () => {
     const view = deriveMissionStateView({ ...base, unmergedPrs: [PR] });
     expect(view.kind).toBe('awaiting_merge');
-    expect(view.chip.label).toBe('READY FOR REVIEW');
+    expect(view.chip.label).toBe('In review');
   });
 
   it('an open fix attempt still wins: the platform owes the next push', () => {

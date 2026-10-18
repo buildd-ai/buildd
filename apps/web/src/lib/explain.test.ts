@@ -429,7 +429,7 @@ describe('explainTask', () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: false };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.chip.label).toBe('LOCAL');
+    expect(answer.chip.label).toBe('Run from your session');
     expect(answer.situation.headline).toBe('Ready to start from a local session.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
     expect(answer.situation.nextAction ?? '').toContain('claim_task');
