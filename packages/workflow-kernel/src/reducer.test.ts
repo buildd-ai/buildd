@@ -1540,6 +1540,8 @@ describe('composition attestation: release PRs from already-reviewed changes', (
   test('AC-24: a composition attestation never closes or lifts an open finding on the composed PR', () => {
     const f: import('./types').FindingSnapshot = { id: 'f1', originRoundId: 'r0', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'a.ts', line: 1, title: 'x', required: true, status: 'open', lastRound: 1 } as never;
     expectResult(ca({ ...v(), findings: [f] }), 'rejected', 'open_findings');
+    // A delta round may still run; it leaves the finding open.
+    expect(ca({ ...v(), findings: [f] }, { novelDelta: { result: 'present', paths: ['a.ts'] } }).result).toBe('apply');
   });
   test('unverifiable, wrong PR, wrong head, wrong state and failed verification claim nothing', () => {
     expectResult(ca(v(), { novelDelta: { result: 'unverifiable', reason: 'tree mismatch' } }), 'rejected', 'composition_unverifiable');

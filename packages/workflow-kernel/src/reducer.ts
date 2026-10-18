@@ -1662,8 +1662,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (att.repoFullName !== dd.repoFullName || att.prNumber !== dd.prNumber) return c.rejected('attestation_pr_mismatch');
       if (att.aggregateHeadSha !== dd.currentHeadSha) return c.stale('head_not_current');
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_not_allowed');
-      // §13.13 rule 2 / AC-24: an attestation covers a head, it never closes a finding.
-      const standing = openRequiredFindings(c.view);
+      // §13.13 rule 2 / AC-24: an attestation covers a head, it never closes a finding. A whole-PR
+      // composition approval over one is refused; a delta round still runs and leaves it open.
+      const standing = att.novelDelta.result === 'none' ? openRequiredFindings(c.view) : [];
       if (standing.length) return c.rejected('open_findings', { missing: standing.map(describeFinding) });
       if (att.novelDelta.result === 'unverifiable') return c.rejected('composition_unverifiable', { missing: [att.novelDelta.reason] });
       const v = verifyCompositionAttestation(att, cmd.constituents);
