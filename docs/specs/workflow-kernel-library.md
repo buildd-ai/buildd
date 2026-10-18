@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-18
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
+surfaces: [apps/web/src/lib/override-permission.ts, apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
+verified_by: [apps/web/tests/db/epoch-effects.test.ts, packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/src/lib/override-permission.test.ts, apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -786,6 +786,11 @@ recorded as such, never as an approval.
   reviewer already approved is reported as a finding, never absorbed; the
   reviewer prompt asks for edge-case tracing and every blocking issue in the
   one review, to keep rounds to what is new.
+- A person's approve-and-override (§7) is a human approval of exactly the
+  current head, so `Buildd / Review approval` is `success` for that head and
+  says so: "Ready to merge: <sha> approved by a person over N open findings".
+  A later push starts it `pending` again, like any approval. The findings
+  stay as they were; only the check and the landing read the approval.
 - A merge GitHub holds on a required check is a wait, never a person's (merge
   holds). GitHub's 405 "Required status check ... is expected / in progress /
   pending" is the outcome `held`, not a refusal: the delivery stays `LANDING`
@@ -1502,6 +1507,23 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   refused (`decision_head_stale`, `human_required`, `no_merge_permission`),
   nothing moves or is dispatched, the note stays, and the door answers with a
   plain sentence that names what was wrong and what to do, never a bare code.
+- AC-81 (implements Living Spec criteria AC-45/AC-46, follow-up 22): GIVEN a
+  review escalation with required findings still open or awaiting
+  verification WHEN a person whom the merge policy allows, with an owner or
+  admin team role and merge permission on the repo on GitHub, chooses
+  "Approve and override" THEN it is one `HumanResolve(approve)` bound to the
+  head (and version) they saw, through the person-only `approve_override` op;
+  the delivery is `APPROVED` on the basis `human` for that head, the bypass
+  names the person, their reason and the findings it went past, the findings
+  stay listed, `Buildd / Review approval` turns `success` for that head, the
+  escalation note clears, and the landing merges it once; the same decision
+  again is answered by the first and changes nothing.
+- AC-82 (failure): GIVEN the same escalation WHEN the head moved since, an
+  agent, an API key or a task token asks, the person lacks merge permission,
+  or the merge policy or their role does not allow an override THEN it is
+  refused (`decision_head_stale`, `human_required`, `no_merge_permission`,
+  `override_not_permitted`, or the door's own `policy_off` / `role`), in a
+  plain sentence, and nothing moves.
 - AC-69 (implements Living Spec criterion AC-47): GIVEN findings in every
   disposition WHEN `get_pr`, the task page, the activity comment and the
   DeliveryView count them THEN each required finding is counted once, in one
@@ -1529,7 +1551,31 @@ same groups (`open`, `addressedAwaitingVerification`, `resolved`, `waived`,
 `deferred`), their `totals`, and `decisionHead { headSha, version }` for the
 card to send back. Whether the brief offers approve-and-override is whatever
 the surface passes as `escalationPermissions` per workspace
-(`getDeliveryViewsForTasks`); absent, the override is not offered.
+(`getDeliveryViewsForTasks`, asked only for a delivery escalated for a review
+reason); absent, the override is not offered.
+
+Approve and override (follow-up 22, task 90898aca). Who may take it comes from
+three readings, none a list in code (`apps/web/src/lib/override-permission.ts`):
+the workspace merge policy's `reviewOverride` (`admins`, the default, or
+`off`), the person's team role in the team that owns the workspace (owner or
+admin), and their GitHub permission on the workspace repo through its
+installation (write, maintain or admin; `users.githubId` resolved to a login,
+as `member-repo-access.ts` does). Anything unconfirmed is no. The task page
+passes the viewer's answer to the brief (`loadTaskDeliveryContext(taskId,
+viewerId)`), with the refusal as a sentence, so the card offers the action
+only to someone who can take it. The door is `POST
+/api/prs/[prNumber]/approve-override` (`{ headSha, version?, reason?,
+workspaceId? }`), from a dashboard session or the person's own OAuth session
+(MCP `approve_pr_override`); a key, a task token or an agent grant is refused
+before anything is read. It re-reads the permission at the click, then
+submits `approve_override` (`approveOverrideThroughKernel`): the live head is
+recorded first, then `HumanResolve(approve)` with `decision
+approve_override:<head>:v<version>`, `commitId`, `hasMergePermission` and
+`overridePermitted`. The kernel refuses an approval past required findings
+that are open or addressed without `overridePermitted` (`override_not_permitted`)
+and records `overriddenFindings` on the bypass. On `applied` (or a replay
+while the PR no longer waits on a person) the escalation note clears; a
+replay on a PR escalated again is `decision_already_answered`.
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
 requested · 1 open finding, 1 verified resolved") and a repair's phase are pure readings in the
@@ -1551,6 +1597,8 @@ as a candidate whatever its worker row says.
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 | Criterion AC-67 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-45"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-45 / AC-46"; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "Living Spec r7"; `apps/web/src/app/api/prs/[prNumber]/apply-recommendation/route.test.ts` › "Living Spec r7" |
 | Criterion AC-68 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-46"; `packages/workflow-kernel/src/decision-refusal.test.ts`; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "AC-46" |
+| Criterion AC-81 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override: a person with merge permission"; `apps/web/tests/db/escalation-decisions.test.ts` › "approve and override"; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts`; `packages/workflow-kernel/src/reducer.test.ts` › "over open findings needs overridePermitted"; `apps/web/src/lib/workflow/delivery-view.test.ts` › "read only for a review escalation" |
+| Criterion AC-82 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "approve and override is refused"; `apps/web/src/lib/override-permission.test.ts`; `apps/web/src/app/api/prs/[prNumber]/approve-override/route.test.ts` › "refused"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "host's sentence" |
 | Criterion AC-69 | `packages/workflow-kernel/src/findings.test.ts` › "findingTotals"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "AC-47"; `packages/workflow-kernel/src/delivery-summary.test.ts` › "AC-47"; `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/lib/workflow/delivery-view.test.ts` › "follow-up 22" |
 | Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
