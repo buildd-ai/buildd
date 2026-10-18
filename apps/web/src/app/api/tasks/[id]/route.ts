@@ -123,12 +123,17 @@ export async function GET(
     // A task token for a worker-level caller needs to check if the requested
     // task is its own task or a child task, which requires fetching the task.
     // We can't know this without a DB query, so we fetch first then check.
+    const include = new Set((req.nextUrl.searchParams.get('include') || '').split(',').map(s => s.trim()).filter(Boolean));
+    const statusOnly = req.nextUrl.searchParams.get('view') === 'status';
     const task = await db.query.tasks.findFirst({
       where: sqlWhere(eq(tasks.id, id)),
-      with: {
-        workspace: true,
+      columns: statusOnly
+        ? { id: true, workspaceId: true, missionId: true, parentTaskId: true, status: true, updatedAt: true }
+        : { ...(!include.has('context') ? { context: false as const } : {}), ...(!include.has('result') ? { result: false as const } : {}), ...(!include.has('decisions') ? { categoryDecision: false as const, verdictDecision: false as const } : {}), outputSchema: false, releaseResult: false, pathDeclaration: false, loopConfig: false },
+      ...(!statusOnly ? { with: {
+        workspace: { columns: { id: true, name: true, repo: true } },
         mission: { columns: { id: true, title: true, status: true } },
-      },
+      } } : {}),
     });
 
     if (!task) {
@@ -147,8 +152,7 @@ export async function GET(
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const includeRaw = req.nextUrl.searchParams.get('include') || '';
-    const include = new Set(includeRaw.split(',').map(s => s.trim()).filter(Boolean));
+    if (statusOnly) return NextResponse.json({ id: task.id, workspaceId: task.workspaceId, status: task.status, updatedAt: task.updatedAt });
 
     let taskWorkers: any[] | undefined;
     let taskArtifacts: any[] | undefined;
@@ -157,6 +161,7 @@ export async function GET(
       taskWorkers = await db.query.workers.findMany({
         where: sqlWhere(eq(workers.taskId, id)),
         orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
+        limit: 50,
         columns: {
           id: true,
           status: true,
@@ -205,7 +210,9 @@ export async function GET(
       const workerIds = taskWorkers.map(w => w.id);
       const rows = await db.query.artifacts.findMany({
         where: sqlWhere(inArray(artifacts.workerId, workerIds)),
-        orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
+        orderBy: sqlOrderBy([desc(artifacts.updatedAt), desc(artifacts.id)]),
+        limit: 50,
+        columns: { content: false },
       });
       const baseUrl = appBaseUrl();
       taskArtifacts = rows.map(a => ({
@@ -217,8 +224,7 @@ export async function GET(
     // result.prUrl / prNumber are derived on read (workflow/task-pr.ts): get_task's PR line reads them.
     const response: Record<string, unknown> = {
       ...task,
-      result: withTaskPr(task.result as Record<string, unknown> | null, await taskPrOf(id)),
-      workspace: withoutDispatchToken(task.workspace),
+      ...(include.has('result') ? { result: withTaskPr(task.result as Record<string, unknown> | null, await taskPrOf(id)) } : {}),
     };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
@@ -241,11 +247,11 @@ export async function GET(
         };
       }
     }
-    const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
+    const evidenceObjects = include.has('evidence') ? await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.
       actor: apiAccount ? { accountId: apiAccount.id } : { userId: user!.id },
-    });
+    }) : [];
     if (evidenceObjects.length > 0) response.evidenceObjects = evidenceObjects;
 
     return NextResponse.json(response);

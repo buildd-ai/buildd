@@ -86,7 +86,7 @@ export async function runGetVisualReview(
     if (!UUID_RE.test(missionId)) return errorResult(`missionId must be a full UUID; pass missionTitle to look a mission up by title.`);
     const id = encodeURIComponent(missionId);
     type MissionHead = { title?: unknown; status?: unknown; completedAt?: unknown };
-    const mission = await api(`/api/missions/${id}`) as (MissionHead & { mission?: MissionHead }) | null;
+    const mission = await api(`/api/missions/${id}?include=details`) as (MissionHead & { mission?: MissionHead }) | null;
     const m = mission?.mission ?? mission;
     const out = await api(`/api/missions/${id}/visual-review`) as { model?: VisualReviewModel; state?: { line?: unknown } | null } | null;
     if (!out?.model) return errorResult('The visual review could not be read.');

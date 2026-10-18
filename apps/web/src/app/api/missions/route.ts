@@ -1,3 +1,5 @@
+import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
+import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -66,10 +68,7 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
-    // Opt-in cap: every mission carries all its tasks, so an unbounded list
-    // grows with the team's whole history. Unset keeps the dashboard's full list.
-    const limitParam = Number(searchParams.get('limit'));
-    const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : undefined;
+    const { details, limit } = missionReadOptions(searchParams);
     const q = searchParams.get('q');
     const where = buildMissionListWhere({
       teamIds: scopedTeamIds,
@@ -78,10 +77,21 @@ export async function GET(req: NextRequest) {
       q,
     });
 
+    if (!details) {
+      const rows = await db.query.missions.findMany({
+        where: sqlWhere(where), columns: MISSION_SUMMARY_COLUMNS,
+        orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
+        limit: limit + 1,
+      });
+      const page = rows.slice(0, limit);
+      const summaries = await readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : []));
+      return NextResponse.json({ missions: page.map(row => missionSummaryResponse(row, summaries.get(row.id)?.summary ?? null)), hasMore: rows.length > limit });
+    }
+
     const results = await db.query.missions.findMany({
       where: sqlWhere(where),
       orderBy: sqlOrderBy(missionListOrderBy(parseMissionListSort(searchParams.get('sort')), q)),
-      ...(limit ? { limit } : {}),
+      limit,
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {

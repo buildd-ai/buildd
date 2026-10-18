@@ -262,6 +262,22 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.error).toBe('Unauthorized');
   });
 
+  it('selects lean fields by default and skips heavy derived reads for status polls', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123' });
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    expect(mockTasksFindFirst.mock.calls[0][0]).toMatchObject({
+      columns: { context: false, result: false, categoryDecision: false, verdictDecision: false },
+      with: { workspace: { columns: { id: true, name: true, repo: true } } },
+    });
+    mockTasksFindFirst.mockClear();
+    const response = await callHandler(GET, createMockRequest({ search: '?view=status', headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    expect(await response.json()).toEqual({ id: TASK_ID, workspaceId: 'ws-1', status: 'pending' });
+    expect(mockTasksFindFirst.mock.calls[0][0].with).toBeUndefined();
+    expect(mockTasksFindFirst.mock.calls[0][0].columns.context).toBeUndefined();
+  });
+
   it('returns task for API key auth', async () => {
     const mockTask = {
       id: TASK_ID,

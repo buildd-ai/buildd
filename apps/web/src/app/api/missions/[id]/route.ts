@@ -1,3 +1,5 @@
+import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
+import { readMissionSummaries } from '@/lib/mission-summary-store';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
 import { NextRequest, NextResponse, after } from 'next/server';
@@ -16,7 +18,6 @@ import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria }
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
-import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
 import {
@@ -114,11 +115,20 @@ export async function GET(
   try {
     const teamIds = await resolveTeamIds(user, apiAccount);
 
+    const { details, limit } = missionReadOptions(new URL(req.url).searchParams);
+    if (!details) {
+      const row = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, id)), columns: MISSION_SUMMARY_COLUMNS });
+      if (!row || !(await hasMissionAccess(row, teamIds, apiAccount?.id))) return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      const summaries = await readMissionSummaries([id], row.workspaceId ? [row.workspaceId] : []);
+      return NextResponse.json(missionSummaryResponse(row, summaries.get(id)?.summary ?? null));
+    }
+
     const mission = await db.query.missions.findFirst({
       where: sqlWhere(eq(missions.id, id)),
       with: {
         workspace: { columns: { id: true, name: true } },
         tasks: {
+          limit,
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, mode: true, category: true, parentTaskId: true, creationSource: true, taskClass: true },
           orderBy: sqlOrderByFn((tasks, { desc }) => [desc(tasks.createdAt)]),
           with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true, abandonedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
@@ -166,33 +176,6 @@ export async function GET(
           evaluationRationale = evalResult?.rationale || null;
           lastEvaluationAt = evalTask.updatedAt?.toISOString?.() || (evalTask.updatedAt as any) || null;
         }
-      }
-    }
-
-    // Stale-while-revalidate: fire PR state refresh in the background so the
-    // open view gets corrected state via WORKER_PROGRESS without blocking render.
-    const prCandidates = (mission.tasks || []).flatMap((task: any) =>
-      (task.workers || []).map((w: any) => ({
-        id: w.id as string,
-        prNumber: (w.prNumber ?? null) as number | null,
-        // Carries the repo the PR is actually in — the mission's tasks can span
-        // repos, so the workspace repo is not a safe substitute.
-        prUrl: (w.prUrl ?? null) as string | null,
-        workspaceId: mission.workspaceId as string,
-        taskId: task.id as string,
-        prLifecycleStatus: (w.prLifecycleStatus ?? null) as string | null,
-        prLastCheckedAt: (w.prLastCheckedAt ?? null) as Date | null,
-      }))
-    );
-    if (prCandidates.length > 0) {
-      try {
-        after(() =>
-          refreshStaleWorkers(prCandidates).catch(err =>
-            console.error('[pr-state-refresh] mission detail refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
       }
     }
 
