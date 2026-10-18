@@ -30,7 +30,7 @@
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
  * - Two progress readings, kept apart: the strip is the mission's dependency
- *   progress (landed n/m, what holds what); the drawer's Build › Audit › Land
+ *   progress (landed n/m, what holds what); the drawer's Build › Verify › Deliver
  *   row is the selected task's own delivery flow (`deliveries`, from the
  *   shared projection). Its "Audit and repair" disclosure lists that task's
  *   revisions, gates and repair rounds: attempts and review runs are evidence
@@ -77,7 +77,7 @@ export interface LandedStripProps {
   focus: StripFocus | null;
   /** The big "9 of 10", drawn by the band. */
   count: ReactNode;
-  /** Each deliverable's own Build › Audit › Land and evidence, by task id (`missionTaskDeliveries`). Absent: no stage row. */
+  /** Each deliverable's own Build › Verify › Deliver and evidence, by task id (`missionTaskDeliveries`). Absent: no stage row. */
   deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
 }
 
@@ -348,6 +348,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             roleSlug={t.roleSlug}
             missionExecutor={executor}
             hideQueuedNote={!!why}
+            deliveryReading={t.delivery?.label ?? null}
             framed={false}
             taskTitle={t.title}
             onChanged={onChanged}
@@ -398,7 +399,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 /**
- * The selected task's own delivery: its Build › Audit › Land row, then an
+ * The selected task's own delivery: its Build › Verify › Deliver row, then an
  * "Audit and repair" disclosure over its revisions and repair rounds. Closed
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.

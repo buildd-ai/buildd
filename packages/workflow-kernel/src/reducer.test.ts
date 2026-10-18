@@ -97,6 +97,8 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['TreadmillCycleRestarted', V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [1, 2, 3].map((n) => A({ id: `m${n}`, family: 'conflict', mode: 'mechanical', attemptNo: n, boundHeadSha: `B${n}`, triggerReason: 'behind', status: 'ended', taskId: null }))), { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle' }, 'APPROVED'],
   ['AttemptRequeued', V(D()), { type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry' }, 'WORKING'],
   ['AttemptStarted', V(D()), { type: 'AttemptStarted', actor: 'claim', taskId: 't1', claimedBy: 'acct1', claimedAt: '2026-10-18 08:00:00.123456+00' }, 'WORKING'],
+  ['AttemptReopened', V(D()), { type: 'AttemptReopened', actor: 'recovery', taskId: 't1', workerId: 'w9', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending', reason: 'credential_restored' }, 'WORKING'],
+  ['AttemptWithdrawn', V(D()), { type: 'AttemptWithdrawn', actor: 'claim', taskId: 't1', claim: { claimedBy: 'acct1', claimedAt: '2026-10-18 08:00:00.123456+00' }, outcome: 'requeued', reason: 'account_cap' }, 'WORKING'],
 ];
 
 describe('generic: every applied transition is a version CAS (§7)', () => {
@@ -427,6 +429,61 @@ describe('AttemptStarted (AC-1 slice 7): a claim starts the owner attempt withou
     expectResult(run(V(D()), start({ claimedBy: '' })), 'rejected', 'claim_not_named');
     expect(stableIdempotencyKey(start(), D())).toBe(`start:t1:${STAMP}`);
     expect(stableIdempotencyKey(start({ claimedAt: '2026-10-18 08:05:00+00' }), D())).toBe('start:t1:2026-10-18 08:05:00+00');
+  });
+});
+
+describe('AttemptReopened (AC-1 slice 9): a settled owner task opens again without moving the delivery', () => {
+  const reopen = (o: Partial<Extract<Command, { type: 'AttemptReopened' }>> = {}): Command => ({ type: 'AttemptReopened', actor: 'recovery', taskId: 't1', workerId: 'w9', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending', reason: 'credential_restored', ...o });
+
+  test('a reopen of the owner task while WORKING applies in place and records the end it reopens', () => {
+    const dec = applied(run(V(D()), reopen()));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.idempotencyKey).toBe('reopen:t1:w9:2026-10-18T08:00:00.000Z');
+    expect(dec.evidence).toMatchObject({ reopen: true, taskId: 't1', workerId: 'w9', endedAt: '2026-10-18T08:00:00.000Z', to: 'pending' });
+    expect({ attempts: dec.attempts, rounds: dec.rounds, patch: dec.patch }).toEqual({ attempts: [], rounds: [], patch: {} });
+  });
+
+  test('another task, or a delivery past WORKING (handed on, failed, merged), is not bound', () => {
+    expectResult(run(V(D()), reopen({ taskId: 'other' })), 'stale', 'attempt_not_bound');
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'AWAITING_PUSH', 'ESCALATED', 'FAILED', 'MERGED'] as const) {
+      expectResult(run(V(D({ state })), reopen()), 'stale', 'attempt_not_bound');
+    }
+  });
+
+  test('a reopen that names nothing is rejected; a resume must name its worker; each ended attempt is its own key', () => {
+    expectResult(run(V(D()), reopen({ taskId: '' })), 'rejected', 'reopen_not_named');
+    expectResult(run(V(D()), reopen({ to: 'assigned', workerId: null })), 'rejected', 'reopen_not_named');
+    expectResult(run(V(D()), reopen({ to: 'running' as never })), 'rejected', 'reopen_not_named');
+    expect(stableIdempotencyKey(reopen({ workerId: null, endedAt: null }), D())).toBe('reopen:t1:none:none');
+    expect(stableIdempotencyKey(reopen({ endedAt: '2026-10-18T09:00:00.000Z' }), D())).toBe('reopen:t1:w9:2026-10-18T09:00:00.000Z');
+  });
+});
+
+describe('AttemptWithdrawn (AC-1 slice 9): a claim that runs no attempt gives its start back, or refuses the task', () => {
+  const STAMP = '2026-10-18 08:00:00.123456+00';
+  const withdraw = (o: Partial<Extract<Command, { type: 'AttemptWithdrawn' }>> = {}): Command => ({ type: 'AttemptWithdrawn', actor: 'claim', taskId: 't1', claim: { claimedBy: 'acct1', claimedAt: STAMP }, outcome: 'requeued', reason: 'account_cap', ...o });
+
+  test('while WORKING on the owner task it applies in place and records the claim and outcome', () => {
+    const dec = applied(run(V(D()), withdraw()));
+    expect(dec.toState).toBe('WORKING');
+    expect(dec.idempotencyKey).toBe(`withdraw:t1:${STAMP}:requeued`);
+    expect(dec.evidence).toMatchObject({ withdraw: true, taskId: 't1', claim: { claimedBy: 'acct1', claimedAt: STAMP }, outcome: 'requeued' });
+    expect({ attempts: dec.attempts, rounds: dec.rounds, patch: dec.patch }).toEqual({ attempts: [], rounds: [], patch: {} });
+    expect(applied(run(V(D()), withdraw({ claim: null, outcome: 'failed', reason: 'workspace_mismatch' }))).idempotencyKey).toBe('withdraw:t1:queued:failed');
+  });
+
+  test('another task, or a delivery past WORKING, is not bound', () => {
+    expectResult(run(V(D()), withdraw({ taskId: 'other' })), 'stale', 'attempt_not_bound');
+    for (const state of ['AWAITING_REVIEW', 'AWAITING_PUSH', 'ESCALATED', 'FAILED', 'MERGED'] as const) {
+      expectResult(run(V(D({ state })), withdraw()), 'stale', 'attempt_not_bound');
+    }
+  });
+
+  test('a requeue must name its claim; a claim must name both fields; the outcome is one of two', () => {
+    expectResult(run(V(D()), withdraw({ claim: null })), 'rejected', 'claim_not_named');
+    expectResult(run(V(D()), withdraw({ claim: { claimedBy: '', claimedAt: STAMP } })), 'rejected', 'claim_not_named');
+    expectResult(run(V(D()), withdraw({ outcome: 'cancelled' as never })), 'rejected', 'withdrawal_not_named');
+    expect(stableIdempotencyKey(withdraw({ outcome: 'failed' }), D())).toBe(`withdraw:t1:${STAMP}:failed`);
   });
 });
 

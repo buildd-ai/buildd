@@ -10,7 +10,7 @@ import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
+import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
@@ -241,8 +241,38 @@ function footer(state: TopState, cols: number, p: Palette): string {
 /** The fewest title columns a mission row keeps before it drops its stage word: two letters and "…". */
 const MIN_MISSION_TITLE = 3;
 
-function leftWidth(cols: number): number {
-  return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
+/** The most lines the selected mission's name wraps onto (R-57). */
+const MAX_NAME_LINES = 4;
+
+/**
+ * The missions pane grows with the terminal, about a quarter of it, to 48
+ * columns; while you move between missions it takes about a third, to 64 (R-57).
+ */
+function leftWidth(cols: number, focused: boolean): number {
+  if (focused) return cols >= 110 ? Math.min(64, Math.max(36, Math.floor(cols / 3))) : cols >= 90 ? 30 : 28;
+  return cols >= 110 ? Math.min(48, Math.max(28, Math.floor(cols / 4))) : cols >= 90 ? 24 : 22;
+}
+
+/**
+ * Word-wrap `s` into lines: the first `first` columns wide, the rest `rest`,
+ * at most `max` lines, the last cut with "…" when words are left over.
+ */
+function wrapName(s: string, first: number, rest: number, max: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  const words = s.replace(/\s+/g, ' ').trim().split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const room = lines.length === 0 ? first : rest;
+    const next = line ? `${line} ${words[i]}` : words[i];
+    if (textWidth(next) <= room) { line = next; continue; }
+    if (lines.length === max - 1) return [...lines, fit(words.slice(i).reduce((a, w) => `${a} ${w}`, line).trim(), room).trimEnd()];
+    if (line) lines.push(line);
+    line = words[i];
+    // A single word wider than the line is cut on its own line.
+    if (textWidth(line) > (lines.length === 0 ? first : rest)) line = fit(line, lines.length === 0 ? first : rest).trimEnd();
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 /** A fold row's words: "Done this week · 4", or "Done · 4" where that does not fit. */
@@ -290,10 +320,17 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
-      const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
-      const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
-      if (isCurrent) selected = lines.length;
-      lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      const countText = count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : '';
+      const token: PaletteToken = delivered ? 'muted' : 'text';
+      // The selected mission shows its whole name, wrapped under itself (R-57).
+      const name = isCurrent ? wrapName(m.title, titleW, lw - 4, MAX_NAME_LINES) : [m.title];
+      name.forEach((part, k) => {
+        const line = k === 0
+          ? ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${p.fg(token, fit(part, titleW))}${countText} `
+          : `   ${p.fg(token, fit(part, lw - 4))} `;
+        lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      });
+      if (isCurrent) selected = lines.length - 1;
     });
     // Without team headings the pane keeps its MISSIONS label.
     if (!hasTeams) return { lines: [p.fg('muted', fit(' MISSIONS', lw)), ...lines], selected: selected + 1 };
@@ -309,7 +346,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
 }
 
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
-  const lw = leftWidth(cols);
+  const lw = leftWidth(cols, state.focus === 'missions');
   const rw = cols - lw - 1;
   const missions = missionList(state, now);
   const mission = currentMission(state, now);
@@ -584,7 +621,7 @@ const QEST_W = 6;
 /** The narrowest title the queue keeps before it drops a column. */
 const QTITLE_MIN = 30;
 
-interface QueueCols { est: boolean; workspace: boolean; mission: number; starts: number; title: number }
+interface QueueCols { est: boolean; workspace: boolean; by: number; mission: number; starts: number; title: number }
 
 /**
  * The queue's columns at `cols`: est. goes first, then workspace, and below 60
@@ -592,19 +629,23 @@ interface QueueCols { est: boolean; workspace: boolean; mission: number; starts:
  * wide and never wraps.
  */
 export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
-  const mission = cols < 60 ? 12 : 17;
+  const mission = cols < 60 ? 12 : cols < 110 ? 14 : 17;
+  // The by column (R-58): "you", a first name, or "-"; a long name is cut.
+  const by = cols < 110 ? 6 : 9;
   // Wide enough for "when #4 ends (same files)"; a held row's title gets more at 120.
   const starts = cols < 60 ? 10 : cols < 80 ? 13 : cols < 110 ? 26 : 36;
-  const fixed = 1 + POS_W + mission + starts;
+  // The by column stays at every width (R-58); est. and workspace give way first.
+  const fixed = 1 + POS_W + by + mission + starts;
   const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
   const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
   const title = Math.max(4, cols - fixed - (workspace ? QWS_W : 0) - (est ? QEST_W : 0));
-  return { est, workspace, mission, starts, title };
+  return { est, workspace, by, mission, starts, title };
 }
 
 function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Palette): string {
   const text =
-    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title) +
+    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title - 1) + ' ' +
+    fit('by', c.by) +
     (c.workspace ? fit('workspace', QWS_W) : '') +
     fit('mission', c.mission) +
     (c.est ? fit('est.', QEST_W) : '') +
@@ -624,6 +665,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
     p.fg(primary, col(row.title, c.title)) +
+    p.fg('muted', col(row.by, c.by)) +
     (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
     p.fg('muted', col(row.mission, c.mission)) +
     (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
@@ -641,6 +683,9 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   } else if (sections.length === 0) {
     lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing in the queue matches the filter.' : ' Nothing is waiting for this runner.', cols)) });
   }
+  // R-59: what runs next, from the rows' own reasons.
+  const next = queueNextLine(state, now);
+  if (next) lines.push({ text: p.fg('text', fit(' ' + next, cols)) });
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });

@@ -22,6 +22,7 @@ import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { wakeTasks } from '@/lib/dispatch-authority';
 import { releaseCredentialHolds } from '@/lib/task-recovery-hold';
+import { notOwnerTaskSql, reopenFailedOwners } from '@/lib/workflow/owner-attempt';
 
 /** How far back a failed task can be to still count as a recoverable casualty. */
 export const RECOVERY_WINDOW_HOURS = 24;
@@ -55,12 +56,19 @@ async function releaseTeamHolds(teamId: string): Promise<string[]> {
  */
 export async function requeueFailedTasks(taskIds: string[], reason: 'credential.restored' | 'task.requeued'): Promise<string[]> {
   if (taskIds.length === 0) return [];
+  // AC-1 slice 9: a delivery's owner task is reopened through the kernel (AttemptReopened), which
+  // names the failed attempt, so a reopen after the task was claimed again moves nothing. This write
+  // is every other task's.
   const flipped = await db
     .update(tasks)
     .set({ status: 'pending', updatedAt: new Date() })
-    .where(and(inArray(tasks.id, taskIds), eq(tasks.status, 'failed')))
+    .where(and(inArray(tasks.id, taskIds), eq(tasks.status, 'failed'), notOwnerTaskSql()))
     .returning({ id: tasks.id });
   const ids = flipped.map(r => r.id);
+  ids.push(...await reopenFailedOwners(taskIds, {
+    reason: reason === 'credential.restored' ? 'credential_restored' : 'incident_recovery',
+    source: 'credential-recovery',
+  }));
   // The tasks trigger already made each flip durable; this labels the wake
   // and kicks delivery.
   if (ids.length > 0) await wakeTasks(ids, reason);
