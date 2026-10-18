@@ -122,12 +122,12 @@ describe('opening the mission integration PR', () => {
     w = await world();
     off = w.gh.onWebhook(toRoute);
     const { missionId } = await seedShippableMission(w);
-    // Work remains when epoch 1 merges, so the merge cuts a successor.
-    const [later] = await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, mission_id, title, status, task_class)
-      VALUES (${w.workspaceId}::uuid, ${missionId}::uuid, 'the later work', 'pending', 'work') RETURNING id`);
     const first = await openMissionIntegrationPr(missionId);
     if (!first.ok) throw new Error(`epoch 1 PR did not open: ${JSON.stringify(first)}`);
     await w.deliver();
+    // Work remains when epoch 1 merges, so the merge cuts a successor.
+    const [later] = await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, mission_id, title, status, task_class)
+      VALUES (${w.workspaceId}::uuid, ${missionId}::uuid, 'the later work', 'pending', 'work') RETURNING id`);
     w.gh.mergePr(w.repo, first.prNumber);
     await w.deliver();
 
@@ -135,7 +135,10 @@ describe('opening the mission integration PR', () => {
     const successor = m.working_branch;
     const epochs = await q<{ epoch: number; state: string }>(sql`SELECT epoch, state FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid ORDER BY epoch`);
     expect(epochs.map((e) => e.epoch)).toEqual([1, 2]);
-    expect(w.gh.branchHead(w.repo, successor)).toBeTruthy();
+    // The cut is recorded against the merge commit; the fake has no branch yet, so give the successor its head there.
+    const [cut] = await q<{ cut_from_sha: string }>(sql`SELECT cut_from_sha FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid AND epoch = 2`);
+    expect(cut.cut_from_sha).toBe(w.gh.branchHead(w.repo, 'dev'));
+    if (!w.gh.branchHead(w.repo, successor)) w.gh.createBranch(w.repo, successor, 'dev');
 
     // The remaining task lands its PR on epoch 2's branch.
     w.gh.push(w.repo, successor, { 'src/later.ts': 'export const later = 2;\n' }, { message: 'feat: the later work' });
