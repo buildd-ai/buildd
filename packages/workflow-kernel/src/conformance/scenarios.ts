@@ -28,6 +28,7 @@ import { MERGE_HOLD_MAX_MS, MERGE_HOLD_MIN_DELAY_MS, wakeHeldMergesOn } from '..
 import { openHeadStatus } from '../open-pr-status';
 import { attemptOrdinal } from '../reducer';
 import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
+import type { EpochOp, EpochSnapshot } from '../delivery-epochs';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
 export interface ConformanceHost {
@@ -54,6 +55,25 @@ export interface ConformanceHost {
   transitions(deliveryId: string): Promise<Array<{ fromVersion: number; toVersion: number; command: string; toState: string }>>;
   /** §14: turn the workspace's kill switch off (or back on). */
   setKernelEnabled(workspaceId: string, on: boolean): Promise<void>;
+  /** Let `ms` of the store's time pass: advance a fake clock, or wait on a real one (an effect lease expires by it). */
+  passTime(ms: number): Promise<void>;
+  /** §6 mission epochs on the host's store. */
+  epochs: EpochHost;
+}
+
+/**
+ * The host's mission epoch rows (docs/specs/workflow-kernel-library.md §6):
+ * `reduceMissionEpochs` decides, the host applies one transition's ops as one
+ * statement with the epoch row's compare-and-set and its unique indexes (one
+ * epoch per number, one successor per predecessor, one open epoch per mission).
+ */
+export interface EpochHost {
+  /** A fresh mission whose integration branch is `branch`. Returns its id. */
+  seedMission(branch: string): Promise<string>;
+  /** The mission's integration branch and its epochs in epoch order, as the host loads them. */
+  load(missionId: string): Promise<{ integrationBranch: string | null; epochs: EpochSnapshot[] }>;
+  /** One transition's ops, all or nothing. false = a lost compare-and-set or a unique index refused it, and nothing was written. */
+  apply(ops: EpochOp[]): Promise<boolean>;
 }
 
 export interface ConformanceScenario {
@@ -214,14 +234,14 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
 
 // ── The package's effect handlers, on fake ports ────────────────────────────
 
-interface FakePorts {
+export interface FakePorts {
   ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest;
   work: RecordingWork; trunk: RecordingTrunk; escalate: RecordingEscalate; evidence: RecordingEvidence;
   reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff; rails: RecordingRails;
 }
 
 /** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
-function fakePorts(host: ConformanceHost, o: {
+export function fakePorts(host: ConformanceHost, o: {
   lifecycle?: RecordingLifecycle; ingest?: RecordingIngest; notify?: RecordingNotify; trunk?: RecordingTrunk; escalate?: RecordingEscalate;
   evidence?: RecordingEvidence; work?: Record<string, WorkAnswer>; omit?: Array<keyof KernelPorts>;
 } = {}): FakePorts {
@@ -259,7 +279,7 @@ async function direct(host: ConformanceHost, s: Delivery, kind: EffectKind, payl
 }
 
 /** Drain one delivery until nothing is due: the package's handlers over `ports`, every other kind recorded. */
-async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
+export async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
   for (let i = 0; i < 6; i++) {
     const r = await drainEffects(host.store, { policy: host.policy, handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
     if (r.claimed === 0) return;
@@ -2684,7 +2704,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'AC-37: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-38: never a stale success)',
+    name: 'AC-76: every open head gets a Review approval answer: the kernel answers its own head, a head it has not seen or a PR with no live delivery is pending, a release candidate is success only when verified and its review passes (AC-77: never a stale success)',
     async run(host) {
       const s = await new Delivery(host, 81).open();
       const of = async (sha: string) => openHeadStatus({ sha, view: await s.view() }).by;

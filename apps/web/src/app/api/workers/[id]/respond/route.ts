@@ -1,3 +1,4 @@
+import { workerHeartbeatAt, parkedWorkerSeenAt } from '@/lib/worker-patch-diff';
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
@@ -154,12 +155,16 @@ export async function POST(
   // credential, so that credential's health says nothing about it and a
   // revoked one must not bounce the answer. A GONE interactive session falls
   // through: its cold continuation runs on a runner, which the preflight is for.
+  const [liveUpdatedAt, liveSessionSeenAt] = await Promise.all([
+    workerHeartbeatAt(id, worker.updatedAt),
+    parkedWorkerSeenAt(id, waitingFor.sessionSeenAt ?? null),
+  ]);
   const interactiveDecision = evaluateInteractiveAnswerPath({
     workerRunner: (worker as { runner?: string | null }).runner ?? null,
     workerStatus: worker.status,
-    workerUpdatedAt: worker.updatedAt,
+    workerUpdatedAt: liveUpdatedAt,
     // The parked session's poll heartbeat (await_answer / receive_messages).
-    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
+    sessionSeenAt: liveSessionSeenAt,
   });
   if (interactiveDecision?.path === 'interactive') {
     return respondToInteractiveSession({
@@ -213,14 +218,14 @@ export async function POST(
 
   const decision = evaluateAnswerPath({
     workerStatus: worker.status,
-    workerUpdatedAt: worker.updatedAt,
+    workerUpdatedAt: liveUpdatedAt,
     workerTurns: worker.turns,
     supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
     credentialPreflight: preflight.state,
     waitingForType: waitingFor.type ?? null,
     parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
     workerRunner: (worker as { runner?: string | null }).runner ?? null,
-    sessionSeenAt: waitingFor.sessionSeenAt ?? null,
+    sessionSeenAt: liveSessionSeenAt,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({

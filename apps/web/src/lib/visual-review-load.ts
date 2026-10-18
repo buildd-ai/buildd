@@ -27,6 +27,12 @@ import {
 } from './visual-review-model';
 import {
   missionCaptureRefQuery,
+  missionCaptureRefsQuery,
+  roundCapNotesQuery,
+  visualReviewTasksForMissionsQuery,
+  visualReviewWorkersForMissionsQuery,
+  visualShotReviewsForMissionsQuery,
+  visualShotsForMissionsQuery,
   roundCapNoteQuery,
   visualReviewTasksQuery,
   visualReviewWorkersQuery,
@@ -117,10 +123,37 @@ export async function loadVisualReview(
     roundCapNoteQuery(db, mission.id, SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE) as Promise<Array<{ id: string }>>,
     missionCaptureRefQuery(db, mission.id) as Promise<CaptureRefRow[]>,
   ]);
+  return modelFromRows(mission, { shotRows, taskRows, workerRows, reviewRows, capOpen: capRows.length > 0, refRow: refRows[0] }, now, async workspaceId => {
+    const [ws] = await db
+      .select({ id: workspaces.id, teamId: workspaces.teamId, accessMode: workspaces.accessMode, gitConfig: workspaces.gitConfig, webhookConfig: workspaces.webhookConfig })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1) as Array<{ id: string; teamId: string; accessMode: string | null; gitConfig: { executor?: unknown } | null; webhookConfig: { enabled?: unknown; events?: unknown } | null }>;
+    const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;
+    return hbs ? browserRunnerOnline(hbs, workspaceId, now) : null;
+  });
+}
+
+interface MissionReviewRows {
+  shotRows: VisualReviewShotRow[];
+  taskRows: TaskRow[];
+  workerRows: WorkerRow[];
+  reviewRows: ReviewRow[];
+  capOpen: boolean;
+  refRow: CaptureRefRow | undefined;
+}
+
+/** One mission's model from its rows: the part `loadVisualReview` and `loadVisualReviews` share. */
+async function modelFromRows(
+  mission: { id: string; workspaceId: string | null },
+  rows: MissionReviewRows,
+  now: number,
+  runnerOnlineOf: (workspaceId: string) => Promise<boolean | null>,
+): Promise<VisualReviewModel> {
+  const { shotRows, taskRows, workerRows, reviewRows, capOpen, refRow } = rows;
   // No live branch check here (no GitHub call on a read): a trunk shot taken
   // because the branch was gone records refSource integration_missing, and
   // captureRefMatch never calls that one wrong.
-  const refRow = refRows[0];
   const captureRef = refRow
     ? resolveVisualQaCaptureRef({ mission: refRow, trunk: captureTrunk(refRow.gitConfig) }).ref
     : null;
@@ -135,22 +168,14 @@ export async function loadVisualReview(
   const byId = new Map(tasks.map(t => [t.id, t]));
 
   let runnerOnline: boolean | null = null;
-  if (mission.workspaceId && auditAwaitingRunner(tasks, now)) {
-    const [ws] = await db
-      .select({ id: workspaces.id, teamId: workspaces.teamId, accessMode: workspaces.accessMode, gitConfig: workspaces.gitConfig, webhookConfig: workspaces.webhookConfig })
-      .from(workspaces)
-      .where(eq(workspaces.id, mission.workspaceId))
-      .limit(1) as Array<{ id: string; teamId: string; accessMode: string | null; gitConfig: { executor?: unknown } | null; webhookConfig: { enabled?: unknown; events?: unknown } | null }>;
-    const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;
-    runnerOnline = hbs ? browserRunnerOnline(hbs, mission.workspaceId, now) : null;
-  }
+  if (mission.workspaceId && auditAwaitingRunner(tasks, now)) runnerOnline = await runnerOnlineOf(mission.workspaceId);
 
   return buildVisualReviewModel({
     missionId: mission.id,
     shots: shotRows,
     tasks,
     reviews: reviewRows.map(toHumanShotReview),
-    roundCapOpen: capRows.length > 0,
+    roundCapOpen: capOpen,
     browserRunnerOnline: runnerOnline,
     requiredRoutesOf: t => auditRequiredRoutes(
       { context: t.context },
@@ -160,6 +185,65 @@ export async function loadVisualReview(
     missionIntegrationBranch,
     now,
   });
+}
+
+/**
+ * `loadVisualReview` for a batch of missions (the visual-review scheduler's
+ * sweep, spec 3ef37387 R-25): six queries for the whole batch instead of six
+ * per mission, each mission's model built from its own rows exactly as
+ * `loadVisualReview` builds it. `runnerOnline` answers the browser-runner
+ * question per workspace when an audit has waited past the window (the
+ * caller memoises it across the batch).
+ */
+export async function loadVisualReviews(
+  missionList: ReadonlyArray<{ id: string; workspaceId: string | null }>,
+  opts: { now?: number; runnerOnline: (workspaceId: string) => Promise<boolean | null> },
+): Promise<Map<string, VisualReviewModel>> {
+  const out = new Map<string, VisualReviewModel>();
+  if (missionList.length === 0) return out;
+  const now = opts.now ?? Date.now();
+  const ids = missionList.map(m => m.id);
+  const [shotRows, taskRows, workerRows, reviewRows, capRows, refRows] = await Promise.all([
+    visualShotsForMissionsQuery(db, ids) as Promise<Array<VisualReviewShotRow & { missionId: string | null }>>,
+    visualReviewTasksForMissionsQuery(db, ids) as Promise<Array<TaskRow & { missionId: string | null }>>,
+    visualReviewWorkersForMissionsQuery(db, ids) as Promise<WorkerRow[]>,
+    visualShotReviewsForMissionsQuery(db, ids) as Promise<Array<ReviewRow & { missionId: string | null }>>,
+    roundCapNotesQuery(db, ids, SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE) as Promise<Array<{ missionId: string | null }>>,
+    missionCaptureRefsQuery(db, ids) as Promise<Array<CaptureRefRow & { missionId: string }>>,
+  ]);
+  const group = <T extends { missionId?: string | null }>(rows: T[]) => {
+    const by = new Map<string, T[]>();
+    for (const r of rows) {
+      if (!r.missionId) continue;
+      const list = by.get(r.missionId) ?? [];
+      list.push(r);
+      by.set(r.missionId, list);
+    }
+    return by;
+  };
+  const shots = group(shotRows);
+  const tasksBy = group(taskRows);
+  const reviews = group(reviewRows);
+  const capOpen = new Set(capRows.map(r => r.missionId).filter(Boolean));
+  const refs = new Map(refRows.map(r => [r.missionId, r]));
+  const missionOfTask = new Map(taskRows.map(t => [t.id, t.missionId]));
+  const workersBy = new Map<string, WorkerRow[]>();
+  for (const w of workerRows) {
+    const m = w.taskId ? missionOfTask.get(w.taskId) : null;
+    if (!m) continue;
+    workersBy.set(m, [...(workersBy.get(m) ?? []), w]);
+  }
+  for (const mission of missionList) {
+    out.set(mission.id, await modelFromRows(mission, {
+      shotRows: shots.get(mission.id) ?? [],
+      taskRows: tasksBy.get(mission.id) ?? [],
+      workerRows: workersBy.get(mission.id) ?? [],
+      reviewRows: reviews.get(mission.id) ?? [],
+      capOpen: capOpen.has(mission.id),
+      refRow: refs.get(mission.id),
+    }, now, opts.runnerOnline));
+  }
+  return out;
 }
 
 export interface WorkspaceAwaitingMission {
