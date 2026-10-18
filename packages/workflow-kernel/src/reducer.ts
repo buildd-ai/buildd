@@ -2515,7 +2515,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
       const why = tolerance && !tolerance.tolerated ? tolerance : null;
       const because = why ? (why.cause === 'refresh_unsafe' ? `; ${why.reason}, so a green on an older base is not proof` : `; ${why.reason}`) : '';
       const detail = finalCycle
-        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
+        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to merge it (merge anyway past freshness, or wait for a quiet base)`
         : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES})${because}; landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
