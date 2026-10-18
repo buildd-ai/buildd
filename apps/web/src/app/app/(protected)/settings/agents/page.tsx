@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces, users } from '@buildd/core/db/schema';
+import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces, users, missions } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, isNotNull, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -11,7 +11,7 @@ import { can } from '@/lib/permissions';
 import { TeamGrid } from './TeamGrid';
 import { TurnedOffRoles, type TurnedOffRole } from './TurnedOffRoles';
 import { splitTeamLevelRows, type RoleVisibility } from '@/lib/personal-roles-shared';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { readRound } from '@/lib/read-round';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,23 +108,84 @@ export default async function RolesPage() {
     );
   }
 
-  // Get user's account IDs for account-level roles
-  const userAccountWs = await db.query.accountWorkspaces.findMany({
-    where: sqlWhere(inArray(accountWorkspaces.workspaceId, wsIds)),
-    columns: { accountId: true },
+  // One round trip for every read that needs only the workspace ids
+  // (readRound), then the role rows (which need the account ids) and the
+  // owners of shared personal roles. Only the shown columns: never a role's
+  // SKILL.md content or a task's whole context.
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const round = await readRound({
+    // Account ids linked here, for account-level roles.
+    userAccountWs: db.select({ accountId: accountWorkspaces.accountId }).from(accountWorkspaces)
+      .where(inArray(accountWorkspaces.workspaceId, wsIds)),
+    // Workspace names for scope labels.
+    workspaceList: db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, wsIds)),
+    // Turned-off roles in the same scope (plus the viewer's own personal ones):
+    // listed quietly so they stay findable and can be turned back on.
+    turnedOffRows: db.select({ id: workspaceSkills.id, slug: workspaceSkills.slug, name: workspaceSkills.name, workspaceId: workspaceSkills.workspaceId })
+      .from(workspaceSkills)
+      .where(and(
+        eq(workspaceSkills.enabled, false),
+        eq(workspaceSkills.isRole, true),
+        or(
+          inArray(workspaceSkills.workspaceId, wsIds),
+          teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds), or(isNull(workspaceSkills.ownerUserId), eq(workspaceSkills.ownerUserId, user.id))) : undefined,
+        ),
+      ))
+      .orderBy(desc(workspaceSkills.createdAt)),
+    // Personal roles in the active team: the viewer's own and teammates' shared ones.
+    personalRows: teamIds.length === 0 ? null : db.select({
+      id: workspaceSkills.id, slug: workspaceSkills.slug, name: workspaceSkills.name, description: workspaceSkills.description,
+      color: workspaceSkills.color, model: workspaceSkills.model, ownerUserId: workspaceSkills.ownerUserId, visibility: workspaceSkills.visibility,
+    }).from(workspaceSkills)
+      .where(and(
+        inArray(workspaceSkills.teamId, teamIds),
+        isNull(workspaceSkills.workspaceId),
+        isNotNull(workspaceSkills.ownerUserId),
+        eq(workspaceSkills.isRole, true),
+        eq(workspaceSkills.enabled, true),
+        or(eq(workspaceSkills.ownerUserId, user.id), eq(workspaceSkills.visibility, 'team')),
+      ))
+      .orderBy(desc(workspaceSkills.createdAt)),
+    // Task counts per role over the last 30 days, counted in SQL. Attempt
+    // tasks (parentTaskId set) are left out so CI retries don't inflate them.
+    roleStatRows: db.select({
+      roleSlug: tasks.roleSlug,
+      total: sql<number>`count(*)::int`,
+      completed: sql<number>`count(*) filter (where ${tasks.status} = 'completed')::int`,
+      failed: sql<number>`count(*) filter (where ${tasks.status} = 'failed')::int`,
+    }).from(tasks)
+      .where(and(
+        inArray(tasks.workspaceId, wsIds),
+        sql`${tasks.roleSlug} IS NOT NULL`,
+        sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+        isNull(tasks.parentTaskId),
+      ))
+      .groupBy(tasks.roleSlug),
+    // Live workers with their task: of the context, only its skill slugs.
+    activeWorkers: db.select({
+      id: workers.id, status: workers.status, startedAt: workers.startedAt, prUrl: workers.prUrl,
+      taskId: tasks.id, taskTitle: tasks.title, roleSlug: tasks.roleSlug,
+      skillSlugs: sql<string[] | null>`${tasks.context}->'skillSlugs'`,
+      workspaceName: workspaces.name, missionTitle: missions.title,
+    }).from(workers)
+      .leftJoin(tasks, eq(tasks.id, workers.taskId))
+      .leftJoin(workspaces, eq(workspaces.id, tasks.workspaceId))
+      .leftJoin(missions, eq(missions.id, tasks.missionId))
+      .where(and(
+        inArray(workers.workspaceId, wsIds),
+        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+      )),
   });
-  const accountIds = [...new Set(userAccountWs.map(aw => aw.accountId))];
+  const accountIds = [...new Set(round.userAccountWs.map(aw => aw.accountId))];
+  const wsNameMap = new Map(round.workspaceList.map(w => [w.id, w.name]));
 
-  // Get workspace name map for scope labels
-  const workspaceList = await db.query.workspaces.findMany({
-    where: sqlWhere(inArray(workspaces.id, wsIds)),
-    columns: { id: true, name: true },
-  });
-  const wsNameMap = new Map(workspaceList.map(w => [w.id, w.name]));
-
-  // Get ALL role rows (both team-defaults AND workspace overrides) — no dedup
-  const allSkillsRaw = await db.query.workspaceSkills.findMany({
-    where: sqlWhere(and(
+  // ALL role rows (both team-defaults AND workspace overrides) — no dedup.
+  const allSkillsRaw = await db.select({
+    id: workspaceSkills.id, teamId: workspaceSkills.teamId, workspaceId: workspaceSkills.workspaceId, slug: workspaceSkills.slug,
+    name: workspaceSkills.name, description: workspaceSkills.description, color: workspaceSkills.color, model: workspaceSkills.model,
+    allowedTools: workspaceSkills.allowedTools, canDelegateTo: workspaceSkills.canDelegateTo, enabled: workspaceSkills.enabled, isRole: workspaceSkills.isRole,
+  }).from(workspaceSkills)
+    .where(and(
       eq(workspaceSkills.enabled, true),
       eq(workspaceSkills.isRole, true),
       or(
@@ -134,50 +195,21 @@ export default async function RolesPage() {
         teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), isNull(workspaceSkills.ownerUserId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
-    )),
-    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
-  });
+    ))
+    .orderBy(desc(workspaceSkills.createdAt));
 
-  // Turned-off roles in the same scope (plus the viewer's own personal ones):
-  // listed quietly so they stay findable and can be turned back on.
-  const turnedOffRows = await db.query.workspaceSkills.findMany({
-    where: sqlWhere(and(
-      eq(workspaceSkills.enabled, false),
-      eq(workspaceSkills.isRole, true),
-      or(
-        inArray(workspaceSkills.workspaceId, wsIds),
-        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds), or(isNull(workspaceSkills.ownerUserId), eq(workspaceSkills.ownerUserId, user.id))) : undefined,
-      ),
-    )),
-    columns: { id: true, slug: true, name: true, workspaceId: true },
-    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
-  });
-  const turnedOff: TurnedOffRole[] = turnedOffRows.map(r => ({
+  const turnedOff: TurnedOffRole[] = round.turnedOffRows.map(r => ({
     id: r.id,
     slug: r.slug,
     name: r.name,
     scopeLabel: r.workspaceId ? (wsNameMap.get(r.workspaceId) ?? 'Workspace') : 'Team',
   }));
 
-  // Personal roles in the active team: the viewer's own and teammates' shared ones.
-  const personalRows = teamIds.length === 0 ? [] : await db.query.workspaceSkills.findMany({
-    where: sqlWhere(and(
-      inArray(workspaceSkills.teamId, teamIds),
-      isNull(workspaceSkills.workspaceId),
-      isNotNull(workspaceSkills.ownerUserId),
-      eq(workspaceSkills.isRole, true),
-      eq(workspaceSkills.enabled, true),
-      or(eq(workspaceSkills.ownerUserId, user.id), eq(workspaceSkills.visibility, 'team')),
-    )),
-    columns: { id: true, slug: true, name: true, description: true, color: true, model: true, ownerUserId: true, visibility: true },
-    orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
-  });
+  const personalRows = round.personalRows ?? [];
   const { mine, sharedByOthers } = splitTeamLevelRows(personalRows, user.id);
   const otherOwnerIds = [...new Set(sharedByOthers.map(r => r.ownerUserId!))];
-  const owners = otherOwnerIds.length === 0 ? [] : await db.query.users.findMany({
-    where: sqlWhere(inArray(users.id, otherOwnerIds)),
-    columns: { id: true, name: true, email: true },
-  });
+  const owners = otherOwnerIds.length === 0 ? [] : await db.select({ id: users.id, name: users.name, email: users.email })
+    .from(users).where(inArray(users.id, otherOwnerIds));
   const ownerNames = new Map(owners.map(o => [o.id, o.name || o.email?.split('@')[0] || null]));
   const personalRoles: PersonalRoleEntry[] = [...mine, ...sharedByOthers].map(r => ({
     id: r.id,
@@ -191,43 +223,20 @@ export default async function RolesPage() {
     ownerName: r.ownerUserId === user.id ? null : ownerNames.get(r.ownerUserId!) ?? null,
   }));
 
-  // Get historical task counts per role (last 30 days)
-  // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate stats.
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const recentTasks = await db.query.tasks.findMany({
-    where: sqlWhere(and(
-      inArray(tasks.workspaceId, wsIds),
-      sql`${tasks.roleSlug} IS NOT NULL`,
-      sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
-      isNull(tasks.parentTaskId),
-    )),
-    columns: { roleSlug: true, status: true },
-  });
   const roleStats: Record<string, { completed: number; failed: number; total: number }> = {};
-  for (const t of recentTasks) {
-    const slug = t.roleSlug!;
-    if (!roleStats[slug]) roleStats[slug] = { completed: 0, failed: 0, total: 0 };
-    roleStats[slug].total++;
-    if (t.status === 'completed') roleStats[slug].completed++;
-    if (t.status === 'failed') roleStats[slug].failed++;
+  for (const r of round.roleStatRows) {
+    roleStats[r.roleSlug!] = { completed: Number(r.completed), failed: Number(r.failed), total: Number(r.total) };
   }
 
-  // Get active workers with their tasks
-  const activeWorkers = await db.query.workers.findMany({
-    where: sqlWhere(and(
-      inArray(workers.workspaceId, wsIds),
-      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-    )),
-    with: {
-      task: {
-        columns: { id: true, title: true, workspaceId: true, roleSlug: true, context: true },
-        with: {
-          workspace: { columns: { name: true } },
-          mission: { columns: { title: true } },
-        },
-      },
-    },
-  });
+  // The worker rows in the shape the role activity below reads.
+  const activeWorkers = round.activeWorkers.map(w => ({
+    status: w.status, startedAt: w.startedAt, prUrl: w.prUrl,
+    task: w.taskId ? {
+      id: w.taskId, title: w.taskTitle, roleSlug: w.roleSlug, context: { skillSlugs: w.skillSlugs ?? undefined },
+      workspace: w.workspaceName != null ? { name: w.workspaceName } : null,
+      mission: w.missionTitle != null ? { title: w.missionTitle } : null,
+    } : null,
+  }));
 
   // Map workers to roles by roleSlug or context.skillSlugs.
   // Track count per role so multiple concurrent workers are represented.
