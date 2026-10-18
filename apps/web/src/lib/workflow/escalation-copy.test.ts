@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { deriveEscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import type { AttemptSnapshot, DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from '@buildd/workflow-kernel/types';
-import { decisionActionHref, decisionCopy, parseDecisionHash } from './escalation-decision-copy';
+import { decisionActionHref, decisionCopy, parseDecisionHash } from '@/lib/workflow/escalation-copy';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
   id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
@@ -94,6 +94,13 @@ describe('decisionCopy', () => {
     expect(c.actions.map((a) => a.id)).toEqual(['review_findings']);
     expect(c.primary.id).toBe('review_findings');
   });
+});
+
+test('no review round yet has its own words', () => {
+  const v = view([F(1, 'x')], { rounds: [] });
+  const c = decisionCopy(deriveEscalationBrief(v)!, { rounds: [], ledger });
+  expect(c.why.startsWith('Automation stopped before any review round finished')).toBe(true);
+  expect(c.why).not.toContain('no review rounds');
 });
 
 describe('decision hash', () => {

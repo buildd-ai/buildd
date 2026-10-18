@@ -15,7 +15,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { TERMS, missionGateTerm, titleWithAttempt } from '@buildd/shared';
+import { TERMS, missionGateTerm, titleWithAttempt, githubReviewStatesLine, DECISION_LABELS } from '@buildd/shared';
 import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, INTERACTIVE_WORKER_RUNNER, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
@@ -135,9 +135,6 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
   };
 }
 
-const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-const countWords = (n: number): string => COUNT_WORDS[n] ?? String(n);
-
 /** `items` cut to `max`, with the count of what was left out. */
 /**
  * get_pr's delivery lines (docs/specs/workflow-kernel-library.md §7). A
@@ -167,17 +164,14 @@ export function formatGetPrDelivery(data: {
     ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
     : 'Reviews: none';
   if (!d) return { standingLine: '', reviewLine: github, roundsLine: '', decisionLine: '', repairsLine: '', approvalLine: '' };
-  const githubStates = (() => {
-    const parts = ([[approved, 'Approved'], [changes, 'Changes requested'], [r.commented ?? 0, 'Commented']] as const).filter(([n]) => n > 0);
-    return parts.length > 0 ? `On GitHub: ${parts.map(([n, s], i) => (i === 0 ? `${countWords(n)} ${n === 1 ? 'review' : 'reviews'} ${s}` : `${countWords(n)} ${s}`)).join(', ')}` : '';
-  })();
+  const githubStates = githubReviewStatesLine(r) ?? '';
   const dec = d.decision;
   const decisionLine = dec
     ? [
         `Decision: ${dec.question} ${dec.why}`,
-        dec.unresolved.open.length > 0 ? `Still open: ${dec.unresolved.open.join('; ')}` : '',
-        dec.unresolved.awaitingVerification.length > 0 ? `Fixed, waiting for a review to confirm: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
-        `Open to you: ${dec.actions.map(a => a.label).join(', ')} (on the task page)`,
+        dec.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${dec.unresolved.open.join('; ')}` : '',
+        dec.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${dec.unresolved.awaitingVerification.join('; ')}` : '',
+        `${DECISION_LABELS.choicesOnTaskPage}: ${dec.actions.map(a => a.label).join(', ')}`,
       ].filter(Boolean).join('\n')
     : '';
   return {

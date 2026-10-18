@@ -8,8 +8,8 @@
  * and the PR activity comment print, so the three agree (AC-24). GitHub review
  * counts stay in `reviews` for a PR that has no delivery.
  */
-import { reviewRoundsOf, type ReviewRoundsReading } from '@/lib/pr-activity-rounds';
-import { decisionCopy, type DecisionCopy } from '@/components/escalation-decision-copy';
+import { reviewRoundsOf, type ReviewRoundsReading } from '@/lib/workflow/delivery-rounds';
+import { decisionCopy, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 import { REPAIR_PHASE_WORDS, repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase, type ReviewSummary } from '@/lib/workflow/projections';
 
 export interface PrDeliveryReport {

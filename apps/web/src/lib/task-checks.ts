@@ -10,7 +10,7 @@
  * branch refresh is not one either.
  */
 import { TaskStatus } from '@buildd/shared';
-import { reviewRoundsOf } from './pr-activity-rounds';
+import { reviewRoundsOf } from './workflow/delivery-rounds';
 import { repairLabelOf, repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
 
 /**

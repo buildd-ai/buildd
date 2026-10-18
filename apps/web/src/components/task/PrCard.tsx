@@ -1,5 +1,5 @@
 import { Fragment } from 'react';
-import { githubReviewStatesLine } from '@/lib/pr-activity-rounds';
+import { githubReviewStatesLine } from '@/lib/workflow/delivery-rounds';
 import Link from 'next/link';
 import { PR_PILL, resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';

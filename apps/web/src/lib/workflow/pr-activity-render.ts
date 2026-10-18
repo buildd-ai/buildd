@@ -17,8 +17,8 @@
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
 import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
-import { reviewRoundsOf } from '../pr-activity-rounds';
-import { decisionCopy } from '@/components/escalation-decision-copy';
+import { reviewRoundsOf } from './delivery-rounds';
+import { decisionCopy, DECISION_LABELS } from './escalation-copy';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
@@ -282,9 +282,9 @@ function renderEscalationDecision(dv: NonNullable<ReturnType<typeof deriveDelive
   return [
     `**${c.question}**`,
     c.why,
-    c.unresolved.open.length > 0 ? `Still open: ${c.unresolved.open.map(escapeFindingText).join('; ')}` : '',
-    c.unresolved.awaitingVerification.length > 0 ? `Fixed, waiting for a review to confirm: ${c.unresolved.awaitingVerification.map(escapeFindingText).join('; ')}` : '',
-    `Open on the task page: ${c.actions.map((a) => a.label).join(', ')}`,
+    c.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${c.unresolved.open.map(escapeFindingText).join('; ')}` : '',
+    c.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${c.unresolved.awaitingVerification.map(escapeFindingText).join('; ')}` : '',
+    `${DECISION_LABELS.choicesOnTaskPage}: ${c.actions.map((a) => a.label).join(', ')}`,
   ].filter(Boolean).join('\n\n');
 }
 

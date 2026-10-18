@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import Sheet from '@/components/ui/Sheet';
 import PrimaryAction from '@/components/ui/PrimaryAction';
-import { parseDecisionHash, type DecisionCopy } from './escalation-decision-copy';
+import { DECISION_LABELS, parseDecisionHash, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'apply-recommendation',
@@ -61,8 +61,10 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
     if (!path) return;
     setBusy(true);
     try {
+      // AC-45: the decision is bound to the head and delivery version this card showed; a stale one comes back 409 with a plain sentence.
       const res = await fetch(`/api/prs/${prNumber}/${path}`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, ...(brief.decisionHead.headSha ? { headSha: brief.decisionHead.headSha, version: brief.decisionHead.version } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setNote({ tone: 'err', text: data.error || `Could not ${a.label.toLowerCase()}. Try again.` });
@@ -76,12 +78,12 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
   }
 
   const named: Array<[string, string[]]> = [
-    ['Still open', copy.unresolved.open],
-    ['Fixed, waiting for a review', copy.unresolved.awaitingVerification],
+    [DECISION_LABELS.open, copy.unresolved.open],
+    [DECISION_LABELS.awaitingVerification, copy.unresolved.awaitingVerification],
   ];
   const groups: Array<[string, typeof brief.findings.open]> = [
-    ['Still open', brief.findings.open],
-    ['Fixed, waiting for a review', brief.findings.addressedAwaitingVerification],
+    [DECISION_LABELS.open, brief.findings.open],
+    [DECISION_LABELS.awaitingVerification, brief.findings.addressedAwaitingVerification],
     ['Resolved', brief.findings.resolved],
   ];
 

@@ -17,7 +17,7 @@ import type { StateKey } from '@/components/ui/states';
 import type { ReviewFindings } from '@/lib/task-checks';
 import type { EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import type { FindingSnapshot } from '@buildd/workflow-kernel/types';
-import { decisionActionHref, decisionCopy, type DecisionCopy } from '@/components/escalation-decision-copy';
+import { decisionActionHref, decisionCopy, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
 export const TASK_PAGE_CASES = ['review-pending', 'review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human', 'review-stuck'] as const;
 export type TaskPageCase = typeof TASK_PAGE_CASES[number];

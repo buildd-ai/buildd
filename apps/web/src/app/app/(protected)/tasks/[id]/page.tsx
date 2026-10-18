@@ -123,7 +123,7 @@ import { TaskShippedDetails } from './TaskShippedHeader';
 import { formatElapsed } from './format-elapsed';
 import TaskVerdictBlock from './TaskVerdictBlock';
 import EscalationDecision from '@/components/EscalationDecision';
-import { decisionActionHref, decisionCopy } from '@/components/escalation-decision-copy';
+import { decisionActionHref, decisionCopy } from '@/lib/workflow/escalation-copy';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
