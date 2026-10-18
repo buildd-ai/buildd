@@ -87,7 +87,8 @@ describe('empty window', () => {
   it('every bucket is zero and the summary says so', () => {
     const s = series([]);
     expect(s.buckets.every(b => b.runner.avg === 0 && b.runner.peak === 0 && b.sessions.avg === 0 && b.sessions.peak === 0)).toBe(true);
-    expect(s.summary).toEqual({ runner: { peak: 0, avg: 0 }, sessions: { peak: 0, avg: 0 } });
+    expect(s.summary.runner).toEqual({ peak: 0, avg: 0 });
+    expect(s.summary.sessions).toEqual({ peak: 0, avg: 0 });
   });
 });
 
@@ -221,5 +222,45 @@ describe('when a worker stops holding its slot', () => {
   it('a worker that never started occupies nothing', () => {
     const s = series([row({ status: 'running', startedAt: null })]);
     expect(s.summary.runner.peak).toBe(0);
+  });
+});
+
+describe('owner attribution reconciles to the total', async () => {
+  const { occupancyDiscrepancies } = await import('./fleet-occupancy');
+  const rows = (): OccupancyWorkerRow[] => [
+    row({ ownerId: 'me', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+    row({ ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - 30 * MIN }),
+    row({ ownerId: null, startedAt: NOW - 90 * MIN, completedAt: NOW - 20 * MIN }),
+    row({ runner: 'mcp', ownerId: 'me', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+    row({ runner: 'mcp', ownerId: 'you', startedAt: NOW - 90 * MIN, completedAt: NOW - H }),
+  ];
+
+  for (const w of ['24h', '7d', '30d'] as const) {
+    it(`${w}: mine + others + unattributed = total, runner and sessions apart`, () => {
+      const s = buildOccupancySeries({ window: w, now: NOW, workers: rows(), viewerId: 'me' });
+      expect(occupancyDiscrepancies(s)).toEqual([]);
+      expect(s.summary.runner.avg).toBeGreaterThan(0);
+      expect(s.summary.runnerBy.mine.avg).toBeGreaterThan(0);
+      expect(s.summary.runnerBy.unattributed.avg).toBeGreaterThan(0);
+    });
+  }
+
+  it('unknown owner is unattributed, never mine; no viewer means nothing is mine', () => {
+    const a = buildOccupancySeries({ window: '24h', now: NOW, workers: rows(), viewerId: 'me' });
+    const none = buildOccupancySeries({ window: '24h', now: NOW, workers: rows() });
+    expect(a.summary.runnerBy.unattributed.peak).toBe(1);
+    expect(none.summary.runnerBy.mine.avg).toBe(0);
+    expect(none.summary.runner.avg).toBeCloseTo(a.summary.runner.avg, 9);
+  });
+
+  it('sessions are not folded into runner slots in any part', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, workers: [row({ runner: 'mcp', ownerId: 'me', startedAt: NOW - H, completedAt: NOW })], viewerId: 'me' });
+    expect(s.summary.runner.peak).toBe(0);
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('empty input reconciles at zero', () => {
+    expect(occupancyDiscrepancies(buildOccupancySeries({ window: '7d', now: NOW, workers: [], viewerId: 'me' }))).toEqual([]);
   });
 });

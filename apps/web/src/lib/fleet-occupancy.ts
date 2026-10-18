@@ -54,6 +54,8 @@ export interface OccupancyWorkerRow {
   startedAt: number | null;
   completedAt: number | null;
   updatedAt: number | null;
+  /** `workers.claimedByUserId`: the accountable principal. Null/absent: unattributed, never guessed. */
+  ownerId?: string | null;
 }
 
 export interface OccupancyLevel {
@@ -63,11 +65,24 @@ export interface OccupancyLevel {
   peak: number;
 }
 
+/** Who a slot's work belongs to, relative to the viewer. Every worker lands in exactly one. */
+export type OccupancyOwner = 'mine' | 'others' | 'unattributed';
+export const OCCUPANCY_OWNERS: readonly OccupancyOwner[] = ['mine', 'others', 'unattributed'];
+
+export type OccupancyBreakdown = Record<OccupancyOwner, OccupancyLevel>;
+
 export interface OccupancyBucket {
   /** Bucket start, epoch ms. */
   t: number;
   runner: OccupancyLevel;
   sessions: OccupancyLevel;
+  /**
+   * The same two series split by owner. The parts' `avg` sum to the total's;
+   * `peak` does not (the parts peak at different instants), so a part's peak is
+   * at most the total's.
+   */
+  runnerBy: OccupancyBreakdown;
+  sessionsBy: OccupancyBreakdown;
 }
 
 export interface OccupancySeries {
@@ -76,7 +91,7 @@ export interface OccupancySeries {
   bucketMs: number;
   buckets: OccupancyBucket[];
   /** Over the whole window: the highest peak, and the time-weighted mean. */
-  summary: { runner: OccupancyLevel; sessions: OccupancyLevel };
+  summary: { runner: OccupancyLevel; sessions: OccupancyLevel; runnerBy: OccupancyBreakdown; sessionsBy: OccupancyBreakdown };
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
@@ -144,11 +159,32 @@ function level(edges: Edge[], from: number, now: number, bucketMs: number, count
   return { buckets, summary: { avg: now > from ? total / (now - from) : 0, peak: Math.max(0, ...peak) } };
 }
 
-export function buildOccupancySeries(input: { window: OccupancyWindow; now: number; workers: OccupancyWorkerRow[]; tzOffsetMs?: number }): OccupancySeries {
+function ownerOf(w: OccupancyWorkerRow, viewerId: string | null | undefined): OccupancyOwner {
+  if (!w.ownerId) return 'unattributed';
+  return viewerId && w.ownerId === viewerId ? 'mine' : 'others';
+}
+
+type OwnerEdges = Record<OccupancyOwner, Edge[]>;
+const emptyEdges = (): OwnerEdges => ({ mine: [], others: [], unattributed: [] });
+
+/** Total and per-owner levels from one set of edges; the total is the union, not a sum of parts. */
+function split(edges: OwnerEdges, from: number, now: number, bucketMs: number, count: number) {
+  const total = level([...edges.mine, ...edges.others, ...edges.unattributed], from, now, bucketMs, count);
+  const parts = {
+    mine: level(edges.mine, from, now, bucketMs, count),
+    others: level(edges.others, from, now, bucketMs, count),
+    unattributed: level(edges.unattributed, from, now, bucketMs, count),
+  };
+  const at = (k: number): OccupancyBreakdown => ({ mine: parts.mine.buckets[k], others: parts.others.buckets[k], unattributed: parts.unattributed.buckets[k] });
+  const summary: OccupancyBreakdown = { mine: parts.mine.summary, others: parts.others.summary, unattributed: parts.unattributed.summary };
+  return { total, at, summary };
+}
+
+export function buildOccupancySeries(input: { window: OccupancyWindow; now: number; workers: OccupancyWorkerRow[]; tzOffsetMs?: number; viewerId?: string | null }): OccupancySeries {
   const { window, now, workers } = input;
   const { from, bucketMs, count } = occupancyBuckets(window, now, input.tzOffsetMs ?? 0);
-  const runnerEdges: Edge[] = [];
-  const sessionEdges: Edge[] = [];
+  const runnerEdges = emptyEdges();
+  const sessionEdges = emptyEdges();
   for (const w of workers) {
     if (w.startedAt == null) continue;
     const executor = executorOf(w.runner);
@@ -156,16 +192,46 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
     const start = w.startedAt;
     const end = Math.min(occupancyEnd(w, now), now);
     if (end <= start || end <= from) continue;
-    const into = executor === 'interactive' ? sessionEdges : runnerEdges;
+    const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId)];
     into.push({ t: start, d: 1 }, { t: end, d: -1 });
   }
-  const runner = level(runnerEdges, from, now, bucketMs, count);
-  const sessions = level(sessionEdges, from, now, bucketMs, count);
+  const runner = split(runnerEdges, from, now, bucketMs, count);
+  const sessions = split(sessionEdges, from, now, bucketMs, count);
   return {
     windowKey: window,
     window: { from, to: now },
     bucketMs,
-    buckets: runner.buckets.map((r, k) => ({ t: from + k * bucketMs, runner: r, sessions: sessions.buckets[k] })),
-    summary: { runner: runner.summary, sessions: sessions.summary },
+    buckets: runner.total.buckets.map((r, k) => ({
+      t: from + k * bucketMs,
+      runner: r,
+      sessions: sessions.total.buckets[k],
+      runnerBy: runner.at(k),
+      sessionsBy: sessions.at(k),
+    })),
+    summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary },
   };
+}
+
+const EPS = 1e-6;
+
+/**
+ * Where the owner split fails to add up to the total, as readable lines; empty
+ * when every bucket and the window summary reconcile. Checked per series
+ * (runner slots, sessions), never across them: the two are not summed.
+ */
+export function occupancyDiscrepancies(series: OccupancySeries): string[] {
+  const out: string[] = [];
+  const sum = (b: OccupancyBreakdown, f: 'avg' | 'peak') => OCCUPANCY_OWNERS.reduce((s, o) => s + b[o][f], 0);
+  const check = (label: string, total: OccupancyLevel, by: OccupancyBreakdown) => {
+    if (Math.abs(sum(by, 'avg') - total.avg) > EPS) out.push(`${label}: owner avg ${sum(by, 'avg')} != total ${total.avg}`);
+    for (const o of OCCUPANCY_OWNERS) if (by[o].peak > total.peak) out.push(`${label}: ${o} peak ${by[o].peak} > total peak ${total.peak}`);
+    if (total.peak > sum(by, 'peak')) out.push(`${label}: total peak ${total.peak} > sum of owner peaks ${sum(by, 'peak')}`);
+  };
+  for (const b of series.buckets) {
+    check(`runner@${b.t}`, b.runner, b.runnerBy);
+    check(`sessions@${b.t}`, b.sessions, b.sessionsBy);
+  }
+  check('runner summary', series.summary.runner, series.summary.runnerBy);
+  check('sessions summary', series.summary.sessions, series.summary.sessionsBy);
+  return out;
 }

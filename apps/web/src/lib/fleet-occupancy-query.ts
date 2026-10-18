@@ -44,6 +44,7 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   const rows = await db
     .select({
       runner: workers.runner,
+      ownerId: workers.claimedByUserId,
       status: workers.status,
       startedAt: workers.startedAt,
       completedAt: workers.completedAt,
@@ -53,8 +54,9 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
     .where(occupancyWhere(workspaceIds, since, now))
     .orderBy(desc(workers.startedAt))
     .limit(OCCUPANCY_ROW_LIMIT);
-  return (rows as Array<{ runner: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
+  return (rows as Array<{ runner: string | null; ownerId: string | null; status: string; startedAt: Date | null; completedAt: Date | null; updatedAt: Date | null }>).map(r => ({
     runner: r.runner,
+    ownerId: r.ownerId,
     status: r.status,
     startedAt: ms(r.startedAt),
     completedAt: ms(r.completedAt),
@@ -62,8 +64,8 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   }));
 }
 
-export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0): Promise<OccupancySeries & { truncated: boolean }> {
+export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0, viewerId: string | null = null): Promise<OccupancySeries & { truncated: boolean }> {
   const { from } = occupancyBuckets(window, now, tzOffsetMs);
   const rows = await fetchOccupancyRows(workspaceIds, new Date(from), new Date(now));
-  return { ...buildOccupancySeries({ window, now, workers: rows, tzOffsetMs }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
+  return { ...buildOccupancySeries({ window, now, workers: rows, tzOffsetMs, viewerId }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
 }
