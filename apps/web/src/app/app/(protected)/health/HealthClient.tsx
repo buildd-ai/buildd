@@ -905,6 +905,13 @@ export function HealthClient({
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
+                        <RunnerSlotDetail
+                          fleetRow={fleetRow}
+                          online={online}
+                          busyLine={busyLine}
+                          lastHeartbeatAt={hb.lastHeartbeatAt}
+                          now={now}
+                        />
                         {health.pushOnlyResult && (
                           <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
                             Push-only runner · {health.pushOnlyResult.message}
@@ -1060,6 +1067,59 @@ export function HealthClient({
       </section>
       )}
 
+    </div>
+  );
+}
+
+/**
+ * Expanded runner row: its slots, what each is doing, the last run on each
+ * (recent usage), connectivity, and runs that ended in failure. Read from the
+ * same fleet row the collapsed line uses, so the counts cannot disagree. A
+ * working claim that holds no slot is not shown here as a slot.
+ */
+function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now }: {
+  fleetRow: FleetSnapshot['runners'][number] | null;
+  online: boolean;
+  busyLine: string;
+  lastHeartbeatAt: string | null;
+  now: number;
+}) {
+  const slots = fleetRow?.slots ?? [];
+  const failed = slots.filter(s => !s.worker && s.last?.failed);
+  return (
+    <div data-testid="health-runner-detail" className="pt-3 space-y-2">
+      <p className="text-[11px] font-medium text-text-secondary uppercase tracking-wide">
+        Slots
+        <span className="ml-2 font-normal normal-case text-text-muted">{busyLine}</span>
+      </p>
+      {slots.length === 0 ? (
+        <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
+      ) : (
+        <ul className="space-y-1">
+          {slots.map(s => (
+            <li key={s.index} data-testid="health-runner-slot" className="flex items-baseline gap-2 text-xs min-w-0">
+              <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
+              {s.worker ? (
+                <span className="text-text-primary truncate">
+                  {s.worker.question ? 'Waiting · ' : 'Working · '}{s.worker.name ?? s.worker.title ?? s.worker.label}
+                </span>
+              ) : (
+                <span className="text-text-muted truncate">
+                  Idle{s.last ? ` · last ${s.last.label ?? 'run'}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="health-runner-connectivity" className="text-xs text-text-muted">
+        {online ? 'Connected' : 'Offline'} · {online ? 'seen' : 'last seen'} {observedAgo(lastHeartbeatAt, now) ?? (online ? 'just now' : 'never')}
+      </p>
+      <p data-testid="health-runner-failures" className={`text-xs ${failed.length > 0 ? 'text-status-warning' : 'text-text-muted'}`}>
+        {failed.length > 0
+          ? `${countOf(failed.length, 'slot')} last ended in failure`
+          : 'No failed last runs on these slots'}
+      </p>
     </div>
   );
 }
