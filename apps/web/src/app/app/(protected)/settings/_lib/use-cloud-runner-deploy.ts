@@ -13,6 +13,17 @@ const LABELS: Record<DeployStep, string> = {
   connect: 'Connecting workspace…',
 };
 
+/** The step's name in words, for the step list and the failure message. */
+export function stepLabel(s: DeployStep): string {
+  switch (s) {
+    case 'check': return 'Pre-flight check';
+    case 'bucket': return 'Snapshot bucket';
+    case 'worker': return 'Worker upload';
+    case 'containers': return 'Container applications';
+    case 'connect': return 'Connect workspace';
+  }
+}
+
 export interface DeployState {
   /** Idle until Deploy is pressed; running while steps are in flight; done/error at the end. */
   phase: 'idle' | 'running' | 'done' | 'error';
@@ -24,7 +35,7 @@ export interface DeployState {
   progress: number;
   /** The Worker URL on success. */
   workerUrl: string | null;
-  /** Error message on failure. */
+  /** Error message on failure; it starts with the failed step's name in words. */
   error: string | null;
   /** Notes from the deploy (e.g. about the runner key). */
   notes: string[];
@@ -95,7 +106,7 @@ export function useCloudRunnerDeploy() {
           setState((s) => ({
             ...s,
             phase: 'error',
-            error: body.error ?? `Step "${step}" failed (HTTP ${res.status}).`,
+            error: `${stepLabel(step)} failed: ${body.error ?? `HTTP ${res.status}.`}`,
             failedStep: step,
             progress: i / DEPLOY_STEPS.length,
           }));
@@ -123,7 +134,7 @@ export function useCloudRunnerDeploy() {
         setState((s) => ({
           ...s,
           phase: 'error',
-          error: err instanceof Error ? err.message : 'Deploy failed.',
+          error: `${stepLabel(step)} failed: ${err instanceof Error ? err.message : 'no response.'}`,
           failedStep: step,
           progress: i / DEPLOY_STEPS.length,
         }));

@@ -52,6 +52,8 @@ import { runnerBusyLine } from '@/lib/fleet-view';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { ClaimabilitySection } from './ClaimabilitySection';
+import type { ClaimPlanHealth } from '@/lib/claim-plan-health';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
 import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
@@ -281,12 +283,16 @@ interface Props {
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
   runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
+  /** Claim-planner ledger summary: claimability, shown apart from slot occupancy; null hides it. */
+  claimPlans?: ClaimPlanHealth | null;
   /**
    * A task that needs protection is waiting in the scoped workspaces. Every
    * task needs it by default, so this is "any task pending". An unknown or
    * stale sandbox probe is a Problem only while this holds.
    */
   protectedWorkPending?: boolean;
+  /** May read teammates' work in expanded runner detail; false shows other people's runs unnamed. */
+  seesTeamWork?: boolean;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -337,7 +343,9 @@ export function HealthClient({
   failureGroups: failureGroupsView = null,
   agentAccess = null,
   runnerLanes = null,
+  claimPlans = null,
   protectedWorkPending = false,
+  seesTeamWork = false,
   now,
   page = 'all',
   top = null,
@@ -803,6 +811,8 @@ export function HealthClient({
         </div>
       )}
 
+      {show('capacity') && <ClaimabilitySection health={claimPlans} now={now} />}
+
       {show('capacity') && hasLanes && (
         <div data-testid="health-section-lanes" className="mb-6">
           <Disclosure summary="Timeline: each slot over the last hours">
@@ -828,7 +838,7 @@ export function HealthClient({
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h3 className="text-xs font-medium text-text-secondary">{g.title}</h3>
-          <span data-testid={`health-runners-${g.key}-capacity`} className="text-[11px] text-text-muted">
+          <span data-testid={`health-runners-${g.key}-capacity`} className="text-meta text-text-muted">
             {(() => {
               // Aggregate over this section's online runners, same counts as each row.
               const on = g.list.filter(r => (fleetById.get(r.id)?.online ?? isRunnerOnline(r.lastHeartbeatAt, now)));
@@ -913,6 +923,14 @@ export function HealthClient({
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
+                        <RunnerSlotDetail
+                          fleetRow={fleetRow}
+                          online={online}
+                          busyLine={busyLine}
+                          lastHeartbeatAt={hb.lastHeartbeatAt}
+                          now={now}
+                          seesTeamWork={seesTeamWork}
+                        />
                         {health.pushOnlyResult && (
                           <p className={`pt-3 text-xs ${health.pushOnlyResult.online ? 'text-status-success' : 'text-status-warning'}`}>
                             Push-only runner · {health.pushOnlyResult.message}
@@ -1068,6 +1086,63 @@ export function HealthClient({
       </section>
       )}
 
+    </div>
+  );
+}
+
+/**
+ * Expanded runner row: its slots, what each is doing, the last run on each
+ * (recent usage), connectivity, and runs that ended in failure. Read from the
+ * same fleet row the collapsed line uses, so the counts cannot disagree. A
+ * working claim that holds no slot is not shown here as a slot.
+ */
+function RunnerSlotDetail({ fleetRow, online, busyLine, lastHeartbeatAt, now, seesTeamWork }: {
+  fleetRow: FleetSnapshot['runners'][number] | null;
+  online: boolean;
+  busyLine: string;
+  lastHeartbeatAt: string | null;
+  now: number;
+  seesTeamWork: boolean;
+}) {
+  // Another person's run (or one with no known owner) is named only to those
+  // who may read the team's work; everyone else sees that the slot is busy.
+  const hidden = (mine: boolean | null | undefined) => !seesTeamWork && mine !== true && mine !== undefined;
+  const slots = fleetRow?.slots ?? [];
+  const failed = slots.filter(s => !s.worker && s.last?.failed);
+  return (
+    <div data-testid="health-runner-detail" className="pt-3 space-y-2">
+      <p className="text-meta font-medium text-text-secondary">
+        Slots
+        <span className="ml-2 font-normal normal-case text-text-muted">{busyLine}</span>
+      </p>
+      {slots.length === 0 ? (
+        <p className="text-xs text-text-muted">No slot detail reported for this runner.</p>
+      ) : (
+        <ul className="space-y-1">
+          {slots.map(s => (
+            <li key={s.index} data-testid="health-runner-slot" className="flex items-baseline gap-2 text-xs min-w-0">
+              <span className="font-mono text-text-muted shrink-0">#{s.index + 1}</span>
+              {s.worker ? (
+                <span className="text-text-primary truncate">
+                  {s.worker.question ? 'Waiting · ' : 'Working · '}{hidden(s.worker.mine) ? (s.worker.mine === null ? 'Unattributed work' : 'A teammate\'s work') : (s.worker.name ?? s.worker.title ?? s.worker.label)}
+                </span>
+              ) : (
+                <span className="text-text-muted truncate">
+                  Idle{s.last ? ` · last ${hidden(s.last.mine) ? 'run' : (s.last.label ?? 'run')}${s.last.failed ? ' (failed)' : ''}${s.last.at ? `, ${timeAgo(new Date(s.last.at).toISOString(), now)}` : ''}` : ''}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="health-runner-connectivity" className="text-xs text-text-muted">
+        {online ? 'Connected' : 'Offline'} · {online ? 'seen' : 'last seen'} {observedAgo(lastHeartbeatAt, now) ?? (online ? 'just now' : 'never')}
+      </p>
+      <p data-testid="health-runner-failures" className={`text-xs ${failed.length > 0 ? 'text-status-warning' : 'text-text-muted'}`}>
+        {failed.length > 0
+          ? `${countOf(failed.length, 'slot')} last ended in failure`
+          : 'No failed last runs on these slots'}
+      </p>
     </div>
   );
 }
