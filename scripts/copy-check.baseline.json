@@ -21,6 +21,7 @@
   },
   "internal-jargon": {
     "apps/web/src/app/app/(protected)/health/_components/FailureGroups.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/CloudRunnerDeploy.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/CloudflareSection.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
