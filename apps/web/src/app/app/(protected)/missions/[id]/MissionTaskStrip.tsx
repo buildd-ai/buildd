@@ -479,7 +479,7 @@ const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, lin
       />
       <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{stripTick(index)}</span>
       <p className="font-mono text-lede font-semibold text-text-primary">
-        {`${k} ${slot.state === 'landed' ? 'landed' : 'queued'} tasks`}
+        {`${k} ${slot.state === 'landed' ? 'merged' : 'queued'} tasks`}
       </p>
       <a
         href={`/app/missions/${link.missionId}?view=timeline`}
