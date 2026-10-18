@@ -20,7 +20,11 @@ import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { GATE_SLUGS } from './gate-ledger';
 import { claimHoldPhrase } from './claim-hold-phrase';
-import { CLAIM_HOLD_WINDOW_MS, DEFERRAL_FRESHNESS_MS } from './mission-claim-deferrals';
+
+// Mirror `DEFERRAL_FRESHNESS_MS` and `CLAIM_HOLD_WINDOW_MS` in mission-claim-deferrals.ts.
+// Not imported: core may not import a module (scripts/module-boundaries.test.ts).
+const DEFERRAL_FRESHNESS_MS = 15 * 60 * 1000;
+const CLAIM_HOLD_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export type ClaimBlockerState = 'blocked' | 'stale' | 'unknown';
 
