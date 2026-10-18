@@ -414,8 +414,17 @@ export default async function TaskDetailPage({
     : null;
   // Those four in one round trip.
   const round2 = batchReads([artifactsQuery, errorTracesQuery, ciAttemptsQuery, dependentsQuery]);
+  // The delivery this task belongs to, started with round 2: the review status
+  // below reads the same view when this task owns the PR, so it is read once.
+  const deliveryContextPromise = loadTaskDeliveryContext(task.id);
+  deliveryContextPromise.catch(() => {});
   const [evidenceReview, evidenceArtifactCount, reads2, ship, teamTimezone, roleRow, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureRaw, livingSpec, taskServiceStatus] = await Promise.all([
-    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
+    prWorker?.prNumber
+      ? RUN_PROGRESS_READERS.review({
+          workspaceId: task.workspaceId, prNumber: prWorker.prNumber,
+          knownDelivery: { taskId: task.id, view: deliveryContextPromise.then((c) => c.view) },
+        }).catch(() => null)
+      : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     round2,
     (async () => {
@@ -667,7 +676,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   // The same load carries the review rounds' findings and the deliverable's
   // title for the page's checks list and attempt framing (docs/specs/task-page.md).
-  const deliveryContext = await loadTaskDeliveryContext(task.id);
+  const deliveryContext = await deliveryContextPromise;
   const deliveryView = deliveryContext.view;
   // §7 (workflow-kernel-library.md): the PR's merged/open/closed reading is the
   // delivery's when it owns this PR, never a worker row that disagrees (AC-26).
