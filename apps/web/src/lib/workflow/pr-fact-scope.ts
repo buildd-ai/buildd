@@ -86,6 +86,15 @@ export function deliveryOwnedTaskSql(
       opts.pr ? sql` AND kd.pr_number = ${opts.pr.prNumber}::int AND lower(kd.repo_full_name) = lower(${opts.pr.repoFullName}::text)` : sql``})`;
 }
 
+/**
+ * AC-1 slice 8: the negation, for an attempt writer whose status write is for tasks with no kernel
+ * delivery only (a reviewer's round, a loop wait the kernel does not expire): it skips the owner of
+ * a delivery-owned task in its own WHERE, so the guard can see it never moves one.
+ */
+export function notDeliveryOwnedTaskSql(t: { id: SQL; workspaceId: SQL } = taskCols()): SQL {
+  return sql`NOT ${deliveryOwnedTaskSql(t)}`;
+}
+
 /** The `tasks` table's own columns, for a Drizzle statement over `tasks` (built per call: modules mocked in tests load this file). */
 export const taskCols = () => ({ id: sql`${tasks.id}`, workspaceId: sql`${tasks.workspaceId}`, status: sql`${tasks.status}` });
 
