@@ -156,11 +156,16 @@ export function legacyReviewFixOf(task: {
   reviewerRetryPrNumber?: number | null;
   reviewerRetryHeadSha?: string | null;
   context?: unknown;
-}): { prNumber: number; boundHeadSha: string; feedback: string | null } | null {
+}): { prNumber: number; boundHeadSha: string; feedback: string | null; human: boolean } | null {
   if (task.deliveryId || typeof task.reviewerRetryPrNumber !== 'number' || !task.reviewerRetryHeadSha) return null;
   const fc = ((task.context ?? {}) as { failureContext?: { errorType?: unknown; summary?: unknown } }).failureContext;
-  if (fc?.errorType !== 'reviewer_request_changes') return null;
-  return { prNumber: task.reviewerRetryPrNumber, boundHeadSha: task.reviewerRetryHeadSha, feedback: typeof fc.summary === 'string' ? fc.summary : null };
+  if (fc?.errorType !== 'reviewer_request_changes' && fc?.errorType !== 'reviewer_escalation_applied') return null;
+  return {
+    prNumber: task.reviewerRetryPrNumber, boundHeadSha: task.reviewerRetryHeadSha,
+    feedback: typeof fc.summary === 'string' ? fc.summary : null,
+    // A person's fix (Apply recommendation) is theirs to judge: head-moved only, no relevance check.
+    human: fc.errorType === 'reviewer_escalation_applied',
+  };
 }
 
 export interface LegacyReviewFixGateDeps {
@@ -170,6 +175,8 @@ export interface LegacyReviewFixGateDeps {
   changedPaths: (p: { installationId: number; repoFullName: string; fromSha: string; toSha: string }) => Promise<string[] | null>;
   /** Paths the review's inline comments were anchored to at `headSha`. */
   findingPaths: (p: { workspaceId: string; repoFullName: string; prNumber: number; headSha: string }) => Promise<string[]>;
+  /** The kernel's relevance rule (reached through the workflow seam): false only when the diff plainly misses every named path. */
+  diffTouches: (p: { named: string[]; changed: string[] | null; feedback: string | null }) => boolean | null;
 }
 
 /**
@@ -183,6 +190,8 @@ export async function legacyReviewFixCompletionGate(
     task: { workspaceId: string; deliveryId?: string | null; reviewerRetryPrNumber?: number | null; reviewerRetryHeadSha?: string | null; context?: unknown };
     localHeadSha: string | null;
     noopClaimed?: boolean;
+    /** A well-formed `fixedElsewhere` claim (files and reason); the next review verifies it. */
+    fixedElsewhere?: { files: string[]; reason: string } | null;
   },
   deps: LegacyReviewFixGateDeps,
 ): Promise<LegacyReviewFixRefusal | null> {
@@ -203,16 +212,15 @@ export async function legacyReviewFixCompletionGate(
       ...base,
     };
   }
-  const { diffTouchesFindings, pathsNamedIn } = await import('@buildd/workflow-kernel/findings');
+  if (fix.human || p.fixedElsewhere) return null;
   const named = await deps.findingPaths({ workspaceId: p.task.workspaceId, repoFullName: repo.repoFullName, prNumber: fix.prNumber, headSha: fix.boundHeadSha });
   const changed = await deps.changedPaths({ installationId: repo.installationId, repoFullName: repo.repoFullName, fromSha: fix.boundHeadSha, toSha: live.headSha }).catch(() => null);
-  const view = { findings: named.map((path, i) => ({ id: `legacy-${i}`, path, required: true, status: 'open' })) } as unknown as Parameters<typeof diffTouchesFindings>[0];
   if (named.length === 0) {
     // No anchored finding: only an empty diff is plainly not a fix.
     if (changed && changed.length === 0) return unrelated(fix.prNumber, [], base);
     return null;
   }
-  if (diffTouchesFindings(view, changed, pathsNamedIn(fix.feedback)) === false) return unrelated(fix.prNumber, named, base);
+  if (deps.diffTouches({ named, changed, feedback: fix.feedback }) === false) return unrelated(fix.prNumber, named, base);
   return null;
 }
 
@@ -222,7 +230,7 @@ function unrelated(prNumber: number, named: string[], base: { boundHeadSha: stri
     error: named.length
       ? `Your push to PR #${prNumber} changes nothing near the files the review names (${[...new Set(named)].slice(0, 5).join(', ')}), nor anything its feedback names.`
       : `Your push to PR #${prNumber} changes no files.`,
-    hint: 'Fix what the review asked for and push. If there is nothing to change, say so in the summary and complete without a push only with a verified no-op claim.',
+    hint: 'Fix what the review asked for and push. If the fix belongs elsewhere, complete with structuredOutput.fixedElsewhere { findingIds, files, reason } naming the files you changed and why; the re-review verifies it.',
     ...base,
   };
 }

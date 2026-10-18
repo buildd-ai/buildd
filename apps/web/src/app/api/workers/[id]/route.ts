@@ -79,7 +79,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyRepairGateDeps, type LegacyReviewFixGateDeps } from '@/lib/repair-completion';
-import { fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
 import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
@@ -2110,6 +2110,7 @@ export async function PATCH(
         task: { workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
         localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
         noopClaimed: noopEvidenceOf(body.structuredOutput) != null,
+        fixedElsewhere: legacyFixedElsewhereOf(body.structuredOutput),
       }, legacyReviewFixGateDeps()).catch((err) => {
         console.error(`[review-fix] legacy completion gate failed for worker ${worker.id} (allowing):`, err);
         return null;
@@ -6638,9 +6639,19 @@ async function handleReviewerOutcomeIfNeeded(
  * a live PR read, and the migration inspector, ignoring the PR's own recorded
  * predecessors (spec workflow-state-kernel §13.11 rules 2 and 5).
  */
+/** A legacy PR has no finding ids, so a claim needs only the files and the reason. */
+function legacyFixedElsewhereOf(output: unknown): { files: string[]; reason: string } | null {
+  const o = (output && typeof output === 'object' ? (output as Record<string, unknown>).fixedElsewhere : null) as Record<string, unknown> | null | undefined;
+  if (!o || typeof o !== 'object') return null;
+  const files = Array.isArray(o.files) ? o.files.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
+  return files.length && reason ? { files, reason } : null;
+}
+
 function legacyReviewFixGateDeps(): LegacyReviewFixGateDeps {
   const base = legacyRepairGateDeps();
   return {
+    diffTouches: legacyDiffTouchesFindings,
     repoFor: base.repoFor,
     readPr: base.readPr,
     changedPaths: async (p) => (await import('@/lib/workflow/github-facts')).githubReader(p.installationId).changedPaths?.(p.repoFullName, p.fromSha, p.toSha) ?? null,

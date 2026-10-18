@@ -104,6 +104,7 @@ describe('legacyReviewFixCompletionGate (§13.13 rule 4 for a PR with no deliver
     readPr: async () => open({ headSha: 'bbbbbbb2222222' }),
     changedPaths: async () => ['packages/other/x.ts'] as string[] | null,
     findingPaths: async () => ['apps/web/src/copy.ts'],
+    diffTouches: ({ named, changed }: { named: string[]; changed: string[] | null }) => (changed ? changed.some((c) => named.includes(c)) : null),
     ...over,
   });
   const run = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
@@ -117,6 +118,18 @@ describe('legacyReviewFixCompletionGate (§13.13 rule 4 for a PR with no deliver
     const same = { readPr: async () => open({ headSha: HEAD }) };
     expect((await run(same))?.code).toBe('delivery_not_advanced');
     expect(await run(same, { noopClaimed: true })).toBeNull();
+  });
+  it('passes a moved head with a fixedElsewhere claim', async () => {
+    expect(await run({}, { fixedElsewhere: { files: ['packages/other/x.ts'], reason: 'the helper lives there' } })).toBeNull();
+  });
+  it('a refusal for a moved head does not point at a no-op claim', async () => {
+    expect((await run())?.hint).toContain('fixedElsewhere');
+  });
+  it('a person\'s Apply-recommendation fix (reviewer_escalation_applied) skips the relevance check but not head-moved', async () => {
+    const human = { ...task, context: { failureContext: { errorType: 'reviewer_escalation_applied', summary: 'do x' } } };
+    const g = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => legacyReviewFixCompletionGate({ task: human, localHeadSha: null, ...extra }, deps(over) as never);
+    expect(await g()).toBeNull();
+    expect((await g({ readPr: async () => open({ headSha: HEAD }) }))?.code).toBe('delivery_not_advanced');
   });
   it('allows a push that touches a named path, an unreadable diff, and a task that is not a legacy review fix', async () => {
     expect(await run({ changedPaths: async () => ['apps/web/src/copy.ts'] })).toBeNull();
