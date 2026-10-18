@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "f2fa37f6-0989-4dba-981f-f2e2653e1bd1",
+  "id": "50361ad3-fa83-4ca8-ade0-15f44fda4e9f",
   "prevIds": [
-    "7e5fdcab-de3a-4edd-91eb-8882f2b58d96"
+    "36c8e66a-4e9b-43b7-9b1d-941a047bd0e7"
   ],
   "ddl": [
     {
@@ -7400,6 +7400,19 @@
       "generated": null,
       "identity": null,
       "name": "account_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_audit_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
       "entityType": "columns",
       "schema": "public",
       "table": "deployment_audit_events"
@@ -44153,6 +44166,23 @@
       "onUpdate": "NO ACTION",
       "onDelete": "SET NULL",
       "name": "deployment_audit_events_account_id_accounts_id_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "deployment_audit_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "deployment_audit_events_user_id_users_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "deployment_audit_events"
