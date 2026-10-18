@@ -330,12 +330,12 @@ describe('Landed strip drawer: the selected task\'s own delivery', () => {
     expect(drawer().querySelector('[data-testid="landed-strip-drawer-ordinal"]')?.textContent).toBe('34 · LEVEL 34 OF 35');
   });
 
-  it('the repairing task shows Build passed, Audit current with its round, Land ahead', async () => {
+  it('the repairing task shows Build passed, Verify current with its round, Deliver ahead', async () => {
     await mount(missionTaskStripFixture('delivery'));
-    expect(stages().map(s => [s.dataset.stage, s.dataset.state])).toEqual([['build', 'done'], ['audit', 'current'], ['land', 'later']]);
+    expect(stages().map(s => [s.dataset.stage, s.dataset.state])).toEqual([['build', 'done'], ['verify', 'current'], ['deliver', 'later']]);
     expect(stages()[0].textContent).toBe('✓ BuildPR #434 opened');
     expect(stages()[1].textContent).toContain('Repair 2 · CI failed');
-    expect(stages()[1].querySelector('[aria-current="step"]')?.textContent).toBe('↻ Audit · repair 2');
+    expect(stages()[1].querySelector('[aria-current="step"]')?.textContent).toBe('↻ Verify · repair 2');
   });
 
   it('a repairing task opens its audit and repair evidence; the toggle closes it', async () => {

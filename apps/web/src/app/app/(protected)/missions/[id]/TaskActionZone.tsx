@@ -106,6 +106,12 @@ export interface TaskActionZoneProps {
   entitlementBlock?: EntitlementBlock | null;
   /** Why a queued task cannot be claimed: its backend has no key (task context `credentialBlock`). */
   credentialBlock?: CredentialBlock | null;
+  /**
+   * What the task's delivery is doing while this task row waits (the kernel's
+   * reading, "Approved · checking"). The queued line then names its subject, the
+   * task's next run, so it never reads as the whole delivery being unclaimed.
+   */
+  deliveryReading?: string | null;
   /** The task's title, named in the Force start confirmation. */
   taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
@@ -127,6 +133,7 @@ const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 
 const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
 
 export default function TaskActionZone({
+  deliveryReading = null,
   taskId,
   workspaceId,
   phase,
@@ -391,7 +398,9 @@ export default function TaskActionZone({
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
               ? 'Ready to start. Claim it from your session.'
-              : 'Waiting for a runner to claim it.'}
+              : deliveryReading
+                ? `${deliveryReading}. The next run is waiting for a runner to claim it.`
+                : 'Waiting for a runner to claim it.'}
           </p>}
           {runnerPicker && workspaceId && (
             <RunnerPicker workspaceId={workspaceId} value={target} onChange={setTarget} disabled={starting} />

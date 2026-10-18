@@ -213,6 +213,9 @@ export function ActivityTape({
   );
 }
 
+/** Log rows added per "Show more" tap. */
+const LOG_PAGE = 25;
+
 export default function WorkerActivityTimeline({
   milestones,
   currentAction,
@@ -221,7 +224,9 @@ export default function WorkerActivityTimeline({
   nowMs: nowProp,
   live = false,
 }: WorkerActivityTimelineProps) {
-  const [expanded, setExpanded] = useState(false);
+  // How many log rows show: a first page, then one page per tap, so a session
+  // of hundreds of turns never lands on a phone as one wall of rows.
+  const [shown, setShown] = useState(maxVisible);
 
   if (!milestones.length && !currentAction) {
     return null;
@@ -238,8 +243,8 @@ export default function WorkerActivityTimeline({
   // took. Narration is dropped and tool calls fold under the milestone they
   // happened in (see milestone-log.ts). The tape above is the heartbeat.
   const entries = buildMilestoneLog(milestones, { nowMs, live });
-  const visibleEntries = expanded ? entries : entries.slice(0, maxVisible);
-  const hasMore = entries.length > maxVisible;
+  const visibleEntries = entries.slice(0, shown);
+  const left = entries.length - visibleEntries.length;
 
   const hasTape = milestones.some(m => m.type === 'action' || (m.type === 'status' && !!m.label?.trim()));
 
@@ -277,13 +282,24 @@ export default function WorkerActivityTimeline({
               />
             ))}
           </div>
-          {hasMore && (
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="mt-2 text-xs text-accent-text hover:underline min-h-11 md:min-h-0"
-            >
-              {expanded ? 'Show less' : `Show ${entries.length - maxVisible} more…`}
-            </button>
+          {(left > 0 || shown > maxVisible) && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-4">
+              {left > 0 && (
+                <button onClick={() => setShown(shown + LOG_PAGE)} className="text-xs text-accent-text hover:underline min-h-11 md:min-h-0">
+                  {`Show ${Math.min(LOG_PAGE, left)} more · ${left} left`}
+                </button>
+              )}
+              {left > LOG_PAGE && (
+                <button onClick={() => setShown(entries.length)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
+                  {`Show all ${entries.length}`}
+                </button>
+              )}
+              {shown > maxVisible && (
+                <button onClick={() => setShown(maxVisible)} className="text-xs text-text-muted hover:underline min-h-11 md:min-h-0">
+                  Show less
+                </button>
+              )}
+            </div>
           )}
         </details>
       )}
