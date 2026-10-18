@@ -640,6 +640,10 @@ export async function tryAutoMergeWorkerPr(params: {
   surfaceOrderingConfig?: WorkspaceGitConfig | null;
   /** The kernel's landing (T15/T16); null = not the kernel's PR. Defaults to the seam's. Injected by tests. */
   landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
+  /** AC-13: adopts a PR with no delivery before it merges (pr-landing-adoption.ts). Injected by tests. */
+  adoptBeforeMerge?: typeof import('@/lib/pr-landing-adoption').adoptBeforeMerge;
+  /** The release gate's merge for a PR adoption answered `gate` for. Injected by tests. */
+  mergeOutsideKernel?: typeof import('@/lib/pr-landing-adoption').mergeOutsideKernel;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
@@ -910,13 +914,42 @@ export async function tryAutoMergeWorkerPr(params: {
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
   // refusal is owed. Any other PR merges here as before.
+  //
+  // AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted first (open_delivery
+  // with this worker's task as the owner), so it lands through the kernel's gate, which owes it a
+  // review of this head; one nothing can adopt is refused, never merged on the legacy arm.
+  const landingWorkspaceId = reviewWorkspaceId;
+  const adoptBeforeMerge = params.adoptBeforeMerge ?? (await import('@/lib/pr-landing-adoption')).adoptBeforeMerge;
+  const adoption = await adoptBeforeMerge(
+    { workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, taskId: worker.taskId ?? null, door: 'auto_merge' },
+    { principal: { kind: 'system', id: 'system:auto_merge' } },
+  );
+  if (adoption.kind === 'refused') {
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${adoption.message}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      reason: adoption.message,
+      workspaceId: landingWorkspaceId,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName, reasonClass: adoption.reason },
+    });
+    return { merged: false, reason: adoption.message };
+  }
   const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/kernel-client')).landThroughKernel;
-  const landingWorkspaceId = await workspaceIdOnce();
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
-    const kernel = landingWorkspaceId
-      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } })
-      : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
+    const kernel = await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } });
+    if (kernel) return { kernel };
+    // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption.kind === 'gate') {
+      const outside = params.mergeOutsideKernel ?? (await import('@/lib/pr-landing-adoption')).mergeOutsideKernel;
+      return { legacy: await outside({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, mergeMethod, door: 'auto_merge', taskId: worker.taskId ?? null }) };
+    }
+    if (adoption.kind !== 'legacy') return { notLanded: true as const };
+    return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
@@ -927,7 +960,17 @@ export async function tryAutoMergeWorkerPr(params: {
     console.log(`[auto-merge] ${repoFullName}#${prNumber}: kernel landing ${k.outcome} (${k.reason})`);
     return k.merged ? { merged: true } : { merged: false, reason: k.message };
   }
+  if (!slotted.result.legacy) {
+    const reason = `the workflow owns ${repoFullName}#${prNumber} and did not take the merge; nothing was merged`;
+    console.log(`Auto-merge deferred: ${reason}`);
+    return { merged: false, reason };
+  }
   const result = slotted.result.legacy;
+  // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+  if (!result.merged && 'hold' in result && result.hold) {
+    console.log(`Auto-merge waiting for ${repoFullName}#${prNumber}: ${result.message}`);
+    return { merged: false, reason: result.message };
+  }
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber);
