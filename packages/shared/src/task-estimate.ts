@@ -65,7 +65,7 @@ export function formatTaskEstimate(r: TaskEstimatePayload): TaskEstimateDisplay 
     evidence?.neighbours.reason === 'unavailable' || evidence?.clusters.reason === 'unavailable';
   const provenance = !supported ? 'Not enough comparable evidence for a useful range.' : local.length > 0 ?
     (localN < 10 ? 'Based on limited comparable tasks in this repo.' : 'Based on comparable tasks in this repo.') :
-    h?.completedWork === 0 ? 'Based on similar tasks across Buildd. Estimates will improve as this repo builds history.' :
+    h?.completedWork === 0 ? 'Based on similar tasks across Buildd; this repo has no completed work history at the forecast cutoff.' :
     localUnavailable ? 'Based on similar tasks across Buildd; comparable repo evidence was unavailable.' :
     h && h.completedWork > 0 ? 'Based on similar tasks across Buildd; limited comparable history in this repo.' :
     'Based on similar tasks across Buildd; comparable repo history is unavailable.';

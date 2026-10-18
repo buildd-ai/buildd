@@ -22,10 +22,10 @@ describe('estimates fixtures', () => {
   test('each fixture shows the variant the visual audit names', () => {
     expect(render('enabled-empty')).toContain('Not enough finished tasks to assess estimates.');
     expect(render('enabled-few')).toContain('4 finished so far.');
-    expect(render('enabled-ten')).toContain('7 in 10 tasks finished within the upper estimate.');
+    expect(render('enabled-ten')).toContain('Upper estimate coverage: 70% (80% target).');
     expect(render('enabled')).toContain('Across 40 finished tasks.');
-    expect(render('enabled-overrun')).toContain('Typically ran 1.5x longer than estimated.');
-    expect(render('enabled-underrun')).toContain('Typically ran 1.7x shorter than estimated.');
+    expect(render('enabled-overrun')).toContain('Actual / p50: 1.5x.');
+    expect(render('enabled-underrun')).toContain('Actual / p50: 0.6x.');
     expect(render('enabled-limited-history')).toContain('6 of these had limited comparable history in the repo.');
     expect(render('enabled')).not.toContain('estimates-limited-history');
   });

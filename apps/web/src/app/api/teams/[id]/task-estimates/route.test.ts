@@ -56,13 +56,13 @@ describe('GET /api/teams/[id]/task-estimates', () => {
     expect(calls).toEqual([`readout:${TEAM}`, `clusters:${TEAM}`]);
   });
 
-  it('a worker-level key of the team can read, and a team that never opted in reads enabled: false', async () => {
+  it('a worker-level key of the team can read, and a team with no choice gets default availability', async () => {
     principal = { kind: 'api_key', account: { teamId: TEAM, level: 'worker' } };
     setting = null;
     const body = await (await get()).json();
-    expect(body.enabled).toBe(false);
+    expect(body.enabled).toBe(true);
     expect(body.source).toBe('default');
-    expect(body.defaultOn).toBe(false);
+    expect(body.defaultOn).toBe(true);
   });
 
   it('an explicit opt-out reads as the team\'s choice', async () => {

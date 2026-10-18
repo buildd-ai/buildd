@@ -33,16 +33,21 @@ describe('estimatesReadout: insufficient evidence (AC-9)', () => {
 describe('estimatesReadout: a rate from 10 (AC-10)', () => {
   test('10 scored, 7 within: the fraction and the sample, nothing else', () => {
     const v = view(score(10, 0.7));
-    expect(v.lead).toBe('7 in 10 tasks finished within the upper estimate.');
+    expect(v.lead).toBe('Upper estimate coverage: 70% (80% target).');
     expect(v.sample).toBe('Across 10 finished tasks.');
-    expect(v.typical).toBeNull();
+    expect(v.typical).toBe('Actual / p50: 1.0x.');
+  });
+  test('rounding never turns near-total coverage into all tasks', () => {
+    expect(view(score(1000, 0.999)).lead).toBe('Upper estimate coverage: 99% (80% target).');
+    expect(view(score(1000, 0.001)).lead).toBe('Upper estimate coverage: 1% (80% target).');
+    expect(view(score(1000, 1)).lead).toBe('Upper estimate coverage: 100% (80% target).');
   });
   test('40 scored: the n reads 40', () => {
     expect(view(score(40, 0.85)).sample).toBe('Across 40 finished tasks.');
   });
   test('a weak result reads as its number, with no verdict word', () => {
     const v = view(score(50, 0.3));
-    expect(v.lead).toBe('3 in 10 tasks finished within the upper estimate.');
+    expect(v.lead).toBe('Upper estimate coverage: 30% (80% target).');
     for (const line of Object.values(v)) expect(line ?? '').not.toMatch(/most|almost|many|only|good|great|poor|days|week/i);
   });
 });
@@ -59,20 +64,20 @@ describe('inTen', () => {
 });
 
 describe('typicalBiasLine (AC-11)', () => {
-  test('inside 0.85 to 1.15 there is no line', () => {
-    expect(typicalBiasLine(score(20, 0.8, 1))).toBeNull();
-    expect(typicalBiasLine(score(20, 0.8, 0.85))).toBeNull();
-    expect(typicalBiasLine(score(20, 0.8, 1.15))).toBeNull();
+  test('reports the ratio near one and omits missing or invalid ratios', () => {
+    expect(typicalBiasLine(score(20, 0.8, 1))).toBe('Actual / p50: 1.0x.');
     expect(typicalBiasLine(score(20, 0.8, null))).toBeNull();
+    expect(typicalBiasLine(score(20, 0.8, 0))).toBeNull();
+    expect(typicalBiasLine(score(20, 0.8, NaN))).toBeNull();
+    expect(typicalBiasLine(score(20, 0.8, 0.02))).toBe('Actual / p50: <0.1x.');
   });
-  test('overrun and underrun', () => {
-    expect(typicalBiasLine(score(20, 0.5, 1.5))).toBe('Typically ran 1.5x longer than estimated.');
-    expect(typicalBiasLine(score(20, 0.9, 0.6))).toBe('Typically ran 1.7x shorter than estimated.');
-    expect(typicalBiasLine(score(20, 0.1, 12.4))).toBe('Typically ran 12x longer than estimated.');
+  test('reports overrun and underrun without reciprocal distortion', () => {
+    expect(typicalBiasLine(score(20, 0.5, 1.5))).toBe('Actual / p50: 1.5x.');
+    expect(typicalBiasLine(score(20, 0.9, 0.6))).toBe('Actual / p50: 0.6x.');
   });
   test('shown under the rate from 10 scored', () => {
-    expect(view(score(10, 0.5, 1.5)).typical).toBe('Typically ran 1.5x longer than estimated.');
-    expect(view(score(30, 0.95, 0.6)).typical).toBe('Typically ran 1.7x shorter than estimated.');
+    expect(view(score(10, 0.5, 1.5)).typical).toBe('Actual / p50: 1.5x.');
+    expect(view(score(30, 0.95, 0.6)).typical).toBe('Actual / p50: 0.6x.');
   });
 });
 

@@ -26,8 +26,7 @@ export type SettingsSectionId =
   | 'runners'
   | 'alerts'
   | 'integrations'
-  | 'apps'
-  | 'features';
+  | 'apps';
 
 export interface SettingsNavItem {
   id: SettingsSectionId;
@@ -161,13 +160,6 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         href: '/app/settings/apps',
         description: 'Manage the apps team agents can use and their access requests.',
         manage: ['manage_connectors'],
-      },
-      {
-        id: 'features',
-        label: 'Features',
-        href: '/app/settings/features',
-        description: 'Turn on optional team features, such as task estimates.',
-        manage: ['manage_team_settings'],
       },
     ],
   },
