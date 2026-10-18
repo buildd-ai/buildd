@@ -242,6 +242,8 @@ export interface HealthData {
   protectedWorkPending: boolean;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
   runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
+  /** Whether the viewer may read teammates' work in expanded runner detail (view_team_usage); a member sees only their own. */
+  seesTeamWork: boolean;
   /** Claim-planner ledger summary (claimability), apart from slot occupancy; null hides the section. */
   claimPlans: ClaimPlanHealth | null;
   /** The workspaces `runnerLanes` reads, so the page can re-render on their worker events. */
@@ -702,7 +704,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   // Team experiments (model routing A/B). Operator-only rows are dropped for
   // everyone else inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
-    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now, viewerId: userId })
       .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
       .catch(() => null)
     : null;
@@ -736,6 +738,9 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
       runnerLanes,
+      seesTeamWork: need('runnerLanes')
+        ? await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false)
+        : false,
       claimPlans,
       protectedWorkPending,
       // The workspaces the lanes read, for the page's live refresh.
