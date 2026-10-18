@@ -840,6 +840,28 @@ describe('explainPr — a dirty mission PR', () => {
   it('refuses a PR with no task attached rather than inventing a subject', async () => {
     expect(await explainPr({ ...subject, taskId: null }, ACTOR)).toBeNull();
   });
+
+  it('a PR resolved through a cancelled fix attempt\'s worker answers for the task that opened it, never "complete"', async () => {
+    taskRows[0].workers[0].prLifecycleStatus = 'pr_open';
+    taskRows.push(task({
+      id: 'task-ci-fix', title: '[builder · after CI #1] Mission PR', status: 'cancelled', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', creationSource: 'ci_retry',
+      workers: [worker({ id: 'worker-ci-fix', prNumber: 101, branch: 'mission/build-auth', prLifecycleStatus: 'pr_open' })],
+    }));
+    const answer = (await explainPr({ ...subject, id: 'worker-ci-fix', taskId: 'task-ci-fix', prLifecycleStatus: 'pr_open' }, ACTOR))!.subjects[0];
+    expect(answer.subject.taskId).toBe('task-mission-pr');
+    expect(answer.state).not.toBe('complete');
+    expect(answer.because.map(l => l.claim).join('\n')).not.toContain('No task, PR, check or decision is open');
+  });
+
+  it('an attempt that opened a PR of its own stays that PR\'s subject', async () => {
+    taskRows.push(task({
+      id: 'task-own-pr', title: '[builder · after CI #2] its own PR', status: 'completed', taskClass: 'attempt',
+      parentTaskId: 'task-mission-pr', workers: [worker({ id: 'worker-own', prNumber: 202 })],
+    }));
+    const answer = (await explainPr({ ...subject, id: 'worker-own', taskId: 'task-own-pr', prNumber: 202, prLifecycleStatus: 'pr_open' }, ACTOR))!.subjects[0];
+    expect(answer.subject.taskId).toBe('task-own-pr');
+  });
 });
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

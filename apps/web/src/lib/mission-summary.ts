@@ -41,6 +41,7 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { missionWorkHolder, missionWorkStateFromRows } from './mission-work-state';
 import { missionNeedsYou } from './mission-state-view';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
+import { prOutcome } from './pr-presentation';
 import { overlayDeliveryLifecycle } from './delivery-overlay';
 import { taskRowsStripProjection } from './mission-strip-order';
 
@@ -81,9 +82,7 @@ function newestFirst(ws: Row[]): Row[] {
 }
 
 function prState(w: Row): MissionSummaryDelivery['state'] {
-  if (w.mergedAt || w.prLifecycleStatus === 'merged') return 'merged';
-  if (w.prLifecycleStatus === 'closed') return 'closed';
-  return 'open';
+  return prOutcome(w);
 }
 
 /**
