@@ -1,6 +1,6 @@
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
@@ -141,6 +141,20 @@ import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
 import { changedFields, livenessWriteDue, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
+
+/**
+ * Work that does not change the reply runs after it is sent (spec 3ef37387
+ * R-33): `after()` inside a request, inline outside one (tests, scripts), so
+ * nothing is lost where no response is being sent. Never throws.
+ */
+async function afterReply(label: string, fn: () => Promise<unknown>): Promise<void> {
+  const run = () => fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err));
+  try {
+    after(run);
+  } catch {
+    await run();
+  }
+}
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -800,8 +814,12 @@ export async function PATCH(
   // so nothing waits on the worker read. The task fields are the ones a
   // progress report reads (pending worker messages, note scope, park context,
   // lease category); a terminal report re-reads what it needs after its writes.
-  const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId) =>
+  // The same round reads the secrets redaction scrubs (below), scoped the way
+  // it always was: the worker's team, its workspace or team-wide, its account
+  // or account-agnostic.
+  const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId | typeof workers.accountId) =>
     sql`(SELECT ${col} FROM ${workers} WHERE ${workers.id} = ${id})`;
+  const workerTeam = sql`(SELECT ${workspaces.teamId} FROM ${workspaces} WHERE ${workspaces.id} = ${workerOf(workers.workspaceId)})`;
   const opening = await readRound({
     worker: db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) }),
     workspace: db.query.workspaces.findFirst({
@@ -811,6 +829,14 @@ export async function PATCH(
     task: db.query.tasks.findFirst({
       where: sqlWhere(eq(tasks.id, workerOf(workers.taskId))),
       columns: { context: true, missionId: true, title: true, pathManifest: true, category: true },
+    }),
+    secrets: db.query.secrets.findMany({
+      where: sqlWhere(and(
+        eq(secretsTable.teamId, workerTeam),
+        or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, workerOf(workers.workspaceId))),
+        or(isNull(secretsTable.accountId), eq(secretsTable.accountId, workerOf(workers.accountId))),
+      )),
+      columns: { encryptedValue: true, label: true, purpose: true },
     }),
   });
   const worker = opening.worker;
@@ -839,17 +865,7 @@ export async function PATCH(
   const secretValues: Array<{ label: string; value: string }> = [];
   try {
     if (worker.workspaceId && wsForSensitivity?.teamId) {
-      const credRows = await db.query.secrets.findMany({
-        where: sqlWhere(and(
-          eq(secretsTable.teamId, wsForSensitivity.teamId),
-          or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, worker.workspaceId)),
-          worker.accountId
-            ? or(isNull(secretsTable.accountId), eq(secretsTable.accountId, worker.accountId))
-            : isNull(secretsTable.accountId),
-        )),
-        columns: { encryptedValue: true, label: true, purpose: true },
-      });
-      for (const row of credRows) {
+      for (const row of opening.secrets ?? []) {
         try {
           const val = decrypt(row.encryptedValue);
           if (val) secretValues.push(...collectSecretValues(row.label || row.purpose, val));
@@ -1241,6 +1257,13 @@ export async function PATCH(
       ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
       : merged;
   }
+  // Telemetry rows (error traces, action events, prompt builds) change nothing
+  // in the reply, so a progress report writes them after it. A terminal report
+  // writes them first: its own failure handling below reads the traces.
+  const reportIsTerminal = reportedStatus === 'completed' || reportedStatus === 'failed' || reportedStatus === 'error';
+  const telemetryWrite = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
+    ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
+    : afterReply(label, fn);
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
     const existing = (worker.mcpCalls as any[]) || [];
@@ -1269,11 +1292,7 @@ export async function PATCH(
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerErrorTraces).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert error traces', err);
-      }
+      await telemetryWrite('insert error traces', () => db.insert(workerErrorTraces).values(rows));
     }
   }
   // appendActionEvents: insert per-call buildd MCP action events into
@@ -1293,11 +1312,7 @@ export async function PATCH(
         ts: new Date(e.ts),
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerActionEvents).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert action events', err);
-      }
+      await telemetryWrite('insert action events', () => db.insert(workerActionEvents).values(rows));
     }
   }
   // appendPromptCompositionEvents: insert one row per prompt build into
@@ -1358,11 +1373,7 @@ export async function PATCH(
         sections: Array.isArray(e.sections) ? e.sections.slice(0, 32) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert prompt composition events', err);
-      }
+      await telemetryWrite('insert prompt composition events', () => db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing());
     }
   }
   // Branch: persist actual checkout branch when resume branch was used
@@ -5355,12 +5366,16 @@ export async function PATCH(
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
   const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
-  if (accumulatedTouches && accumulatedTouches.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    try {
+  // Advisory and reply-independent: it runs after the reply (R-33). The ack of
+  // served worker messages below stays in the request.
+  const overlapWorkspaceId = worker.workspaceId;
+  const overlapTaskId = worker.taskId;
+  if (accumulatedTouches && accumulatedTouches.length > 0 && overlapWorkspaceId && overlapTaskId && !isTerminalStatus) {
+    await afterReply('passive overlap detection', async () => {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const siblings = await db.query.workers.findMany({
         where: sqlWhere(and(
-          eq(workers.workspaceId, worker.workspaceId),
+          eq(workers.workspaceId, overlapWorkspaceId),
           not(eq(workers.id, id)),
           not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
           isNull(workers.mergedAt),
@@ -5436,7 +5451,7 @@ export async function PATCH(
         // Emit Pusher event on workspace channel.
         const overlapEvent = {
           detectedWorkerId: id,
-          detectedTaskId: worker.taskId,
+          detectedTaskId: overlapTaskId,
           siblingWorkerId: sibling.id,
           siblingTaskId: sibling.taskId,
           overlappingPaths: contended,
@@ -5444,7 +5459,7 @@ export async function PATCH(
           detectedByBranch: updated.branch ?? worker.branch,
           detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
         };
-        await triggerEvent(channels.workspace(worker.workspaceId), 'path_overlap_detected', overlapEvent);
+        await triggerEvent(channels.workspace(overlapWorkspaceId), 'path_overlap_detected', overlapEvent);
 
         // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
         // One atomic append (capped in SQL): the sibling is checking in and
@@ -5469,7 +5484,7 @@ export async function PATCH(
         if (contended.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_blocked_on_you',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: contended,
@@ -5482,7 +5497,7 @@ export async function PATCH(
         if (regenerable.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_regenerable_overlap',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: regenerable.map(r => r.path),
@@ -5505,20 +5520,11 @@ export async function PATCH(
           .set({
             context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('notifiedOverlaps', ${JSON.stringify([...notifiedOverlaps, ...newNotifications])}::jsonb)`,
           })
-          .where(eq(tasks.id, worker.taskId));
+          .where(eq(tasks.id, overlapTaskId));
       }
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    } catch (err) {
-      console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
-      // Fall through — an ack still has to be honoured.
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    }
-  } else if (deliveredMessageIds.length > 0 && worker.taskId) {
-    // No overlap detection this tick — honour the delivery ack on its own.
+    });
+  }
+  if (deliveredMessageIds.length > 0 && worker.taskId) {
     await clearWorkerMessages(worker.taskId, deliveredMessageIds);
   }
 
