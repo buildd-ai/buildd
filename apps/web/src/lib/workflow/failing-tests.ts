@@ -10,15 +10,20 @@
  * Anything else is not a test line. A log with none of them is a job that
  * failed without failing a test (a lint, a type check, a gate).
  */
-import { cleanLogText } from '@/lib/ci-failure-excerpts';
 import { TEST_SEPARATOR, UNREAD_TESTS } from '@buildd/workflow-kernel/trunk-signature';
+
+// Only what a test line needs: colours and the Actions timestamp prefix (the full cleaner,
+// with redaction, is ci-failure-excerpts.ts, a module the kernel does not import).
+const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const LINE_PREFIX = /^\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/;
 
 const BUN_FAIL = /^\s*\(fail\)\s+(.+?)(?:\s+\[\d+(?:\.\d+)?\s*m?s\])?\s*$/;
 const MARK_FAIL = /^\s*[✕×✗]\s+(.+?)(?:\s+\(?\d+(?:\.\d+)?\s*m?s\)?)?\s*$/;
 
 export function failingTestsFromLog(raw: string): string[] {
   const out = new Set<string>();
-  for (const line of cleanLogText(raw).split('\n')) {
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.replace(/\r$/, '').replace(ANSI, '').replace(LINE_PREFIX, '');
     const m = line.match(BUN_FAIL) ?? line.match(MARK_FAIL);
     const name = m?.[1]?.trim();
     if (name) out.add(name);
