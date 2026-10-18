@@ -23,6 +23,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Exec } from './kernel';
+import { reapedOwnerAttemptIsCurrentSql } from './task-projection';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -139,6 +140,19 @@ export async function kernelDeliveryById(deliveryId: string, exec: Exec = dbExec
   const r = await first(resolveByIdSql(deliveryId, workspaceId), exec);
   return r?.authority === 'kernel' && r.inWorkspace ? r.deliveryId : null;
 }
+
+/**
+ * AC-1 slice 5: whether a worker a sweep expired is the end of its kernel owner task's attempt,
+ * which the kernel then decides (AttemptEnded(lost)) and projects onto the task. Only an attempt
+ * row (never a placeholder no runner executed) that is the open task's current attempt: a late
+ * reap, after the task was requeued and claimed again, ends nothing. The predicate is exported
+ * for the sweep's own write, so the check and the write agree.
+ */
+export async function reapedOwnerAttemptIsCurrent(taskId: string, workerId: string, exec: Exec = dbExec): Promise<boolean> {
+  const r = await exec(sql`SELECT 1 AS ok FROM tasks tk WHERE tk.id = ${taskId}::uuid AND ${reapedOwnerAttemptIsCurrentSql(workerId)}`);
+  return (r.rows ?? []).length > 0;
+}
+export { reapedOwnerAttemptIsCurrentSql };
 
 /**
  * As `kernelDeliveryById` for a named workspace, failing closed: a delivery that exists but is

@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
+import { attemptEndTaskProjectionCtes, endingWorkerIsCurrentSql, reapedOwnerAttemptIsCurrentSql, isAttemptRow, isAttemptRowSql, mergeTaskPayloadSql, mergeTaskProjectionCtes, mergeTaskTransitionOf, ownerAttemptEndOf, ownerEndTaskStatus, projectOwnerEndSql, OWNER_END_SETTLE_MS, CLAIM_CLOCK_SKEW_MS } from './task-projection';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -122,6 +122,21 @@ describe('AC-1 slice 3: the owner end projection', () => {
     expect(t).toContain('tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => $2::double precision)');
     expect(params[1]).toBe(CLAIM_CLOCK_SKEW_MS / 1000);
     expect(t).toContain('nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id)');
+  });
+
+  test('reapedOwnerAttemptIsCurrentSql: an open task, an attempt row (no placeholder), its current attempt; the task alias is the caller\'s', () => {
+    const { sql: t, params } = render(reapedOwnerAttemptIsCurrentSql('w7'));
+    expect(t).toContain("tk.status IN ($1::text, $2::text)");
+    expect(params.slice(0, 2)).toEqual(['assigned', 'in_progress']);
+    expect(t).toContain('rw.id::text = $3::text AND (rw.runner IS NULL OR rw.runner NOT IN');
+    expect(params).toContain('external');
+    expect(t).toContain('ew.task_id = tk.id');
+    // Inside a drizzle update(tasks) the row is `tasks`, unaliased.
+    const inUpdate = render(reapedOwnerAttemptIsCurrentSql('w7', 'tasks')).sql;
+    expect(inUpdate).toContain('tasks.status IN (');
+    expect(inUpdate).toContain('ew.task_id = tasks.id');
+    expect(inUpdate).toContain('nw.task_id = tasks.id');
+    expect(inUpdate).not.toContain('tk.');
   });
 
   test('no CTE for a requeue, a repair\'s end, another command, or an end with no outcome', () => {

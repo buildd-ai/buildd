@@ -372,7 +372,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. No attempt writer stores result.prUrl / prNumber: they are derived on read (workflow/task-pr.ts, AC-1 slice 4)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
-  'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
+  'apps/web/src/lib/stale-workers.ts': `${ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt')}. For the current attempt of a kernel owner task (AC-1 slice 5) the caps write result but not status, and the unanswered-question sweep writes nothing: AttemptEnded(lost) projects it (t_attempt, projectOwnerEnd). A late reap after a re-claim, or a placeholder row, ends nothing (reapedOwnerAttemptIsCurrent)`,
   'apps/web/src/lib/interactive-detach.ts': ATTEMPT('a released interactive session requeues its open task'),
   'apps/web/src/lib/credential-recovery.ts': ATTEMPT('requeue of tasks failed on an auth error once the credential is back'),
   'apps/web/src/lib/github-repo-access-store.ts': ATTEMPT('requeue of a task failed on blocked GitHub access, once access is verified'),
@@ -409,7 +409,7 @@ const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
   // task runs the worker, but the task keeps completed. Kept guarded rather than exempted, so a
   // follow-up that then fails or is requeued can never reopen work that already merged.
   'apps/web/src/app/api/workers/[id]/route.ts': 9,
-  'apps/web/src/lib/stale-workers.ts': 8,
+  'apps/web/src/lib/stale-workers.ts': 6,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
   'apps/web/src/lib/task-recovery-hold.ts': 1,
   'apps/web/src/lib/ci-failure-retry.ts': 1,
@@ -432,7 +432,8 @@ const ATTEMPT_SITE_CEILING: Record<string, number> = {
   'apps/web/src/app/api/workers/[id]/route.ts': 13,
   'apps/web/src/app/api/workers/claim/route.ts': 4,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 3,
-  'apps/web/src/lib/stale-workers.ts': 11,
+  // AC-1 slice 5: the three cap failures are one statement, which writes no status for a kernel owner attempt.
+  'apps/web/src/lib/stale-workers.ts': 9,
   'apps/web/src/lib/interactive-detach.ts': 1,
   'apps/web/src/lib/credential-recovery.ts': 1,
   'apps/web/src/lib/github-repo-access-store.ts': 1,

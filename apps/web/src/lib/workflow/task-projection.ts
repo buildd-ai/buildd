@@ -174,12 +174,26 @@ const tkCols = { id: sql`tk.id`, workspaceId: sql`tk.workspace_id`, status: sql`
  * again belongs to the attempt before, so it must not settle the new one. Compared as text: a
  * reaper end with no worker row names a synthetic id, which matches nothing.
  */
-export function endingWorkerIsCurrentSql(workerId: string): SQL {
+export function endingWorkerIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  const tk = sql.raw(task);
   return sql`EXISTS (SELECT 1 FROM workers ew
-      WHERE ew.id::text = ${workerId}::text AND ew.task_id = tk.id
-        AND (tk.claimed_at IS NULL OR ew.created_at >= tk.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
-        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = tk.id AND ${isAttemptRowSql('nw')}
+      WHERE ew.id::text = ${workerId}::text AND ew.task_id = ${tk}.id
+        AND (${tk}.claimed_at IS NULL OR ew.created_at >= ${tk}.claimed_at - make_interval(secs => ${CLAIM_CLOCK_SKEW_MS / 1000}::double precision))
+        AND NOT EXISTS (SELECT 1 FROM workers nw WHERE nw.task_id = ${tk}.id AND ${isAttemptRowSql('nw')}
           AND (nw.created_at > ew.created_at OR (nw.created_at = ew.created_at AND nw.id > ew.id))))`;
+}
+
+/**
+ * AC-1 slice 5: a worker the reaper expired is the end of its owner task's attempt only when it
+ * is that attempt: an attempt row itself (a placeholder no runner executed ends nothing) and the
+ * task's current one (`endingWorkerIsCurrentSql`), on a task still open. `task` names the tasks
+ * row in the enclosing statement (`tasks` inside a drizzle `update(tasks)`).
+ */
+export function reapedOwnerAttemptIsCurrentSql(workerId: string, task = 'tk'): SQL {
+  const tk = sql.raw(task);
+  return sql`(${tk}.status IN (${open})
+    AND EXISTS (SELECT 1 FROM workers rw WHERE rw.id::text = ${workerId}::text AND ${isAttemptRowSql('rw')})
+    AND ${endingWorkerIsCurrentSql(workerId, task)})`;
 }
 
 /**
