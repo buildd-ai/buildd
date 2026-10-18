@@ -2032,6 +2032,50 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '0230612e: a verdict read at another commit than the round\'s head is inconclusive: it never approves, the round is asked again at the head, then a person\'s',
+    async run(host) {
+      const reviewer = async (ws: string) => (host.newTaskId ? host.newTaskId(ws) : host.newId());
+      const s = await new Delivery(host, 78).open();
+      await s.ownerPushed('H1');
+      const judged = async (verdict: 'approve' | 'request_changes', evidenceSha: string | null, reviewerTaskId: string) => {
+        const r = await s.latestRound();
+        return s.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${reviewerTaskId}`, roundId: r.id, verdict, effectiveVerdict: verdict, headBound: r.headSha, evidenceSha, reviewerTaskId, maxContractRetries: 1 });
+      };
+      // The reviewer's checkout sat at the base (B0), not the head it was asked about.
+      const r1 = await reviewer(s.workspaceId);
+      applied(await judged('approve', 'B0', r1), 'AWAITING_REVIEW', 'an approval read at the base');
+      eq(pick(await s.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: [], approvalBasis: null }, 'nothing approved');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status', 'failureCount', 'verdict']), { round: 1, headSha: 'H1', status: 'queued', failureCount: 1, verdict: null }, 'the same round, re-queued, with no verdict');
+      eq(await s.count('post_review'), 0, 'no GitHub review posted');
+      eq(await s.count('dispatch_review'), 2, 'a reviewer is asked again at the head');
+      notApplied(await judged('approve', 'B0', r1), 'duplicate', 'idempotency_key_seen', 'the same report twice spends nothing more');
+      // The next reviewer reported no checkout at all: also inconclusive, and the budget is spent.
+      const r2 = await reviewer(s.workspaceId);
+      applied(await judged('approve', null, r2), 'ESCALATED', 'an approval with no checkout reported');
+      eq(pick(await s.d(), ['state', 'stateReason', 'approvedHeads']), { state: 'ESCALATED', stateReason: 'review_unavailable', approvedHeads: [] }, 'a person\'s, never approved');
+      eq((await s.latestRound()).status, 'failed', 'the round is closed');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'nothing lands');
+
+      // Read at the head, the re-asked reviewer's verdict decides the round as any other does.
+      const t = await new Delivery(host, 79).open();
+      await t.ownerPushed('H1');
+      const r3 = await reviewer(t.workspaceId);
+      const round = await t.latestRound();
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r3}`, roundId: round.id, verdict: 'request_changes', effectiveVerdict: 'request_changes', headBound: 'H1', evidenceSha: 'B0', reviewerTaskId: r3, maxContractRetries: 1 }), 'AWAITING_REVIEW', 'a request for changes read at the base');
+      eq(await t.count('dispatch_fix'), 0, 'no fix dispatched on it');
+      const r4 = await reviewer(t.workspaceId);
+      applied(await t.submit({ type: 'ReviewVerdictRecorded', actor: `reviewer:${r4}`, roundId: round.id, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'H1', reviewerTaskId: r4, maxContractRetries: 1 }), 'APPROVED', 'read at the head, it decides');
+      eq(pick(await t.d(), ['approvedHeads', 'approvalBasis']), { approvedHeads: ['H1'], approvalBasis: 'verdict' }, 'approval binds H1');
+
+      // A verdict from outside the kernel's rounds is held to the same rule: never kept as the head's review.
+      const u = await new Delivery(host, 80).open();
+      applied(await u.push('H1'), 'WORKING', 'the owner pushed H1 and is still working');
+      const outside = await reviewer(u.workspaceId);
+      notApplied(await u.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: outside, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1', evidenceSha: 'B0' }), 'stale', 'verdict_evidence_not_at_head', 'an outside approval read at the base');
+      eq((await u.view()).rounds.length, 0, 'no decided round kept');
+    },
+  },
+  {
     name: '6900a317: the CI reading is per head: a failure outranks runs still going, a re-run withdraws it, green is recorded without a repair, and an old head says nothing',
     async run(host) {
       const s = await new Delivery(host, 77).open();

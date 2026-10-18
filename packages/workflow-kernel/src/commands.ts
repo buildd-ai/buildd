@@ -246,6 +246,17 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /**
+       * The commit the reviewer's checkout was at when it judged (`git rev-parse HEAD`).
+       * Only a verdict read at the round's own head decides it: any other commit (or
+       * `null`, none reported) is inconclusive, never an approval, and fails the round
+       * as T27 does. Absent = a caller that does not attest it.
+       */
+      evidenceSha?: string | null;
+      /** The reviewer that judged: one inconclusive verdict per reviewer spends the round's budget. */
+      reviewerTaskId?: string;
+      /** T27's budget for an inconclusive verdict. Absent = 0: it escalates at once. */
+      maxContractRetries?: number;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -260,6 +271,8 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+      /** As T6's: a verdict read at any other commit than `headBound` is never adopted. */
+      evidenceSha?: string | null;
     } & VerdictFindings)
   | (Base & {
       /**
@@ -560,7 +573,7 @@ export type Command =
       type: 'ReviewRoundFailed';
       roundId: string;
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
-      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
+      reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover' | 'evidence_not_at_head';
       maxContractRetries: number;
       /**
        * The reviewer task whose run failed. The failure is counted once per
