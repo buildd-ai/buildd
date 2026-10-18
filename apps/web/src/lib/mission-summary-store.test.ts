@@ -168,6 +168,22 @@ describe('AC-2: stored == computed after each kind of write', () => {
     expect(summary('m-build').taskCounts.pending).toBe(2);
   });
 
+  it('a sessionless worker settled (cancel/reap) leaves the live count; the settle notes its worker', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b3')!, { status: 'failed', completedAt: new Date(clock), updatedAt: new Date(clock) });
+    noteWorkChanged({ workerIds: ['w-b3'], taskIds: ['t-b3'] });
+    await flushWorkChanges();
+    expectStoredEqualsComputed();
+  });
+
+  it('a PR attached by hand: the attach notes its task and worker', async () => {
+    tick();
+    Object.assign(world.workers.find(w => w.id === 'w-b3')!, { prUrl: 'https://github.com/acme/app/pull/14', prNumber: 14, prLifecycleStatus: 'pr_open', updatedAt: new Date(clock) });
+    noteWorkChanged({ taskIds: ['t-b3'], workerIds: ['w-b3'] });
+    await flushWorkChanges();
+    expectStoredEqualsComputed();
+  });
+
   it('a mission row write: the owner holds the mission', async () => {
     tick();
     world.missions.find(m => m.id === 'm-build')!.isHeld = true;
