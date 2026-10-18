@@ -132,7 +132,6 @@ import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, ve
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
-import { ATTEMPT_WORKER_EXTRAS, ATTEMPT_WORKER_PROJECTED_COLUMNS } from './attempt-worker-extras';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -395,11 +394,9 @@ export default async function TaskDetailPage({
         with: {
           // The rows taskWorkers carry, for Worker history, less what only the
           // live worker's steer panel reads: an attempt's worker is never this
-          // task's active one. Its milestones and resultMeta are cut to what
-          // the page draws from them (attempt-worker-extras.ts).
+          // task's active one.
           workers: {
-            columns: { ...TASK_VIEW_UNREAD_WORKER_COLUMNS, ...ATTEMPT_WORKER_PROJECTED_COLUMNS, instructionHistory: false, pendingInstructions: false, observedTouches: false },
-            extras: ATTEMPT_WORKER_EXTRAS,
+            columns: { ...TASK_VIEW_UNREAD_WORKER_COLUMNS, instructionHistory: false, pendingInstructions: false, observedTouches: false },
             orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
             with: { account: { columns: { name: true } } },
           },
