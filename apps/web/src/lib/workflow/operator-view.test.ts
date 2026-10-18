@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { describeFloorResult, evidenceLine, parseKernelQuery } from './kernel-operator-view';
+import { describeFloorResult, evidenceLine, parseKernelQuery } from './operator-view';
 
 describe('parseKernelQuery', () => {
   it('defaults to the last day and no filter', () => {

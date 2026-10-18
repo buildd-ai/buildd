@@ -8,7 +8,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedTask, seedWorkspace, withDb } from './harness';
-import { loadKernelOperatorView, parkedCommands, webHostTransitions, lastFloorRuns } from '../../src/lib/kernel-operator-view';
+import { loadKernelOperatorView, parkedCommands, webHostTransitions, lastFloorRuns } from '../../src/lib/workflow/operator-view';
 
 let teamId: string;
 let workspaceId: string;

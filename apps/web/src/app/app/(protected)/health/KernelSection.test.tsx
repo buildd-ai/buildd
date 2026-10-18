@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { KernelSection, ageOf } from './KernelSection';
-import type { KernelOperatorView, TransitionRow } from '@/lib/kernel-operator-view';
+import type { KernelOperatorView, TransitionRow } from '@/lib/workflow/operator-view';
 
 const NOW = Date.parse('2026-10-18T12:00:00.000Z');
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -32,7 +32,7 @@ describe('KernelSection', () => {
     expect(html).toMatch(/data-testid="kernel-web-host" data-count="0"/);
     const t = text(html);
     expect(t).toContain('The web host wrote no transitions in the last 24 hours');
-    expect(t).toContain('As it should be');
+    expect(t).toContain('Expected');
     expect(html).not.toContain('kernel-web-host-recent');
   });
 
@@ -40,7 +40,7 @@ describe('KernelSection', () => {
     const html = render(view({ web: { count: 2, recent: [tr({ id: 'w', host: 'web', command: 'observe_ci_green' })] } }));
     const t = text(html);
     expect(t).toContain('The web host wrote 2 transitions in the last 24 hours');
-    expect(t).toContain('It should be none');
+    expect(t).toContain('Should be 0');
     expect(html).toContain('text-status-error');
     expect(html).toContain('data-testid="kernel-web-host-recent"');
     expect(t).toContain('observe ci green');
@@ -61,10 +61,10 @@ describe('KernelSection', () => {
   });
 
   it('nothing parked says so, and a replay that has not failed says that', () => {
-    expect(text(render(view()))).toContain('No commands are parked.');
+    expect(text(render(view()))).toContain('No parked commands.');
     const t = text(render(view({ parked: { total: 1, oldestAt: ago(60_000), gaveUp: 0, byOp: [{ op: 'attempt_ended', count: 1, oldestAt: ago(60_000), failing: 0, lastError: null }] } })));
     expect(t).toContain('1 command is parked');
-    expect(t).toContain('Sending them again has not failed.');
+    expect(t).toContain('No resend failures.');
   });
 
   it('floor runs: what each repaired, and what it could not', () => {
@@ -87,7 +87,7 @@ describe('KernelSection', () => {
     expect(t).toContain('acme/app#42 in alpha, by system:reviewer, written by the control plane');
     expect(html).toContain('name="kworkspace" value="alpha"');
     expect(html).toContain('name="kcommand" value="record_review_verdict"');
-    expect(html).toMatch(/<option value="7d" selected/);
+    expect(html).toContain('name="kwindow" value="7d"');
     expect(html).toContain('method="get"');
   });
 
@@ -118,9 +118,9 @@ describe('KernelSection', () => {
 
   it('a finished PR has no approval check to show; notes for the unanswerable lookups', () => {
     const found = (approval: null) => view({ timeline: { kind: 'found', timelines: [{ deliveryId: 'd', repo: null, prNumber: 7, state: 'MERGED', stateReason: null, workspaceName: 'alpha', steps: [], stepsOmitted: 0, openFindings: [], approval, approvalContext: 'Buildd / Review approval' }] } });
-    expect(text(render(found(null)))).toContain('Not shown: the PR is over');
+    expect(text(render(found(null)))).toContain('PR closed. Last check unchanged.');
     expect(text(render(found(null)))).toContain('No open review findings.');
-    expect(text(render(view({ timeline: { kind: 'needs_workspace' } })))).toContain('Name the workspace too');
+    expect(text(render(view({ timeline: { kind: 'needs_workspace' } })))).toContain('Add a workspace');
     expect(text(render(view({ timeline: { kind: 'not_found', prNumber: 9 } })))).toContain('no delivery for PR #9');
   });
 

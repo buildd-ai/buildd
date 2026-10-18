@@ -32,8 +32,8 @@ mock.module('next/headers', () => ({ cookies: downstream }));
 
 // The kernel log is read only past the gate: count loader calls to prove a 404 reads nothing.
 let kernelReads = 0;
-const kernelView = await import('@/lib/kernel-operator-view');
-mock.module('@/lib/kernel-operator-view', () => ({ ...kernelView, loadKernelOperatorView: async () => { kernelReads++; throw new Downstream(); } }));
+const kernelView = await import('@/lib/workflow/operator-view');
+mock.module('@/lib/workflow/operator-view', () => ({ ...kernelView, loadKernelOperatorView: async () => { kernelReads++; throw new Downstream(); } }));
 
 process.env.BUILDD_OPERATOR_USER_EMAILS = OWNER;
 

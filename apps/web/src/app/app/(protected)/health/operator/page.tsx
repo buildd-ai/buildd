@@ -3,7 +3,7 @@ import { requirePlatformOperator } from '@/lib/operator-page';
 import { renderHealthPage } from '../_lib/render-health';
 import { loadUsageView } from '../usage/_lib/load-usage-view';
 import { UsageInternals } from '../usage/UsageClient';
-import { loadKernelOperatorView, parseKernelQuery } from '@/lib/kernel-operator-view';
+import { loadKernelOperatorView, parseKernelQuery } from '@/lib/workflow/operator-view';
 import { KernelSection } from '../KernelSection';
 
 export const dynamic = 'force-dynamic';

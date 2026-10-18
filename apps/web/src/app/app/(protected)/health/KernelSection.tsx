@@ -5,11 +5,10 @@
  * touches the DB. The filters are a plain GET form, so the page stays a server
  * component and a filtered view is a link.
  */
+import { WindowSelect } from './KernelWindowSelect';
 import Chip, { type ChipTone } from '@/components/ui/Chip';
-import {
-  KERNEL_WINDOW_LABEL, KERNEL_WINDOWS, TRANSITION_LIMIT,
-  type FloorRun, type KernelOperatorView, type KernelWindow, type PrTimeline, type TransitionRow,
-} from '@/lib/kernel-operator-view';
+import type { FloorRun, KernelOperatorView, PrTimeline, TransitionRow } from '@/lib/workflow/operator-view';
+import { KERNEL_WINDOW_LABEL, TRANSITION_LIMIT } from '@/lib/kernel-windows';
 
 /** "5m", "3h", "2d": how long before `now`. */
 export function ageOf(at: string | null, now: number): string {
@@ -26,11 +25,11 @@ const label = (s: string) => s.replace(/_/g, ' ');
 const when = (at: string) => at.replace('T', ' ').slice(0, 16);
 
 function hostLabel(host: string | null): string {
-  return host === 'control-plane' ? 'control plane' : host === 'web' ? 'web host' : 'before hosts were recorded';
+  return host === 'control-plane' ? 'control plane' : host === 'web' ? 'web host' : 'unrecorded host';
 }
 
 function prLabel(t: Pick<TransitionRow, 'prNumber' | 'repo'>): string {
-  return t.prNumber == null ? 'no PR yet' : `${t.repo ? `${t.repo}` : ''}#${t.prNumber}`;
+  return t.prNumber == null ? 'no PR' : `${t.repo ? `${t.repo}` : ''}#${t.prNumber}`;
 }
 
 function TransitionList({ items, now, testid }: { items: TransitionRow[]; now: number; testid: string }) {
@@ -59,9 +58,7 @@ function Filters({ view }: { view: KernelOperatorView }) {
     <form method="get" data-testid="kernel-filters" className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
       <div className="col-span-1">
         <label className="field-label" htmlFor="kwindow">Window</label>
-        <select id="kwindow" name="kwindow" defaultValue={q.window} className={input}>
-          {(Object.keys(KERNEL_WINDOWS) as KernelWindow[]).map((w) => <option key={w} value={w}>{KERNEL_WINDOW_LABEL[w]}</option>)}
-        </select>
+        <WindowSelect value={q.window} />
       </div>
       <div className="col-span-1">
         <label className="field-label" htmlFor="kworkspace">Workspace</label>
@@ -101,8 +98,8 @@ function WebHost({ view }: { view: KernelOperatorView }) {
           </div>
           <div className="text-xs text-text-muted">
             {count === 0
-              ? 'As it should be. The control plane writes every transition, in every workspace.'
-              : 'It should be none: the control plane writes every transition. The newest are below.'}
+              ? 'Expected. The control plane writes every transition.'
+              : 'Should be 0. The control plane writes every transition. Newest below.'}
           </div>
         </div>
       </div>
@@ -113,11 +110,12 @@ function WebHost({ view }: { view: KernelOperatorView }) {
 
 function Parked({ view }: { view: KernelOperatorView }) {
   const p = view.parked;
+  const gaveUp = p.gaveUp > 0 && <span className="text-status-error"> The floor gave up on {plural(p.gaveUp, 'command', 'commands')} in the {KERNEL_WINDOW_LABEL[view.query.window]}.</span>;
   if (p.total === 0) {
     return (
       <div data-testid="kernel-parked" data-total={0} className="text-sm text-text-secondary">
-        No commands are parked.
-        {p.gaveUp > 0 && <span className="text-status-error"> The floor gave up on {plural(p.gaveUp, 'command', 'commands')} in the {KERNEL_WINDOW_LABEL[view.query.window]}.</span>}
+        No parked commands.
+        {gaveUp}
       </div>
     );
   }
@@ -127,9 +125,9 @@ function Parked({ view }: { view: KernelOperatorView }) {
       <div className="text-sm text-text-primary">
         {plural(p.total, 'command is', 'commands are')} parked, the oldest {ageOf(p.oldestAt, view.now).replace(' ago', '')} old.{' '}
         <span data-testid="kernel-replay" className={failing > 0 ? 'text-status-error' : 'text-text-secondary'}>
-          {failing > 0 ? `Sending them again is failing for ${failing}.` : 'Sending them again has not failed.'}
+          {failing > 0 ? `Sending them again is failing for ${failing}.` : 'No resend failures.'}
         </span>
-        {p.gaveUp > 0 && <span className="text-status-error"> The floor gave up on {plural(p.gaveUp, 'command', 'commands')} in the {KERNEL_WINDOW_LABEL[view.query.window]}.</span>}
+        {gaveUp}
       </div>
       <ul className="divide-y divide-border-default">
         {p.byOp.map((o) => (
@@ -137,7 +135,7 @@ function Parked({ view }: { view: KernelOperatorView }) {
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-mono text-text-primary">{label(o.op)}</span>
               <span className="text-text-secondary">{o.count} waiting, oldest {ageOf(o.oldestAt, view.now).replace(' ago', '')}</span>
-              {o.failing > 0 && <span className="text-status-error">{o.failing} failed to send again</span>}
+              {o.failing > 0 && <span className="text-status-error">{o.failing} resends failing</span>}
             </div>
             {o.lastError && <div className="text-text-muted break-words">Last error: {o.lastError}</div>}
           </li>
@@ -148,7 +146,7 @@ function Parked({ view }: { view: KernelOperatorView }) {
 }
 
 function FloorRuns({ runs, now }: { runs: FloorRun[]; now: number }) {
-  if (runs.length === 0) return <div data-testid="kernel-floor" className="text-sm text-text-secondary">No floor run is recorded yet.</div>;
+  if (runs.length === 0) return <div data-testid="kernel-floor" className="text-sm text-text-secondary">No floor runs.</div>;
   return (
     <ul data-testid="kernel-floor" className="divide-y divide-border-default">
       {runs.map((r) => {
@@ -183,7 +181,7 @@ function Timeline({ t, now }: { t: PrTimeline; now: number }) {
         <span className="text-text-muted">{t.approvalContext}</span>
         {t.approval
           ? <><Chip tone={APPROVAL_TONE[t.approval.state]}>{t.approval.state === 'success' ? 'approved' : t.approval.state === 'failure' ? 'not approved' : 'waiting'}</Chip><span className="text-text-secondary">{t.approval.description}</span></>
-          : <span className="text-text-secondary">Not shown: the PR is over, so its last check stays as it was.</span>}
+          : <span className="text-text-secondary">PR closed. Last check unchanged.</span>}
       </div>
       <div data-testid="kernel-findings" className="text-xs">
         {t.openFindings.length === 0
@@ -207,7 +205,7 @@ function Timeline({ t, now }: { t: PrTimeline; now: number }) {
           </li>
         ))}
       </ol>
-      {t.stepsOmitted > 0 && <div className="text-xs text-text-muted">{t.stepsOmitted} later transitions are not shown.</div>}
+      {t.stepsOmitted > 0 && <div className="text-xs text-text-muted">{t.stepsOmitted} later transitions hidden.</div>}
     </div>
   );
 }
@@ -215,8 +213,8 @@ function Timeline({ t, now }: { t: PrTimeline; now: number }) {
 function TimelineBody({ view }: { view: KernelOperatorView }) {
   const tl = view.timeline;
   switch (tl.kind) {
-    case 'idle': return <p className="text-xs text-text-muted">Enter a PR number and a workspace above to see its transitions in order.</p>;
-    case 'needs_workspace': return <p data-testid="kernel-timeline-note" className="text-xs text-text-secondary">A PR number is only unique inside a workspace. Name the workspace too.</p>;
+    case 'idle': return <p className="text-xs text-text-muted">Enter a PR number and workspace.</p>;
+    case 'needs_workspace': return <p data-testid="kernel-timeline-note" className="text-xs text-text-secondary">Add a workspace. PR numbers repeat across workspaces.</p>;
     case 'no_workspace': return <p data-testid="kernel-timeline-note" className="text-xs text-text-secondary">No workspace matches {tl.scope}.</p>;
     case 'not_found': return <p data-testid="kernel-timeline-note" className="text-xs text-text-secondary">That workspace has no delivery for PR #{tl.prNumber}.</p>;
     case 'found': return <div className="space-y-6">{tl.timelines.map((t) => <Timeline key={t.deliveryId} t={t} now={view.now} />)}</div>;
@@ -250,7 +248,7 @@ export function KernelSection({ view }: { view: KernelOperatorView | null }) {
 
       <Block title={scoped ? 'Recent transitions, filtered' : 'Recent transitions'} testid="kernel-block-transitions">
         {view.scopeMissing
-          ? <p data-testid="kernel-scope-missing" className="text-sm text-text-secondary">No {view.scopeMissing} matches, so there is nothing to list.</p>
+          ? <p data-testid="kernel-scope-missing" className="text-sm text-text-secondary">No {view.scopeMissing} matches.</p>
           : view.transitions.length === 0
             ? <p className="text-sm text-text-secondary">No transitions in the {windowLabel}{scoped ? ' for this filter' : ''}.</p>
             : <>

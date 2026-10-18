@@ -17,18 +17,17 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { describeFinding } from '@buildd/workflow-kernel/findings';
 import { landingStatusOf, LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
-import { loadView, type Exec } from '@/lib/workflow/kernel';
+import { loadView, type Exec } from './kernel';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
 type J = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const KERNEL_WINDOWS = { '24h': 24 * 3_600_000, '7d': 7 * 24 * 3_600_000 } as const;
-export type KernelWindow = keyof typeof KERNEL_WINDOWS;
-export const KERNEL_WINDOW_LABEL: Record<KernelWindow, string> = { '24h': 'last 24 hours', '7d': 'last 7 days' };
+import { KERNEL_WINDOWS, type KernelWindow } from '@/lib/kernel-windows';
+export { KERNEL_WINDOWS, KERNEL_WINDOW_LABEL, TRANSITION_LIMIT, type KernelWindow } from '@/lib/kernel-windows';
 
-export const TRANSITION_LIMIT = 50;
+import { TRANSITION_LIMIT } from '@/lib/kernel-windows';
 export const WEB_RECENT_LIMIT = 5;
 export const FLOOR_RUN_LIMIT = 8;
 const TIMELINE_LIMIT = 200;
@@ -283,7 +282,7 @@ export async function lastFloorRuns(exec: Exec = dbExec): Promise<FloorRun[]> {
 SELECT * FROM (
   (SELECT ${pick} FROM cron_runs WHERE job = 'kernel-floor' ORDER BY started_at DESC LIMIT ${FLOOR_RUN_LIMIT})
   UNION ALL
-  (SELECT ${pick} FROM cron_runs WHERE job = 'pr-reconcile' AND result ? 'kernelOutbox' ORDER BY started_at DESC LIMIT ${FLOOR_RUN_LIMIT})
+  (SELECT ${pick} FROM cron_runs WHERE job = 'pr-reconcile' AND started_at >= now() - interval '7 days' AND result ? 'kernelOutbox' ORDER BY started_at DESC LIMIT ${FLOOR_RUN_LIMIT})
 ) runs ORDER BY started_at DESC LIMIT ${FLOOR_RUN_LIMIT}`);
   return rows(res).map((r) => {
     const result = obj(r.result);
