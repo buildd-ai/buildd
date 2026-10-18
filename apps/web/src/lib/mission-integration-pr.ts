@@ -22,6 +22,7 @@ import {
   missionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { prOutcome } from './pr-presentation';
 
 export type MissionIntegrationPrState =
   /** Open on trunk: this is the mission's outstanding review gate. */
@@ -125,7 +126,7 @@ export function deriveMissionIntegrationPr(args: {
       ? 'merged'
       : current.prNumber == null
         ? 'not_opened'
-        : ownerWorker?.w.prLifecycleStatus === 'closed' ? 'closed' : 'open';
+        : ownerWorker ? prOutcome(ownerWorker.w) : 'open';
     const landedIn = state === 'closed' ? landedInOf(ownerWorker?.w.supersededByPrNumber) : undefined;
     return {
       branch: current.branch, state, prNumber: current.prNumber, prUrl: prUrlOf(current) ?? ownerWorker?.w.prUrl ?? null,
@@ -141,11 +142,7 @@ export function deriveMissionIntegrationPr(args: {
     if (!isMissionPrTask(task)) continue;
     const worker = (task.workers ?? []).find((w) => w.prUrl);
     if (!worker) continue;
-    const state: MissionIntegrationPrState = worker.mergedAt
-      ? 'merged'
-      : worker.prLifecycleStatus === 'closed'
-        ? 'closed'
-        : 'open';
+    const state: MissionIntegrationPrState = prOutcome(worker);
     const landedIn = state === 'closed' ? landedInOf(worker.supersededByPrNumber) : undefined;
     return {
       branch,
