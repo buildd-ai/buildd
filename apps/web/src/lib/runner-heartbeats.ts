@@ -112,6 +112,8 @@ export async function getRunnerHeartbeats(
       isolation: readIsolationRecord(hb.environment),
       shared: isSharedRunner(membersByTeam, hb.account?.teamId ?? null, teamId),
       runnerClass: classifyRunnerOwnership(hb.account),
+      modelAuthSource: hb.modelAuthSource ?? null,
+      codexAuthSource: hb.codexAuthSource ?? null,
       mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
     }));
 }
