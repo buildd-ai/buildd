@@ -9,7 +9,26 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/tasks/11111111-1111-4111-8111-111111111111' });
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+type Handler = (data: unknown) => void;
+const channels = new Map<string, Map<string, Handler[]>>();
+function emit(channel: string, event: string, data: unknown) {
+  for (const fn of channels.get(channel)?.get(event) ?? []) fn(data);
+}
+mock.module('@/lib/pusher-client', () => ({
+  CHANNEL_PREFIX: '',
+  subscribeToChannel: (name: string) => {
+    const handlers = channels.get(name) ?? new Map<string, Handler[]>();
+    channels.set(name, handlers);
+    return {
+      bind: (e: string, fn: Handler) => handlers.set(e, [...(handlers.get(e) ?? []), fn]),
+      unbind: (e: string, fn: Handler) => handlers.set(e, (handlers.get(e) ?? []).filter(f => f !== fn)),
+    };
+  },
+  unsubscribeFromChannel: () => {},
+  getSubscribedChannel: () => null,
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -24,13 +43,17 @@ let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 let posted: Array<{ url: string; body: unknown }>;
 let messagesResponse: { workerId: string | null; canSend: boolean; messages: unknown[] };
+let messageReads = 0;
 
 beforeEach(() => {
   posted = [];
+  messageReads = 0;
+  channels.clear();
   messagesResponse = { workerId: WORKER_ID, canSend: true, messages: [] };
   (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
     const u = String(url);
     if (u.startsWith('/api/tasks/') && u.endsWith('/messages')) {
+      messageReads++;
       return new Response(JSON.stringify({ taskId: TASK_ID, ...messagesResponse }), { status: 200 });
     }
     if (u.startsWith('/api/workers/') && u.endsWith('/instruct')) {
@@ -138,4 +161,21 @@ describe('SteerConversation — message status', () => {
     expect(rows[0].textContent).toContain('Read');
     expect(rows[1].textContent).toContain('Not delivered');
   });
+});
+
+describe('SteerConversation — listens instead of polling (spec 3ef37387 R-21)', () => {
+  it('a worker:progress on its worker\'s channel reloads the messages', async () => {
+    await render();
+    const before = messageReads;
+    expect(before).toBe(1);
+    await act(async () => { emit(`worker-${WORKER_ID}`, 'worker:progress', { workerId: WORKER_ID }); });
+    await act(async () => { await new Promise(r => setTimeout(r, 700)); });
+    expect(messageReads).toBe(before + 1);
+  });
+
+  it('does not re-read every 5 s while nothing happens', async () => {
+    await render();
+    await act(async () => { await new Promise(r => setTimeout(r, 5_600)); });
+    expect(messageReads).toBe(1);
+  }, 10_000);
 });

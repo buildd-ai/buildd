@@ -8,6 +8,8 @@
  *   reads (`DELIVERABLE_ROLE_CONTEXT_KEYS`). An object marker becomes `{}`
  *   (the role only asks whether it is an object), a value stays itself, an
  *   absent or null key is dropped.
+ * - `stageDependencyFailedSql`: the task failed only because a task it depends
+ *   on failed (`dependencyFailureOf`), as one boolean instead of its `result`.
  * - `stageWorkersPredicate`: the newest `LATEST_WORKERS_PER_TASK` workers of a
  *   task (never-started first, as the page's `startedAt DESC` orders them),
  *   plus every worker that carries a PR. The stage reads only PR-bearing
@@ -30,6 +32,9 @@ const projected: SQL[] = [
 
 /** `tasks.context` reduced to what the stage reads; `{}` when none of it is set. */
 export const stageContextSql = sql<Record<string, unknown> | null>`jsonb_strip_nulls(jsonb_build_object(${sql.join(projected, sql`, `)}))`;
+
+/** True when `tasks.result` is a dependency failure (`dependencyFailureOf`): its `errorType`, or the older rows' text. */
+export const stageDependencyFailedSql = sql<boolean | null>`(${tasks.status} = 'failed' and (${tasks.result} ->> 'errorType' = 'dependency_failed' or ${tasks.result} ->> 'error' like 'Blocked: dependency %'))`;
 
 const NEWER = 'w_newer';
 /** The same table under another name, so the count reads a task's other workers. */

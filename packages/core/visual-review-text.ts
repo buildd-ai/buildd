@@ -30,7 +30,7 @@ const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ?
  * placeholders.
  */
 export function describeVisualPhase(
-  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null },
+  model: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary'> & { needsYou?: VisualReviewNeedsYou | null; waitingOn?: VisualReviewModel['waitingOn'] },
 ): { label: string; detail: string } {
   const { summary: s, progress } = model;
   switch (model.phase) {
@@ -38,6 +38,11 @@ export function describeVisualPhase(
       return { label: 'Off', detail: 'No visual audit on this mission.' };
     case 'waiting_deps':
       return { label: 'Waiting', detail: 'The visual audit starts when the work it checks has landed.' };
+    case 'waiting_on_failed_work': {
+      // It never ran, so nothing here to retry: the recovery is on the failed task.
+      const title = model.waitingOn?.title?.trim();
+      return { label: 'Waiting on failed work', detail: `${title ? `"${one(title)}"` : 'Build work this audit checks'} failed. The visual audit starts once it completes.` };
+    }
     case 'queued':
       return { label: 'Queued', detail: 'Waiting for a browser runner to pick up the visual audit.' };
     case 'no_browser_runner':

@@ -212,6 +212,7 @@ mock.module('@buildd/core/task-requester', () => ({
 import {
   resolveCompletedTask,
   checkDependsOnResolved,
+  reopenChecksFailedBy,
   shouldAutoApprovePlan,
   requirePlanApprovalEnabled,
 } from './task-dependencies';
@@ -887,6 +888,75 @@ describe('dependency failure cascade', () => {
         failedDependencyTitle: 'Phase 1',
       }
     );
+  });
+});
+
+// ── Spec 072de598 I-14: a check that never ran because its dependency failed ──
+
+describe('dependency failure: what the cascade records, and the check it reopens', () => {
+  beforeEach(resetMocks);
+
+  it('records that the dependent never ran: errorType and the task it waits on', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults = [[{ id: 'audit-1', title: '[surface audit] M', workspaceId: 'ws-1', status: 'pending', dependsOn: ['build-1'] }]];
+    findFirstResults[2] = { title: 'Build it' };
+    findFirstResults[3] = { parentTaskId: null };
+    findFirstResults[4] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults[1] = [];
+
+    await resolveCompletedTask('build-1', 'ws-1');
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      result: {
+        error: 'Blocked: dependency "Build it" (build-1) failed',
+        errorType: 'dependency_failed',
+        blockedBy: { taskId: 'build-1', title: 'Build it' },
+      },
+    }));
+  });
+
+  it('re-queues an audit the cascade failed once the task that failed it completes', async () => {
+    selectWhereResults = [
+      // The failed, never-claimed audit that names build-1.
+      [{ id: 'audit-1', workspaceId: 'ws-1', dependsOn: ['build-1', 'build-2'], result: { errorType: 'dependency_failed', blockedBy: { taskId: 'build-1', title: 'Build it' }, error: 'x' } }],
+      // build-2 is not failed.
+      [],
+    ];
+
+    await reopenChecksFailedBy('build-1');
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending', result: null, claimedBy: null }));
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'task:unblocked', { taskId: 'audit-1', resolvedDependency: 'build-1' });
+    expect(mockWakeTask).toHaveBeenCalledWith('audit-1', 'dependency.satisfied');
+  });
+
+  it('keeps it failed, now naming the other failed dependency, when one still holds it', async () => {
+    selectWhereResults = [
+      [{ id: 'audit-1', workspaceId: 'ws-1', dependsOn: ['build-1', 'build-2'], result: { errorType: 'dependency_failed', blockedBy: { taskId: 'build-1', title: 'Build it' } } }],
+      [{ id: 'build-2', title: 'Build the other half' }],
+    ];
+
+    await reopenChecksFailedBy('build-1');
+
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' }));
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({ errorType: 'dependency_failed', blockedBy: { taskId: 'build-2', title: 'Build the other half' } }),
+    }));
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves an audit that failed for another reason, or names another blocker, alone', async () => {
+    selectWhereResults = [[
+      { id: 'audit-1', workspaceId: 'ws-1', dependsOn: ['build-1'], result: { errorType: 'max_turns', error: 'Ran out of turns' } },
+      { id: 'audit-2', workspaceId: 'ws-1', dependsOn: ['build-1', 'build-9'], result: { errorType: 'dependency_failed', blockedBy: { taskId: 'build-9', title: 'Other' } } },
+    ]];
+
+    await reopenChecksFailedBy('build-1');
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });
 

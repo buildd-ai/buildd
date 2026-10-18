@@ -1,7 +1,7 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -124,18 +124,38 @@ async function hasWaiver(missionId: string): Promise<boolean> {
  */
 export async function loadSurfaceAuditWaiver(
   missionId: string,
-): Promise<{ reason: string; actorLabel: string | null; at: string } | null> {
+): Promise<SurfaceAuditWaiver | null> {
+  return (await loadSurfaceAuditWaivers([missionId])).get(missionId) ?? null;
+}
+
+export type SurfaceAuditWaiver = { reason: string; actorLabel: string | null; at: string };
+
+/** Per-mission notes `loadSurfaceAuditWaiver` looks through, newest first. */
+const WAIVER_NOTES_PER_MISSION = 20;
+
+/** `loadSurfaceAuditWaiver` for several missions in one query: each mission's newest waiver, absent when none. */
+export async function loadSurfaceAuditWaivers(missionIds: readonly string[]): Promise<Map<string, SurfaceAuditWaiver>> {
+  const out = new Map<string, SurfaceAuditWaiver>();
+  if (missionIds.length === 0) return out;
   const notes = await db.query.missionNotes.findMany({
-    where: sqlWhere(and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
-    columns: { authorType: true, body: true, actorLabel: true, createdAt: true },
+    where: sqlWhere(and(inArray(missionNotes.missionId, [...missionIds]), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
+    columns: { missionId: true, authorType: true, body: true, actorLabel: true, createdAt: true },
     orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
-    limit: 20,
   });
-  const latest = notes
-    .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  if (!latest) return null;
-  return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
+  const byMission = new Map<string, typeof notes>();
+  for (const n of notes) {
+    if (!n.missionId) continue;
+    const list = byMission.get(n.missionId) ?? [];
+    if (list.length < WAIVER_NOTES_PER_MISSION) list.push(n);
+    byMission.set(n.missionId, list);
+  }
+  for (const [missionId, list] of byMission) {
+    const latest = list
+      .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (latest) out.set(missionId, { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() });
+  }
+  return out;
 }
 
 /** `repoFor`, read once per request: a page's render asks the gate more than once. */
@@ -195,6 +215,8 @@ export async function evaluateSurfaceAuditGate(
     workspacePolicy?: VisualReviewPolicyMode | null;
     /** Whether a person waived it (`loadSurfaceAuditWaiver` found one) when the caller already read it. */
     waived?: boolean;
+    /** A repo-link memo the caller shares across many gate calls (a sweep), keyed by workspace. */
+    repos?: Map<string, Promise<{ installationId: number; fullName: string } | null>>;
   } = {},
 ): Promise<SurfaceAuditGate> {
   // Without a workspace there is nothing to read: the legacy opt-out alone decides, at no cost.
@@ -220,7 +242,7 @@ export async function evaluateSurfaceAuditGate(
     if (typeof n === 'number' && t.workspaceId && !prs.has(n)) prs.set(n, { workspaceId: t.workspaceId, merged: w?.mergedAt != null });
   }
 
-  const repos = new Map<string, Promise<{ installationId: number; fullName: string } | null>>();
+  const repos = opts.repos ?? new Map<string, Promise<{ installationId: number; fullName: string } | null>>();
   const repoOf = (workspaceId: string) => {
     if (!repos.has(workspaceId)) repos.set(workspaceId, repoForRequest(workspaceId));
     return repos.get(workspaceId)!;
@@ -301,13 +323,39 @@ export async function evaluateSurfaceAuditGate(
   };
 }
 
+/**
+ * The columns the gate reads. `context` is projected to the two keys
+ * `isTrunkRefreshTask` reads, never the whole blob (spec 3ef37387 R-11, R-25):
+ * a mission's tasks carry kilobytes of context each and nothing here reads
+ * any other key.
+ */
+const GATE_TASK_COLUMNS = { id: true, missionId: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true } as const;
+const GATE_TASK_EXTRAS = {
+  context: (t: any, { sql: s }: any) => s`jsonb_build_object('requireMergeCommit', ${t.context} -> 'requireMergeCommit', 'refreshTrunk', ${t.context} -> 'refreshTrunk')`.as('trunk_refresh_context'),
+};
+
 /** The mission's tasks in the shape the gate reads, for callers that do not already hold them. */
 export async function loadSurfaceAuditGateTasks(missionId: string): Promise<SurfaceAuditGateTask[]> {
-  return db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.missionId, missionId)),
-    columns: { id: true, title: true, status: true, taskClass: true, roleSlug: true, workspaceId: true, pathManifest: true, context: true },
+  return (await loadSurfaceAuditGateTasksByMission([missionId])).get(missionId) ?? [];
+}
+
+/** `loadSurfaceAuditGateTasks` for several missions in one query, keyed by mission. */
+export async function loadSurfaceAuditGateTasksByMission(missionIds: readonly string[]): Promise<Map<string, SurfaceAuditGateTask[]>> {
+  const out = new Map<string, SurfaceAuditGateTask[]>();
+  if (missionIds.length === 0) return out;
+  const rows = await db.query.tasks.findMany({
+    where: sqlWhere(inArray(tasks.missionId, [...missionIds])),
+    columns: GATE_TASK_COLUMNS,
+    extras: GATE_TASK_EXTRAS,
     with: {
       workers: { columns: { prNumber: true, mergedAt: true }, orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.startedAt)]), limit: 1 },
     },
-  });
+  }) as Array<SurfaceAuditGateTask & { missionId: string | null }>;
+  for (const r of rows) {
+    if (!r.missionId) continue;
+    const list = out.get(r.missionId) ?? [];
+    list.push(r);
+    out.set(r.missionId, list);
+  }
+  return out;
 }

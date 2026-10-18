@@ -572,3 +572,34 @@ describe('the installation a command acts through is resolved from its workspace
     expect(commandProblem(body({ input: noRepo }))).toContain('repoFullName');
   });
 });
+
+describe('dispose_finding is for a signed-in person only', () => {
+  const disposeInput = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, actor: `human:${USER}`, findingId: 'r1:0', disposition: 'waived', reason: 'covered by the e2e suite' };
+  const dispose = (o: Record<string, unknown> = {}) => body({ op: 'dispose_finding', input: disposeInput, idempotencyKey: 'dispose:key-0001', ...o });
+
+  it('a person is applied, once, with their own actor', async () => {
+    const s = server();
+    const res = await s.call(await signed(dispose()));
+    expect(res.status).toBe(200);
+    expect(s.ran).toEqual([{ op: 'dispose_finding', input: disposeInput }]);
+  });
+
+  it('an API account, a grant session or a system caller is refused and nothing runs', async () => {
+    for (const principal of [{ kind: 'account', id: ACCT }, grantP(), { kind: 'system', id: 'sweep' }]) {
+      const s = server();
+      const res = await s.call(await signed(dispose({ principal })));
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('person_only');
+      expect(s.ran).toEqual([]);
+    }
+  });
+
+  it('a person cannot submit another person\'s or an agent\'s actor', async () => {
+    for (const actor of [`human:${ACCT}`, 'agent:task-1']) {
+      const s = server();
+      const res = await s.call(await signed(dispose({ input: { ...disposeInput, actor } })));
+      expect(res.status).toBe(403);
+      expect(s.ran).toEqual([]);
+    }
+  });
+});

@@ -1,3 +1,4 @@
+import { withoutRecentWorkerHeartbeat } from '@/lib/worker-patch-diff';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse } from 'next/server';
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest) {
   // on MCP activity, not runner syncs, and it has its own longer TTL in
   // cleanupStaleWorkers (step 3). One hour of a person's local agent working
   // without an MCP call is normal (friction 92866723).
-  const stalledRunning = !hasAccounts ? [] : await db.query.workers.findMany({
+  const stalledCandidates = !hasAccounts ? [] : await db.query.workers.findMany({
     where: sqlWhere(and(
       inArray(workers.accountId, scope.accountIds),
       inArray(workers.status, ['running', 'starting']),
@@ -249,6 +250,7 @@ export async function POST(req: NextRequest) {
     columns: { id: true, taskId: true },
   });
 
+  const stalledRunning = await withoutRecentWorkerHeartbeat(stalledCandidates, () => oneHourAgo.getTime());
   if (stalledRunning.length > 0) {
     const stalledWorkerIds = stalledRunning.map(w => w.id);
     const stalledTaskIds = stalledRunning.map(w => w.taskId).filter(Boolean) as string[];
