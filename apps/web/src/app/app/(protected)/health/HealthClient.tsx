@@ -2379,7 +2379,11 @@ function FailureAnalyticsSection({
  */
 export function claimBlockerLine(c: ClaimBlocker | undefined): string {
   if (!c || c.state === 'unknown') return 'no recent scheduler decision (not known to be blocked)';
-  const at = c.evaluatedAt ? ` (last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+  const at = c.evaluatedAt ? ` (claim scheduler, last evaluated ${c.evaluatedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
   const why = c.phrase ?? c.reason ?? 'held';
-  return c.state === 'blocked' ? `blocked: ${why}${at}` : `last held: ${why}, may no longer apply${at}`;
+  const label = c.kind === 'credential_unavailable' ? 'credential unavailable'
+    : c.kind === 'capacity_exhausted' ? 'capacity exhausted'
+    : c.kind === 'sandbox' ? 'sandbox requirement unmet'
+    : 'blocked';
+  return c.state === 'blocked' ? `${label}: ${why}${at}` : `last held (${label}): ${why}, may no longer apply${at}`;
 }
