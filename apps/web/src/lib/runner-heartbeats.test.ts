@@ -17,6 +17,8 @@ mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b }),
   gt: (a: any, b: any) => ({ a, b }),
   inArray: (a: any, b: any) => ({ a, b }),
+  or: (...a: any[]) => a,
+  sql: Object.assign(() => ({}), { join: () => ({}) }),
 }));
 
 const { isRunnerOnline, isPushOnlyRunner, selectRelevantRunnerAccounts } = await import('./runner-heartbeats');
