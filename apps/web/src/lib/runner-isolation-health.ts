@@ -179,9 +179,8 @@ function blockedLine(hb: IsolationRunner, state: RunnerIsolationState): string |
   const n = b.protected + b.trustedLocal;
   if (n === 0) return null;
   const tasks = n === 1 ? '1 waiting task' : `${n} waiting tasks`;
-  if (state === 'unknown' || state === 'stale') {
-    return `${tasks} can't run here until it reports a current sandbox check.`;
-  }
+  // Its eligibility line already says it takes nothing; the row's summary carries the count.
+  if (state === 'unknown' || state === 'stale') return null;
   if (b.trustedLocal === 0) {
     const need = n === 1 ? 'needs' : 'need';
     const change = state === 'opted_out'

@@ -68,7 +68,8 @@ export const RUNNER_ISOLATION_ROWS: IsolationFixtureRow[] = [
     isolation: record('linux', none('opt_out'), { reducedOptIn: true }),
     isolationBlocked: { protected: 3, trustedLocal: 0 },
   }),
-  row(10, 'Shared box, opted out', true, { sandboxEnabled: false, shared: true, isolation: record('linux', none('opt_out')) }),
+  // The runner records reducedOptIn whenever BUILDD_DISABLE_SANDBOX=1 is set (reducedIsolationOptedIn).
+  row(10, 'Shared box, opted out', true, { sandboxEnabled: false, shared: true, mine: false, isolation: record('linux', none('opt_out'), { reducedOptIn: true }) }),
   row(11, 'Stale probe', true, { isolation: record('linux', bwrap, { probeAt: at(90), processStartedAt: at(10) }), isolationBlocked: { protected: 3, trustedLocal: 1 } }),
   row(12, 'Old runner version', true, { sandboxEnabled: false, isolation: null }),
 ];

@@ -247,6 +247,8 @@ describe('runnerIsolationDetail: state, eligibility and blocked work', () => {
       expect(d.attention).toBe(true);
       expect(d.eligibility.join(' ')).toMatch(/[Tt]akes no tasks/);
     }
+    // Said once: the eligibility line, not again as a blocked line.
+    expect(runnerIsolationDetail(runner({ isolation: null, sandboxEnabled: null, isolationBlocked: { protected: 2, trustedLocal: 1 } })).blocked).toBeNull();
   });
 
   it('reads lost confinement without an opt-in as a failure that takes no tasks', () => {
