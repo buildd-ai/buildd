@@ -1,4 +1,5 @@
 import { registerOTel } from '@vercel/otel';
+import { serverSpans } from './lib/server-span-registry';
 
 export async function register() {
   // Private policy overrides (lib/policy-overrides.ts) and versioned prompts: load once at boot so the
@@ -36,6 +37,9 @@ export async function register() {
 
   registerOTel({
     serviceName: 'buildd-web',
+    // serverSpans lets a route put team id and plan on the request's root span
+    // (lib/request-tenant.ts); 'auto' keeps the default exporter.
+    spanProcessors: ['auto', serverSpans],
   });
 
   // Memory is now stored in buildd's own database (memories table).
