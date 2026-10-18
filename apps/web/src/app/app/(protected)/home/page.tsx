@@ -1995,7 +1995,7 @@ export default async function HomePage({
               return null;
             }),
             // The Agents live sparkline: the last day's busy slots, same scope as the fleet.
-            loadOccupancySeries(wsIds, '24h', renderNow).catch(err => {
+            loadOccupancySeries(wsIds, '24h', renderNow, 0, null, activeTeamId ?? null).catch(err => {
               console.error('[home] occupancy load failed (non-fatal):', err);
               return null;
             }),
