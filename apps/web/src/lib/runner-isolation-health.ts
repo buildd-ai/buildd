@@ -94,7 +94,7 @@ export function isolationProblem(
   return null;
 }
 
-const PLATFORM_TEXT: Record<RunnerHostPlatform, string> = {
+export const PLATFORM_TEXT: Record<RunnerHostPlatform, string> = {
   darwin: 'macOS',
   linux: 'Linux',
   'linux-wsl': 'Linux on WSL',
@@ -127,6 +127,18 @@ const BACKEND_ROWS = [
   { label: 'Codex, can edit files', pick: (r: NonNullable<IsolationRunner['isolation']>) => r.codex['workspace-write'] },
 ] as const;
 
+/**
+ * Rows that agree collapse to one: a macOS host prints "Claude and Codex:
+ * macOS Seatbelt" once, not once per backend and mode. Differing rows stay
+ * separate so a partly confined runner still shows which mode lost it.
+ */
+function collapseBackends(rows: RunnerIsolationDetail['backends']): RunnerIsolationDetail['backends'] {
+  if (rows.length > 1 && rows.every(r => r.value === rows[0].value && r.confined === rows[0].confined)) {
+    return [{ label: 'Claude and Codex', value: rows[0].value, confined: rows[0].confined }];
+  }
+  return rows;
+}
+
 /** Runner detail for isolation (R-10): platform, each backend and mode, cause, probe age, fixer and steps. */
 export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetail {
   const rec = hb.isolation;
@@ -152,7 +164,7 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
   if (!current) {
     return {
       platform: PLATFORM_TEXT[rec.platform] ?? rec.platform,
-      backends: BACKEND_ROWS.map(b => ({ label: b.label, value: 'unknown', confined: false })),
+      backends: collapseBackends(BACKEND_ROWS.map(b => ({ label: b.label, value: 'unknown', confined: false }))),
       filesystem: null,
       cause: 'The last sandbox check came from an earlier run of this runner, so what is enforced now is unknown.',
       allowed: null,
@@ -163,10 +175,10 @@ export function runnerIsolationDetail(hb: IsolationRunner): RunnerIsolationDetai
     };
   }
 
-  const backends = BACKEND_ROWS.map(b => {
+  const backends = collapseBackends(BACKEND_ROWS.map(b => {
     const c = b.pick(rec);
     return { label: b.label, value: isolationMechanismText(c?.mechanism ?? 'none'), confined: !!c && c.mechanism !== 'none' };
-  });
+  }));
   const usesBwrap = [rec.claude, rec.codex['read-only'], rec.codex['workspace-write']].some(c => c?.mechanism === 'bwrap');
   const filesystem = usesBwrap
     ? hb.mountAllowlistEnforced
