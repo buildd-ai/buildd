@@ -5544,3 +5544,70 @@ describe('POST /api/tasks — task estimate (experiment) never blocks or fails c
     expect(mockWriteTaskEstimate).toHaveBeenCalledTimes(1);
   });
 });
+
+const { createChangeVersions, setChangeVersionsForTests } = await import('@/lib/change-version');
+const { TASK_LIST_PAGE } = await import('@/lib/task-list-cursor');
+
+describe('GET /api/tasks: not-changed replies and paging (spec 3ef37387 R-19, R-20, AC-4)', () => {
+  const kv = new Map<string, string>();
+  let n = 0;
+
+  beforeEach(() => {
+    kv.clear();
+    setChangeVersionsForTests(createChangeVersions({
+      getKeys: async (keys) => keys.map(k => kv.get(k) ?? null),
+      setKeys: async (entries, _ttl, opts) => { for (const [k, v] of entries) if (!opts?.nx || !kv.has(k)) kv.set(k, v); return true; },
+      resolve: async () => [],
+      token: () => `t${++n}`,
+    }));
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', title: 'A', workspaceId: 'ws-1', missionId: null, status: 'pending', createdAt: new Date(), workspace: { id: 'ws-1' } }]);
+  });
+
+  const get = (headers: Record<string, string> = {}, searchParams: Record<string, string> = {}) =>
+    GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx', ...headers }, searchParams }));
+
+  it('the current version answers 304 and reads no task row; a write reads again', async () => {
+    await get(); // seeds the version: no tag yet (fail open)
+    const full = await get();
+    const tag = full.headers.get('etag')!;
+    expect(tag).toMatch(/^W\/"cv1-/);
+    mockTasksFindMany.mockClear();
+    const unchanged = await get({ 'If-None-Match': tag });
+    expect(unchanged.status).toBe(304);
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+
+    kv.set('buildd:cv:ws:ws-1', 'moved');
+    const changed = await get({ 'If-None-Match': tag });
+    expect(changed.status).toBe(200);
+    expect(mockTasksFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('the tag differs by query: a filtered list never answers for the whole one', async () => {
+    await get();
+    const all = (await get()).headers.get('etag');
+    const active = (await get({}, { status: 'active' })).headers.get('etag');
+    expect(all).not.toBe(active);
+  });
+
+  it('a full page says hasMore and a cursor; the cursor reads the next page; a bad cursor is a 400', async () => {
+    const at = new Date('2026-10-01T00:00:00.000Z');
+    mockTasksFindMany.mockResolvedValue(Array.from({ length: TASK_LIST_PAGE + 1 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, title: `T${i}`, workspaceId: 'ws-1', missionId: null, status: 'pending', createdAt: at, workspace: { id: 'ws-1' },
+    })));
+    const body = await (await get()).json();
+    expect(body.tasks).toHaveLength(TASK_LIST_PAGE);
+    expect(body.hasMore).toBe(true);
+    expect(body.nextCursor).toBe(`2026-10-01T00:00:00.000Z_00000000-0000-4000-8000-${String(TASK_LIST_PAGE - 1).padStart(12, '0')}`);
+    expect((mockTasksFindMany.mock.calls.at(-1) as any[])[0].limit).toBe(TASK_LIST_PAGE + 1);
+
+    mockTasksFindMany.mockResolvedValue([]);
+    const next = await (await get({}, { cursor: body.nextCursor })).json();
+    expect(next).toMatchObject({ tasks: [], hasMore: false, nextCursor: null });
+    expect((await get({}, { cursor: 'nonsense' })).status).toBe(400);
+  });
+});
