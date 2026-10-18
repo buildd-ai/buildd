@@ -706,8 +706,9 @@ recorded as such, never as an approval.
   merge" or "Merge blocked: <reason>", clipped to GitHub's 140 characters; it
   never says "land" (internal names keep it). Its target URL is the host's
   page for the delivery's review and findings (the optional `Links` port;
-  buildd links the owner task on the app's public name), so GitHub's Details
-  link is somewhere a person can act. `get_pr` prints the same description on
+  buildd links the owner task's review findings, `/app/tasks/<id>#review-findings`
+  on the app's public name, which opens the Code review row to them), so
+  GitHub's Details link is somewhere a person can act. `get_pr` prints the same description on
   its own `Review approval:` line, apart from `CI:`. One effect per delivery version; only the newest
   version's effect publishes, so a late or duplicate effect never overwrites a
   newer answer, and an effect that runs out of retries publishes `failure`,
@@ -758,7 +759,10 @@ recorded as such, never as an approval.
   hold) leaves the approval standing (`APPROVED`); a lasting one (protected
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
   notified, with the rail named on `Buildd / Review approval` ("Merge blocked:
-  <rail>"). The status is written only when GitHub does not already show it
+  <rail>"). A rail's refusal reason is passed through verbatim, so the rails
+  word it in merge terms and never say "land" either; the mission delivery
+  pills read the shared terms catalog ("Merging", "Merged", "Closed without
+  merging") and the page's action says "Retry merge". The status is written only when GitHub does not already show it
   (state, description and, when the reader reports it, the link), and re-checked after writing so the
   newest version wins across drains. The mission-PR hold is a rail too, and
   lasting when only a person or a new fact changes it: a refresh on a branch it
