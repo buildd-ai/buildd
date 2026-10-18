@@ -24,13 +24,13 @@ const realAuthHelpers = await import('../../src/lib/auth-helpers');
 mock.module('../../src/lib/auth-helpers', () => ({ ...realAuthHelpers, getCurrentUser: async () => null }));
 
 const claimRoute = await import('../../src/app/api/workers/claim/route');
-const { CONTROL_PLANE_URL, resetKernelModeCache } = await import('../../src/lib/workflow/kernel-client');
+const { CONTROL_PLANE_URL, resetKernelModeCache, resetAttemptStartBreaker } = await import('../../src/lib/workflow/kernel-client');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { signInteractiveSession, INTERACTIVE_SESSION_HEADER } = await import('../../src/lib/interactive-session');
 
 setDefaultTimeout(30_000);
 
-const ENV_KEYS = ['EXECUTION_MODE', 'KERNEL_COMMAND_SECRET', 'KERNEL_CLAIM_BUDGET_MS', 'AUTH_SECRET'] as const;
+const ENV_KEYS = ['EXECUTION_MODE', 'KERNEL_COMMAND_SECRET', 'KERNEL_CLAIM_BUDGET_MS', 'KERNEL_START_BUDGET_MS', 'KERNEL_DOOR_BUDGET_MS', 'AUTH_SECRET'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 let w: World | undefined;
 let restoreFetch: (() => void) | null = null;
@@ -45,6 +45,7 @@ afterEach(() => {
     if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k];
   }
   resetKernelModeCache();
+  resetAttemptStartBreaker();
   setKernelHost('web');
   w?.dispose();
 });
@@ -92,18 +93,23 @@ function claim(account: { key: string }, taskId: string, o: { runner?: string; h
 }
 const claimedCount = async (res: Response) => ((await res.json()) as { workers?: unknown[] }).workers?.length ?? 0;
 
-/** Own mode with a control plane that refuses every connection. */
-function controlPlaneDown(): { calls: () => number } {
+type Outage = 'refused' | '503' | 'hang';
+/** Own mode with a control plane that refuses every connection, answers 503, or accepts and never answers. */
+/** `calls` counts the AttemptStarted requests it was sent. */
+function controlPlaneDown(how: Outage = 'refused'): { calls: () => number } {
   process.env.EXECUTION_MODE = 'own';
   process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
   resetKernelModeCache();
+  resetAttemptStartBreaker();
   setKernelHost('web');
   const original = globalThis.fetch;
   let n = 0;
   const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (!href.startsWith(CONTROL_PLANE_URL)) return original(input, init);
-    n++;
+    if (String(init?.body ?? '').includes('"op":"attempt_started"')) n++;
+    if (how === '503') return Response.json({ v: 1, code: 'unavailable', error: 'down' }, { status: 503 });
+    if (how === 'hang') return new Promise<Response>((_res, rej) => { init?.signal?.addEventListener('abort', () => rej(init.signal!.reason)); });
     throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
   }) as typeof fetch;
   globalThis.fetch = Object.assign(wrapped, { preconnect: (original as { preconnect?: unknown }).preconnect }) as typeof fetch;
@@ -175,28 +181,47 @@ describe('a claim of a kernel owner task is started by the kernel', () => {
 });
 
 describe('the control plane down: the claim still starts, on the web host, and nothing parks', () => {
-  for (const kind of ['runner', 'interactive session'] as const) {
-    test(`a ${kind} claim: started by the route's own projection within the claim's budget`, async () => {
+  const interactiveHeaders = (accountId: string) => ({ [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId, userId: null, sessionKey: 's-1' })! });
+
+  /** One claim of a fresh requeued owner task under `how`, at the default budgets; its elapsed ms. */
+  async function claimDuring(account: { id: string; key: string }, pr: OpenedPr, kind: 'runner' | 'interactive') {
+    const t0 = Date.now();
+    const res = await claim(account, pr.ownerTaskId, kind === 'interactive' ? { runner: 'mcp', headers: interactiveHeaders(account.id) } : {});
+    const elapsed = Date.now() - t0;
+    expect(res.status).toBe(200);
+    expect(await claimedCount(res)).toBe(1);
+    const t = await taskRow(pr.ownerTaskId);
+    expect({ status: t.status, claimedBy: t.claimed_by }).toEqual({ status: 'assigned', claimedBy: account.id });
+    // Projected, not recorded; and never parked for a later re-send.
+    expect(await starts(pr)).toHaveLength(0);
+    return elapsed;
+  }
+
+  for (const how of ['503', 'hang', 'refused'] as const) {
+    test(`a control plane that ${how === 'hang' ? 'hangs' : how === '503' ? 'answers 503' : 'refuses connections'}, at the default budgets: a runner's first claim waits at most the start's own budget, the next skip the door, and an interactive claim never asks`, async () => {
       w = await world();
       const account = await serviceKey(await teamOf());
-      const pr = await requeuedOwner(`feat/start-down-${kind === 'runner' ? 'r' : 'i'}`);
-      process.env.KERNEL_CLAIM_BUDGET_MS = '400';
       process.env.AUTH_SECRET = 'db-test-interactive-secret';
-      const cp = controlPlaneDown();
-      const headers = kind === 'interactive session'
-        ? { [INTERACTIVE_SESSION_HEADER]: signInteractiveSession({ accountId: account.id, userId: null, sessionKey: 's-1' })! }
-        : undefined;
-      const t0 = Date.now();
-      const res = await claim(account, pr.ownerTaskId, { runner: kind === 'interactive session' ? 'mcp' : undefined, headers });
-      const elapsed = Date.now() - t0;
-      expect(res.status).toBe(200);
-      expect(await claimedCount(res)).toBe(1);
-      expect(cp.calls()).toBeGreaterThan(0);
-      expect(elapsed).toBeLessThan(5_000);
-      const t = await taskRow(pr.ownerTaskId);
-      expect({ status: t.status, claimedBy: t.claimed_by }).toEqual({ status: 'assigned', claimedBy: account.id });
-      // Projected, not recorded; and never parked for a later re-send.
-      expect(await starts(pr)).toHaveLength(0);
+      for (const k of ['KERNEL_CLAIM_BUDGET_MS', 'KERNEL_START_BUDGET_MS', 'KERNEL_DOOR_BUDGET_MS'] as const) delete process.env[k];
+      const [a, b, c, d] = await Promise.all(['a', 'b', 'c', 'd'].map((tag) => requeuedOwner(`feat/start-${how}-${tag}`)));
+      const cp = controlPlaneDown(how);
+
+      const interactiveFirst = await claimDuring(account, a, 'interactive');
+      expect(cp.calls()).toBe(0);
+      const runnerFirst = await claimDuring(account, b, 'runner');
+      const sentByFirst = cp.calls();
+      expect(sentByFirst).toBeGreaterThan(0);
+      const runnerNext = await claimDuring(account, c, 'runner');
+      expect(cp.calls()).toBe(sentByFirst);
+      const interactiveNext = await claimDuring(account, d, 'interactive');
+      expect(cp.calls()).toBe(sentByFirst);
+
+      process.stderr.write(`[claim-attempt-start] outage=${how}: runner first ${runnerFirst}ms, runner next ${runnerNext}ms, interactive ${interactiveFirst}ms / ${interactiveNext}ms\n`);
+      // The start budget is 750 ms; the claim's own work rides on top. Before the fix: about 5-6 s each.
+      expect(runnerFirst).toBeLessThan(2_000);
+      expect(runnerNext).toBeLessThan(1_250);
+      expect(interactiveFirst).toBeLessThan(1_250);
+      expect(interactiveNext).toBeLessThan(1_250);
       expect((await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workflow_command_outbox WHERE op = 'attempt_started'`))[0].n).toBe(0);
     });
   }
@@ -228,6 +253,27 @@ describe('a late or repeated start moves nothing', () => {
     expect(late.started).toBe(false);
     const t = await taskRow(pr.ownerTaskId);
     expect({ status: t.status, claimedBy: t.claimed_by, claimedAt: t.claimed_at }).toEqual({ status: 'pending', claimedBy: b.id, claimedAt: stampB });
+  });
+
+  test('the same account claims, the task is requeued, the same account claims again: the first claim\'s late start does not assign it and leaves the new claim alone', async () => {
+    w = await world();
+    const account = await serviceKey(await teamOf());
+    const pr = await requeuedOwner('feat/start-same-account');
+    const first = await stamped(pr, account.id);
+    // Requeued before the first start arrived, then claimed again by the same account (its start not sent yet).
+    await q(sql`UPDATE tasks SET claimed_by = NULL, claimed_at = NULL, expires_at = NULL WHERE id = ${pr.ownerTaskId}::uuid`);
+    await q(sql`SELECT pg_sleep(0.01)`);
+    const second = await stamped(pr, account.id);
+    expect(second).not.toBe(first);
+    const late = await seam.attemptStarted({ task: task(pr), claimedBy: account.id, claimedAt: first, source: 'claim' });
+    expect(late.started).toBe(false);
+    let t = await taskRow(pr.ownerTaskId);
+    expect({ status: t.status, claimedBy: t.claimed_by, claimedAt: t.claimed_at }).toEqual({ status: 'pending', claimedBy: account.id, claimedAt: second });
+    // The second claim's own start is the one that assigns it.
+    const own = await seam.attemptStarted({ task: task(pr), claimedBy: account.id, claimedAt: second, source: 'claim' });
+    expect(own.started).toBe(true);
+    t = await taskRow(pr.ownerTaskId);
+    expect({ status: t.status, claimedAt: t.claimed_at }).toEqual({ status: 'assigned', claimedAt: second });
   });
 
   test('a cancel between the compare-and-set and the start: the start moves nothing, the task stays cancelled', async () => {

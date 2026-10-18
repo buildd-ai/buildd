@@ -13,7 +13,7 @@ import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitl
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, UNVERIFIED_INTERACTIVE_RUNNER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -198,29 +198,33 @@ async function rollBackClaim(taskId: string, accountId: string): Promise<void> {
 
 /**
  * AC-1 slice 7 (workflow-kernel-library.md §9): start a kernel owner task this request's
- * compare-and-set won. AttemptStarted goes through the door, inside the claim's one control-plane
- * budget (shared with T9's fix claims); then, unless the kernel already answered started, the
- * route projects the start here under the same guard (`projectAttemptStart`). So a control plane
- * that is down, slow, refusing or too old never fails or holds the claim past its budget, and
- * nothing parks: an interactive session's claim and a runner's alike. Answers whether the task is
- * now assigned under exactly this claim.
+ * compare-and-set won. A runner's claim sends AttemptStarted through the door, which has its own
+ * small budget and a breaker after an unanswered start (kernel-client.ts `attemptStarted`), never
+ * the fix claims' budget. Unless the kernel answered started, the route projects the start here
+ * under the same guard (`projectAttemptStart`). An interactive session's claim never waits on the
+ * door: it projects the start at once. So a control plane that is down, slow, refusing or too old
+ * never fails a claim, costs a runner's claim at most the start budget once per breaker window,
+ * and costs a person's own session nothing. Nothing parks. Answers whether the task is now
+ * assigned under exactly this claim.
  */
 async function startKernelOwnerAttempt(p: {
   task: { id: string; workspaceId: string; deliveryId: string; deliveryRole: 'owner'; context: unknown };
   claimedBy: string;
   claimedAt: string;
   principal: KernelPrincipal | null;
-  budgetMs: number;
+  interactive: boolean;
 }): Promise<boolean> {
-  const t0 = Date.now();
-  try {
-    const { value } = await withControlPlaneBudget('claim', p.budgetMs, () => kernelAttemptStarted(
-      { task: p.task, claimedBy: p.claimedBy, claimedAt: p.claimedAt, source: 'claim' },
-      { principal: p.principal },
-    ));
-    if (value.started) return true;
-  } catch (err) {
-    console.error(`[claim] AttemptStarted for task ${p.task.id} did not reach the kernel after ${Date.now() - t0}ms; projecting it here:`, err);
+  if (!p.interactive) {
+    const t0 = Date.now();
+    try {
+      const r = await kernelAttemptStarted(
+        { task: p.task, claimedBy: p.claimedBy, claimedAt: p.claimedAt, source: 'claim' },
+        { principal: p.principal },
+      );
+      if (r.started) return true;
+    } catch (err) {
+      console.error(`[claim] AttemptStarted for task ${p.task.id} did not reach the kernel after ${Date.now() - t0}ms; projecting it here:`, err);
+    }
   }
   return projectAttemptStart({ deliveryId: p.task.deliveryId, taskId: p.task.id, claimedBy: p.claimedBy, claimedAt: p.claimedAt }).catch((err) => {
     console.error(`[claim] start projection failed for task ${p.task.id}:`, err);
@@ -2880,7 +2884,6 @@ export async function POST(req: NextRequest) {
         .returning({ id: tasks.id });
 
     if (updated.length > 0 && kernelOwner) {
-      fixClaimDeadline ??= Date.now() + (Number(process.env.KERNEL_CLAIM_BUDGET_MS) || CLAIM_FIX_CONTROL_PLANE_BUDGET_MS);
       const stamp = updated[0].claimStamp ?? null;
       const started = stamp
         ? await startKernelOwnerAttempt({
@@ -2888,7 +2891,8 @@ export async function POST(req: NextRequest) {
           claimedBy: account.id,
           claimedAt: stamp,
           principal: kernelPrincipalOf({ account }),
-          budgetMs: Math.max(0, fixClaimDeadline - Date.now()),
+          // A person's own session (claim_task) never waits on the door.
+          interactive: !!interactiveSession || runner === INTERACTIVE_RUNNER || runner === UNVERIFIED_INTERACTIVE_RUNNER,
         })
         : false;
       if (!started) {

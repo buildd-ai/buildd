@@ -9907,14 +9907,14 @@ describe('explicit taskId claims (organizer workflow)', () => {
       mockTasksUpdate.mockReset();
       mockTasksUpdate.mockImplementation((() => ({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })) })) as any);
     };
-    afterEach(reset);
+    afterEach(() => { reset(); realKernelClient.resetAttemptStartBreaker(); });
 
     it('the compare-and-set stamps the claim but writes no status; AttemptStarted names that exact claim, and the worker starts', async () => {
       reset();
       const sets = captureTaskSets();
       mockAuthenticateApiKey.mockResolvedValue(account());
       mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
-      const data = await (await claim({ runner: 'mcp' })).json();
+      const data = await (await claim({ runner: 'runner-1' })).json();
       expect(data.workers).toHaveLength(1);
       const cas = sets.find((v) => 'claimedBy' in v && v.claimedBy === account().id);
       expect(cas).toBeDefined();
@@ -9933,7 +9933,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
       mockAttemptStarted.mockImplementation(async () => { throw new realKernelClient.ControlPlaneUnavailableError('unreachable' as any); });
       mockAuthenticateApiKey.mockResolvedValue(account());
       mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
-      const data = await (await claim({ runner: 'mcp' })).json();
+      const data = await (await claim({ runner: 'runner-1' })).json();
       expect(data.workers).toHaveLength(1);
       expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
       expect(mockProjectAttemptStart.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'task-1', claimedBy: account().id, claimedAt: STAMP });
@@ -9946,7 +9946,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
       mockProjectAttemptStart.mockImplementation(async () => false);
       mockAuthenticateApiKey.mockResolvedValue(account());
       mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
-      const data = await (await claim({ runner: 'mcp' })).json();
+      const data = await (await claim({ runner: 'runner-1' })).json();
       expect(data.workers).toHaveLength(0);
       const giveBack = sets.find((v) => v.claimedBy === null);
       expect(giveBack).toEqual({ claimedBy: null, claimedAt: null, expiresAt: null });
@@ -9958,7 +9958,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
       captureTaskSets({ won: false });
       mockAuthenticateApiKey.mockResolvedValue(account());
       mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
-      const data = await (await claim({ runner: 'mcp' })).json();
+      const data = await (await claim({ runner: 'runner-1' })).json();
       expect(data.workers).toHaveLength(0);
       expect(mockAttemptStarted).not.toHaveBeenCalled();
       expect(mockProjectAttemptStart).not.toHaveBeenCalled();
@@ -9970,21 +9970,24 @@ describe('explicit taskId claims (organizer workflow)', () => {
         const sets = captureTaskSets();
         mockAuthenticateApiKey.mockResolvedValue(account());
         mockTasksFindMany.mockResolvedValueOnce([t]);
-        await claim({ runner: 'mcp' });
+        await claim({ runner: 'runner-1' });
         expect(sets.some((v) => v.status === 'assigned' && v.claimedBy === account().id)).toBe(true);
         expect(mockAttemptStarted).not.toHaveBeenCalled();
       }
     });
 
-    it('hot path: a control plane that never answers costs the claim at most its budget, then the start is projected here (interactive and runner claims alike)', async () => {
+    it('hot path at the default budgets: a control plane that hangs costs a runner\'s claim under a second and a half, and the next claim skips the door', async () => {
       const saved = process.env.KERNEL_CLAIM_BUDGET_MS;
-      process.env.KERNEL_CLAIM_BUDGET_MS = '300';
-      const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => {
+      delete process.env.KERNEL_CLAIM_BUDGET_MS;
+      let sent = 0;
+      const hanging = ((_u: string, init: RequestInit) => { sent++; return new Promise((_res, rej) => {
         init.signal?.addEventListener('abort', () => rej(init.signal!.reason));
-      })) as unknown as typeof fetch;
+      }); }) as unknown as typeof fetch;
       realResetKernelModeCache();
+      realKernelClient.resetAttemptStartBreaker();
       try {
-        for (const headers of [interactiveHeaders(), { Authorization: 'Bearer bld_test' }]) {
+        const times: number[] = [];
+        for (let i = 0; i < 2; i++) {
           reset();
           captureTaskSets();
           mockAttemptStarted.mockImplementation((p: any, c: any) => realAttemptStarted(p, {
@@ -9993,16 +9996,35 @@ describe('explicit taskId claims (organizer workflow)', () => {
           mockAuthenticateApiKey.mockResolvedValue(account());
           mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
           const started = Date.now();
-          const data = await (await claim({ runner: 'mcp' }, headers)).json();
-          const elapsed = Date.now() - started;
+          const data = await (await claim({ runner: 'runner-1' })).json();
+          times.push(Date.now() - started);
           expect(data.workers).toHaveLength(1);
           expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
-          // The door alone may take 20 s; the claim's budget bounds it.
-          expect(elapsed).toBeLessThan(3_000);
+          if (i === 0) expect(sent).toBeGreaterThan(0);
         }
+        // The start's own budget bounds the first; the breaker answers the second without a request.
+        expect(times[0]).toBeLessThan(1_500);
+        const afterFirst = sent;
+        expect(times[1]).toBeLessThan(300);
+        expect(sent).toBe(afterFirst);
       } finally {
         if (saved === undefined) delete process.env.KERNEL_CLAIM_BUDGET_MS; else process.env.KERNEL_CLAIM_BUDGET_MS = saved;
         realResetKernelModeCache();
+        realKernelClient.resetAttemptStartBreaker();
+      }
+    });
+
+    it('an interactive session\'s claim never waits on the door: it projects the start at once', async () => {
+      for (const [body, headers] of [[{ runner: 'mcp' }, interactiveHeaders()], [{ runner: 'mcp' }, undefined]] as const) {
+        reset();
+        captureTaskSets();
+        mockAuthenticateApiKey.mockResolvedValue(account());
+        mockTasksFindMany.mockResolvedValueOnce([ownerTask()]);
+        const data = await (await claim(body as any, headers as any)).json();
+        expect(data.workers).toHaveLength(1);
+        expect(mockAttemptStarted).not.toHaveBeenCalled();
+        expect(mockProjectAttemptStart).toHaveBeenCalledTimes(1);
+        expect(mockProjectAttemptStart.mock.calls[0][0]).toEqual({ deliveryId: 'delivery-1', taskId: 'task-1', claimedBy: account().id, claimedAt: STAMP });
       }
     });
   });

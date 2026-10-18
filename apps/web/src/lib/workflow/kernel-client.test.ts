@@ -19,7 +19,10 @@ const input = { workspaceId: WS, installationId: 1, repoFullName: 'acme/w', prNu
 const principal = { kind: 'user' as const, id: USER };
 const OWN = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
 
-afterEach(() => resetKernelModeCache());
+afterEach(async () => {
+  resetKernelModeCache();
+  (await import('./kernel-client')).resetAttemptStartBreaker();
+});
 
 /** Node's fetch when the connection is refused: `fetch failed` with the socket error as its cause. */
 const refusedErr = (code = 'ECONNREFUSED') => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
@@ -561,24 +564,51 @@ describe('AttemptStarted is a door too (AC-1 slice 7): a claim of a kernel owner
     expect(l.ran).toEqual(['attempt_started']);
   });
 
-  it('release skew: an older control plane refuses it as unknown, so the web host applies it and says so; any other refusal stays one', async () => {
+  it('release skew: an older control plane refuses it as unknown, and the web host still never runs it (the claim projects the start instead)', async () => {
     const { attemptStarted } = await import('./kernel-client');
     const l = local();
     const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "attempt_started"' }, { status: 400 })) as unknown as typeof fetch;
-    const errors: unknown[] = [];
-    const realError = console.error;
-    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
-    try {
-      await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } });
-    } finally {
-      console.error = realError;
-    }
-    expect(l.ran).toEqual(['attempt_started']);
-    expect(String(errors[0])).toContain('SKEW');
+    expect(await attemptStarted(start, { principal: runner, deps: { ...l.deps, env: OWN, fetch: older } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
+    expect(l.ran).toEqual([]);
     const r2 = local();
     const refusing = (async () => Response.json({ v: 1, code: 'forbidden', error: 'account does not reach this workspace' }, { status: 403 })) as unknown as typeof fetch;
     expect(await attemptStarted(start, { principal: runner, deps: { ...r2.deps, env: OWN, fetch: refusing } }).catch((e) => e)).toBeInstanceOf(KernelCommandRefusedError);
     expect(r2.ran).toEqual([]);
+  });
+
+  it('its own small budget at the default: a control plane answering 503, or hanging, costs a start well under a second and a half, not the claim\'s 5 s', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_BUDGET_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_BUDGET_MS).toBeLessThanOrEqual(1_000);
+    const unavailable = (async () => Response.json({ v: 1, code: 'unavailable' }, { status: 503 })) as unknown as typeof fetch;
+    const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+    for (const f of [unavailable, hanging]) {
+      resetAttemptStartBreaker();
+      const t0 = Date.now();
+      const err = await attemptStarted(start, { principal: runner, deps: { ...local().deps, sleep: undefined, env: OWN, fetch: f } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(Date.now() - t0).toBeLessThan(1_500);
+    }
+  });
+
+  it('a start left unanswered opens a short breaker: the next starts skip the door at once, until it closes', async () => {
+    const { attemptStarted, resetAttemptStartBreaker, ATTEMPT_START_SKIP_MS } = await import('./kernel-client');
+    expect(ATTEMPT_START_SKIP_MS).toBeGreaterThanOrEqual(30_000);
+    expect(ATTEMPT_START_SKIP_MS).toBeLessThanOrEqual(60_000);
+    resetAttemptStartBreaker();
+    let t = 1_000_000;
+    let sent = 0;
+    const down = (async () => { sent++; throw refusedErr(); }) as unknown as typeof fetch;
+    const deps = { ...local().deps, env: OWN, fetch: down, now: () => t, sleep: async (ms: number) => { t += ms + 5_000; } };
+    expect(await attemptStarted(start, { principal: runner, deps }).catch((e) => e)).toBeInstanceOf(ControlPlaneUnavailableError);
+    const afterFirst = sent;
+    expect(afterFirst).toBeGreaterThan(0);
+    const skipped = await attemptStarted(start, { principal: runner, deps }).catch((e) => e);
+    expect(skipped).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(sent).toBe(afterFirst);
+    t += ATTEMPT_START_SKIP_MS + 1;
+    const answered = (async () => answer({ op: 'attempt_started', result: { handled: true, started: true } })) as unknown as typeof fetch;
+    expect(await attemptStarted(start, { principal: runner, deps: { ...deps, fetch: answered } })).toEqual({ handled: true, started: true });
+    resetAttemptStartBreaker();
   });
 
   it('a start the control plane never answered is not parked: the claim projects it on its own host instead', async () => {

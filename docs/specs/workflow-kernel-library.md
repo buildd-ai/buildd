@@ -1594,15 +1594,25 @@ column outside the kernel; S3 and S4 remove or route each one.
   claim, never a kernel-merged one. So the kernel cannot assign a task to a
   claimer that lost the race, and a start that lands late (after a cancel, a
   requeue and a new claim, or an expired claim taken over) moves nothing. It
-  is a door op (`attempt_started`) inside the claim's one control-plane budget,
-  shared with the fix claims (`KERNEL_CLAIM_BUDGET_MS`, default 5 s); it is
-  never parked, and is applied on the web host during release skew. Unless
-  the kernel answered started, the route projects the start itself, so a
-  control plane that is down, slow, refusing or too old costs a claim at most
-  its budget and never fails it, for a runner and an interactive session
-  alike. A claim lost after its compare-and-set gives back only its own claim
-  fields, with no status write. The start's effects are drained by the floor,
-  never inline on the claim. On the web host (shadow) the start adds a few
+  is a door op (`attempt_started`) with its own small budget
+  (`ATTEMPT_START_BUDGET_MS`, 750 ms; `KERNEL_START_BUDGET_MS` overrides),
+  apart from the fix claims' budget. It is never parked and never run on the
+  web host in own mode, not even during release skew: an older control plane's
+  refusal is one more door error. A start the control plane leaves unanswered
+  opens a process-level breaker (`ATTEMPT_START_SKIP_MS`, 45 s): until it
+  closes, starts skip the door. An interactive session's claim never asks the
+  door at all. On any door error, a skipped door or an interactive claim, the
+  route projects the start itself, so a control plane that is down, slow,
+  refusing or too old never fails a claim: a runner's claim waits at most the
+  start budget once per breaker window, and a person's own session not at all
+  (`tests/db/claim-attempt-start.test.ts` measures a 503, a hang and refused
+  connections at the default budgets). A claim lost after its compare-and-set
+  gives back only its own claim fields, with no status write. A request that
+  dies between its compare-and-set and the start leaves the task `pending`
+  with the claim set, and no one can claim it until the claim's `expires_at`
+  passes (the task's `timeoutMinutes`, 15 minutes by default), the same way a
+  legacy claim that died before inserting its worker recovers. The start's
+  effects are drained by the floor, never inline on the claim. On the web host (shadow) the start adds a few
   statements (the delivery read, the view, the transition, the projection
   read): single-digit milliseconds against a local Postgres in
   `tests/db/claim-attempt-start.test.ts`; in own mode it is one control-plane
