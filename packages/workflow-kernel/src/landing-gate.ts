@@ -136,9 +136,33 @@ export const REVIEW_STATUS_TERMS = {
   ready: 'Ready to merge',
   blocked: 'Merge blocked',
   repairing: 'Branch update in progress',
+  repairingCi: 'CI fix in progress',
+  repairingConflict: 'Conflict fix in progress',
+  repairingMigration: 'Migration fix in progress',
 } as const;
 
 const T = REVIEW_STATUS_TERMS;
+
+/** The term a repair leads with, per reason: a CI fix is not a "branch update". The state stays pending either way. */
+function repairTerm(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'ci': return T.repairingCi;
+    case 'conflict': return T.repairingConflict;
+    case 'migration': return T.repairingMigration;
+    default: return T.repairing;
+  }
+}
+
+/** A repair reason in words, for the description after the term. */
+function repairWords(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'ci': return 'a failing check is being fixed';
+    case 'conflict': return 'a merge conflict is being resolved';
+    case 'migration': return 'a migration is being renumbered';
+    case 'behind': return 'the branch is being brought up to date';
+    default: return 'the PR is being repaired';
+  }
+}
 
 /** A stored reason code (`landing_needs_human`) in words: underscores to spaces, the kernel's "landing" as "merge". */
 function plainCode(code: string | null | undefined, fallback: string): string {
@@ -197,7 +221,7 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     // review of this head stands clean the check is pending, never a red that reads as a rejection.
     if (d.state === 'REPAIRING') {
       const review = reviewGate(view, { states: ['REPAIRING'] });
-      if (review.ok) return status('pending', T.repairing, `review approved ${at}; the PR is being repaired (${plainCode(d.stateReason, 'repair')})`);
+      if (review.ok) return status('pending', repairTerm(d.stateReason), `review approved ${at}; ${repairWords(d.stateReason)}`);
       if (review.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
       const failedReview = gateFailure(review);
       if (failedReview) return failedReview;

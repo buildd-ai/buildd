@@ -106,7 +106,7 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the merge door merges it without another refresh',
   ];
   test('R-43: every description leads with a plain review term and never says "land"', () => {
-    const terms = ['Branch update in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
+    const terms = ['Branch update in progress', 'CI fix in progress', 'Conflict fix in progress', 'Migration fix in progress', 'Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
     const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
     const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
     const out: string[] = [landingStatusUnknown('abcdef1234').description];
@@ -137,7 +137,19 @@ describe('landingStatusOf while the PR is being repaired (review validity vs lan
   test('approved at the head and behind: pending, says the review is approved, never a failure', () => {
     const s = landingStatusOf(V(rep(), [R(1, 'approve')]))!;
     expect(s.state).toBe('pending');
-    expect(s.description).toBe('Branch update in progress: review approved abcdef1; the PR is being repaired (behind)');
+    expect(s.description).toBe('Branch update in progress: review approved abcdef1; the branch is being brought up to date');
+  });
+  test.each([
+    ['ci', 'CI fix in progress: review approved abcdef1; a failing check is being fixed'],
+    ['conflict', 'Conflict fix in progress: review approved abcdef1; a merge conflict is being resolved'],
+    ['migration', 'Migration fix in progress: review approved abcdef1; a migration is being renumbered'],
+    ['behind', 'Branch update in progress: review approved abcdef1; the branch is being brought up to date'],
+    ['something_else', 'Branch update in progress: review approved abcdef1; the PR is being repaired'],
+  ])('reason %s reads in its own terms and stays pending', (stateReason, description) => {
+    expect(landingStatusOf(V(rep({ stateReason }), [R(1, 'approve')]))).toEqual({ state: 'pending', sha: 'abcdef1234', description });
+  });
+  test('a CI repair never reads as a branch update', () => {
+    expect(landingStatusOf(V(rep({ stateReason: 'ci' }), [R(1, 'approve')]))!.description).not.toMatch(/branch update/i);
   });
   test('a new head with no covering review is pending review, not a rejection', () => {
     const s = landingStatusOf(V(rep({ approvedHeads: [], approvalBasis: null }), [R(1, 'approve')]))!;
@@ -177,5 +189,14 @@ describe('reviewGate with findings (workflow-kernel-library.md §5, AC-13)', () 
   test('buildd/landing is failure at the head, naming the finding', () => {
     expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'Unresolved review finding: src/a.ts:4: rename the flag' });
     expect(landingStatusOf(VF(D(), [F(), F({ id: 'r1:1', path: null, title: 'add a test' })]))!.description).toBe('Unresolved review finding: src/a.ts:4: rename the flag (and 1 more)');
+  });
+});
+
+describe('team notification copy (R-43)', () => {
+  test('the handlers never say "landing" or "land" to a person', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, 'handlers/review.ts'), 'utf8') as string;
+    const copy = [...src.matchAll(/needsAttention\([^;]*?`([^`]*)`(?:,\s*([^;]*?))?\);/gs)].map((m) => m[1] + (m[2] ?? '')).join('\n');
+    expect(copy).toContain('merge needs a person');
+    expect(copy).not.toMatch(/\bland(ing)?\b/i);
   });
 });
