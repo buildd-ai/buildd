@@ -1,6 +1,7 @@
 /**
  * GET /api/missions/recent (spec c7410e76 R-24): who may ask, that the read is
- * scoped to the caller's reachable workspaces, and the shape handed back.
+ * scoped to the caller's reachable workspaces, the shape handed back, and the
+ * not-changed reply (spec 3ef37387 R-20, AC-4).
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
@@ -14,18 +15,39 @@ const mockLoadMissionStages = mock((missionIds: string[], workspaceIds: string[]
 let rows: any[] = [];
 const mockFindMany = mock(async (args: any): Promise<any[]> => {
   const params = dialect.sqlToQuery(args.where).params;
-  const matches = rows.filter(r => params.includes(r.status));
-  return args.limit ? matches.slice(0, args.limit) : matches;
+  return rows.filter(r => r.status !== 'completed' && params.includes(r.status));
 });
+/** The delivered read's builder chain: records each clause, answers the completed rows. */
+let deliveredCalls: Record<string, any[]> = {};
+const mockSelect = mock((fields: any) => {
+  deliveredCalls = { fields: [fields] };
+  const chain: any = {};
+  for (const k of ['from', 'leftJoin', 'where', 'groupBy', 'having', 'orderBy', 'limit']) {
+    chain[k] = (...args: any[]) => { deliveredCalls[k] = args; return chain; };
+  }
+  chain.then = (ok: any, bad: any) => Promise.resolve()
+    .then(() => { if (selectFails) throw new Error('boom'); return rows.filter(r => r.status === 'completed').slice(0, deliveredCalls.limit?.[0] ?? Infinity); })
+    .then(ok, bad);
+  return chain;
+});
+let selectFails = false;
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/workspace-access', () => ({ listReachableWorkspaceIds: mockListReachable }));
 mock.module('@/lib/mission-stage-load', () => ({ loadMissionStages: mockLoadMissionStages }));
-mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: mockFindMany } } } }));
+mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: mockFindMany } }, select: mockSelect } }));
+mock.module('@/lib/redis', () => ({
+  mgetKeys: async (keys: string[]) => keys.map(k => versions.get(k) ?? null),
+  setKeys: async (entries: Array<[string, string]>, _ttl: number, opts?: { nx?: boolean }) => {
+    for (const [k, v] of entries) if (!opts?.nx || !versions.has(k)) versions.set(k, v);
+    return true;
+  },
+}));
+const versions = new Map<string, string>();
 
 const { GET } = await import('./route');
-const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
+const { RECENT_DAYS, completionNoteSql } = await import('@/lib/missions-recent');
 const { missionStatusNoteBody, MISSION_COMPLETED_MARKER } = await import('@/lib/mission-status-note');
 const { MAX_STAGE_MISSION_IDS } = await import('@/lib/mission-stage');
 const dialect = new PgDialect();
@@ -45,6 +67,9 @@ describe('GET /api/missions/recent', () => {
     mockListReachable.mockResolvedValue([]);
     stagesImpl = async () => new Map();
     rows = [];
+    selectFails = false;
+    versions.clear();
+    mockSelect.mockClear();
   });
 
   it('401 without a key or a session, and reads nothing', async () => {
@@ -103,12 +128,11 @@ describe('GET /api/missions/recent', () => {
     const body = await (await GET(req({ authorization: 'Bearer bld_x' }))).json();
     expect(body.missions.filter((m: any) => m.status !== 'completed')).toHaveLength(303);
     expect(body.missions.filter((m: any) => m.status === 'completed')).toHaveLength(300);
-    const calls = mockFindMany.mock.calls.map(([args]) => args as any);
-    expect(calls[0].limit).toBeUndefined();
-    expect(calls[1].limit).toBe(300);
-    expect(dialect.sqlToQuery(calls[0].where).params).toEqual(['ws-1', 'active', 'paused', 'budget_exhausted']);
-    expect(dialect.sqlToQuery(calls[1].where).params).toContain('completed');
-    expect(dialect.sqlToQuery(calls[1].where).params).not.toContain('active');
+    const open = mockFindMany.mock.calls[0]![0] as any;
+    expect(open.limit).toBeUndefined();
+    expect(dialect.sqlToQuery(open.where).params).toEqual(['ws-1', 'active', 'paused', 'budget_exhausted']);
+    expect(deliveredCalls.limit).toEqual([300]);
+    expect(dialect.sqlToQuery(deliveredCalls.where[0]).params).toEqual(['ws-1', 'completed']);
   });
 
   it('asks for at most MAX_STAGE_MISSION_IDS stages, the first listed, and still lists every mission', async () => {
@@ -130,33 +154,41 @@ describe('GET /api/missions/recent', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
     mockListReachable.mockResolvedValue(['ws-1']);
     await GET(req({ authorization: 'Bearer bld_x' }));
-    expect(mockFindMany).toHaveBeenCalledTimes(2);
+    expect(mockFindMany).toHaveBeenCalledTimes(1);
+    expect(mockSelect).toHaveBeenCalledTimes(1);
     expect(RECENT_DAYS).toBe(7);
     const args = mockFindMany.mock.calls[0]![0] as any;
     expect(args.columns.workspaceId).toBe(true);
     expect(args.columns.completedAt).toBeUndefined();
-    expect(Object.keys(args.extras)).toEqual(['deliveredAt']);
+    expect(args.extras).toBeUndefined();
+    expect(Object.keys(deliveredCalls.fields[0])).toContain('deliveredAt');
   });
 
-  describe('the WHERE, rendered (a mocked findMany cannot see it)', () => {
-    const since = day(RECENT_DAYS);
-    const rendered = dialect.sqlToQuery(recentMissionsWhere(['ws-1', 'ws-2'], since)!);
-    const text = rendered.sql.replace(/\s+/g, ' ');
+  describe('the delivered read, rendered (a mocked builder cannot run it)', () => {
+    const render = (x: any) => dialect.sqlToQuery(x);
+    // Drizzle's parenthesisation is not the point: compare the clauses.
+    const text = (x: any) => render(x).sql.replace(/[()]/g, '').replace(/\s+/g, ' ');
 
-    it('is the reachable workspaces AND (open status OR completed and delivered since the window start), nothing else', () => {
-      expect(text).toBe(
-        '(("missions"."workspace_id" in ($1, $2)) and ((("missions"."status" in ($3, $4, $5)) or ((("missions"."status" = $6) and '
-        + '(greatest("missions"."completed_at", ( select max("mission_notes"."created_at") from "mission_notes" '
-        + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."created_at" >= $7 and "mission_notes"."type" = \'update\' '
-        + 'and ("mission_notes"."collapse_key" = $8 or ("mission_notes"."author_type" = \'system\' and "mission_notes"."title" in ($9, $10) '
-        + 'and "mission_notes"."body" like $11)) )) >= $12))))))',
+    it('one grouped pass: the window\'s completion notes joined to the reachable completed missions, no correlated subquery', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
+      mockListReachable.mockResolvedValue(['ws-1', 'ws-2']);
+      await GET(req({ authorization: 'Bearer bld_x' }));
+      const since = day(RECENT_DAYS);
+      const join = render(deliveredCalls.leftJoin[1]);
+      expect(text(deliveredCalls.leftJoin[1])).toBe(
+        '"mission_notes"."mission_id" = "missions"."id" and "mission_notes"."created_at" >= $1 and "mission_notes"."type" = \'update\' '
+        + 'and "mission_notes"."collapse_key" = $2 or "mission_notes"."author_type" = \'system\' and "mission_notes"."title" in $3, $4 '
+        + 'and "mission_notes"."body" like $5',
       );
-      expect(rendered.params.slice(0, 11)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', since, MISSION_COMPLETED_MARKER, 'Mission status changed', 'Mission reopened', '% → completed']);
-      expect(new Date(rendered.params[11] as string).getTime()).toBe(since.getTime());
+      expect(Math.abs(new Date(join.params[0] as string).getTime() - since.getTime())).toBeLessThan(5_000);
+      expect(join.params.slice(1)).toEqual([MISSION_COMPLETED_MARKER, 'Mission status changed', 'Mission reopened', '% → completed']);
+      expect(text(deliveredCalls.where[0])).toBe('"missions"."workspace_id" in $1, $2 and "missions"."status" = $3');
+      expect(text(deliveredCalls.having[0])).toBe('greatest"missions"."completed_at", max"mission_notes"."created_at" >= $1');
+      expect(text(deliveredCalls.fields[0].deliveredAt)).not.toContain('select');
     });
 
     it('a re-completion through a status PATCH counts: its "→ completed" feed note is read', () => {
-      const delivered = dialect.sqlToQuery(deliveredAtSql);
+      const delivered = dialect.sqlToQuery(completionNoteSql());
       const pattern = delivered.params.find(p => typeof p === 'string' && p.includes('→')) as string;
       // The pattern matches exactly the body the PATCH route writes for a transition into completed.
       const like = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`);
@@ -166,7 +198,7 @@ describe('GET /api/missions/recent', () => {
     });
 
     it('a forged post_note (author_type != system) with body matching "→ completed" does not update delivered time', () => {
-      const rendered = dialect.sqlToQuery(deliveredAtSqlFor(new Date(0)));
+      const rendered = dialect.sqlToQuery(completionNoteSql());
       const sql = rendered.sql;
       // The query must check author_type = 'system' to reject user-posted notes
       expect(sql).toContain('author_type');
@@ -176,6 +208,35 @@ describe('GET /api/missions/recent', () => {
       const titleCheck = [...sql.matchAll(/title.*in\s*\([^)]+\)/g)];
       expect(titleCheck.length).toBeGreaterThan(0);
     });
+  });
+
+  it('AC-4: a client holding the current version gets 304 and no mission is read', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
+    mockListReachable.mockResolvedValue(['ws-1']);
+    rows = [{ id: 'm-open', title: 'Open', workspaceId: 'ws-1', status: 'active', isHeld: false, executor: 'runner' }];
+    // First read seeds the version (fail open: no tag yet); the second carries it.
+    expect((await GET(req({ authorization: 'Bearer bld_x' }))).headers.get('etag')).toBeNull();
+    const full = await GET(req({ authorization: 'Bearer bld_x' }));
+    const tag = full.headers.get('etag')!;
+    expect(tag).toMatch(/^W\/"cv1-/);
+    for (const m of [mockFindMany, mockSelect, mockLoadMissionStages]) m.mockClear();
+    const res = await GET(req({ authorization: 'Bearer bld_x', 'if-none-match': tag }));
+    expect(res.status).toBe(304);
+    expect(res.headers.get('etag')).toBe(tag);
+    expect(mockFindMany).not.toHaveBeenCalled();
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockLoadMissionStages).not.toHaveBeenCalled();
+  });
+
+  it('a write to the workspace moves the version: the old tag reads in full', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
+    mockListReachable.mockResolvedValue(['ws-1']);
+    await GET(req({ authorization: 'Bearer bld_x' }));
+    const tag = (await GET(req({ authorization: 'Bearer bld_x' }))).headers.get('etag')!;
+    versions.set('buildd:cv:ws:ws-1', 'moved');
+    const res = await GET(req({ authorization: 'Bearer bld_x', 'if-none-match': tag }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('etag')).not.toBe(tag);
   });
 
   it('500 with a plain message when the read fails', async () => {

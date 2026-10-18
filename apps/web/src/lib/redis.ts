@@ -216,6 +216,23 @@ export async function delKey(key: string): Promise<void> {
   await safe('del key', r => r.del(key), undefined);
 }
 
+/** MGET: one value (or null) per key in order; undefined when Redis is unavailable. */
+export async function mgetKeys<T>(keys: string[]): Promise<Array<T | null> | undefined> {
+  if (keys.length === 0) return [];
+  return safe<Array<T | null> | undefined>('mget keys', r => r.mget<Array<T | null>>(...keys), undefined);
+}
+
+/** SET EX each entry in one pipeline (NX: only where absent); false when Redis is unavailable. */
+export async function setKeys(entries: Array<[string, string]>, ttlSec: number, opts: { nx?: boolean } = {}): Promise<boolean> {
+  if (entries.length === 0) return true;
+  return safe('set keys', async r => {
+    const p = r.pipeline();
+    for (const [k, v] of entries) p.set(k, v, opts.nx ? { nx: true, ex: ttlSec } : { ex: ttlSec });
+    await p.exec();
+    return true;
+  }, false);
+}
+
 /** SET NX EX: true only for the first caller in the window; false when Redis is unavailable. */
 export async function setOnce(key: string, ttlSec: number): Promise<boolean> {
   return safe('set nx', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', false);

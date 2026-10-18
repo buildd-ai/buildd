@@ -3402,6 +3402,18 @@ export interface MissionSummaryHome {
 }
 
 /**
+ * "Recently delivered" (spec 3ef37387 R-24): a mission whose latest transition
+ * into completed is at most this many days old. The one definition: the
+ * server's read (`GET /api/missions/recent`) and `buildd top`'s fold both use it.
+ */
+export const RECENTLY_DELIVERED_DAYS = 7;
+
+/** Whether a delivery at `deliveredAtMs` is recent at `nowMs`. */
+export function isRecentlyDelivered(deliveredAtMs: number, nowMs: number): boolean {
+  return deliveredAtMs >= nowMs - RECENTLY_DELIVERED_DAYS * 86_400_000;
+}
+
+/**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
  * reachable workspaces. All open missions are included; only recent deliveries

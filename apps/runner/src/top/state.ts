@@ -28,7 +28,7 @@
 import type { ProgressCell } from './progress';
 import { rowDollars, runsOnLine, runWords, sameRoute, todayLine, todayTotals, workerSpend, type RouteProblem, type RunRoute, type RunSpend, type SpendResultMeta, type SpendTotals } from '../run-route';
 import { queueRowList, type QueueRow } from './queue';
-import { TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
+import { RECENTLY_DELIVERED_DAYS, isRecentlyDelivered, TERMINAL_TASK_STATUSES, TERMS, slotsInUse, isRunnerHoldActive, titleWithAttempt, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -711,8 +711,8 @@ export function isFoldKey(key: string | null | undefined): boolean {
   return !!key && key.startsWith('fold:');
 }
 
-/** Delivered missions stay listed this long (R-24). */
-export const DELIVERED_DAYS = 7;
+/** Delivered missions stay listed this long (R-24): the server's own definition, from @buildd/shared. */
+export const DELIVERED_DAYS = RECENTLY_DELIVERED_DAYS;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /** "Oct 14", in the reader's own time zone. */
@@ -887,7 +887,7 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     let row = map.get(m.id);
     if (!row) {
       // Not in the task list: listed only while open, or delivered inside the window.
-      if (finished && !(at >= now - DELIVERED_DAYS * 86_400_000)) continue;
+      if (finished && !isRecentlyDelivered(at, now)) continue;
       row = emptyRow(m.id, m.title);
       map.set(m.id, row);
     }

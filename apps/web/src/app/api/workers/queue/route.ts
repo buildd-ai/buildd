@@ -14,12 +14,19 @@
  *
  * A runner key; per-task tokens and trigger keys are refused, as they cannot
  * make a broad claim either.
+ *
+ * Carries the workspaces' change version as an ETag (spec 3ef37387 R-20):
+ * If-None-Match with the current one answers 304 without reading the queue.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { isRunnerExecutor, type RunnerQueueResponse } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { claimableWorkspaceIds } from '@/lib/claim-order';
 import { loadRunnerQueue } from '@/lib/claim-order-queue';
+import { listTag, notModifiedFor, queryKey, withTag, wsScope } from '@/lib/change-version';
+
+/** The queue moves with the clock too (cooldowns, deferred starts): a tag holds a minute at most. */
+const QUEUE_TAG_BUCKET_MS = 60_000;
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -45,12 +52,18 @@ export async function GET(req: NextRequest) {
     // The broad claim's reach: no workspace narrowing from the query.
     const workspaceIds = await claimableWorkspaceIds(account as any, null);
     if (workspaceIds.length === 0) return NextResponse.json({ teams: [], truncated: false } satisfies RunnerQueueResponse);
+    const tag = await listTag({
+      route: '/api/workers/queue', caller: `acct:${(account as any).id}`,
+      scopes: workspaceIds.map(wsScope), vary: [queryKey(params)], bucketMs: QUEUE_TAG_BUCKET_MS,
+    });
+    const unchanged = notModifiedFor(req, tag);
+    if (unchanged) return unchanged;
     const out = await loadRunnerQueue({
       workspaceIds,
       caller: { accountType: String((account as any).type ?? ''), runner, availableSkills, executor },
       viewerUserId: (account as any).createdByUserId ?? null,
     });
-    return NextResponse.json(out);
+    return withTag(NextResponse.json(out), tag);
   } catch (err) {
     console.error('[workers/queue] failed:', err);
     return NextResponse.json({ error: 'Failed to load the queue' }, { status: 500 });

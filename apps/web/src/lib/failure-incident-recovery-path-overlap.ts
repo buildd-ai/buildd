@@ -16,6 +16,7 @@
  */
 import type { FailureRecoveryDecision, FailureRecoveryRef } from '@buildd/shared';
 import type { BlockerPrState } from './failure-pattern-sentinel';
+import { prOutcome } from './pr-presentation';
 import type { RecoveryFamily, RecoveryPolicyOutcome, RecoveryVerdict } from './failure-incident-recovery';
 import type { StoredIncident } from './failure-incident-store';
 
@@ -375,8 +376,8 @@ export async function dbObservePathOverlapRecovery(incident: StoredIncident): Pr
       .select({ taskId: workers.taskId, createdAt: workers.createdAt, updatedAt: workers.updatedAt, mergedAt: workers.mergedAt, prLifecycleStatus: workers.prLifecycleStatus })
       .from(workers)
       .where(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)));
-    const fromWorkers: BlockerPrState = prWorkers.some(w => w.mergedAt || w.prLifecycleStatus === 'merged') ? 'merged'
-      : prWorkers.some(w => w.prLifecycleStatus === 'closed') ? 'closed'
+    const fromWorkers: BlockerPrState = prWorkers.some(w => prOutcome(w) === 'merged') ? 'merged'
+      : prWorkers.some(w => prOutcome(w) === 'closed') ? 'closed'
         : prWorkers.length > 0 && prWorkers.every(w => w.prLifecycleStatus !== 'unresolvable') ? 'open' : 'unknown';
     const fromDelivery: BlockerPrState | null = !delivery ? null
       : delivery.mergedAt || delivery.state === 'MERGED' ? 'merged'

@@ -73,6 +73,8 @@ import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
+import { listTag, notModifiedFor, queryKey, withTag, wsScope } from '@/lib/change-version';
+import { TASK_LIST_PAGE, decodeTaskCursor, encodeTaskCursor } from '@/lib/task-list-cursor';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -147,6 +149,12 @@ export async function GET(req: NextRequest) {
     // fetching every workspace's task and filtering client-side (see DependencySelector).
     //   ?missionId=<uuid>  — only tasks linked to that mission (400 on a malformed id:
     //     a filter that cannot be applied must never widen the result)
+    //   ?cursor=<nextCursor> — the full list's next page (newest first); the reply
+    //     says hasMore and nextCursor instead of stopping silently at a cap
+    //
+    // Every shape carries the workspaces' change version as an ETag (spec
+    // 3ef37387 R-20): If-None-Match with the current one answers 304 without
+    // reading a task (lib/change-version.ts).
     const requestedWorkspaceId = req.nextUrl.searchParams.get('workspaceId');
     const statusFilter = req.nextUrl.searchParams.get('status');
     const missionIdFilter = req.nextUrl.searchParams.get('missionId');
@@ -168,6 +176,10 @@ export async function GET(req: NextRequest) {
       );
     }
     const missionScope = missionIdFilter ? eq(tasks.missionId, missionIdFilter) : undefined;
+    const cursor = decodeTaskCursor(req.nextUrl.searchParams.get('cursor'));
+    if (cursor === 'invalid') {
+      return NextResponse.json({ error: 'cursor must be the nextCursor of an earlier reply.' }, { status: 400 });
+    }
 
     // Intersect the requested workspace with the caller's accessible set.
     // If it isn't accessible, workspaceIds becomes empty → returns [] below
@@ -175,6 +187,19 @@ export async function GET(req: NextRequest) {
     if (requestedWorkspaceId) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
+
+    // Versions first, rows after: a write between the two is read again next time.
+    const tag = workspaceIds.length > 0
+      ? await listTag({
+          route: '/api/tasks',
+          caller: apiAccount ? `acct:${apiAccount.id}:${(apiAccount as { taskScope?: { taskId?: string } }).taskScope?.taskId ?? ''}` : `user:${user!.id}`,
+          scopes: workspaceIds.map(wsScope),
+          // budgetWindows reads the account row, which no work note moves.
+          vary: [queryKey(req.nextUrl.searchParams), apiAccount ? String(apiAccount.budgetResetsAt ?? '') : ''],
+        })
+      : null;
+    const unchanged = notModifiedFor(req, tag);
+    if (unchanged) return unchanged;
 
     const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -250,12 +275,12 @@ export async function GET(req: NextRequest) {
       const pendingCount = countsResult[0]?.pendingCount ?? 0;
 
 
-      return jsonResponse({
+      return withTag(jsonResponse({
         tasks: leanTasks,
         total,
         pendingCount,
         hasMore: offset + limit < total,
-      }, undefined, { route: req.nextUrl.pathname });
+      }, undefined, { route: req.nextUrl.pathname }), tag);
     }
 
     // ── Full (un-paginated) path — existing behaviour, dashboard-safe ───────
@@ -279,9 +304,13 @@ export async function GET(req: NextRequest) {
                     gte(tasks.updatedAt, oneDayAgo),
                   ),
                 ),
+            // Milliseconds, as the cursor holds them: Postgres keeps microseconds.
+            cursor
+              ? sql`(date_trunc('milliseconds', ${tasks.createdAt}), ${tasks.id}) < (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+              : undefined,
           )),
-          orderBy: sqlOrderBy(desc(tasks.createdAt)),
-          limit: 200,
+          orderBy: sqlOrderBy([desc(sql`date_trunc('milliseconds', ${tasks.createdAt})`), desc(tasks.id)]),
+          limit: TASK_LIST_PAGE + 1,
           columns: {
             id: true,
             workspaceId: true,
@@ -334,7 +363,9 @@ export async function GET(req: NextRequest) {
           },
         })
       : [];
-    const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
+    const hasMore = allTasks.length > TASK_LIST_PAGE;
+    const page = hasMore ? allTasks.slice(0, TASK_LIST_PAGE) : allTasks;
+    const listedTasks = await withTaskListAggregates(page, workspaceIds, terminalStatuses);
 
     // include=missionStages: each listed mission's stage in this same reply, so
     // `buildd top` makes one read where it made two (/api/tasks, then
@@ -356,8 +387,10 @@ export async function GET(req: NextRequest) {
     // No PR refresh per poll (spec 3ef37387 R-24): the webhook and the
     // pr-reconcile cron keep PR state fresh.
 
-    return jsonResponse({
+    return withTag(jsonResponse({
       tasks: listedTasks,
+      hasMore,
+      nextCursor: hasMore ? encodeTaskCursor(page[page.length - 1]) : null,
       ...(missionStages ? { missionStages } : {}),
       budgetWindows: apiAccount ? {
         claude: {
@@ -369,7 +402,7 @@ export async function GET(req: NextRequest) {
           resolution: 'default_budget_window',
         },
       } : undefined,
-    }, undefined, { route: req.nextUrl.pathname });
+    }, undefined, { route: req.nextUrl.pathname }), tag);
   } catch (error) {
     // Audit mode (a terminal ?status) reaches a workspace's entire history with
     // no 24h window — the one query path where an unusual row shape or a slow

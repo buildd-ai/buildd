@@ -24,6 +24,7 @@ let clock: number;
 let table: Map<string, StoredMissionSummary>;
 let loads: string[][];
 let recorded: Array<{ event: string; fields: Record<string, number> }>;
+let changed: string[][];
 
 function deps(): MissionSummaryStoreDeps {
   return {
@@ -47,6 +48,7 @@ function deps(): MissionSummaryStoreDeps {
     },
     now: () => clock,
     record: (event, fields) => { recorded.push({ event, fields }); },
+    changed: async (ids) => { changed.push([...ids]); },
   };
 }
 
@@ -74,11 +76,13 @@ beforeEach(async () => {
   table = new Map();
   loads = [];
   recorded = [];
+  changed = [];
   store = createMissionSummaryStore(deps());
   setWorkChangeListenersForTests([async (batch) => { await store.refreshFor(batch); }]);
   // Backfill: the reconcile writes every mission it finds missing.
   await store.reconcile({ limit: 50 });
   loads = [];
+  changed = [];
 });
 
 afterEach(() => { setWorkChangeListenersForTests(null); });
@@ -205,6 +209,18 @@ describe('the writer', () => {
     expect(table.get('m-build')!.summary.health).not.toBe('held');
   });
 
+  it('moves the change version of the missions it wrote, and none it fenced out (R-20)', async () => {
+    tick();
+    world.missions.find(m => m.id === 'm-build')!.isHeld = true;
+    noteWorkChanged({ missionIds: ['m-build'] });
+    await flushWorkChanges();
+    expect(changed).toEqual([['m-build']]);
+    changed = [];
+    clock = NOW - 3_600_000;
+    await store.recompute(['m-build']);
+    expect(changed).toEqual([]);
+  });
+
   it('a note for rows of no mission loads nothing', async () => {
     world.tasks.push({ ...world.tasks[0], id: 't-free', missionId: null });
     noteWorkChanged({ taskIds: ['t-free', 'no-such-task'] });
@@ -225,6 +241,16 @@ describe('the reconcile', () => {
     expect(summary('m-build').progress.done).toBe(2);
     expectStoredEqualsComputed();
     expect(recorded).toEqual([{ event: 'mission_summary.reconcile', fields: expect.objectContaining({ repaired: 1, missedWrites: 1 }) }]);
+  });
+
+  it('moves the change version only for summaries that read differently (R-20)', async () => {
+    tick();
+    expect((await store.reconcile({ limit: 50 })).unchanged).toBe(world.missions.length);
+    expect(changed).toEqual([]);
+    Object.assign(world.workers.find(w => w.id === 'w-b2')!, { mergedAt: new Date(clock), prLifecycleStatus: 'merged' });
+    tick();
+    await store.reconcile({ limit: 50 });
+    expect(changed).toEqual([['m-build']]);
   });
 
   it('a reading that only aged is repaired but is not a missed write', async () => {

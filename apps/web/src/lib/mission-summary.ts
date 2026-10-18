@@ -42,6 +42,7 @@ import { missionWorkHolder, missionWorkStateFromRows } from './mission-work-stat
 import { missionNeedsYou } from './mission-state-view';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { overlayDeliveryLifecycle } from './delivery-overlay';
+import { prOutcome } from './pr-presentation';
 import { taskRowsStripProjection } from './mission-strip-order';
 
 /** One mission's rows, as `loadMissionSummaryInputs` reads them. */
@@ -81,9 +82,7 @@ function newestFirst(ws: Row[]): Row[] {
 }
 
 function prState(w: Row): MissionSummaryDelivery['state'] {
-  if (w.mergedAt || w.prLifecycleStatus === 'merged') return 'merged';
-  if (w.prLifecycleStatus === 'closed') return 'closed';
-  return 'open';
+  return prOutcome({ prLifecycleStatus: w.prLifecycleStatus, mergedAt: w.mergedAt });
 }
 
 /**

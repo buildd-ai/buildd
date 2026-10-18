@@ -1,5 +1,6 @@
 import { MISSION_SUMMARY_COLUMNS, missionReadOptions, missionSummaryResponse } from '@/lib/mission-read-shape';
-import { readMissionSummaries } from '@/lib/mission-summary-store';
+import { readMissionSummaries, refreshMissionSummary } from '@/lib/mission-summary-store';
+import { listTag, notModifiedFor, queryKey, teamScope, withTag } from '@/lib/change-version';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -68,6 +69,15 @@ export async function GET(req: NextRequest) {
       scopedTeamIds = [teamIdFilter];
     }
 
+    // The teams' change version as an ETag (spec 3ef37387 R-20): If-None-Match
+    // with the current one answers 304 without reading a mission.
+    const tag = await listTag({
+      route: '/api/missions', caller: apiAccount ? `acct:${apiAccount.id}` : `user:${user!.id}`,
+      scopes: scopedTeamIds.map(teamScope), vary: [queryKey(searchParams)],
+    });
+    const unchanged = notModifiedFor(req, tag);
+    if (unchanged) return unchanged;
+
     const { details, limit } = missionReadOptions(searchParams);
     const q = searchParams.get('q');
     const where = buildMissionListWhere({
@@ -90,10 +100,10 @@ export async function GET(req: NextRequest) {
         readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : [])),
         hasMore ? db.$count(missions, where) : page.length,
       ]);
-      return NextResponse.json({
+      return withTag(NextResponse.json({
         missions: page.map(row => ({ ...missionSummaryResponse(row, summaries.get(row.id)?.summary ?? null), workspace: row.workspace ?? null })),
         total, hasMore,
-      });
+      }), tag);
     }
 
     const results = await db.query.missions.findMany({
@@ -150,7 +160,7 @@ export async function GET(req: NextRequest) {
 
     // total: how many match before the cap, so a capped page can say "N of M".
     const total = limit && results.length >= limit ? await db.$count(missions, where) : results.length;
-    return NextResponse.json({ missions: missionsWithProgress, total });
+    return withTag(NextResponse.json({ missions: missionsWithProgress, total }), tag);
   } catch (error) {
     console.error('List missions error:', error);
     return NextResponse.json({ error: 'Failed to list missions' }, { status: 500 });
@@ -613,6 +623,8 @@ export async function POST(req: NextRequest) {
         })
       : created;
 
+    // Its summary is stored after the response, and the list's change version moves (R-13, R-20).
+    refreshMissionSummary(mission.id);
     return NextResponse.json(responseBody, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);

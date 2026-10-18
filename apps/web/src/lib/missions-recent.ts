@@ -1,6 +1,7 @@
 /**
  * The read behind GET /api/missions/recent (spec c7410e76 R-24): every open
- * mission of the given workspaces, plus those delivered in the last 7 days.
+ * mission of the given workspaces, plus those delivered recently
+ * (`RECENTLY_DELIVERED_DAYS`, the one definition: spec 3ef37387 R-24).
  *
  * "Delivered" is the latest transition into completed, not
  * `missions.completedAt` alone. The automated completion re-stamps that column
@@ -12,15 +13,20 @@
  * newest such note is the current completion. Automated completion keeps the
  * earlier stamp when no task finished since the reopen (completeMissionSql). A reopened mission is open again and lists as open; a completed
  * mission with neither (finished before the stamp existed) is not listed.
+ *
+ * The delivered read is one grouped pass: the given workspaces' completed
+ * missions, left-joined to their completion notes inside the window. The note
+ * match (a LIKE on the body) runs once per note row of those missions, never
+ * per mission in a correlated subquery, and never over another tenant's notes.
  */
 import { db } from '@buildd/core/db';
 import { missionNotes, missions } from '@buildd/core/db/schema';
-import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { missionStatusNoteIntoPattern, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
-import type { RecentMission } from '@buildd/shared';
+import { RECENTLY_DELIVERED_DAYS, type RecentMission } from '@buildd/shared';
 
-export const RECENT_DAYS = 7;
+export const RECENT_DAYS = RECENTLY_DELIVERED_DAYS;
 /** Bound recent deliveries only; open missions must never be truncated. */
 const MAX_DELIVERED_MISSIONS = 300;
 const OPEN_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
@@ -30,64 +36,52 @@ const OPEN_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
  * caller; post_note cannot write it), or a system-authored status note (older rows, which
  * predate the marker). A bare author type is not trusted for anyone else's note.
  */
-function completionNote(title1: string, title2: string) {
-  return sql`(${missionNotes.collapseKey} = ${MISSION_COMPLETED_MARKER}
+export function completionNoteSql() {
+  const [title1, title2] = MISSION_STATUS_CHANGE_TITLES;
+  return sql`(${missionNotes.type} = 'update' and (${missionNotes.collapseKey} = ${MISSION_COMPLETED_MARKER}
     or (${missionNotes.authorType} = 'system'
       and ${missionNotes.title} in (${title1}, ${title2})
-      and ${missionNotes.body} like ${missionStatusNoteIntoPattern('completed')}))`;
+      and ${missionNotes.body} like ${missionStatusNoteIntoPattern('completed')})))`;
 }
 
-/** When the mission last became completed: the later of its stamp and its newest "→ completed" status note. */
-export function deliveredAtSqlFor(since: Date) {
-  const [title1, title2] = MISSION_STATUS_CHANGE_TITLES;
-  return sql<string | Date | null>`greatest(${missions.completedAt}, (
-  select max(${missionNotes.createdAt}) from ${missionNotes}
-  where ${missionNotes.missionId} = ${missions.id}
-    and ${missionNotes.createdAt} >= ${since}
-    and ${missionNotes.type} = 'update'
-    and ${completionNote(title1, title2)}
-))`;
-}
+/** When the mission last became completed, over the joined notes: the later of its stamp and its newest completion note. */
+export const deliveredAtSql = sql<string | Date | null>`greatest(${missions.completedAt}, max(${missionNotes.createdAt}))`;
 
-export const deliveredAtSql = sql<string | Date | null>`greatest(${missions.completedAt}, (
-  select max(${missionNotes.createdAt}) from ${missionNotes}
-  where ${missionNotes.missionId} = ${missions.id}
-    and ${missionNotes.type} = 'update'
-    and ${completionNote(MISSION_STATUS_CHANGE_TITLES[0], MISSION_STATUS_CHANGE_TITLES[1])}
-))`;
+const LISTED = { id: missions.id, title: missions.title, workspaceId: missions.workspaceId, status: missions.status, isHeld: missions.isHeld, executor: missions.executor };
 
-/** Open missions, and those delivered since `since`, in the given workspaces. */
-export function recentMissionsWhere(workspaceIds: string[], since: Date) {
-  return and(
-    inArray(missions.workspaceId, workspaceIds),
-    or(
-      inArray(missions.status, [...OPEN_STATUSES]),
-      and(eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since)),
-    ),
-  );
+/** Completed missions of these workspaces delivered since `since`, newest activity first. */
+export function deliveredMissionsQuery(workspaceIds: string[], since: Date) {
+  return db
+    .select({ ...LISTED, deliveredAt: deliveredAtSql })
+    .from(missions)
+    .leftJoin(missionNotes, and(
+      eq(missionNotes.missionId, missions.id),
+      gte(missionNotes.createdAt, since),
+      completionNoteSql(),
+    ))
+    .where(and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed')))
+    .groupBy(missions.id)
+    .having(gte(deliveredAtSql, since))
+    .orderBy(desc(missions.updatedAt))
+    .limit(MAX_DELIVERED_MISSIONS);
 }
 
 /** The listed missions, open first, newest activity first within each set; `completedAt` is the delivered time, set only on a completed one. */
 export async function loadRecentMissions(workspaceIds: string[], now = Date.now()): Promise<Array<Omit<RecentMission, 'stage'>>> {
   if (workspaceIds.length === 0) return [];
   const since = new Date(now - RECENT_DAYS * 86_400_000);
-  const selection = {
-    columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, armedAt: true, executor: true } as const,
-    extras: sqlExtras({ deliveredAt: deliveredAtSqlFor(since) }),
-    orderBy: sqlOrderBy([desc(missions.updatedAt)]),
-  };
   const [open, delivered] = await Promise.all([
     db.query.missions.findMany({
-      ...selection,
+      columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, executor: true },
       where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), inArray(missions.status, [...OPEN_STATUSES]))),
+      orderBy: sqlOrderBy([desc(missions.updatedAt)]),
     }),
-    db.query.missions.findMany({
-      ...selection,
-      where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since))),
-      limit: MAX_DELIVERED_MISSIONS,
-    }),
+    deliveredMissionsQuery(workspaceIds, since),
   ]);
-  return [...open, ...delivered].map(r => ({
+  return [
+    ...open.map(r => ({ ...r, deliveredAt: null as string | Date | null })),
+    ...delivered,
+  ].map(r => ({
     id: r.id,
     title: r.title,
     workspaceId: r.workspaceId as string,

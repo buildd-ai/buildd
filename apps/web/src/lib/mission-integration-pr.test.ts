@@ -36,6 +36,11 @@ function missionPrTask(over: Partial<{ prNumber: number; mergedAt: Date | null; 
 }
 
 describe('deriveMissionIntegrationPr', () => {
+  it('a mission PR the record says merged reads merged even before mergedAt is stamped (R-24: one PR state)', () => {
+    const view = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [missionPrTask({ prLifecycleStatus: 'merged', mergedAt: null })] });
+    expect(view?.state).toBe('merged');
+  });
+
   it('is null for a mission that never opted in — nothing on that surface changes', () => {
     expect(deriveMissionIntegrationPr({ mission: { workingBranch: BRANCH, integrationBranchEnabled: false }, tasks: [landedTask(1)] })).toBeNull();
     expect(deriveMissionIntegrationPr({ mission: null, tasks: [] })).toBeNull();

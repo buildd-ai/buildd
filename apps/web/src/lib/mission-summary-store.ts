@@ -27,6 +27,7 @@ import { MISSION_SUMMARY_VERSION, type MissionSummary } from '@buildd/shared';
 import { computeMissionSummary, summariesEqual, type MissionSummaryInput } from './mission-summary';
 import { trackEvent } from './axiom';
 import { noteWorkChanged, type WorkChange, type WorkChangeBatch } from './work-changed';
+import { bumpChangeVersions } from './change-version';
 
 export interface StoredMissionSummary {
   missionId: string;
@@ -48,6 +49,8 @@ export interface MissionSummaryStoreDeps {
   now: () => number;
   /** The reconcile's counts, as a span (R-29: names and counts, never values). */
   record: (event: string, fields: Record<string, number>) => void;
+  /** These missions' stored summaries changed: move their workspaces' change version (R-20). */
+  changed: (missionIds: string[]) => Promise<void>;
 }
 
 /** Missions per batched load: a burst of writes is loaded in chunks this size. */
@@ -136,6 +139,7 @@ export const defaultMissionSummaryStoreDeps: MissionSummaryStoreDeps = {
   },
   now: () => Date.now(),
   record: (event, fields) => trackEvent(event, fields),
+  changed: async (missionIds) => { await bumpChangeVersions({ missionIds }); },
 };
 
 /**
@@ -166,6 +170,7 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
       for (const r of rows) computed.set(r.missionId, r);
       written.push(...await deps.write(rows));
     }
+    if (written.length > 0) await deps.changed(written);
     return { computed, written };
   }
 
@@ -193,6 +198,7 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
     const readAt = deps.now();
     const inputs = await deps.load(ids);
     const fresh: StoredMissionSummary[] = [];
+    const differs: string[] = [];
     for (const id of ids) {
       const input = inputs.get(id);
       if (!input) continue;
@@ -205,6 +211,7 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
         continue;
       }
       const prev = stored.get(id);
+      if (!prev || prev.version !== MISSION_SUMMARY_VERSION || !summariesEqual(prev.summary, summary)) differs.push(id);
       if (!prev) counts.missing++;
       else if (prev.version !== MISSION_SUMMARY_VERSION) counts.otherVersion++;
       else if (summariesEqual(prev.summary, summary)) { counts.unchanged++; }
@@ -218,7 +225,11 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
       const mission = input.missionRows[0] as { workspaceId?: string | null } | undefined;
       fresh.push({ missionId: id, workspaceId: mission?.workspaceId ?? null, version: MISSION_SUMMARY_VERSION, summary, computedAt: new Date(readAt) });
     }
-    counts.written = (await deps.write(fresh)).length;
+    const written = await deps.write(fresh);
+    counts.written = written.length;
+    // Only a summary that read differently moves the version: a rewrite of the same answer is not a change.
+    const moved = differs.filter(id => written.includes(id));
+    if (moved.length > 0) await deps.changed(moved);
     deps.record('mission_summary.reconcile', { limit, ...counts });
     return counts;
   }

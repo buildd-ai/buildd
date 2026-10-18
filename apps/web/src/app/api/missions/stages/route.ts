@@ -16,6 +16,9 @@
  * Scoped to the caller's reachable workspaces: a mission in another workspace,
  * or an unknown id, is simply absent from `stages`. A runner key or a signed-in
  * user; per-task tokens are not accepted.
+ *
+ * Carries the workspaces' change version as an ETag (R-20): If-None-Match with
+ * the current one answers 304 without reading a summary (lib/change-version.ts).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -23,6 +26,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
 import { isUuid } from '@/lib/uuid';
+import { listTag, notModifiedFor, withTag, wsScope } from '@/lib/change-version';
 import type { MissionStage } from '@buildd/shared';
 import { MAX_STAGE_MISSION_IDS as MAX_MISSION_IDS } from '@/lib/mission-stage';
 
@@ -48,10 +52,16 @@ export async function GET(req: NextRequest) {
 
   try {
     const workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
+    const tag = await listTag({
+      route: '/api/missions/stages', caller: apiAccount ? `acct:${apiAccount.id}` : `user:${user!.id}`,
+      scopes: workspaceIds.map(wsScope), vary: [...ids].sort(),
+    });
+    const unchanged = notModifiedFor(req, tag);
+    if (unchanged) return unchanged;
     const stages = await loadMissionStagesFromSummaries(ids, workspaceIds);
     const out: Record<string, MissionStage> = {};
     for (const [id, stage] of stages) out[id] = stage;
-    return NextResponse.json({ stages: out });
+    return withTag(NextResponse.json({ stages: out }), tag);
   } catch (err) {
     console.error('[missions/stages] failed:', err);
     return NextResponse.json({ error: 'Failed to load mission stages' }, { status: 500 });
