@@ -79,7 +79,7 @@ export interface ReleaseCandidateFixParams {
 export function buildReleaseCandidateFixTask(p: ReleaseCandidateFixParams) {
   const v = `v${p.version}`;
   const logCommand = p.ciFailedJobId
-    ? `gh api --allow-escape-sequences /repos/${p.repoFullName}/actions/jobs/${p.ciFailedJobId}/logs | sed 's/^[0-9T:.-]*Z //' | tail -200`
+    ? `gh api /repos/${p.repoFullName}/actions/jobs/${p.ciFailedJobId}/logs | sed 's/^[0-9T:.-]*Z //' | tail -200`
     : null;
   const description = `CI failed on release candidate ${v} (PR #${p.prNumber}, \`${p.headRef}\` at ${p.headSha.slice(0, 12)}) in ${p.repoFullName}.
 
