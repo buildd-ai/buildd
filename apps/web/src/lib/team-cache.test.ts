@@ -131,6 +131,21 @@ describe('the team plan (request-tenant teamPlan)', () => {
     await teamPlan(TEAM);
     expect(count('teams')).toBe(2);
   });
+
+  it('no Redis at all: held in process for at most the team TTL', async () => {
+    redis.state.configured = false;
+    const t0 = Date.now();
+    const realNow = Date.now;
+    try {
+      for (let i = 0; i < 5; i++) expect(await teamPlan(OTHER)).toBe('pro');
+      expect(count('teams')).toBe(1);
+      Date.now = () => t0 + TEAM_CACHE_MAX_TTL_SEC * 1000 + 1_000;
+      await teamPlan(OTHER);
+      expect(count('teams')).toBe(2);
+    } finally {
+      Date.now = realNow;
+    }
+  });
 });
 
 describe('workspace settings (lib/workspace-settings.ts)', () => {

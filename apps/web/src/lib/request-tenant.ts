@@ -85,21 +85,31 @@ const noteRequestTenant = createTenantNoter({
 });
 
 const userTenants = new TTLCache<Tenant | null>({ maxSize: 2_000, ttlMs: 5 * 60_000 });
+/** Only with no Redis at all (no instance shares a cache, so none can clear one); TEAM_CACHE_MAX_TTL_SEC. */
+const localTeamPlans = new TTLCache<TeamPlan>({ maxSize: 2_000, ttlMs: 30_000 });
 
 /**
  * A team's plan, from the per-team cache (lib/team-cache.ts: 30 s, cleared
- * when the plan changes, shared by every instance).
+ * when the plan changes, shared by every instance). With no Redis configured
+ * it is held in process for as long; Redis configured but failing reads the
+ * database every time.
  */
 export async function teamPlan(teamId: string): Promise<TeamPlan> {
-  const [{ db }, { teams }, { eq }, { sqlWhere }, { cachedTeamRead }] = await Promise.all([
+  const [{ db }, { teams }, { eq }, { sqlWhere }, { cachedTeamRead }, { isRedisConfigured }] = await Promise.all([
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('@buildd/core/db/relational-sql'),
-    import('./team-cache'),
+    import('./team-cache'), import('./redis'),
   ]);
-  const plan = await cachedTeamRead<TeamPlan>(teamId, 'plan', async () => {
+  const local = !isRedisConfigured();
+  if (local) {
+    const hit = localTeamPlans.get(teamId);
+    if (hit) return hit;
+  }
+  const plan = normalizePlan(await cachedTeamRead<TeamPlan>(teamId, 'plan', async () => {
     const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { plan: true } });
     return normalizePlan(row?.plan);
-  });
-  return normalizePlan(plan);
+  }));
+  if (local) localTeamPlans.set(teamId, plan);
+  return plan;
 }
 
 async function userTenant(userId: string): Promise<Tenant | null> {
