@@ -1,7 +1,6 @@
 import type { ActionQueueItem } from './action-queue';
 import { MISSION_START_COPY } from './mission-start-state';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
-import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSummary';
 import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
@@ -201,12 +200,18 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
   }
 }
 
+/** A listed mission as the inbox reads it: its name and link, and whether it is stranded. */
+export interface HomeListedMission {
+  view: { id: string; title: string; href: string };
+  model: { strand: StrandCta | null };
+}
+
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
 export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
-  missions: readonly HomeMissionRow[];
+  missions: readonly HomeListedMission[];
   questions: readonly HomeQuestion[];
   held: readonly HomeHeldMission[];
   /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
