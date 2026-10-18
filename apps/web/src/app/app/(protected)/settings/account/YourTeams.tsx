@@ -6,11 +6,14 @@ import { useRouter } from 'next/navigation';
 import { useConfirm } from '@/components/useConfirm';
 import Notice from '@/components/ui/Notice';
 import { TonePill } from '@/components/ui/StatePill';
+import { isPersonalTeam } from '@/lib/personal-team';
 
 export interface YourTeam {
   id: string;
   name: string;
   slug: string;
+  /** Set on a personal team (lib/personal-team). */
+  personalUserId: string | null;
   role: string;
   memberCount: number;
   /** Owners on the team; unknown leaves Leave enabled and the API decides. */
@@ -19,7 +22,7 @@ export interface YourTeam {
 
 const ROWS = 'divide-y divide-border-default border-y border-border-default';
 
-const isPersonal = (team: YourTeam) => team.slug.startsWith('personal-');
+const isPersonal = (team: YourTeam) => isPersonalTeam(team);
 const isLastOwner = (team: YourTeam) => team.role === 'owner' && team.ownerCount !== undefined && team.ownerCount <= 1;
 
 /**

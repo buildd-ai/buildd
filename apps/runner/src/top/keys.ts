@@ -5,7 +5,7 @@
  */
 import { TERMS } from '@buildd/shared';
 import {
-  NO_MISSION, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  isLooseKey, busySlots, currentMission, isFoldKey, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
@@ -229,7 +229,7 @@ export const LOCAL_CLAIM_WORDS = 'Its mission is managed from a local session, s
 /** The mission a key opens when no task is picked; null for loose tasks and the fold row. */
 function openableMission(state: TopState, now: number): string | null {
   const m = currentMission(state, now);
-  return m.key === NO_MISSION || m.fold ? null : m.key;
+  return isLooseKey(m.key) || m.fold ? null : m.key;
 }
 
 function actOnRow(state: TopState, ch: string, now: number): KeyResult {
@@ -466,7 +466,7 @@ function talkKey(state: TopState, now: number): KeyResult {
   }
   if (state.mode.kind === 'list' && state.focus === 'missions') {
     const m = currentMission(state, now);
-    if (m.key === NO_MISSION || isFoldKey(m.key)) return { state: refuse(state, 'Pick a mission to talk to (↑↓), or → for a task.'), effects: [] };
+    if (isLooseKey(m.key) || isFoldKey(m.key)) return { state: refuse(state, 'Pick a mission to talk to (↑↓), or → for a task.'), effects: [] };
     return { state: info(state, `Opening Claude on "${m.title}"…`), effects: [{ type: 'talk', kind: 'mission', id: m.key, title: m.title }] };
   }
   const row = targetRow(state, now);

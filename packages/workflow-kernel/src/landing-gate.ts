@@ -3,7 +3,7 @@
  * workflow-state-kernel.md §13.13 rules 6 and 7): the one question every
  * merge door asks, answered from the delivery's own state at the head that
  * would merge. Pure: the `merge_call` effect asks it again against a fresh
- * read when it runs, and the `buildd/landing` commit status publishes its
+ * read when it runs, and the `Buildd / Review approval` commit status publishes its
  * answer onto the head, so GitHub can enforce what the kernel decided.
  *
  * What stands against a head (§5, rule 2): an open required finding (raised
@@ -17,8 +17,17 @@ import { describeFinding, openRequiredFindings } from './findings';
 import { headCoverage, openVerdict } from './reducer';
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
-/** The commit status context the kernel publishes on every kernel-owned PR head. */
-export const LANDING_STATUS_CONTEXT = 'buildd/landing';
+/** The commit status context the kernel publishes on every kernel-owned PR head: the one a trunk rule requires. */
+export const LANDING_STATUS_CONTEXT = 'Buildd / Review approval';
+
+/**
+ * The name it was published under before the rename. Still written with the same answer, so a
+ * rule or tool that already reads it keeps working until nothing does; never read as CI.
+ */
+export const LEGACY_LANDING_STATUS_CONTEXT = 'buildd/landing';
+
+/** Every context carrying the kernel's verdict, the legacy name first so the current one is the last write. */
+export const LANDING_STATUS_CONTEXTS: readonly string[] = [LEGACY_LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXT];
 
 /** GitHub caps a status description at 140 characters. */
 const MAX_DESCRIPTION = 140;
@@ -91,18 +100,44 @@ function notApprovedReason(d: DeliverySnapshot): string {
 }
 
 export interface LandingStatus {
-  state: 'success' | 'failure';
+  /** `pending` while review is still running (not a failure, but it still blocks a required check). */
+  state: 'success' | 'failure' | 'pending';
   description: string;
   /** The head the status belongs on. */
   sha: string;
 }
 
 /**
- * The `buildd/landing` status for the delivery's current head: `success` only
- * when the kernel would land that head (approved or landing, covered, no open
- * verdict), `failure` with the blocker otherwise. Null when there is nothing
+ * The plain terms a status description leads with (spec R-43): what a person
+ * reading GitHub's check list sees, never the kernel's own vocabulary.
+ */
+export const REVIEW_STATUS_TERMS = {
+  inProgress: 'Review in progress',
+  changesRequested: 'Changes requested',
+  finding: 'Unresolved review finding',
+  ready: 'Ready to merge',
+  blocked: 'Merge blocked',
+} as const;
+
+const T = REVIEW_STATUS_TERMS;
+
+/** A stored reason code (`landing_needs_human`) in words: underscores to spaces, the kernel's "landing" as "merge". */
+function plainCode(code: string | null | undefined, fallback: string): string {
+  return (code ?? fallback).replace(/landing/gi, 'merge').replace(/_/g, ' ');
+}
+
+/**
+ * The `Buildd / Review approval` status for the delivery's current head: `success` only
+ * when the kernel would merge that head (approved or merging, covered, no open
+ * verdict), `pending` while review of it has not finished (work running, review
+ * awaited), `failure` with the blocker otherwise (an open finding, a verdict
+ * against it, a person's decision). Null when there is nothing
  * to publish on (no PR or head, or the delivery is over: a merged or closed
  * PR's head keeps the last status it was given).
+ *
+ * Each description leads with one of `REVIEW_STATUS_TERMS` (R-43): "Review in
+ * progress", "Changes requested", "Unresolved review finding: <finding>"
+ * (AC-13), "Ready to merge" or "Merge blocked: <reason>".
  */
 export function landingStatusOf(view: KernelView, o: { detail?: string | null } = {}): LandingStatus | null {
   const d = view.delivery;
@@ -110,18 +145,36 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
   if (d.state === 'MERGED' || d.state === 'CLOSED_UNMERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return null;
   const g = reviewGate(view);
   const at = short(d.currentHeadSha);
+  const status = (state: LandingStatus['state'], term: string, text: string): LandingStatus => ({ state, sha: d.currentHeadSha!, description: clip(`${term}: ${text}`) });
   if (g.ok) {
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
-    return { state: 'success', sha: d.currentHeadSha, description: clip(`buildd would land ${at}: approved by ${by}`) };
+    return status('success', T.ready, `${at} approved by ${by}`);
+  }
+  // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
+  if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
+  if (g.blocker === 'not_approved') {
+    if (d.state === 'AWAITING_REVIEW') return status('pending', T.inProgress, `${at} is waiting for its review`);
+    if (d.state === 'WORKING' || d.state === 'AWAITING_PUSH') return status('pending', T.inProgress, 'work on the PR is still running');
+    if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}`);
+    if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress`);
+  }
+  if (g.blocker === 'open_finding' && g.findings?.length) {
+    const more = g.findings.length > 1 ? ` (and ${g.findings.length - 1} more)` : '';
+    return status('failure', T.finding, `${describeFinding(g.findings[0]!)}${more}`);
+  }
+  if (g.blocker === 'open_verdict' && g.round && (g.round.effectiveVerdict ?? g.round.verdict) !== 'escalate') {
+    return status('failure', T.changesRequested, g.reason);
   }
   // The detail the transition named (a lasting rail's refusal), while the delivery still waits on a person for it.
-  const why = o.detail && d.state === 'ESCALATED' ? o.detail : g.reason;
-  return { state: 'failure', sha: d.currentHeadSha, description: clip(`buildd will not land ${at}: ${why}`) };
+  if (o.detail && d.state === 'ESCALATED') return status('failure', T.blocked, o.detail);
+  if (g.blocker === 'not_approved' && d.state === 'ESCALATED') return status('failure', T.blocked, `a person has to decide (${plainCode(d.stateReason, 'escalated')})`);
+  if (g.blocker === 'not_approved' && d.state === 'REPAIRING') return status('failure', T.blocked, `the PR is being repaired (${plainCode(d.stateReason, 'repair')})`);
+  return status('failure', T.blocked, g.reason);
 }
 
 /** What the status says when the kernel could not decide it (the effect ran out of retries). Never success. */
 export function landingStatusUnknown(sha: string): LandingStatus {
-  return { state: 'failure', sha, description: clip(`buildd could not confirm ${short(sha)} can land; ask for a review again or retry the merge`) };
+  return { state: 'failure', sha, description: clip(`${T.blocked}: buildd could not confirm ${short(sha)} is ready to merge; ask for a review again or retry the merge`) };
 }
 
 function clip(s: string): string {

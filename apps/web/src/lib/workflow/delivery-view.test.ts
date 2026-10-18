@@ -75,7 +75,7 @@ describe('rowToDeliveryView', () => {
       delivery: { ...row.delivery, state: 'REPAIRING', state_reason: 'behind', base_ref: 'dev' },
       lane_wait: 'parked:lane_busy:#41',
     };
-    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is landing on dev first' });
+    expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is merging into dev first' });
     expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating branch');
   });
   // §7 / AC-24: the reader carries the findings and each attempt's proven push head.

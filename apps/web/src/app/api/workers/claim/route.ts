@@ -2809,7 +2809,9 @@ export async function POST(req: NextRequest) {
       .update(tasks)
       .set({
         claimedBy: account.id,
-        claimedAt: now,
+        // The database's clock, the one workers.created_at uses: the kernel tells a claim in
+        // flight from a finished attempt by comparing the two (endingWorkerIsCurrentSql).
+        claimedAt: sql`now()`,
         expiresAt,
         status: 'assigned',
         predictedModel: resolvedModel,

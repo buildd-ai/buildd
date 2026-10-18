@@ -131,3 +131,14 @@ describe('a re-run supersedes the run it replaced (6900a317)', () => {
     expect(await githubReader(1, suitesOnly).ciGreen!('acme/widgets', 'H1')).toBe(false);
   });
 });
+
+describe('statusOf (the review status the kernel last published)', () => {
+  test('reports the link it carries, so a status published before it had one is written again', async () => {
+    const reader = githubReader(1, (async () => ({ statuses: [
+      { context: 'Buildd / Review approval', state: 'success', description: 'Ready to merge: abc1234 approved by review', target_url: 'https://buildd.dev/app/tasks/t1' },
+      { context: 'buildd/landing', state: 'success', description: 'old', target_url: null },
+    ] })) as never);
+    expect(await reader.statusOf!('acme/widgets', 'abc', 'Buildd / Review approval')).toEqual({ state: 'success', description: 'Ready to merge: abc1234 approved by review', targetUrl: 'https://buildd.dev/app/tasks/t1' });
+    expect(await reader.statusOf!('acme/widgets', 'abc', 'buildd/landing')).toEqual({ state: 'success', description: 'old', targetUrl: null });
+  });
+});

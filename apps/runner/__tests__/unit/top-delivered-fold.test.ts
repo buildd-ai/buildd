@@ -65,7 +65,6 @@ describe('the missions list folds delivered missions (state)', () => {
     expect(rows.map(r => r.title)).toEqual([
       'Pair on the parser', 'Ship the importer', 'Docs refresh', 'Done this week',
       'Billing cleanup', 'Done this week',
-      'Other tasks',
     ]);
     const folds = rows.filter(r => r.fold);
     expect(folds.map(f => [f.team, f.fold!.count, f.fold!.open])).toEqual([['Acme', 4, false], ['Initech', 1, false]]);
@@ -94,7 +93,7 @@ describe('the missions list folds delivered missions (state)', () => {
   test('`/` finds a delivered mission by name without unfolding; open missions are filtered the same way', () => {
     const s = { ...teamed(), filter: 'billing' };
     const rows = missionList(s, NOW);
-    expect(rows.map(r => r.title)).toEqual(['Billing export', 'Billing cleanup', 'Other tasks']);
+    expect(rows.map(r => r.title)).toEqual(['Billing export', 'Billing cleanup']);
     expect(rows.find(r => r.title === 'Billing export')!.deliveredAt).toBe(NOW - 2 * DAY);
     expect(s.unfolded).toEqual([]);
   });

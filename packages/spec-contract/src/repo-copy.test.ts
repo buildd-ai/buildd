@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { contentHash } from './hash';
-import { renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopyInput } from './repo-copy';
-import { lintSpecFile, parseSpecFrontmatter } from './repo-spec';
+import { isRepoPath, renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopyInput } from './repo-copy';
+import { buildSpecIndex, lintSpecFile, parseSpecFrontmatter, validSpecSummary } from './repo-spec';
 
 // docs/specs/living-specs.md §18: R-14, R-15, R-16, AC-74, AC-75.
 
@@ -125,6 +125,25 @@ describe('renderRepoCopy', () => {
   });
 });
 
+describe('route-group and dynamic-segment paths', () => {
+  const ROUTE = 'apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecPicker.dom.test.tsx';
+
+  it('a repo path may name a Next.js route group and a dynamic segment', () => {
+    expect(isRepoPath(ROUTE)).toBe(true);
+    expect(isRepoPath('apps/web/src/app/api/specs/[specId]/route.test.ts')).toBe(true);
+  });
+
+  it('a repo path is still relative, without traversal, a comma or whitespace', () => {
+    for (const p of ['/etc/passwd', 'apps/../secrets.ts', 'a,b.ts', 'a b.ts', 'a\nb.ts', '']) expect(isRepoPath(p)).toBe(false);
+  });
+
+  it('a copy lists such a path in verified_by, and the repo lint reads it back whole', async () => {
+    const r = await render({ metadata: { verified_by: [ROUTE, 'apps/web/src/lib/widget.test.ts'] } });
+    expect(r.text).toContain(`verified_by: [${ROUTE}, apps/web/src/lib/widget.test.ts]`);
+    expect(parseSpecFrontmatter(r.text).fm?.verified_by).toEqual([ROUTE, 'apps/web/src/lib/widget.test.ts']);
+  });
+});
+
 describe('verifyRepoCopy refuses a hand edit (AC-75)', () => {
   it('to the body', async () => {
     const r = await render();
@@ -156,4 +175,28 @@ describe('verifyRepoCopy refuses a hand edit (AC-75)', () => {
     expect(await verifyRepoCopy('---\ntitle: X\n---\n# X\n')).toEqual({ generated: false });
     expect(await verifyRepoCopy('# X\n')).toEqual({ generated: false });
   });
+});
+
+describe('quoted copy frontmatter', () => {
+  for (const title of ['Runner login: detect, say, report', ...['[', '{', '-', '*', '|', '>', '%', '@', '`', '"'].map(c => `${c} title`), 'Title # preserved', `It's "quoted"`]) {
+    it(`round trips title ${title} through strict YAML and repo lint`, async () => {
+      const r = await render({ body: '# Body\n\nA runner MUST report its login.\n', title });
+      const yaml = r.text.slice(4, r.text.indexOf('\n---', 4));
+      expect((Bun.YAML.parse(yaml) as { title: string }).title).toBe(title);
+      expect(parseSpecFrontmatter(r.text).fm?.title).toBe(title);
+    });
+  }
+  it('decodes single and double quoted scalars for the index', () => {
+    const { fm } = parseSpecFrontmatter(`---\ntitle: 'It''s "ready"'\nsummary: "A \\"quoted\\" path C:\\\\tmp MUST work."\n---\n`);
+    expect(fm?.title).toBe(`It's "ready"`);
+    expect(fm?.summary).toBe('A "quoted" path C:\\tmp MUST work.');
+    const index = buildSpecIndex([{ file: 'ready.md', slug: 'ready', fm: { ...fm, status: 'draft' } }]);
+    expect(index).toContain(`It's "ready"`);
+    expect(index).not.toContain("It''s");
+  });
+});
+
+it('validates a single summary sentence within 220 characters', () => {
+  for (const value of ['A runner MUST report its login.', 'A runner MUST report its login', 'x'.repeat(220), 'Use host-seat.ts for login.']) expect(validSpecSummary(value)).toBe(true);
+  for (const value of ['', '  ', 'x'.repeat(221), 'First sentence. Second sentence.', 'First! Second?', 'one\ntwo', 'one\rtwo', 42]) expect(validSpecSummary(value)).toBe(false);
 });

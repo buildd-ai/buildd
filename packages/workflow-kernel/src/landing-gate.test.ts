@@ -5,7 +5,7 @@
  * and the status puts on the head.
  */
 import { describe, expect, test } from 'bun:test';
-import { LANDING_STATUS_CONTEXT, landingStatusOf, landingStatusUnknown, reviewGate } from './landing-gate';
+import { LANDING_STATUS_CONTEXT, LANDING_STATUS_CONTEXTS, landingStatusOf, landingStatusUnknown, reviewGate } from './landing-gate';
 import { openVerdict } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -55,23 +55,33 @@ describe('reviewGate (§13.13 rule 6)', () => {
 });
 
 describe('landingStatusOf: the buildd/landing status (§4)', () => {
-  test('the context is buildd/landing', () => {
-    expect(LANDING_STATUS_CONTEXT).toBe('buildd/landing');
+  test('the context is Buildd / Review approval, also published under the legacy name', () => {
+    expect(LANDING_STATUS_CONTEXT).toBe('Buildd / Review approval');
+    expect(LANDING_STATUS_CONTEXTS).toEqual(['buildd/landing', 'Buildd / Review approval']);
+  });
+  test('review still running is pending, not failure; a finding or verdict against the head stays failure', () => {
+    for (const state of ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW'] as const) {
+      expect(landingStatusOf(V(D({ state, approvedHeads: [] })))!.state).toBe('pending');
+    }
+    expect(landingStatusOf(V(D({ state: 'AWAITING_REVIEW', approvedHeads: [] })))!.description).toBe('Review in progress: abcdef1 is waiting for its review');
+    expect(landingStatusOf(V(D({ state: 'WORKING', approvedHeads: [] })))!.description).toBe('Review in progress: work on the PR is still running');
   });
   test('success only when the kernel would land the head; the description names it by short sha', () => {
-    expect(landingStatusOf(V(D(), [R(1, 'approve')]))).toEqual({ state: 'success', sha: 'abcdef1234', description: 'buildd would land abcdef1: approved by review' });
+    expect(landingStatusOf(V(D(), [R(1, 'approve')]))).toEqual({ state: 'success', sha: 'abcdef1234', description: 'Ready to merge: abcdef1 approved by review' });
     expect(landingStatusOf(V(D({ state: 'LANDING' }), [R(1, 'approve')]))!.state).toBe('success');
   });
-  test('failure while review is missing, a verdict is open, or the delivery is anywhere else', () => {
-    expect(landingStatusOf(V(D({ state: 'AWAITING_REVIEW', approvedHeads: [] }))))
-      .toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd will not land abcdef1: review of abcdef1 is pending' });
-    expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('buildd will not land abcdef1: review round 2 asked for changes at abcdef1');
-    expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' })))!.description).toContain('a person has to decide (review_exhausted)');
+  test('failure while a verdict is open, or the delivery is anywhere else', () => {
+    expect(landingStatusOf(V(D(), [R(1, 'approve'), R(2, 'request_changes')]))!.description).toBe('Changes requested: review round 2 asked for changes at abcdef1');
+    expect(landingStatusOf(V(D({ state: 'CHANGES_REQUESTED' })))!.description).toBe('Changes requested: waiting for a fix to abcdef1');
+    expect(landingStatusOf(V(D({ state: 'FIXING' })))!.description).toBe('Changes requested: a fix for abcdef1 is in progress');
+    expect(landingStatusOf(V(D({ state: 'BLOCKED_ON_TRUNK' })))!.description).toBe('Merge blocked: the base branch is red');
+    expect(landingStatusOf(V(D(), [R(1, 'escalate')]))!.description).toBe('Merge blocked: review round 1 escalated at abcdef1');
+    expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' })))!.description).toBe('Merge blocked: a person has to decide (review exhausted)');
     expect(landingStatusOf(V(D({ state: 'CHANGES_REQUESTED' })))!.state).toBe('failure');
   });
   test('a lasting rail\'s refusal is named while a person decides it', () => {
     expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human' })), { detail: 'touches protected path (infra/x)' })!.description)
-      .toBe('buildd will not land abcdef1: touches protected path (infra/x)');
+      .toBe('Merge blocked: touches protected path (infra/x)');
     // Only while escalated: a detail never turns into a reason for a delivery that moved on.
     expect(landingStatusOf(V(D(), [R(1, 'approve')]), { detail: 'touches protected path (infra/x)' })!.state).toBe('success');
   });
@@ -85,8 +95,27 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(long.description.length).toBeLessThanOrEqual(140);
     expect(long.description).not.toContain('abcdef1234');
   });
+  test('R-43: every description leads with a plain review term and never says "land"', () => {
+    const terms = ['Review in progress', 'Changes requested', 'Unresolved review finding', 'Ready to merge', 'Merge blocked'];
+    const F = { id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4, title: 'rename the flag', required: true, status: 'open' as const, lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null };
+    const states: DeliverySnapshot['state'][] = ['WORKING', 'AWAITING_PUSH', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'FIXING', 'APPROVED', 'LANDING', 'REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED'];
+    const out: string[] = [landingStatusUnknown('abcdef1234').description];
+    for (const state of states) {
+      for (const stateReason of [null, 'landing_needs_human', 'landing_refused']) {
+        for (const rounds of [[], [R(1, 'approve')], [R(1, 'approve'), R(2, 'request_changes')], [R(1, 'escalate')]]) {
+          out.push(landingStatusOf(V(D({ state, stateReason }), rounds))!.description);
+          out.push(landingStatusOf({ delivery: D({ state, stateReason }), rounds, attempts: [], findings: [F] })!.description);
+          out.push(landingStatusOf(V(D({ state, stateReason, approvedHeads: [] }), rounds))!.description);
+        }
+      }
+    }
+    for (const desc of out) {
+      expect(terms.some((t) => desc.startsWith(`${t}:`))).toBe(true);
+      expect(desc).not.toMatch(/\bland/i);
+    }
+  });
   test('the exhaustion answer is failure, never success, and says what to do', () => {
-    expect(landingStatusUnknown('abcdef1234')).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd could not confirm abcdef1 can land; ask for a review again or retry the merge' });
+    expect(landingStatusUnknown('abcdef1234')).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'Merge blocked: buildd could not confirm abcdef1 is ready to merge; ask for a review again or retry the merge' });
   });
 });
 
@@ -114,6 +143,7 @@ describe('reviewGate with findings (workflow-kernel-library.md §5, AC-13)', () 
     expect(reviewGate(VF(D({ approvalBasis: 'policy_rule' }), [F()]))).toMatchObject({ blocker: 'open_finding' });
   });
   test('buildd/landing is failure at the head, naming the finding', () => {
-    expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd will not land abcdef1: open finding src/a.ts:4: rename the flag' });
+    expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'Unresolved review finding: src/a.ts:4: rename the flag' });
+    expect(landingStatusOf(VF(D(), [F(), F({ id: 'r1:1', path: null, title: 'add a test' })]))!.description).toBe('Unresolved review finding: src/a.ts:4: rename the flag (and 1 more)');
   });
 });

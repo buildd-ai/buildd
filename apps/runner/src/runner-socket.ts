@@ -154,6 +154,9 @@ export async function checkSingleInstance(input: {
   return { probe, decision: decideStart({ probe, isTTY: input.isTTY, foreground: input.foreground, socketPath: input.socketPath }) };
 }
 
+/** How long a socket handler may take before the socket answers 504 for it. */
+export const SOCKET_HANDLER_DEADLINE_MS = 20_000;
+
 /** A request the socket accepted whose handler has not answered yet. */
 export interface InFlightRequest {
   method: string;
@@ -191,8 +194,20 @@ export interface RunnerSocketServer {
 export function serveRunnerSocket(
   socketPath: string,
   fetch: (req: Request) => Response | Promise<Response>,
-  opts: { error?: (err: Error) => Response | Promise<Response> } = {},
+  opts: {
+    error?: (err: Error) => Response | Promise<Response>;
+    /**
+     * A handler that has not answered in this long gets a 504 instead of
+     * holding the connection: a handler awaiting a slow server read must not
+     * leave `buildd top`, `hold` and `stop` waiting on it. Default
+     * SOCKET_HANDLER_DEADLINE_MS; 0 turns it off.
+     */
+    deadlineMs?: number;
+    /** Requests exempt from the deadline (a long-running POST /api/update). */
+    noDeadline?: (req: Request) => boolean;
+  } = {},
 ): RunnerSocketServer {
+  const deadlineMs = opts.deadlineMs ?? SOCKET_HANDLER_DEADLINE_MS;
   // What each accepted request is waiting on, so a socket that stops answering
   // can say whether a handler is stuck or Bun never called one.
   const open = new Map<number, { method: string; path: string; startedAt: number }>();
@@ -209,9 +224,21 @@ export function serveRunnerSocket(
       open.delete(id);
       throw err;
     }
-    if (out instanceof Promise) return out.finally(() => open.delete(id));
-    open.delete(id);
-    return out;
+    if (!(out instanceof Promise)) {
+      open.delete(id);
+      return out;
+    }
+    if (deadlineMs > 0 && !opts.noDeadline?.(req)) {
+      let timer: ReturnType<typeof setTimeout>;
+      const late = new Promise<Response>((resolve) => {
+        timer = setTimeout(() => resolve(Response.json(
+          { error: `${req.method} ${path} did not finish within ${Math.round(deadlineMs / 1000)}s (a slow server read?)` },
+          { status: 504 },
+        )), deadlineMs);
+      });
+      out = Promise.race([out, late]).finally(() => clearTimeout(timer));
+    }
+    return out.finally(() => open.delete(id));
   };
 
   let server: ReturnType<typeof Bun.serve>;

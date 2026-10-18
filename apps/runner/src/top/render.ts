@@ -15,7 +15,7 @@ import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
   providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
-  NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
+  isLooseKey, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
 export interface FrameOptions {
@@ -159,7 +159,8 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   const served = workspaceSummary(state);
   const busy = busySlots(state);
   // R-33: a paused runner reads "paused" where "online" would be.
-  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? `● ${TERMS['runner.paused'].short}` : '● online';
+  // Before the first connection it is loading; reconnecting only once one was up and dropped.
+  const online = !state.runner.online ? (state.runner.connectedOnce ? '○ reconnecting' : '○ loading') : heldNow(state, now) ? `● ${TERMS['runner.paused'].short}` : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
@@ -280,7 +281,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       // The title gives way first; only when it would vanish does the stage
       // word go, and the heading still says it.
       // Loose tasks count what is still open: their done total says nothing.
-      const tally = m.key === NO_MISSION ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
+      const tally = isLooseKey(m.key) ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
       const stage = missionRowStage(m);
       const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? TERMS['mission.paused'].short : '');
       // Widest that leaves the title room: the stage with "locally", then without it, then the tally alone.
@@ -337,7 +338,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const statusLine = missionStatusLine(mission);
   if (statusLine) right.push(p.fg('muted', fit(' ' + statusLine, rw)));
   // R-29: the whole mission as squares, done first, under its heading.
-  const progress = mission.key === NO_MISSION ? null : progressRow(mission, rw, p);
+  const progress = isLooseKey(mission.key) ? null : progressRow(mission, rw, p);
   if (progress) right.push(progress);
   right.push(p.fg('faint', '─'.repeat(rw)));
 

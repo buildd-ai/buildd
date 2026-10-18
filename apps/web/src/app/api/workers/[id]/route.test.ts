@@ -121,8 +121,13 @@ mock.module('@/lib/mission-budget', () => ({
   exhaustMissionBudget: mockExhaustMissionBudget,
 }));
 
+// hasVisibleWorkerChange: re-export the real pure function so the route's
+// no-op suppression logic runs in tests exactly as it does in production.
+const { hasVisibleWorkerChange: realHasVisibleWorkerChange } = await import('@/lib/pusher');
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
+  hasVisibleWorkerChange: realHasVisibleWorkerChange,
   channels: {
     workspace: (id: string) => `workspace-${id}`,
     task: (id: string) => `task-${id}`,
@@ -739,6 +744,8 @@ mock.module('@/lib/pr-activity-fix-claimed', () => ({
 // suite (apps/web/tests/db/workflow-seam.test.ts). Here: that the route calls
 // it at the right points and that the legacy write does not run beside it.
 const mockWorkflowAttemptEnded = mock(async (_p: any, _c?: any) => ({ handled: false }));
+/** AC-1 slice 3: the route's own projection of an owner end it left the status out for. */
+const mockProjectOwnerEnd = mock(async (_p: any): Promise<'completed' | 'failed' | null> => null);
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any, _c?: any): Promise<any> => ({ handled: false }));
@@ -757,6 +764,7 @@ mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemp
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
+  projectOwnerEnd: mockProjectOwnerEnd,
   attemptEndFromPatch: realHandOff.attemptEndFromPatch,
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
@@ -1045,6 +1053,24 @@ describe('GET /api/workers/[id]', () => {
     const text = await res.text();
     expect(text).not.toContain('dispatch-secret');
     expect(JSON.parse(text).status).toBe('running');
+  });
+
+  it('serves the owning account key its worker without the dispatch token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'running',
+      workspace: { id: 'ws-1', webhookConfig: { url: 'https://dispatch.example', token: 'dispatch-secret' } },
+    });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('dispatch-secret');
+    expect(JSON.parse(text).workspace.webhookConfig.url).toBe('https://dispatch.example');
   });
 
   it('returns worker when authenticated and authorized', async () => {
@@ -3931,6 +3957,56 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockWorkflowAttemptEnded.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
     });
 
+    // AC-1 slice 3 (workflow-kernel-library.md §9): an owner's plain end is the kernel's to project.
+    const ownerTaskRow = { ...fixTaskRow, id: 'fix-task-1', deliveryRole: 'owner', context: {} };
+    const endOwner = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = ownerTaskRow) => {
+      const taskSets: Record<string, unknown>[] = [];
+      const order: string[] = [];
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(taskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockImplementation(async () => { order.push('end'); return { handled: true }; });
+      mockProjectOwnerEnd.mockReset();
+      mockProjectOwnerEnd.mockImplementation(async () => { order.push('project'); return null; });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: body.status }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock((u: Record<string, unknown>) => { taskSets.push(u); return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'fix-task-1' }])), then: (r: (v: unknown) => unknown) => Promise.resolve().then(r) })) }; }) });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), { params: mockParams });
+      return { res, taskSets, order };
+    };
+
+    it('AC-1 slice 3: an owner\'s completion writes its result but not its status; the end goes to the kernel, then the route projects it', async () => {
+      const { res, taskSets, order } = await endOwner({ status: 'completed', lastCommitSha: 'pushed-l2', commitCount: 1, summary: 'done' });
+      expect(res.status).toBe(200);
+      const completion = taskSets.find((u) => 'result' in u);
+      expect(completion).toBeDefined();
+      expect('status' in completion!).toBe(false);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ task: { deliveryRole: 'owner' }, status: 'completed' });
+      expect(mockProjectOwnerEnd.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-1', taskId: 'fix-task-1', workerId: (await mockParams).id, status: 'completed' });
+      // The end before the projection, both before anything reads the status.
+      expect(order).toEqual(['end', 'project']);
+    });
+
+    it('AC-1 slice 3: an owner\'s failure without a retry is projected as failed', async () => {
+      const { taskSets } = await endOwner({ status: 'failed', error: 'boom' });
+      expect(taskSets.some((u) => 'status' in u)).toBe(false);
+      expect(mockProjectOwnerEnd.mock.calls[0][0]).toMatchObject({ status: 'failed' });
+    });
+
+    it('AC-1 slice 3: an owner retry stays the route\'s own requeue to pending, with no projection', async () => {
+      const { taskSets } = await endOwner({ status: 'failed', error: 'boom' }, { ...ownerTaskRow, missionId: 'mission-1', status: 'assigned' });
+      expect(taskSets.find((u) => 'status' in u)?.status).toBe('pending');
+      expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
+    });
+
+    it('AC-1 slice 3: a repair attempt keeps the route\'s status write; nothing is projected for it', async () => {
+      const { taskSets } = await endOwner({ status: 'completed', lastCommitSha: 'pushed-l2', commitCount: 1 }, fixTaskRow);
+      expect(taskSets.find((u) => 'status' in u)?.status).toBe('completed');
+      expect(mockProjectOwnerEnd).not.toHaveBeenCalled();
+    });
+
     it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue(fixWorker);
@@ -4553,6 +4629,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('completes normally when commits belong to a pre-existing PR opened by an earlier worker on the same branch (auto mode)', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -4563,7 +4641,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -4613,7 +4691,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(77);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(77);
     });
 
     it('returns 400 without updating task when pr_required and no PR', async () => {
@@ -4882,6 +4961,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('completes a dirty-worktree worker whose branch already has an open PR (retry/CI-fix continuation, auto mode)', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // The retry/CI-fix exemption: a worker row with no prUrl of its own, on
       // a branch whose PR was opened by an earlier worker row, must not be
       // blocked by a dirty worktree — the GitHub auto-detect above already
@@ -4896,7 +4977,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -4944,7 +5025,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(77);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(77);
     });
 
     it.each([false, true])('completes a none work task after a verified sibling merge (dirtyWorktree=%s)', async (dirtyWorktree) => {
@@ -5103,6 +5185,8 @@ describe('PATCH /api/workers/[id]', () => {
     };
 
     it('auto-detects PR from GitHub and allows completion', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -5113,7 +5197,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5152,8 +5236,10 @@ describe('PATCH /api/workers/[id]', () => {
       );
       // Verify task result includes auto-detected PR
       expect(capturedTaskSet).not.toBeNull();
-      expect(capturedTaskSet.result.prUrl).toBe('https://github.com/org/repo/pull/42');
-      expect(capturedTaskSet.result.prNumber).toBe(42);
+      expect(capturedTaskSet?.result?.prUrl).toBeUndefined();
+      expect(workerSet.prUrl).toBe('https://github.com/org/repo/pull/42');
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(42);
     });
 
     it('refuses completion when no PR found on GitHub either (auto mode)', async () => {
@@ -5445,6 +5531,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('pr_required + no branch PR + referenced PR is merged → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -5454,7 +5542,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5494,7 +5582,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(2165);
     });
 
     it('pr_required + a merged PR the task only names in its text → not recorded', async () => {
@@ -5698,6 +5787,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('pr_required + referenced PR is open but its head SHA matches the worker\'s last commit → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // Covers the "rebase an EXISTING PR's own branch, push, request review"
       // shape: the worker's own branch never carries the PR (auto-detect above
       // finds nothing), and the referenced PR is still open when complete_task
@@ -5713,7 +5804,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5758,10 +5849,13 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(15);
     });
 
     it('pr_required + referenced PR is open, head SHA matches the SAME request\'s reported lastCommitSha (not yet persisted on the worker row) → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // The runner's real completion payload is one PATCH carrying
       // `{ status: 'completed', ...gitStats }`, where gitStats.lastCommitSha is
       // collected immediately before sending — so the freshly-pushed head SHA
@@ -5777,7 +5871,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5822,7 +5916,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(15);
     });
 
     it('pr_required + referenced PR is open with a different head SHA → still refuses completion', async () => {
@@ -9928,6 +10023,9 @@ describe('PATCH /api/workers/[id]', () => {
         workingBranch: 'mission/illustrative-goal',
         integrationBranchEnabled: true,
       });
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',
@@ -9996,6 +10094,9 @@ describe('PATCH /api/workers/[id]', () => {
         workingBranch: 'mission/illustrative-goal',
         integrationBranchEnabled: true,
       });
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',
@@ -11214,6 +11315,9 @@ describe('PATCH /api/workers/[id]', () => {
       // losing every commit the mission had already merged. baseBranch must carry
       // the PR's actual base (workers.prBaseRef) so that fallback lands somewhere real.
       setupReviewerTaskCompletion('request-changes');
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',
@@ -12220,6 +12324,8 @@ describe('PATCH /api/workers/[id]', () => {
       expect(masked?.[2]?.currentAction).toBe('working');
       expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain('customer ledger');
 
+      // A second PATCH with the same status and no currentAction is a no-op:
+      // hasVisibleWorkerChange suppresses the event to avoid Pusher quota burn.
       mockTriggerEvent.mockReset();
       mockTriggerEvent.mockResolvedValue(undefined);
       await PATCH(createMockRequest({
@@ -12228,8 +12334,7 @@ describe('PATCH /api/workers/[id]', () => {
         body: { status: 'running' },
       }), { params: mockParams });
       const bare = mockTriggerEvent.mock.calls.find((c: any[]) => c[0] === 'workspace-ws-1' && c[1] === 'worker:progress');
-      expect(bare?.[2]).toBeDefined();
-      expect('currentAction' in bare![2]).toBe(false);
+      expect(bare).toBeUndefined(); // no-op suppressed
     });
 
     it('redacts a registered secret before DB persistence and Pusher emission', async () => {
@@ -12266,6 +12371,79 @@ describe('PATCH /api/workers/[id]', () => {
       expect(JSON.stringify(capturedSet)).not.toContain(exposed);
       expect(JSON.stringify(mockTriggerEvent.mock.calls)).not.toContain(exposed);
       expect(capturedSet.currentAction).toContain('[REDACTED:DISPATCH_API_KEY]');
+    });
+  });
+
+  describe('Pusher no-op suppression', () => {
+    // Regression: every worker PATCH used to fire 2 Pusher events (worker +
+    // workspace channel) even when nothing visible changed. With 30 s sync
+    // cycles this exhausted Pusher's daily message quota.
+
+    it('suppresses WORKER_PROGRESS when neither status nor currentAction changed', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        currentAction: 'Building feature', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Building feature' },
+      }), { params: mockParams });
+
+      const progressCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress');
+      expect(progressCalls.length).toBe(0);
+    });
+
+    it('fires WORKER_PROGRESS when currentAction changes', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        currentAction: 'Building feature', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', currentAction: 'Running tests' },
+      }), { params: mockParams });
+
+      const progressCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:progress');
+      expect(progressCalls.length).toBeGreaterThanOrEqual(1);
+      expect(progressCalls[0][2].currentAction).toBe('Running tests');
+    });
+
+    it('always fires terminal events (WORKER_COMPLETED) even when status is unchanged', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', updatedAt: new Date() }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+      });
+      mockTriggerEvent.mockReset();
+      mockTriggerEvent.mockResolvedValue(undefined);
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      const completedCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'worker:completed');
+      expect(completedCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
 

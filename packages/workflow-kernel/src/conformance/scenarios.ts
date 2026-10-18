@@ -238,6 +238,7 @@ function fakePorts(host: ConformanceHost, o: {
   const ports: KernelPorts = {
     store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), policy: host.policy,
     notify, ingest, lifecycle, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails,
+    links: { review: (d) => `https://host.test/review/${d.ownerTaskId}` },
   };
   for (const k of o.omit ?? []) delete ports[k];
   return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails };
@@ -808,7 +809,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'buildd/landing: failure while review is pending, success once approved, failure again on a new head; an older or duplicate effect never overwrites the newer answer',
+    name: 'Buildd / Review approval: pending while review runs, failure once changes are asked, success once approved, pending again on a new head; an older or duplicate effect never overwrites the newer answer',
     async run(host) {
       const s = await new Delivery(host, 29).open();
       const f = fakePorts(host);
@@ -816,17 +817,24 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const lastDesc = () => String(f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.description ?? '');
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'review missing: failure');
-      ok(lastDesc().includes('review of H1 is pending'), `names the wait: ${lastDesc()}`);
+      eq(published().at(-1), { sha: 'H1', state: 'pending', context: 'Buildd / Review approval' }, 'review pending: pending, not failure');
+      ok(published().some((x) => x.context === 'buildd/landing' && x.sha === 'H1'), 'the legacy name carries the same answer');
+      eq(lastDesc(), 'Review in progress: H1 is waiting for its review', 'names the wait in plain review terms (R-43)');
+      const lastTarget = () => f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.targetUrl;
+      ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => w.targetUrl === `https://host.test/review/${s.ownerTaskId}`), 'every write links to the delivery\'s review page (R-43)');
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'changes asked: failure');
+      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'Buildd / Review approval' }, 'changes asked: failure');
+      eq(lastDesc(), 'Unresolved review finding: the review asked for changes', 'changes asked reads as a review finding, not as a CI failure');
+      eq(lastTarget(), `https://host.test/review/${s.ownerTaskId}`, 'the failure links to the findings');
       const fix = await s.startFix();
       applied(await s.push('H2', { attribution: { descendsFromBound: true } }), 'FIXING', 'fix pushed');
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'approved: success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
+      eq(lastDesc(), 'Ready to merge: H2 approved by review', 'approved reads Ready to merge');
+      ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => !/\bland/i.test(String(w.description))), 'no published description says "land"');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
       const count = published().length;
       // Every version owes one effect, and only the newest publishes: no older answer was written after a newer one.
@@ -838,10 +846,10 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: older.payload, dedupeKey: older.dedupeKey }), { outcome: 'skipped:older_version' }, 'a late older effect publishes nothing');
       eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:unchanged:success' }, 'a duplicate of the newest finds GitHub already showing it');
       eq(published().length, count, 'no second write of the same answer');
-      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'still success at H2');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'still success at H2');
       applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new head');
       await drainKernel(host, s, f.ports);
-      eq(published().at(-1), { sha: 'H3', state: 'failure', context: 'buildd/landing' }, 'a new head starts at failure');
+      eq(published().at(-1), { sha: 'H3', state: 'pending', context: 'Buildd / Review approval' }, 'a new head starts pending');
     },
   },
   {
@@ -1696,7 +1704,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const v = await s.view();
       const gate = reviewGate(v, { states: ['APPROVED', 'LANDING', 'ESCALATED'] });
       eq(gate.ok ? null : { blocker: gate.blocker, reason: gate.reason }, { blocker: 'open_finding', reason: 'open finding src/flag.ts:3: the flag is never read' }, 'the gate names it');
-      eq(pick(landingStatusOf(v), ['state', 'sha', 'description']), { state: 'failure', sha: 'H2', description: 'buildd will not land H2: open finding src/flag.ts:3: the flag is never read' }, 'buildd/landing failure at H2, naming it');
+      eq(pick(landingStatusOf(v), ['state', 'sha', 'description']), { state: 'failure', sha: 'H2', description: 'Unresolved review finding: src/flag.ts:3: the flag is never read' }, 'Buildd / Review approval failure at H2, naming the finding (AC-13, R-43)');
       // A person's verdict override is the recorded decision past it (rule 6).
       applied(await s.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H2', live: s.live('H2'), override: { reason: 'accepted as is' } }), 'LANDING', 'a person lands it');
     },
@@ -2542,7 +2550,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       f.github.setPr(s.repo, s.prNumber, s.live('H1'));
       await drainKernel(host, s, f.ports);
       const next = (await s.view()).attempts.filter((a) => a.family === 'ci').sort((a, b) => b.attemptNo - a.attemptNo)[0];
-      eq(next.attemptNo, 2, 'the ledger row is number 2');
+      eq(next!.attemptNo, 2, 'the ledger row is number 2');
       eq(f.work.filed.filter((w) => w.role === 'ci_fix').at(-1)!.detail?.attemptNo, 1, 'but it is CI fix 1');
     },
   },

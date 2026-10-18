@@ -2,7 +2,7 @@
 title: Auth & OAuth Boundaries
 status: active
 owner: max
-last_verified: 2026-10-15
+last_verified: 2026-10-16
 summary: Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/app/api/workers/claim/route.ts]
@@ -207,3 +207,42 @@ limits; it does not redefine provider token or device-code issuance.
 ## Renumbered
 
 Renumbered on 2026-10-15 so every criterion parses: AC-7a to AC-70, AC-7b to AC-71.
+
+## Open dynamic client registration
+
+RFC 7591 registration remains unauthenticated for MCP clients. No Initial
+Access Token or redirect-host allowlist is required; CIMD is not supported.
+Client names are supplied by the registering app and cannot establish identity.
+
+**Acceptance criteria**:
+- AC-72: GIVEN an app returning to an unknown host WHEN either consent form
+  renders THEN it displays “Unverified app”, the destination host in the main
+  heading, and the supplied name in smaller secondary text. Known HTTPS hosts
+  (`claude.ai`, `claude.com`, `chatgpt.com`, `buildd.dev`) use a server-selected name.
+  Loopback destinations remain unverified because local ownership cannot be proven.
+- AC-73: WHEN a registration uses Claude, Claude Code, buildd or buildd CLI
+  (case-insensitive, with compatibility normalization, common Greek/Cyrillic
+  homoglyphs, separators and digit lookalikes folded) THEN every redirect must
+  match that name's hosts, otherwise return `invalid_client_metadata` (400).
+  Claude uses exact HTTPS hosts `claude.ai` / `claude.com`; buildd uses exact
+  HTTPS host `buildd.dev`; the two command-line names use loopback hosts only.
+  These rules reserve names; other app names can register arbitrary safe hosts.
+- AC-74: WHEN an IP exceeds ten registration attempts in a fixed UTC hour
+  THEN return 429 with `Retry-After` before writing a client. The trusted ingress
+  IP is hashed for the shared Redis counter. If the counter is unavailable,
+  return 503 with `Retry-After` rather than allowing unlimited registration.
+- AC-75: WHEN any redirect is neither HTTPS nor HTTP on `127.0.0.1`, `[::1]`
+  or `localhost`, or carries credentials or a fragment THEN registration returns
+  400 `invalid_redirect_uri`. Authorization also refuses unsafe stored redirects.
+- AC-76: WHEN the maintenance cron runs THEN delete clients older than 30 days
+  only if no grant, authorization code or refresh token references them. Keep
+  clients with grants even if revoked, and legacy clients with token/code history.
+  This uses existing tables and requires no schema migration.
+
+**Code surface**:
+- Registration: `apps/web/src/app/api/oauth/register/route.ts`
+- Name policy: `apps/web/src/lib/oauth/client-policy.ts`
+- Redirect validation: `apps/web/src/lib/oauth/storage.ts`
+- Consent: `apps/web/src/lib/oauth/account-consent.ts`
+- Pruning: `apps/web/src/lib/oauth/prune-clients.ts`
+- Scheduled sweep: `apps/web/src/app/api/cron/maintenance/route.ts`

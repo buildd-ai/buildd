@@ -13,7 +13,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead
    Billing… verifying │                                                         
    Done this week · 1 │                                                         
                       │                                                         
-   Other tasks        │                                                         
+                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -44,7 +44,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its
    Billing… verifying │                                                         
    Done this week · 1 │                                                         
                       │                                                         
-   Other tasks        │                                                         
+                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -63,7 +63,7 @@ exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with
  Initech              │─────────────────────────────────────────────────────────
    Billing… verifying │ Nothing matches the filter.                             
                       │                                                         
-   Other tasks        │                                                         
+                      │                                                         
                       │                                                         
                       │                                                         
                       │                                                         
@@ -94,7 +94,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instea
    Billing clean… verifying │                                                                                           
    Done this week · 1       │                                                                                           
                             │                                                                                           
-   Other tasks              │                                                                                           
+                            │                                                                                           
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           
@@ -141,7 +141,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on it
    Billing clean… verifying │                                                                                           
    Done this week · 1       │                                                                                           
                             │                                                                                           
-   Other tasks              │                                                                                           
+                            │                                                                                           
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           
@@ -176,7 +176,7 @@ exports[`frames (R-7, R-21, AC-10) 120x40 filtering: a delivered match shows wit
  Initech                    │───────────────────────────────────────────────────────────────────────────────────────────
    Billing clean… verifying │ Nothing matches the filter.                                                               
                             │                                                                                           
-   Other tasks              │                                                                                           
+                            │                                                                                           
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           

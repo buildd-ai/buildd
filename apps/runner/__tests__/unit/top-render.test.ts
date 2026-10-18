@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createPalette, stripAnsi } from '../../src/terminal-palette';
 import { columnsFor, fit, renderFrame, textWidth } from '../../src/top/render';
-import { NO_MISSION, localLiftTime, reduce, type TopState } from '../../src/top/state';
+import { NO_MISSION, initialState, localLiftTime, reduce, type TopState } from '../../src/top/state';
 import { NOW, TASKS, fixtureState } from './top-fixture';
 
 const plain = createPalette('night', 'none');
@@ -74,6 +74,20 @@ describe('list view', () => {
 
   test('offline shows reconnecting in the header', () => {
     const s = { ...fixtureState(), runner: { ...fixtureState().runner, online: false } };
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ reconnecting');
+  });
+
+  test('before the first connection the header says loading, not reconnecting', () => {
+    let s = initialState({ hostname: 'laptop-1234' });
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ loading');
+    expect(stripAnsi(frame(s, 80, 24)[0])).not.toContain('reconnecting');
+    // A first attempt that fails is still loading: nothing was ever up.
+    s = reduce(s, { type: 'connection', online: false });
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ loading');
+    s = reduce(s, { type: 'init', workers: [], config: { maxConcurrent: 4 } });
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('0 of 4 busy · ● online');
+    // Only a connection that was up and dropped reads reconnecting.
+    s = reduce(s, { type: 'connection', online: false });
     expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ reconnecting');
   });
 });

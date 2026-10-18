@@ -42,7 +42,7 @@ import {
 import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
-import { LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
+import { LANDING_STATUS_CONTEXTS } from '@buildd/workflow-kernel/landing-gate';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -259,9 +259,9 @@ export async function evaluateAutoMergeSafety(
     // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
     // Vercel contexts) never creates check runs.
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
-    // buildd's own `buildd/landing` status is the kernel's verdict, published from
+    // buildd's own `Buildd / Review approval` status (and its legacy `buildd/landing` name) is the kernel's verdict, published from
     // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
-    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT
+    const notPassing = statuses.items.filter((st) => !LANDING_STATUS_CONTEXTS.includes(st.context ?? '')
       && (opts?.personDecides ? st.state === 'failure' || st.state === 'error' : !isPassingStatus(st)));
     if (!statuses.complete || notPassing.length > 0) {
       return {
