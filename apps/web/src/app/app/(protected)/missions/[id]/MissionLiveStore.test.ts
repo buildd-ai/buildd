@@ -119,9 +119,9 @@ describe('AC-17: structural events render at most once per window', () => {
       s.clock.advance(250);
     }
     s.clock.advance(MISSION_REFRESH_WINDOW_MS);
-    // 15s of events + one trailing window: never more than ceil(18s / 3s).
-    expect(s.refreshes).toBeLessThanOrEqual(6);
-    expect(s.refreshes).toBeGreaterThanOrEqual(5);
+    // 15s of events + one trailing window: at most one render per window.
+    expect(s.refreshes).toBeLessThanOrEqual(Math.ceil((15_000 + MISSION_REFRESH_WINDOW_MS) / MISSION_REFRESH_WINDOW_MS));
+    expect(s.refreshes).toBeGreaterThanOrEqual(Math.floor(15_000 / MISSION_REFRESH_WINDOW_MS));
   });
 
   it('a worker status change is structural (running → waiting_input moves the row)', () => {

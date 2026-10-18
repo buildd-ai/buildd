@@ -27,6 +27,7 @@ export default function RunnerIsolationFixture() {
     subagentDelegation: null,
     errorPatterns: null,
     protectedWorkPending: true,
+    isolationStranded: 0,
     now: RUNNER_ISOLATION_FIXTURE_NOW,
   };
   return (
