@@ -39,7 +39,7 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
       </div>
       {runner.interactive && running.length > 0 && (
         <p data-testid="running-now-sessions-note" className="mt-0.5 text-meta text-text-muted">
-          Your own sessions. Claimed tasks don't use runner slots.
+          Your own sessions. Sessions don't use runner slots.
         </p>
       )}
       {running.length > 0 && (
