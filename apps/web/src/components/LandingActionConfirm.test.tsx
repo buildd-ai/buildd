@@ -27,6 +27,6 @@ describe('LandingActionConfirm', () => {
 
   it('offers a re-run once new commits arrive, even on a GitHub-only page', () => {
     const html = renderToStaticMarkup(<LandingActionConfirm {...props} proposed="review_on_github" options={[review]} headMoved />);
-    expect(html).toMatch(/<button[^>]*landing-action-primary[^>]*>Retry merge/);
+    expect(html).toMatch(/<button[^>]*landing-action-primary[^>]*>Retry the merge/);
   });
 });

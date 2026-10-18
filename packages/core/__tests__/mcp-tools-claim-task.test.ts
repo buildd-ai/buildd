@@ -182,6 +182,8 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     const out = result.content[0].text;
     expect(out).toContain('all_candidates_deferred');
     expect(out).toContain('mission_paced');
+    expect(out).toContain(`Task ${TASK_ID} is claimable but was not started this round (see the reason above); try again shortly.`);
+    expect(out).not.toMatch(/\bheld\b/);
   });
 
   it('surfaces the per-task exclusion when an explicit taskId was filtered out', async () => {
@@ -288,5 +290,17 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_tasks', {}, interactive());
     expect(result.content[0].text).not.toMatch(/don't pick by ID/);
     expect(result.content[0].text).toMatch(/taskId/);
+  });
+});
+
+describe('claim_task — a retry assignment (terms catalog §2.10)', () => {
+  it('names the task by its title and attempt, never the machine key', async () => {
+    const api = mock(async () => ({
+      id: WORKER_ID, status: 'running', branch: 'buildd/retry',
+      task: { id: 'task-retry', title: '[builder · after review #1] fix(timeline): duplicate day header', description: 'd', status: 'assigned' },
+    }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'claim_task', {}, ctx());
+    expect(result.content[0].text).toContain('**Task:** fix(timeline): duplicate day header · Fix 1 · review asked for changes (task-retry)');
+    expect(result.content[0].text).not.toContain('[builder');
   });
 });

@@ -21,7 +21,7 @@ const PROGRESSING_OUTCOMES: ReadonlySet<string> = new Set(['waiting_ci', 'updati
 export interface TapResultView {
   heading: string;
   body: string;
-  /** Landing is under way on its own; the page must not read as a failed fix. */
+  /** Merging is under way on its own; the page must not read as a failed fix. */
   progressing: boolean;
 }
 
@@ -30,7 +30,7 @@ export function describeTapResult(r: { summary: string; outcome?: string }): Tap
   const summary = r.summary.trim();
   if (r.outcome && PROGRESSING_OUTCOMES.has(r.outcome)) {
     return {
-      heading: 'The merge is under way',
+      heading: 'Merging is under way',
       body: `${summary} Nothing failed: buildd merges it once the current commit's checks and review pass, and pages you again only if it stops making progress.`,
       progressing: true,
     };

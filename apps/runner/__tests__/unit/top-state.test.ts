@@ -109,12 +109,12 @@ describe('missions pane (R-2)', () => {
     expect(missionStageLine(plain)).toBeNull();
   });
 
-  test('stage words are the rail\'s: on hold in two words, no waiting-on line when there is none', () => {
+  test('stage words are the terms catalog\'s: on_hold reads paused, delivering merging, delivered done; no waiting-on line when there is none', () => {
     const row = (step: any, waitingOn: string | null = null) => ({ key: 'm', title: 'M', done: 0, total: 0, running: 0, planning: false, stage: { step, waitingOn } });
-    expect(missionStageWord(row('on_hold'))).toBe('on hold');
-    expect(missionStageLine(row('delivered'))).toBe('delivered');
-    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('delivering: approve the mission PR');
-    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
+    expect(missionStageWord(row('on_hold'))).toBe('paused');
+    expect(missionStageLine(row('delivered'))).toBe('done');
+    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('merging: approve the mission PR');
+    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 merged');
   });
 
   test('Other tasks is there even with no loose tasks', () => {
@@ -161,7 +161,7 @@ describe('rows (R-3)', () => {
     expect(r['heartbeat name']).toMatchObject({ group: 'running', elsewhere: 'runner', action: 'running on another runner' });
     expect(r['heartbeat name'].workerId).toBeUndefined();
     const spec = { ...fixtureState(), selectedMission: 'm-spec-0000-0000' };
-    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is on hold');
+    expect(rowsByTitle(spec)['import repo specs'].reason).toBe('mission is paused');
   });
 
   test('a full runner, and room to start', () => {
@@ -169,7 +169,7 @@ describe('rows (R-3)', () => {
     const loose = TASKS.find(t => t.id === 't-loose')!;
     expect(waitingReason(loose, s, NOW)).toBe('not tried yet');
     const full = reduce(s, { type: 'config', maxConcurrent: 2 });
-    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 busy)');
+    expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 slots in use)');
   });
 
   test('a dependency that is done no longer holds the task', () => {

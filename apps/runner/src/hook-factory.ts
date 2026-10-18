@@ -48,7 +48,7 @@ function describeUnknown(r: Extract<ShipCheckpointResult, { kind: 'unknown' }>):
  */
 function collisionDenial(c: PathCollision, what: string): [string, string] {
   return [
-    `${what} is refused: ${c.path}, which this task already changed, is held by ${describeHolder(c)}. The runner is saving a checkpoint of this worktree and deferring the task until that task releases it`,
+    `${what} is refused: ${c.path}, which this task already changed, is being changed by ${describeHolder(c)}. The runner is saving a checkpoint of this worktree and deferring the task until that task releases it`,
     'do not retry this call or make further edits; a later attempt resumes from the checkpoint',
   ];
 }

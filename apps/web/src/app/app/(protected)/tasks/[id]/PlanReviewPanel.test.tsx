@@ -31,6 +31,8 @@ describe('resolveRejectOutcome', () => {
     // The two facts a human needs: the reason is kept, and the docs PR stands.
     expect(outcome.text).toContain('reason stays');
     expect(outcome.text).toContain('documentation');
+    expect(outcome.text).toContain('merged documentation fix is unchanged');
+    expect(outcome.text).not.toMatch(/shipped/i);
   });
 
   it('never navigates to a missing task id, whatever flags the response carries', () => {

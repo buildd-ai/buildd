@@ -98,7 +98,7 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-xs font-medium text-text-secondary">Runner slots</h3>
         <div data-testid="occupancy-window-picker" className={`shrink-0 ${loading ? 'opacity-60' : ''}`}>
-          <Segmented label="Slots busy window" items={OCCUPANCY_WINDOWS.map(value => ({ value, label: value }))} value={window} onChange={setWindow} />
+          <Segmented label="Slots in use window" items={OCCUPANCY_WINDOWS.map(value => ({ value, label: value }))} value={window} onChange={setWindow} />
         </div>
       </div>
       {error ? (
@@ -280,7 +280,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
           />
         </div>
       )}
-      {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest workers were read.</p>}
+      {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest agents were read.</p>}
     </div>
   );
 }

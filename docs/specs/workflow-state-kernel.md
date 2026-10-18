@@ -1409,9 +1409,10 @@ exit" and "review, refresh and landing while a coordination owner keeps running"
 
 ### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
 
-**Status.** Every rule below is the target. Where the code differs today, the rule
-says so under "Today" or "As built". Rule 1 (composition) is checked by AC-20 to AC-23
-(§19). The findings, repair, landing, GitHub-status, projection and external-merge
+**Status.** Rule 1 (composition) is built and checked by AC-20 to AC-23 (§19):
+`packages/workflow-kernel/src/reducer.test.ts` ("composition attestation") and
+`apps/web/src/lib/workflow/review-composition.test.ts`. Where the code differs today,
+a rule says so under "Today" or "As built". The findings, repair, landing, GitHub-status, projection and external-merge
 rules (2 to 10) are owned by the native spec "Workflow kernel" (fa62b865,
 `workflow-kernel-library.md` §4, §5 and §7), which carries their criteria and what has
 shipped (S3b, S5); §19 maps the old ids to it.
@@ -1466,8 +1467,14 @@ type".
    `approve` and its delivery is not `CHANGES_REQUESTED`/`ESCALATED` at that head. An
    approve round that a later request-changes round superseded at the same head does
    not count.
-   *Today:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
-   (`reducer.ts`) accept any decided approve round at the head and ignore later rounds.
+   *As built:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
+   (kernel `reducer.ts`) take only a constituent's latest decided round at the head, and
+   refuse one whose delivery is `CHANGES_REQUESTED`/`ESCALATED` at that head or has an open
+   required finding (`constituent_approval_superseded`, `constituent_delivery_blocked`,
+   `constituent_open_findings`). An attestation on a PR with its own open finding is
+   rejected (`open_findings`). The attesting effect writes a four-part composition block
+   into the PR description (`composition-description.ts`): reviewed constituent work,
+   composition verification, uncovered-delta review, final policy gate.
    A mission integration PR is composed like any other since S6 gave it a delivery
    (it had none at #4686 and was reviewed whole).
 2. **Findings are durable.** A request-changes verdict creates findings, one per
@@ -1593,7 +1600,7 @@ workflow `gh pr merge` exists.
 | D6 | `POST /api/prs/[prNumber]/merge` (dashboard, chat `merge_pr`, compose include) | `app/api/prs/[prNumber]/merge/route.ts` | dashboard, chat registry, `release/compose-runtime.ts` | `landPr` in enforce, otherwise `guardReviewVerdict`. A person may override |
 | D7 | Release PR on green CI | `app/api/github/webhook/route.ts` `handleReleasePrCiSuccess` | `check_suite` success | `guardReviewVerdict` (legacy rows). A kernel-owned PR lands through the kernel (S3b) |
 | D8 | `executeRelease`, release-PR path | `lib/release-executor.ts` (`release/pinned-merge.ts`, pinned with `sha` since S3b) | worker completion (`release-completion-policy.ts`), mission release | the review gate, merging only the verified head (AC-16) |
-| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` (squash, pinned with `sha` since S3b) | same, `every_merge` strategy | the review gate, merging only the verified head (AC-16) |
+| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` → `release/pinned-merge.ts` (squash, pinned with `sha`) | same, `every_merge` strategy | CI read at the worker PR's live head (red refuses, running holds the release on the PR, none reported leaves it to GitHub's required checks), then the review gate, merging only that head (AC-16). A worker branch with no PR is refused, never merged: `failed` when the task asked for a release, else `skipped` |
 | D10 | Compose release | `release/compose-actions.ts` → `release/compose-runtime.ts` `mergePr` | `api/releases/compose` | GitHub reviews at the candidate SHA (`packages/core/release-compose.ts`), plus the review gate on the pinned head (S3b, AC-16) |
 | D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
 | D12 | Manual merge on GitHub | — | a person's account, UI or CLI | not a gate: recorded as an external merge, with a trunk fix filed once (AC-15). `buildd/landing` stops it once trunk requires that status (rule 7). This is the #4686 door |
@@ -1609,10 +1616,13 @@ recorded as an external merge with a trunk fix filed once (AC-15) and is what
 `buildd/landing` exists to stop once trunk requires it; D13 is unchanged (deny lists).
 The inventory is held to the code by `apps/web/src/lib/workflow/merge-door-inventory.test.ts`.
 
-Branch-to-branch merges that do not go through a PR (`release-executor.ts` `POST
-/merges`, `mission-branch-refresh.ts`, `scripts/sync-dev.sh`, `release-refresh.yml`)
-are not landing doors. They move a base, and §5.9 refresh composition reviews what that
-merge decided.
+Branch-to-branch merges that do not go through a PR (`mission-branch-refresh.ts`,
+`scripts/sync-dev.sh`, `release-refresh.yml`) are not landing doors. They move a base,
+and §5.9 refresh composition reviews what that merge decided. The release executor used
+to be on this list with a `POST /merges` of a worker branch that had no PR straight into
+the prod branch. That merge moved production, not a base, so §5.9 never reviewed it, and
+it read no verdict and no CI and pinned no head. A branch with no PR has no verdict and no
+delivery to gate, so the executor now refuses it (D9) and a release needs a PR.
 The mission delivery settlement's tree probe (`workflow/delivery-epochs.ts`,
 `workflow-kernel-library.md` §6) is not a door either: it test-merges a PR head into a
 scratch ref cut at the delivery's merge commit, reads the tree, and deletes the ref in

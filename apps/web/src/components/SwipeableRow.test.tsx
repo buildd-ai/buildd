@@ -561,7 +561,7 @@ describe('runCancelTask', () => {
     await Promise.resolve();
     await Promise.resolve();
     // Dialog is open: the row is still shown and nothing was PATCHed.
-    expect(h.log).toEqual(['confirm:Cancel "Do thing"? This stops its worker and cannot be undone.']);
+    expect(h.log).toEqual(['confirm:Cancel "Do thing"? This stops its agent and cannot be undone.']);
     expect(h.patches).toEqual([]);
     answer(true);
     expect(await outcome).toBe('cancelled');

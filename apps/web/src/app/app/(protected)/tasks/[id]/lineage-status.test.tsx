@@ -166,7 +166,7 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     expect(mergedHtml).toContain('bg-status-success/10');
 
     // SUPERSEDED should also be success green (landed tone)
-    const supersededHtml = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Shipped elsewhere', owner: 'platform', stage: 'superseded', state: 'SUPERSEDED' })} />);
+    const supersededHtml = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Merged in #9', owner: 'platform', stage: 'superseded', state: 'SUPERSEDED' })} />);
     expect(supersededHtml).toContain('text-status-success');
     expect(supersededHtml).toContain('bg-status-success/10');
   });
@@ -181,8 +181,8 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
       { stage: 'approved', state: 'APPROVED', owner: 'human', headline: 'APPROVED', expectedLabel: 'Ready to merge', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'landing', state: 'LANDING', owner: 'platform', headline: 'Merging', expectedLabel: 'Merging', shouldBeSuccess: false, shouldBeLive: true, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
       { stage: 'merged', state: 'MERGED', owner: 'landing', headline: 'MERGED', expectedLabel: 'Merged', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'superseded', state: 'SUPERSEDED', owner: 'platform', headline: 'Shipped elsewhere', expectedLabel: 'Shipped elsewhere', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
-      { stage: 'closed', state: 'CLOSED_UNMERGED', owner: 'worker', headline: 'Closed', expectedLabel: 'Closed', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: true, shouldBeFailed: false },
+      { stage: 'superseded', state: 'SUPERSEDED', owner: 'platform', headline: 'Merged in #9', expectedLabel: 'Merged in another PR', shouldBeSuccess: true, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: false },
+      { stage: 'closed', state: 'CLOSED_UNMERGED', owner: 'worker', headline: 'Closed', expectedLabel: 'Closed without merging', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: true, shouldBeFailed: false },
       { stage: 'failed', state: 'FAILED', owner: 'platform', headline: 'Failed', expectedLabel: 'Failed', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: false, shouldBeClosed: false, shouldBeFailed: true },
       { stage: 'blocked', state: 'BLOCKED_ON_TRUNK', owner: 'platform', headline: 'Blocked on base', expectedLabel: 'Blocked on base', shouldBeSuccess: false, shouldBeLive: false, shouldBeStalled: true, shouldBeClosed: false, shouldBeFailed: false },
     ];

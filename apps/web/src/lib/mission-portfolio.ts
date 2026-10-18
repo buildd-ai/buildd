@@ -57,7 +57,7 @@ export type PortfolioSort = 'attention' | 'recent' | 'closest' | 'priority';
 export const PORTFOLIO_SORTS: ReadonlyArray<{ key: PortfolioSort; label: string; title: string }> = [
   { key: 'attention', label: 'Attention', title: 'Needs attention' },
   { key: 'recent', label: 'Recent', title: 'Recently advanced' },
-  { key: 'closest', label: 'Closest', title: 'Closest to landing' },
+  { key: 'closest', label: 'Closest', title: 'Closest to merging' },
   { key: 'priority', label: 'Priority', title: 'Priority' },
 ];
 
@@ -91,9 +91,9 @@ export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
   { key: 'all', label: 'All', title: 'Every open mission' },
   { key: 'needs', label: 'Waiting on you', title: 'A decision only a person can make' },
-  { key: 'motion', label: 'In motion', title: 'buildd is building, auditing, repairing or landing it' },
-  { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or unplanned' },
-  { key: 'landed', label: 'Landed', title: 'Landed. A goal criterion hasn’t passed.' },
+  { key: 'motion', label: 'In motion', title: 'buildd is building, checking, fixing or merging it' },
+  { key: 'waiting', label: 'Waiting', title: 'Waiting for capacity, earlier work, a start or a plan' },
+  { key: 'landed', label: 'Done', title: 'Every task is done. A goal criterion hasn’t passed.' },
 ];
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {

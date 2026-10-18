@@ -61,12 +61,12 @@ describe('LandingActionConfirm after a retry that is now waiting on checks', () 
           options={[{ action: 'retry_landing', label: 'Retry landing', hint: 'h' }]}
           headMoved={false}
           fallbackHref={`/app/tasks/${TASK_ID}`}
-          heading="Won't merge: merge has stopped making progress"
+          heading="Won't land: landing has stopped making progress"
           prUrl="https://github.com/org/repo/pull/42"
         />,
       );
     });
-    expect(container.querySelector('h1')?.textContent).toBe("Won't merge: merge has stopped making progress");
+    expect(container.querySelector('h1')?.textContent).toBe("Won't land: landing has stopped making progress");
 
     await act(async () => {
       q('landing-action-primary')!.click();
@@ -76,9 +76,9 @@ describe('LandingActionConfirm after a retry that is now waiting on checks', () 
 
     const done = q('landing-action-done')!;
     expect(done.getAttribute('data-progressing')).toBe('true');
-    expect(container.querySelector('h1')?.textContent).toBe('The merge is under way');
+    expect(container.querySelector('h1')?.textContent).toBe('Merging is under way');
     expect(done.textContent).toContain('Nothing failed');
-    expect(done.textContent).not.toContain("Won't merge");
+    expect(done.textContent).not.toContain("Won't land");
 
     const link = q('landing-action-open-task') as HTMLAnchorElement;
     expect(link.tagName).toBe('A');

@@ -52,6 +52,8 @@ import { observeBase, observePrState } from '@/lib/workflow/seam';
 import { observeCiGreen, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
+import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
+import { LANDING_STATUS_CONTEXTS } from '@buildd/workflow-kernel/landing-gate';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -90,6 +92,10 @@ export async function POST(req: NextRequest) {
 
       case 'check_suite':
         await handleCheckSuiteEvent(data as GitHubCheckSuiteEvent);
+        break;
+
+      case 'status':
+        await handleStatusEvent(data);
         break;
 
       case 'pull_request':
@@ -387,6 +393,27 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
       }
       break;
     }
+  }
+}
+
+/**
+ * §4 merge holds (workflow-kernel-library.md): a commit status reported success on a head. A merge
+ * GitHub is holding on a required check there (the delivery LANDING, its merge effect parked) is
+ * woken where the kernel is hosted, through the same op a green check suite uses. buildd's own
+ * review status is skipped: the kernel publishes it, and it already published before the merge.
+ */
+async function handleStatusEvent(event: {
+  sha?: string; state?: string; context?: string; repository?: { full_name?: string }; installation?: { id?: number };
+}): Promise<void> {
+  const sha = event.sha;
+  const repo = event.repository?.full_name;
+  const installationId = event.installation?.id;
+  if (!sha || !repo || !installationId || event.state !== 'success') return;
+  if (event.context && LANDING_STATUS_CONTEXTS.includes(event.context)) return;
+  for (const d of await kernelDeliveriesLandingAt(repo, sha)) {
+    await observeCiGreen({
+      workspaceId: d.workspaceId, repoFullName: repo, prNumber: d.prNumber, installationId, headSha: sha, source: 'webhook:status',
+    }, { principal: systemPrincipal('system:webhook:status') }).catch((err) => console.error(`[workflow] status wake ${repo}#${d.prNumber} failed:`, err));
   }
 }
 
@@ -1434,7 +1461,7 @@ async function handleReleasePrCiFailure(
 
       void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release CI failed in ${repoFullName}`,
-        message: `CI is red on release PR #${pr.number}. Prod has not shipped.`,
+        message: `CI is red on release PR #${pr.number}. Production is unchanged.`,
         priority: 1,
         url: prUrl || `https://github.com/${repoFullName}/pull/${pr.number}`,
         urlTitle: `PR #${pr.number}`,

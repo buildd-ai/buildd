@@ -28,6 +28,8 @@ import { loopPolicy } from '@/lib/loop-dispatcher-policy';
 import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
+import { refreshMissionSummariesFor } from '@/lib/mission-summary-store';
+import type { WorkChangeListener } from '@/lib/work-changed';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
@@ -110,6 +112,16 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
+];
+
+/**
+ * Told every write of work (lib/work-changed.ts): a task's status or mission,
+ * a worker's status or PR, a delivery, a review, and every core event's ids.
+ * The missions module refreshes the stored summary of each mission they
+ * belong to, after the response (spec 3ef37387 R-13).
+ */
+export const WORK_CHANGE_LISTENERS: readonly WorkChangeListener[] = [
+  async (batch) => { await refreshMissionSummariesFor(batch); },
 ];
 
 /**

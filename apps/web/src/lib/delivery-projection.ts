@@ -22,7 +22,7 @@
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
-import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, TERMS } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
@@ -49,17 +49,18 @@ export type DeliveryTone = 'success' | 'info' | 'warning' | 'ink' | 'muted' | 'e
 
 /** Glyph + word for every kind: never colour alone. */
 export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string; tone: DeliveryTone }> = {
-  landed: { label: 'Merged', glyph: '■', tone: 'success' },
-  landing: { label: 'Ready to merge', glyph: '▲', tone: 'success' },
+  // The PR words come from the terms catalog (packages/shared/src/terms.ts).
+  landed: { label: TERMS['pr.merged'].word, glyph: '■', tone: 'success' },
+  landing: { label: TERMS['pr.merging'].word, glyph: '▲', tone: 'success' },
   audit: { label: 'In audit', glyph: '◐', tone: 'info' },
   repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
   build: { label: 'Building', glyph: '▶', tone: 'ink' },
   waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
   // A held start gate; deliveryKindLabel says Paused for one that ran before.
-  held: { label: 'Not started', glyph: '‖', tone: 'muted' },
+  held: { label: TERMS['mission.not_started'].word, glyph: '‖', tone: 'muted' },
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
-  notlanded: { label: 'Merge blocked', glyph: '✕', tone: 'error' },
+  notlanded: { label: TERMS['pr.closed'].word, glyph: '✕', tone: 'error' },
   needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
 };
 
@@ -550,8 +551,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
     else if (kind === 'waiting') {
       exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
-        : m.localStrand?.stranded ? { tone: 'warning', text: 'No local session is running it' }
-        : m.localStrand ? { tone: 'muted', text: 'Waiting for a local session' }
+        : m.localStrand?.stranded ? { tone: 'warning', text: 'No session is running it' }
+        : m.localStrand ? { tone: 'muted', text: 'Waiting for your session' }
         : { tone: 'muted', text: 'Next in line for a runner, not waiting on you' };
     }
   }
@@ -646,8 +647,8 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'waiting':
       if (d?.waitingOn !== 'dependency' && m.localStrand) {
         return m.localStrand.stranded
-          ? { evidence: `${t} has not started.`, next: `Waiting for a local session (none for ${quietLabel(m.localStrand.quietMs)})` }
-          : { evidence: `${t} has not started.`, next: 'Waiting for a local session' };
+          ? { evidence: `${t} has not started.`, next: `Waiting for your session (none for ${quietLabel(m.localStrand.quietMs)})` }
+          : { evidence: `${t} has not started.`, next: 'Waiting for your session' };
       }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Next in line for a runner' };
     case 'held':
@@ -711,7 +712,7 @@ function quietCause(m: MissionDelivery): string {
     return m.visualOpen.hold ? `waiting on visual review (${m.visualOpen.hold})` : 'waiting on visual review';
   }
   if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
-  if (m.next.startsWith('Waiting for a local session')) return 'waiting for a local session';
+  if (m.next.startsWith('Waiting for your session')) return 'waiting for your session';
   if (m.next === 'Next in line for a runner') return 'next in line for a runner';
   return 'waiting';
 }

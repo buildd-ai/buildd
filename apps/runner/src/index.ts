@@ -38,6 +38,7 @@ import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress,
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
+import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
 
@@ -267,7 +268,11 @@ if (ONCE_TASK_ID === null) {
         return Response.json(runnerIdentity());
       }
       return socketHandler ? socketHandler(req) : Response.json({ error: 'starting' }, { status: 503 });
-    }, { error: (err) => localServerError(err) });
+    }, {
+      error: (err) => localServerError(err),
+      // Manual update runs git + install + a health probe, minutes by design.
+      noDeadline: (req) => new URL(req.url).pathname === '/api/update',
+    });
   } catch (err: any) {
     // Lost a race with another start that bound first: that one is the runner.
     // serveRunnerSocket never unlinks an existing file, so the bind fails here
@@ -1994,6 +1999,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           saveConfig({ apiKey: '' });
           return Response.json({ error: 'API key invalid', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
+        // The server's read rate limit: hand `buildd top` the wait so it holds instead of asking again.
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, tasks: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list tasks:', err.message);
         return Response.json({ error: err.message || 'Failed to load tasks', tasks: [] }, { status: 502, headers: corsHeaders });
       }
@@ -2038,6 +2048,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         const missions = await buildd!.listRecentMissions();
         return Response.json({ missions }, { headers: corsHeaders });
       } catch (err: any) {
+        const wait = rateLimitedRetryAfterSec(err);
+        if (wait !== null) {
+          return Response.json({ error: err.message, retryAfterSec: wait, missions: [] }, { status: 429, headers: { ...corsHeaders, 'Retry-After': String(wait) } });
+        }
         console.error('Failed to list missions:', err.message);
         return Response.json({ error: err.message || 'Failed to load missions', missions: [] }, { status: 502, headers: corsHeaders });
       }

@@ -10,7 +10,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { triggerEvent, channels, events, hasVisibleWorkerChange } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -28,6 +28,7 @@ import { disposeParkedWaitingFor } from '@/lib/park-disposition';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -90,6 +91,7 @@ import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { taskPrOf } from '@/lib/workflow/task-pr';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -979,6 +981,14 @@ export async function PATCH(
     siblingProbeResults,
     siblingProbe: supportsSiblingProbe,
   } = body;
+
+  // A report that moves the worker (status, a question, a PR) moves its
+  // mission: the summary is refreshed once, after the response, whichever
+  // branch below writes (lib/work-changed.ts). A bare progress heartbeat does
+  // not; what it ages the reconcile catches.
+  if (reportedStatus !== undefined || waitingFor !== undefined || body.prUrl !== undefined || body.prNumber !== undefined) {
+    noteWorkChanged({ workerIds: [id] });
+  }
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
@@ -4131,11 +4141,6 @@ export async function PATCH(
         const waitingForData = worker.waitingFor as { prompt?: string } | null;
         const lastQuestion = waitingForData?.prompt || undefined;
 
-        // Re-read worker to pick up auto-detected PR fields
-        const freshWorker = await db.query.workers.findFirst({
-          where: sqlWhere(eq(workers.id, id)),
-        });
-
         taskUpdate.result = {
           summary,
           ...(summarySource && { summarySource }),
@@ -4145,8 +4150,8 @@ export async function PATCH(
           files: filesChanged ?? worker.filesChanged ?? 0,
           added: linesAdded ?? worker.linesAdded ?? 0,
           removed: linesRemoved ?? worker.linesRemoved ?? 0,
-          prUrl: freshWorker?.prUrl ?? worker.prUrl ?? undefined,
-          prNumber: freshWorker?.prNumber ?? worker.prNumber ?? undefined,
+          // No prUrl / prNumber: a task's PR is derived on read from its delivery or its
+          // attempt's worker row (workflow/task-pr.ts), never snapshotted by an attempt's end.
           ...(phases.length > 0 && { phases }),
           ...(lastQuestion && { lastQuestion }),
           // Structured output from SDK (validated JSON matching task.outputSchema)
@@ -5326,6 +5331,7 @@ export async function PATCH(
   // row. The full row can exceed Pusher's 10 KB limit (instructionHistory,
   // mcpCalls, milestones). Clients that need fresh row data call router.refresh()
   // or re-fetch; clients that only need status use the fields below.
+  const isTerminalEvent = status === 'completed' || status === 'failed';
   const eventName = status === 'completed' ? events.WORKER_COMPLETED
     : status === 'failed' ? events.WORKER_FAILED
     : events.WORKER_PROGRESS;
@@ -5351,10 +5357,24 @@ export async function PATCH(
     pusherPayload.heartbeatOk = true;
   }
 
-  await triggerEvent(channels.worker(id), eventName, pusherPayload);
+  // ── No-op suppression ──────────────────────────────────────────────────
+  // Terminal events always fire (completions/failures need to reach the
+  // dashboard immediately). WORKER_PROGRESS events are suppressed when
+  // nothing visible to subscribers has changed — this is the single biggest
+  // lever for daily Pusher message volume, since runners sync every ~30 s
+  // even when idle within a task.
+  const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
+    { status: worker.status, currentAction: worker.currentAction },
+    { status: updated.status, currentAction: updates.currentAction },
+    taskProgress,
+  );
 
-  if (worker.workspaceId) {
-    await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+  if (shouldPublish) {
+    await triggerEvent(channels.worker(id), eventName, pusherPayload);
+
+    if (worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
+    }
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
@@ -5397,10 +5417,15 @@ export async function PATCH(
         const durationMs = startedAt && completedAt
           ? new Date(completedAt as any).getTime() - new Date(startedAt as any).getTime()
           : null;
+        // The PR is derived on read (workflow/task-pr.ts); the result no longer stores it. Read only
+        // when there is a callback to send it to.
+        const taskPr = (taskForNotify.context as { callback?: unknown } | null)?.callback
+          ? await taskPrOf(worker.taskId)
+          : null;
         sendTaskCallback(taskForNotify as any, {
           status,
           summary: isSensitive ? undefined : result?.summary,
-          prUrl: result?.prUrl,
+          prUrl: taskPr?.prUrl ?? result?.prUrl,
           structuredOutput: isSensitive ? undefined : (result as any)?.structuredOutput,
         }, {
           turns: updates.turns ?? worker.turns,

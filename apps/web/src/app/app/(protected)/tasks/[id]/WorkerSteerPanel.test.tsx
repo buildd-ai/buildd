@@ -40,7 +40,7 @@ describe('WorkerSteerPanel — message delivery states (B-12)', () => {
     expect(html).not.toContain('Pending delivery');
   });
 
-  test('undelivered messages from the earlier run show Not delivered and a 44px Resend', () => {
+  test('undelivered messages from the earlier run show Not received and a 44px Resend', () => {
     const html = render({
       earlierRun: {
         workerId: 'w0',
@@ -50,7 +50,8 @@ describe('WorkerSteerPanel — message delivery states (B-12)', () => {
     });
     expect(html).toContain('data-testid="earlier-run-undelivered"');
     expect(html).toContain('data-state="undelivered"');
-    expect(html).toContain('Not delivered');
+    expect(html).toContain('Not received · the previous run ended first');
+    expect(html).not.toContain('Not delivered · the previous run');
     expect(html).toContain('never read');
     expect(html).toContain('data-testid="message-resend"');
     expect(html).toMatch(/data-testid="message-resend"[^>]*min-h-11|min-h-11[^>]*data-testid="message-resend"/);

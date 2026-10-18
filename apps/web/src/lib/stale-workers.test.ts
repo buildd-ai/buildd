@@ -1255,8 +1255,9 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     expect(taskUpdateSet.status).toBe('completed');
     // result must be populated so mission review sees a real completion
     expect(taskUpdateSet.result).toBeDefined();
-    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/1591');
-    expect(taskUpdateSet.result.prNumber).toBe(1591);
+    // AC-1 slice 4: the PR stays on the worker row and is derived on read; result does not copy it.
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
+    expect(taskUpdateSet.result.prNumber).toBeUndefined();
     expect(taskUpdateSet.result.reaperAutoCompleted).toBe(true);
   });
 
@@ -1416,7 +1417,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     // Even with artifact query failure, prUrl being set must promote to completed
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('completed');
-    expect(taskUpdateSet.result.prUrl).toBe('https://github.com/org/repo/pull/99');
+    expect(taskUpdateSet.result.prUrl).toBeUndefined();
   });
 });
 
@@ -3291,7 +3292,7 @@ describe('cleanupUnresumedAnswers', () => {
 // The lost-claim release (lib/lost-claim.ts) resolves its tasks through the
 // reaper's own rules: requeued pending with the infra backoff and a wake keyed
 // to startAt, never charged as a code failure, and stalled truthfully at the cap.
-describe('resolveTasksOfReapedWorkers — lost claim response', () => {
+describe('resolveTasksOfReapedWorkers — never-started reap (no acknowledgement)', () => {
   const lost = { id: 'w-lost', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: 'lost' };
   let taskUpdateSet: any;
   beforeEach(() => {
@@ -3590,4 +3591,83 @@ describe('resolveTasksOfReapedWorkers — interactive (local session) worker', (
       expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
     });
   }
+});
+
+// A claim the runner reported it never received (lib/lost-claim.ts). Nothing
+// ran, so it says nothing about the task: requeue without touching the infra
+// retry budget, never stall the task, never end a kernel attempt.
+describe('resolveTasksOfReapedWorkers — undelivered claim (runner never received it)', () => {
+  const lost = { id: 'w-lost', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/abc-fix', error: null };
+  let taskUpdateSet: any;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksUpdate.mockReset();
+    taskUpdateSet = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWakeTask.mockClear();
+    mockWorkflowAttemptEnded.mockClear();
+  });
+
+  function taskRow(over: Record<string, unknown> = {}) {
+    return { id: 'task-1', workspaceId: 'ws-1', status: 'assigned', category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(), ...over };
+  }
+
+  for (const infraRetryCount of [0, 3]) {
+    it(`requeues pending without charging the infra budget (infraRetryCount=${infraRetryCount})`, async () => {
+      mockWorkersFindMany.mockResolvedValueOnce([]); // no other live worker
+      mockTasksFindFirst.mockResolvedValueOnce(taskRow({ context: { infraRetryCount } })).mockResolvedValue({ parentTaskId: null });
+      const before = Date.now();
+      await resolveTasksOfReapedWorkers([lost], 'never_started', { undelivered: true });
+      expect(taskUpdateSet.status).toBe('pending');
+      expect(taskUpdateSet.result).toBeUndefined();
+      expect(taskUpdateSet.context.infraRetryCount).toBe(infraRetryCount);
+      expect(taskUpdateSet.context.claimLostCount).toBe(1);
+      expect(taskUpdateSet.context.resumeBranch).toBe('buildd/abc-fix');
+      expect(taskUpdateSet.startAt.getTime()).toBeGreaterThanOrEqual(before + 60_000);
+      expect(taskUpdateSet.startAt.getTime()).toBeLessThan(before + 2 * 60_000);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued', { notBefore: taskUpdateSet.startAt }]]);
+      expect(mockWorkflowAttemptEnded).not.toHaveBeenCalled();
+    });
+  }
+
+  it('backs off further on each repeat, capped, and never fails the task', async () => {
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockTasksFindFirst.mockResolvedValueOnce(taskRow({ context: { claimLostCount: 40, infraRetryCount: 3 } })).mockResolvedValue({ parentTaskId: null });
+    const before = Date.now();
+    await resolveTasksOfReapedWorkers([lost], 'never_started', { undelivered: true });
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.context.claimLostCount).toBe(41);
+    expect(taskUpdateSet.startAt.getTime()).toBeGreaterThanOrEqual(before + 15 * 60_000);
+    expect(taskUpdateSet.startAt.getTime()).toBeLessThan(before + 16 * 60_000);
+  });
+
+  it('requeues a review task the same way, without escalating', async () => {
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockTasksFindFirst.mockResolvedValueOnce(taskRow({ category: 'review', context: { prNumber: 5, infraRetryCount: 3 } })).mockResolvedValue({ parentTaskId: null });
+    await resolveTasksOfReapedWorkers([lost], 'never_started', { undelivered: true });
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.context.infraRetryCount).toBe(3);
+  });
+
+  for (const status of ['cancelled', 'completed', 'failed', 'pending']) {
+    it(`leaves a ${status} task alone`, async () => {
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockTasksFindFirst.mockResolvedValueOnce(taskRow({ status })).mockResolvedValue({ parentTaskId: null });
+      await resolveTasksOfReapedWorkers([lost], 'never_started', { undelivered: true });
+      expect(taskUpdateSet).toBeNull();
+      expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+  }
+
+  it('leaves a task alone that another live worker already holds', async () => {
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w-other' }]);
+    mockTasksFindFirst.mockResolvedValue({ parentTaskId: null });
+    await resolveTasksOfReapedWorkers([lost], 'never_started', { undelivered: true });
+    expect(taskUpdateSet).toBeNull();
+  });
 });

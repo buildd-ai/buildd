@@ -209,13 +209,13 @@ describe('withRunnerHold (heartbeat and claim environment)', () => {
 describe('the one-line answers', () => {
   const at = (h: number, m: number) => new Date(2026, 2, 10, h, m).toISOString();
   test('hold says what changed and how many still run', () => {
-    expect(holdLine({ since: at(9, 12), until: null }, 2, T0)).toBe('On hold: nothing new starts. 2 agents still running finish. buildd resume lifts it.');
-    expect(holdLine({ since: at(9, 12), until: at(11, 12) }, 1, T0)).toBe('On hold until 11:12: nothing new starts. 1 agent still running finishes. buildd resume lifts it sooner.');
-    expect(holdLine({ since: at(9, 12), until: null }, 0, T0)).toBe('On hold: nothing new starts. Nothing is running. buildd resume lifts it.');
+    expect(holdLine({ since: at(9, 12), until: null }, 2, T0)).toBe('Paused: nothing new starts. 2 agents still running finish. buildd resume lifts it.');
+    expect(holdLine({ since: at(9, 12), until: at(11, 12) }, 1, T0)).toBe('Paused until 11:12: nothing new starts. 1 agent still running finishes. buildd resume lifts it sooner.');
+    expect(holdLine({ since: at(9, 12), until: null }, 0, T0)).toBe('Paused: nothing new starts. Nothing is running. buildd resume lifts it.');
   });
   test('resume says it takes work again', () => {
     expect(resumeLine(true, 2)).toBe('Resumed: looking for work now. 2 agents running.');
-    expect(resumeLine(false, 0)).toBe('This runner was not on hold, so nothing changed. Nothing is running.');
+    expect(resumeLine(false, 0)).toBe('This runner was not paused, so nothing changed. Nothing is running.');
   });
 });
 
@@ -231,7 +231,7 @@ describe('runHoldCommand', () => {
     });
     expect(calls).toEqual([{ path: '/api/hold', body: { forMs: 7_200_000 } }]);
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('On hold until 11:12: nothing new starts. 2 agents still running finish. buildd resume lifts it sooner.');
+    expect(r.stdout).toBe('Paused until 11:12: nothing new starts. 2 agents still running finish. buildd resume lifts it sooner.');
     expect(existsSync(configFile)).toBe(false);
   });
 
@@ -259,7 +259,7 @@ describe('runHoldCommand', () => {
     writeFileSync(configFile, JSON.stringify({ apiKey: 'bld_x' }));
     const r = await runHoldCommand({ kind: 'hold', forArg: null }, { configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: absent, post: async () => { throw new Error('no socket'); } });
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('No runner is running on this machine. Saved: the next start is on hold until buildd resume.');
+    expect(r.stdout).toBe('No runner is running on this machine. Saved: nothing new starts until buildd resume.');
     expect(readHoldFromConfig(configFile)).toEqual({ since: new Date(T0).toISOString(), until: null });
     const back = await runHoldCommand({ kind: 'resume' }, { configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: absent, post: async () => { throw new Error('no socket'); } });
     expect(back.stdout).toBe('No runner is running on this machine. Saved: the next start takes new work.');
@@ -361,7 +361,7 @@ describe('runStopCommand (R-36, AC-20, AC-22)', () => {
     expect(r.stdout.split('\n')).toEqual([
       'Paused "name override": it stops at its next safe point and keeps its session.',
       'Paused "single instance": it stops at its next safe point and keeps its session.',
-      'On hold: nothing new starts. buildd resume lifts it and continues the paused agents.',
+      'Paused: nothing new starts. buildd resume lifts it and continues the paused agents.',
     ]);
   });
 
@@ -384,7 +384,7 @@ describe('runStopCommand (R-36, AC-20, AC-22)', () => {
       'Stopped "name override".',
       'Stopped "single instance".',
       'Stopped "installer hint".',
-      'On hold: nothing new starts until buildd resume.',
+      'Paused: nothing new starts until buildd resume.',
     ]);
   });
 
@@ -414,13 +414,13 @@ describe('runStopCommand (R-36, AC-20, AC-22)', () => {
     const h = harness();
     const r = await runStopCommand({ yes: true }, { ...h.deps, get: async () => ({ status: 200, body: { workers: [] } }) });
     expect(h.posts).toEqual(['/api/hold']);
-    expect(r.stdout).toBe('Nothing is running. On hold: nothing new starts. buildd resume lifts it and continues the paused agents.');
+    expect(r.stdout).toBe('Nothing is running. Paused: nothing new starts. buildd resume lifts it and continues the paused agents.');
   });
 
   test('no runner running: nothing to stop, saved on hold for the next start', async () => {
     const r = await runStopCommand({ yes: true }, { configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: absent, get: async () => { throw new Error('x'); }, post: async () => { throw new Error('x'); } });
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('No runner is running on this machine, so no agent is running. Saved: the next start is on hold until buildd resume.');
+    expect(r.stdout).toBe('No runner is running on this machine, so no agent is running. Saved: nothing new starts until buildd resume.');
     expect(readHoldFromConfig(configFile)).not.toBeNull();
   });
 });

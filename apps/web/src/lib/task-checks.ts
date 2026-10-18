@@ -149,7 +149,7 @@ function mergeRow(v: ChecksInput): CheckRow | null {
     case 'APPROVED': return { ...base, state: 'pending', result: 'Awaiting merge' };
     case 'CLOSED_UNMERGED':
     case 'ABANDONED': return { ...base, state: 'closed', result: 'Closed without merging' };
-    case 'SUPERSEDED': return { ...base, state: 'closed', result: 'Landed in another PR' };
+    case 'SUPERSEDED': return { ...base, state: 'closed', result: 'Merged in another PR' };
     case 'REPAIRING': {
       if (v.stateReason === 'behind') return { ...base, state: 'running', result: 'Updating branch' };
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {

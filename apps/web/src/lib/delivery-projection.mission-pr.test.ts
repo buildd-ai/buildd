@@ -132,12 +132,12 @@ describe('visual review round 1: what is left reads the waiver, criteria and a l
   it('a stranded local mission says so instead of "a slot frees up"', () => {
     const m = projectMissionDelivery(mission({ integrationBranch: false, localStrand: { stranded: true, quietMs: 33 * 3_600_000 }, tasks: [merged('One'), task({ title: 'Two' })] }));
     expect(m.kind).toBe('waiting');
-    expect(m.next).toBe('Waiting for a local session (none for 33h)');
+    expect(m.next).toBe('Waiting for your session (none for 33h)');
     expect(m.next).not.toContain('slot');
   });
   it('a local mission that is not stranded starts from a local session', () => {
     const m = projectMissionDelivery(mission({ integrationBranch: false, localStrand: { stranded: false, quietMs: 0 }, tasks: [merged('One'), task({ title: 'Two' })] }));
-    expect(m.next).toBe('Waiting for a local session');
+    expect(m.next).toBe('Waiting for your session');
   });
 });
 

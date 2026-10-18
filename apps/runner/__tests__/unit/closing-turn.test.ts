@@ -165,7 +165,9 @@ mock.module('../../src/env-scan', () => ({
   checkBwrapMountIsolationSupport: () => true,
 }));
 
-const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest, __setIsolationHostForTest } = await import('../../src/workers');
+// Mocked bwrap probe models a Linux host; don't run the real Seatbelt probe on macOS.
+__setIsolationHostForTest('linux');
 // Sessions here run a mocked SDK with no model credential: skip the
 // pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
 __setModelAuthPreflightForTest(() => null);
@@ -671,7 +673,7 @@ function askGateReply() {
 function holdGateReply() {
   return {
     verdict: 'send', outcome: 'held', disposition: 'hold',
-    holdReason: 'Held — it did not look urgent enough to interrupt someone right now.',
+    holdReason: 'Not sent yet: it did not look urgent enough to interrupt someone right now.',
     resurfaceAt: new Date().toISOString(),
     version: 'qd1', latencyMs: 5,
   };

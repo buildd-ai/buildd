@@ -42,7 +42,7 @@ describe('with no runner running', () => {
   test('hold saves it for the next start, resume clears it', async () => {
     const h = await buildd('hold');
     expect(h.code).toBe(0);
-    expect(h.stdout).toBe('No runner is running on this machine. Saved: the next start is on hold until buildd resume.');
+    expect(h.stdout).toBe('No runner is running on this machine. Saved: nothing new starts until buildd resume.');
     expect(config().hold.until).toBeNull();
     const r = await buildd('resume');
     expect(r.code).toBe(0);
@@ -69,13 +69,13 @@ describe('with a runner answering on its socket', () => {
       return Response.json({ error: 'Not found' }, { status: 404 });
     });
     const h = await buildd('hold');
-    expect(h.stdout).toBe('On hold: nothing new starts. 1 agent still running finishes. buildd resume lifts it.');
+    expect(h.stdout).toBe('Paused: nothing new starts. 1 agent still running finishes. buildd resume lifts it.');
     const s = await buildd('stop', '--yes');
     expect(s.code).toBe(0);
-    expect(s.stdout).toBe('Paused "name override": it stops at its next safe point and keeps its session.\nOn hold: nothing new starts. buildd resume lifts it and continues the paused agents.');
+    expect(s.stdout).toBe('Paused "name override": it stops at its next safe point and keeps its session.\nPaused: nothing new starts. buildd resume lifts it and continues the paused agents.');
     expect(seen).toContain('POST /api/workers/w1/pause');
     const a = await buildd('stop', '--abort', '--yes');
-    expect(a.stdout).toBe('Stopped "name override".\nOn hold: nothing new starts until buildd resume.');
+    expect(a.stdout).toBe('Stopped "name override".\nPaused: nothing new starts until buildd resume.');
     expect(seen).toContain('POST /api/workers/w1/stop');
     // The runner keeps the hold; the CLI wrote nothing itself.
     expect(config()).toBeNull();

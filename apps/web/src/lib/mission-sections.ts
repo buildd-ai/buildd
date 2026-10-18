@@ -23,7 +23,7 @@ export const SECTION_META: Record<MissionSectionKey, { label: string; order: str
   needs: { label: 'Waiting on you', order: 'oldest first' },
   motion: { label: 'In motion', order: 'slipping first' },
   waiting: { label: 'Waiting', order: 'next to start first' },
-  landed: { label: 'Landed, checks pending', order: 'oldest first' },
+  landed: { label: 'Done, checks pending', order: 'oldest first' },
 };
 
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting', 'landed'];

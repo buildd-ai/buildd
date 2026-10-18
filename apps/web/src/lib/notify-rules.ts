@@ -4,6 +4,7 @@
  * Kept separate from ./notify (which does IO) so the decision logic is trivially
  * unit-testable. ./notify re-exports these.
  */
+import { titleWithAttempt } from '@buildd/shared';
 
 /** Toggleable per-team event types. Mirrors the boolean columns on `notification_preferences`. */
 export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired' | 'connectorBlocked' | 'artifactReady';
@@ -112,4 +113,18 @@ export function isCredentialExpiredError(error?: string | null): boolean {
     lower.includes('expired credential') ||
     lower.includes('credential has expired')
   );
+}
+
+const ATTEMPT_KEY = /\[[^\]·]*·\s*after (?:CI|review|conflict)\s*#\d+\]/i;
+
+/**
+ * A notification's title or message with every retry key
+ * (`[builder · after CI #1] …`) read as the terms catalog words it: the title,
+ * then the attempt. Per line, so a title after a `PR #12: ` prefix reads too.
+ */
+export function readableTitles(text: string): string {
+  return text.split('\n').map((line) => {
+    const at = line.search(ATTEMPT_KEY);
+    return at < 0 ? line : line.slice(0, at) + titleWithAttempt(line.slice(at));
+  }).join('\n');
 }

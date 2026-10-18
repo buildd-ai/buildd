@@ -195,7 +195,7 @@ export function fromMergeRoute(reply: RouteReply): ActionResult {
   if (status >= 200 && status < 300 && json.ok !== false && json.merged !== false) return { ok: true, summary: 'Merged.', outcome: 'merged' };
   if (status === 202) return { ok: true, summary: asString(json.message) ?? 'The branch was updated; it merges when CI is green.', outcome: 'updating_branch' };
   const landing = json.landing as { kind?: string } | undefined;
-  if (landing?.kind) return { ok: true, summary: asString(json.error) ?? 'The merge check re-ran and is still waiting.', outcome: landing.kind };
+  if (landing?.kind) return { ok: true, summary: asString(json.error) ?? 'The merge re-ran and is still waiting.', outcome: landing.kind };
   return { ok: false, error: asString(json.error) ?? `The merge could not be attempted (${status}).` };
 }
 

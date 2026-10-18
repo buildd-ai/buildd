@@ -13,6 +13,7 @@ import { and, eq, inArray, desc } from 'drizzle-orm';
 import { requestingPerson } from '@/lib/request-person';
 import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
 import { emit } from '@/lib/core-emit';
+import { noteWorkChanged } from '@/lib/work-changed';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { lazyRequester } from '@buildd/core/role-visibility';
@@ -46,6 +47,7 @@ import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/inte
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskPrOf, withTaskPr } from '@/lib/workflow/task-pr';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -212,7 +214,12 @@ export async function GET(
       }));
     }
 
-    const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
+    // result.prUrl / prNumber are derived on read (workflow/task-pr.ts): get_task's PR line reads them.
+    const response: Record<string, unknown> = {
+      ...task,
+      result: withTaskPr(task.result as Record<string, unknown> | null, await taskPrOf(id)),
+      workspace: withoutDispatchToken(task.workspace),
+    };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
     if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
@@ -753,6 +760,9 @@ export async function PATCH(
       .set(updateData)
       .where(eq(tasks.id, id))
       .returning();
+
+    // Its mission's stored summary, and the one it left (lib/work-changed.ts).
+    if (updated) noteWorkChanged({ missionIds: [updated.missionId, task.missionId] });
 
     // Status-change side effects. A PATCH that doesn't touch status (title,
     // priority, …) runs none of this.

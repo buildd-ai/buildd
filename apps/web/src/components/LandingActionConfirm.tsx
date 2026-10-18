@@ -91,7 +91,7 @@ export function LandingActionConfirm({
             className="min-h-12 bg-accent px-4 py-3 text-left font-mono text-sm font-bold text-white disabled:opacity-50"
             data-testid="landing-action-primary"
           >
-            {busy ? 'Working…' : headMoved ? 'Retry merge' : primary.label}
+            {busy ? 'Working…' : headMoved ? 'Retry the merge' : primary.label}
           </button>
         )}
         <p className="text-xs text-text-secondary">{headMoved ? 'The merge re-checks the current commit.' : primary.hint}</p>

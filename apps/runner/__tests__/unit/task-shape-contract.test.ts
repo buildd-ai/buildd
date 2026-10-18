@@ -217,7 +217,10 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 const { OutputRequirement, TaskMode } = await import('../../../../packages/shared/src/types');
-const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest, __setIsolationHostForTest } = await import('../../src/workers');
+// The mocked env-scan models a Linux host with working bwrap; don't let a macOS
+// developer machine run the real Seatbelt probe instead.
+__setIsolationHostForTest('linux');
 // Sessions here run a mocked SDK with no model credential: skip the
 // pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
 __setModelAuthPreflightForTest(() => null);
@@ -505,7 +508,10 @@ function reset() {
   mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3000) {
+// Waits return as soon as the predicate holds, so a generous ceiling costs
+// nothing on a quick host and keeps a loaded one (every git spawn in the
+// completion path slows down) from failing on the clock instead of the contract.
+async function waitFor(pred: () => boolean, timeoutMs = 30_000) {
   const start = Date.now();
   while (!pred() && Date.now() - start < timeoutMs) await new Promise(r => setTimeout(r, 10));
 }
@@ -537,7 +543,7 @@ async function runShape(manager: InstanceType<typeof WorkerManager>, shape: Shap
     // well after the local status; a late one would leak into the next test's
     // server state. Wait for the server to record an outcome, then for the
     // trailing PATCHes to go quiet.
-    await waitFor(() => server.status !== null, 5000);
+    await waitFor(() => server.status !== null);
     const deadline = Date.now() + 3000;
     let seen = -1;
     while (seen !== mockUpdateWorker.mock.calls.length && Date.now() < deadline) {

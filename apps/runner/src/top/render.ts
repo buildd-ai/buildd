@@ -6,6 +6,7 @@
  * cost column goes first, then the route words, then the role column (R-7,
  * R-41), and text is cut with "…".
  */
+import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
@@ -157,17 +158,17 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
   // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
   const served = workspaceSummary(state);
   const busy = busySlots(state);
-  // R-33: a held runner reads "on hold" where "online" would be.
+  // R-33: a paused runner reads "paused" where "online" would be.
   // Before the first connection it is loading; reconnecting only once one was up and dropped.
-  const online = !state.runner.online ? (state.runner.connectedOnce ? '○ reconnecting' : '○ loading') : heldNow(state, now) ? '● on hold' : '● online';
+  const online = !state.runner.online ? (state.runner.connectedOnce ? '○ reconnecting' : '○ loading') : heldNow(state, now) ? `● ${TERMS['runner.paused'].short}` : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
-    // R-43: "3 of 6 busy".
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version },
-    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} busy`, version: '' },
-    { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
-    { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
+    // R-43: "3 of 6 slots in use" (terms catalog: capacity is never "busy").
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent), version: '' },
+    { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
+    { host: false, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
   ];
   for (const v of variants) {
     const leftParts = [v.host ? host : null, served || null].filter(Boolean).join(' · ');
@@ -226,7 +227,7 @@ function footer(state: TopState, cols: number, p: Palette): string {
     return p.fg('accent', prefix) + p.fg('text', text) + p.fg('accent', '▏') + ' '.repeat(Math.max(0, cols - textWidth(prefix) - textWidth(text) - 1));
   }
   if (m.kind === 'confirm') {
-    const t = state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle ?? 'this task';
+    const t = titleWithAttempt(state.tasks.find(x => x.id === m.taskId)?.title ?? workerForTask(state, m.taskId)?.taskTitle) || 'this task';
     return p.fg('accent', fit(` Stop the agent on "${t}"? y stops it, any other key keeps it running`, cols));
   }
   if (state.status) {
@@ -244,19 +245,19 @@ function leftWidth(cols: number): number {
   return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
 }
 
-/** A fold row's words: "Delivered this week · 4", or "Delivered · 4" where that does not fit. */
+/** A fold row's words: "Done this week · 4", or "Done · 4" where that does not fit. */
 function foldTitle(m: MissionRow, room: number): string {
   const full = `${m.title} · ${m.fold!.count}`;
-  return textWidth(full) <= room ? full : `Delivered · ${m.fold!.count}`;
+  return textWidth(full) <= room ? full : `${TERMS['mission.done'].word} · ${m.fold!.count}`;
 }
 
 /**
  * The missions pane (R-24): a heading row per team, then that team's open
- * missions (building and verifying first, then on hold), then one dimmed
- * "Delivered this week · N" row. Opened, it lists the missions delivered in
+ * missions (building and verifying first, then paused), then one dimmed
+ * "Done this week · N" row. Opened, it lists the missions done in
  * the last 7 days under it, dimmed, each with its day on its own row ("Oct
  * 14"), so a full pane cannot drop the day. A mission managed from a local
- * session says so in its stage words ("building locally"), on its own row.
+ * session says so in its stage words ("building in your session"), on its own row.
  * When the pane is too short it scrolls to keep the selected mission in view.
  */
 function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
@@ -282,8 +283,8 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       // Loose tasks count what is still open: their done total says nothing.
       const tally = isLooseKey(m.key) ? (m.total > m.done ? `${m.total - m.done} open` : '') : m.total > 0 ? `${m.done}/${m.total}` : '';
       const stage = missionRowStage(m);
-      const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? 'on hold' : '');
-      // Widest that leaves the title room: the stage with "locally", then without it, then the tally alone.
+      const fullCount = [stage, tally].filter(Boolean).join(' ') || (m.held ? TERMS['mission.paused'].short : '');
+      // Widest that leaves the title room: the stage with "in your session", then without it, then the tally alone.
       const fits = (c: string) => lw - 3 - (c.length + 2) >= MIN_MISSION_TITLE;
       const plain = [missionStageWord(m), tally].filter(Boolean).join(' ');
       const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
@@ -328,7 +329,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
   const ws = currentWorkspace(state);
   const delivered = mission.fold ? deliveredMissions(state, mission, now) : [];
-  const title = mission.fold ? `${mission.fold.count} delivered in the last ${DELIVERED_DAYS} days` : mission.title;
+  const title = mission.fold ? `${mission.fold.count} ${TERMS['mission.done'].short} in the last ${DELIVERED_DAYS} days` : mission.title;
   const heading = (ws ? `${ws.name} · ` : '') + title + filterNote;
   const titleW = rw - textWidth(countsCol) - 1;
   // One space always separates a cut heading from the counts (R-21).
@@ -342,7 +343,7 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
-    { key: 'running', label: 'Running now' },
+    { key: 'running', label: 'Working now' },
     { key: 'waiting', label: 'Waiting' },
     { key: 'done', label: 'Done today' },
   ];
@@ -405,7 +406,7 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
   const push = (s: string) => out.push(s);
   const line = (token: PaletteToken, s: string) => push(p.fg(token, fit(s, cols)));
 
-  const title = row?.title ?? task?.title ?? w?.taskTitle ?? taskId;
+  const title = row?.title ?? (titleWithAttempt(task?.title ?? w?.taskTitle) || taskId);
   const g = row ? GLYPH[row.kind] : GLYPH.waiting;
   const meta = [
     row?.role,
@@ -483,7 +484,7 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
 
 const HELP_KEYS: Array<[string, string]> = [
   ['↑↓ j k', 'move; ← → switch between missions and tasks'],
-  ['⏎', 'open a task: plan, milestones, tool calls; on Delivered this week, list them on the left too'],
+  ['⏎', 'open a task: plan, milestones, tool calls; on Done this week, list them on the left too'],
   ['a', 'answer the question an agent is asking'],
   ['m', 'send a message to a running agent'],
   ['p', 'pause a running agent'],
@@ -494,7 +495,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['o', 'open the task on buildd, or the mission when no task is picked'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
-  ['/', 'filter missions and tasks by title, delivered ones too; esc clears it'],
+  ['/', 'filter missions and tasks by title, done ones too; esc clears it'],
   ['q', 'quit (the runner keeps running)'],
 ];
 

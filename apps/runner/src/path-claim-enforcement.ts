@@ -435,7 +435,7 @@ export function describeHolder(c: { blockingTaskId: string; blockingTaskTitle?: 
 
 /** The `Deferred:` error the server requeues on without charging a retry. */
 export function collisionDeferralError(c: PathCollision): string {
-  return `Deferred: path collision — ${c.path} is held by ${describeHolder(c)}; this task waits for it to release`;
+  return `Deferred: path collision — ${c.path} is being changed by ${describeHolder(c)}; this task waits for it to release`;
 }
 
 /** Normalize a server-reported collision list entry. */

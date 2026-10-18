@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row's reason, the claim-loop line 1`] = `
-" buildd · atlas · 2 workspaces · Buildd       1 of 9 busy · ● online · v0.358.1 
+" buildd · atlas · 2 workspaces · Buildd          1 of 9 slots in use · ● online 
  Missions  [ Queue ]   t team: all · w workspace: all          9 slots · 8 free 
  Looked for work 14:58 · started 3                                              
 ────────────────────────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ exports[`frames (R-7) 80x24: slots on the tab line, "now" rows, the refused row'
 `;
 
 exports[`frames (R-7) 120x40: slots on the tab line, "now" rows, the refused row's reason, the claim-loop line 1`] = `
-" buildd · atlas · 2 workspaces · Buildd                                               1 of 9 busy · ● online · v0.358.1 
+" buildd · atlas · 2 workspaces · Buildd                                       1 of 9 slots in use · ● online · v0.358.1 
  Missions  [ Queue ]   t team: all · w workspace: all                    9 slots · 1 running · 8 free   - fewer  + more 
  Looked for work 14:58 · started 3                                                                                      
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

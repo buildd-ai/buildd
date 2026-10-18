@@ -107,6 +107,10 @@ describe('task-page state vocabulary (docs/specs/task-page.md, State mapping)', 
     expect(v.headline).not.toContain('Repairing');
   });
 
+  test('copy catalog: a superseded PR reads Merged in #N, never Shipped', () => {
+    expect(view({ view: V(D({ state: 'SUPERSEDED', supersededByPr: 77 })) }).headline).toBe('Merged in #77');
+  });
+
   test('an approved PR reads Approved · awaiting merge until the merge fact', () => {
     expect(view({ view: V(D({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] })) }).headline).toBe('Approved · awaiting merge');
     expect(view({ view: V(D({ state: 'MERGED' })) }).headline).toBe('Merged');

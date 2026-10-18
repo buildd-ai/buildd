@@ -33,9 +33,9 @@ describe('stranded local mission', () => {
     expect(missionNeedsYou(view)).toBe(true);
   });
 
-  it('headline: "Stranded: no local session for 2h. Continue on a runner?"', () => {
+  it('headline: "Stranded: no session for 2h. Continue on a runner?"', () => {
     const view = deriveMissionStateView(stranded);
-    expect(view.situation.headline).toBe('Stranded: no local session for 2h. Continue on a runner?');
+    expect(view.situation.headline).toBe('Stranded: no session for 2h. Continue on a runner?');
     expect(view.situation.focus?.kind).toBe('task');
   });
 
@@ -64,14 +64,14 @@ describe('stranded local mission', () => {
     expect(view.outstanding.some(f => f.kind === 'merge')).toBe(true);
   });
 
-  it('not stranded yet: the existing local reading stands (waiting for a local session)', () => {
+  it('not stranded yet: the existing local reading stands (waiting for your session)', () => {
     const view = deriveMissionStateView({
       ...localQueued,
       localStrand: { stranded: false, quietMs: 5 * 60_000, claimableTaskIds: ['t1'], flipBlockedReason: null },
     });
     expect(view.kind).toBe('running');
     expect(view.chip.label).toBe('LOCAL');
-    expect(view.situation.headline).toBe('Ready to start from a local session.');
+    expect(view.situation.headline).toBe('Ready to start from your session.');
   });
 
   it('held beats it, even if a caller passes a strand', () => {

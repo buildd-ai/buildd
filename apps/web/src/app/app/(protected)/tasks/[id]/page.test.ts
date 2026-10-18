@@ -347,3 +347,15 @@ describe('diagnostics are a layer for admins and operators — tasks/[id]/page.t
     expect(details.slice(details.indexOf('<DiagnosticsDisclosure>'))).toContain('runnerPreference');
   });
 });
+
+describe('state words on the task page (terms catalog)', () => {
+  it('names the release a task went out in as Released in, never Shipped in', () => {
+    expect(pageSource).toContain('Released in <Link href={origin.shipped.href}');
+    expect(pageSource).not.toContain('Shipped in <Link');
+  });
+
+  it('the mission budget banner names the cause, never "on hold"', () => {
+    expect(pageSource).toContain('waits for more budget. Raise the mission budget to start them, or force-start this task.');
+    expect(pageSource).not.toMatch(/\bon hold\b/);
+  });
+});

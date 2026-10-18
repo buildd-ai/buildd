@@ -57,6 +57,8 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
     );
     expect(html).toContain('Release candidates');
     expect(html).not.toContain('Candidate branches');
+    expect(html).toContain('Released once production runs the merge.');
+    expect(html).not.toMatch(/shipped/i);
   });
 
   it('shows the configured candidate fields, and the policy as text for a read-only viewer', () => {
