@@ -676,7 +676,7 @@ export function buildActivityEpisodes(input: {
 
 export function buildActivityHistory(input: {
   tasks: readonly ActivityTaskInput[];
-  missions: readonly MissionDelivery[];
+  missions: readonly ActivityMission[];
   rules: MissionTaskRules;
 }): Episode[] {
   return buildActivityEpisodes(input, { finishedOnly: true });
