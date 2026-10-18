@@ -10,7 +10,7 @@ import { TERMS, titleWithAttempt, slotsInUse } from '@buildd/shared';
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
-import { queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
+import { queueNextLine, queueSections, selectedQueueRow, slotsSummary, type QueueRow, type QueueSection } from './queue';
 import {
   busySlots, claimLoopLine, currentMission, currentWorkspace, deliveredDay, deliveredMissions, describeToolCall, emptyMissionWords, filterLine, formatDuration, heldNow, holdLine, missionList, missionRowStage, missionStageWord, missionStatusLine, planOf,
   DELIVERED_DAYS,
@@ -641,6 +641,9 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
   } else if (sections.length === 0) {
     lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing in the queue matches the filter.' : ' Nothing is waiting for this runner.', cols)) });
   }
+  // R-59: what runs next, from the rows' own reasons.
+  const next = queueNextLine(state, now);
+  if (next) lines.push({ text: p.fg('text', fit(' ' + next, cols)) });
   for (const section of sections) {
     const c = queueColumnsFor(cols, section.estimatesOn);
     lines.push({ text: queueHeading(section, cols, c, p) });
