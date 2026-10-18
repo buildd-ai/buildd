@@ -61,6 +61,7 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
   notHeldOrLocal: () => ({ _op: 'notHeldOrLocal' }),
 }));
 
+mock.module('@/lib/claim-blocker-projection', () => ({ loadClaimBlockers: async () => new Map() }));
 mock.module('@/lib/backend-failover', () => ({
   isBackendConfigured: mockIsBackendConfigured,
   teamEnabledBackends: mockTeamEnabledBackends,

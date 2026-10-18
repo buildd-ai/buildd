@@ -45,12 +45,15 @@ import {
   type AgentBackend,
 } from '@buildd/core/backend-policy';
 import { isBackendConfigured, teamEnabledBackends } from './backend-failover';
+import { loadClaimBlockers, type ClaimBlocker } from './claim-blocker-projection';
 
 /** Named tasks shown alongside the count, so the operator can click through. */
 export interface StrandedTaskSample {
   id: string;
   title: string;
   workspaceName: string | null;
+  /** The claim scheduler's recorded decision for this task (spec 97b1bd0b R-10). */
+  claim?: ClaimBlocker;
 }
 
 export interface BackendStrandStat {
@@ -176,8 +179,9 @@ export async function getBackendStrandSummary(opts: {
         .where(strandedPendingWhere(wsIds, [...stored]))
         .orderBy(asc(tasks.createdAt))
         .limit(sampleLimit)) as unknown as StrandedTaskSample[];
+      const blockers = await loadClaimBlockers(sampleRows.map(r => r.id));
       const stat = byBackend.get(effective);
-      if (stat) stat.sampleTasks = sampleRows;
+      if (stat) stat.sampleTasks = sampleRows.map(r => ({ ...r, claim: blockers.get(r.id) }));
     }
   }
 
