@@ -1,9 +1,10 @@
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
+import { withLoaderLabel } from '@buildd/core/db/query-label';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
@@ -140,6 +141,35 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { holdsPathClaim } from '@/lib/sibling-conflict-probe';
 import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearTeamCache } from '@/lib/team-cache';
+import { readRound } from '@/lib/read-round';
+import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
+
+/**
+ * Work that does not change the reply runs after it is sent (spec 3ef37387
+ * R-33): `after()` inside a request, inline outside one (tests, scripts), so
+ * nothing is lost where no response is being sent. Never throws.
+ */
+function deferredReplyWork() {
+  const pending: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  let scheduled = false;
+  return async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    const run = async () => {
+      for (const item of pending.splice(0)) {
+        try { await withLoaderLabel(`workers.patch.after.${item.label}`, item.fn); }
+        catch (err) { console.error(`[workers PATCH] ${item.label} failed:`, err); }
+      }
+    };
+    pending.push({ label, fn });
+    if (scheduled) return;
+    try {
+      after(run);
+      scheduled = true;
+    } catch {
+      // Direct invocation (scripts/unit tests) has no request lifetime.
+      await run();
+    }
+  };
+}
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -777,9 +807,17 @@ export async function GET(
 // PATCH /api/workers/[id] - Update worker status
 export async function PATCH(
   req: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) {
+  return withLoaderLabel('workers.patch', () => patchWorker(req, context));
+}
+
+async function patchWorker(
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const afterReply = deferredReplyWork();
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -794,9 +832,37 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  const worker = await db.query.workers.findFirst({
-    where: sqlWhere(eq(workers.id, id)),
-  });
+  // One round trip for the worker, its workspace and its task (spec 3ef37387
+  // R-33): the workspace and task are addressed through the worker row in SQL,
+  // so nothing waits on the worker read. The task fields are the ones a
+  // progress report reads (pending worker messages, note scope, park context,
+  // lease category); a terminal report re-reads what it needs after its writes.
+  // The same round reads the secrets redaction scrubs (below), scoped the way
+  // it always was: the worker's team, its workspace or team-wide, its account
+  // or account-agnostic.
+  const workerOf = (col: typeof workers.workspaceId | typeof workers.taskId | typeof workers.accountId) =>
+    sql`(SELECT ${col} FROM ${workers} WHERE ${workers.id} = ${id})`;
+  const workerTeam = sql`(SELECT ${workspaces.teamId} FROM ${workspaces} WHERE ${workspaces.id} = ${workerOf(workers.workspaceId)})`;
+  const opening = await withLoaderLabel('workers.patch.load', () => readRound({
+    worker: db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)) }),
+    workspace: db.query.workspaces.findFirst({
+      where: sqlWhere(eq(workspaces.id, workerOf(workers.workspaceId))),
+      columns: { dataClass: true, teamId: true, gitConfig: true },
+    }),
+    task: db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, workerOf(workers.taskId))),
+      columns: { context: true, missionId: true, title: true, pathManifest: true, category: true },
+    }),
+    secrets: db.query.secrets.findMany({
+      where: sqlWhere(and(
+        eq(secretsTable.teamId, workerTeam),
+        or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, workerOf(workers.workspaceId))),
+        or(isNull(secretsTable.accountId), eq(secretsTable.accountId, workerOf(workers.accountId))),
+      )),
+      columns: { encryptedValue: true, label: true, purpose: true },
+    }),
+  }));
+  const worker = opening.worker;
 
   if (!worker) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
@@ -809,13 +875,10 @@ export async function PATCH(
   }
 
   // Resolve workspace sensitivity once — used throughout the handler to redact prose.
-  const wsForSensitivity = worker.workspaceId
-    ? await db.query.workspaces.findFirst({
-        where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
-        columns: { dataClass: true, teamId: true, gitConfig: true },
-      })
-    : null;
+  const wsForSensitivity = worker.workspaceId ? opening.workspace ?? null : null;
   const isSensitive = wsForSensitivity?.dataClass === 'sensitive';
+  // The task as it stood when this report arrived (null when the worker has none).
+  const openingTask = worker.taskId ? opening.task ?? null : null;
 
   let body = await req.json();
 
@@ -825,17 +888,7 @@ export async function PATCH(
   const secretValues: Array<{ label: string; value: string }> = [];
   try {
     if (worker.workspaceId && wsForSensitivity?.teamId) {
-      const credRows = await db.query.secrets.findMany({
-        where: sqlWhere(and(
-          eq(secretsTable.teamId, wsForSensitivity.teamId),
-          or(isNull(secretsTable.workspaceId), eq(secretsTable.workspaceId, worker.workspaceId)),
-          worker.accountId
-            ? or(isNull(secretsTable.accountId), eq(secretsTable.accountId, worker.accountId))
-            : isNull(secretsTable.accountId),
-        )),
-        columns: { encryptedValue: true, label: true, purpose: true },
-      });
-      for (const row of credRows) {
+      for (const row of opening.secrets ?? []) {
         try {
           const val = decrypt(row.encryptedValue);
           if (val) secretValues.push(...collectSecretValues(row.label || row.purpose, val));
@@ -1075,13 +1128,6 @@ export async function PATCH(
     siblingProbe: supportsSiblingProbe,
   } = body;
 
-  // A report that moves the worker (status, a question, a PR) moves its
-  // mission: the summary is refreshed once, after the response, whichever
-  // branch below writes (lib/work-changed.ts). A bare progress heartbeat does
-  // not; what it ages the reconcile catches.
-  if (reportedStatus !== undefined || waitingFor !== undefined || body.prUrl !== undefined || body.prNumber !== undefined) {
-    noteWorkChanged({ workerIds: [id] });
-  }
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
   // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
@@ -1164,7 +1210,12 @@ export async function PATCH(
     // The same poll is the session's heartbeat: /respond sends the answer
     // cold once it goes stale (the terminal closed mid-wait). Its own write,
     // so neither the park clock nor a just-cleared question is touched.
-    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+    // At most once a minute: /respond reads it on a 5-minute window.
+    const seenAt = Date.parse(String((worker.waitingFor as { sessionSeenAt?: unknown } | null)?.sessionSeenAt ?? ''));
+    if (declaredConsumer === 'agent' && !(await markParkedWorkerSeen(id))
+      && !(Date.now() - seenAt < INTERACTIVE_SESSION_SEEN_WRITE_MS)) {
+      await recordInteractiveSessionSeen(id);
+    }
   }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
@@ -1176,7 +1227,9 @@ export async function PATCH(
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
   if (typeof costUsd === 'number') updates.costUsd = costUsd.toString();
-  if (carriesUsage) updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  if (carriesUsage && combineCostBasis(worker.costBasis, reportedBasis ?? 'unknown') !== worker.costBasis) {
+    updates.costBasis = costBasisWrite(reportedBasis ?? 'unknown') as unknown as CostBasis;
+  }
   if (typeof inputTokens === 'number') updates.inputTokens = inputTokens;
   if (typeof outputTokens === 'number') updates.outputTokens = outputTokens;
   if (typeof turns === 'number') updates.turns = turns;
@@ -1223,6 +1276,13 @@ export async function PATCH(
       ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
       : merged;
   }
+  // Telemetry rows (error traces, action events, prompt builds) change nothing
+  // in the reply, so a progress report writes them after it. A terminal report
+  // writes them first: its own failure handling below reads the traces.
+  const reportIsTerminal = reportedStatus === 'completed' || reportedStatus === 'failed' || reportedStatus === 'error';
+  const telemetryWrite = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
+    ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
+    : afterReply(label, fn);
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
     const existing = (worker.mcpCalls as any[]) || [];
@@ -1251,11 +1311,7 @@ export async function PATCH(
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerErrorTraces).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert error traces', err);
-      }
+      await telemetryWrite('insert error traces', () => db.insert(workerErrorTraces).values(rows));
     }
   }
   // appendActionEvents: insert per-call buildd MCP action events into
@@ -1275,11 +1331,7 @@ export async function PATCH(
         ts: new Date(e.ts),
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerActionEvents).values(rows);
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert action events', err);
-      }
+      await telemetryWrite('insert action events', () => db.insert(workerActionEvents).values(rows));
     }
   }
   // appendPromptCompositionEvents: insert one row per prompt build into
@@ -1340,11 +1392,7 @@ export async function PATCH(
         sections: Array.isArray(e.sections) ? e.sections.slice(0, 32) : null,
       }));
     if (rows.length > 0) {
-      try {
-        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
-      } catch (err) {
-        console.error('[workers PATCH] failed to insert prompt composition events', err);
-      }
+      await telemetryWrite('insert prompt composition events', () => db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing());
     }
   }
   // Branch: persist actual checkout branch when resume branch was used
@@ -1398,9 +1446,7 @@ export async function PATCH(
     // platform blocker to a repair task instead of a person.
     let stored = briefed;
     if (briefed) {
-      const parkTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, worker.taskId)), columns: { title: true, pathManifest: true, missionId: true } })
-        : null;
+      const parkTask = openingTask;
       const gitConfig = wsForSensitivity?.gitConfig ?? null;
       const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
@@ -1815,16 +1861,18 @@ export async function PATCH(
     if (worker.taskId) {
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
+      const observedTaskId = worker.taskId;
+      await afterReply('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
-      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, worker.taskId) : [];
+      const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, observedTaskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
-      await recordTaskAreaOutcome(worker.taskId, finalPaths);
+      await recordTaskAreaOutcome(observedTaskId, finalPaths);
       // Final touched-file label for orchestration decisions (conflict-aware
       // orchestration §5), from the same observation, before the clear. Writes
       // only for a task a decision looked at; never throws into this PATCH.
       try {
         await recordOrchestrationTouchLabel({
-          taskId: worker.taskId,
+          taskId: observedTaskId,
           workspaceId: worker.workspaceId,
           workerId: worker.id,
           workerStatus: status,
@@ -1836,6 +1884,7 @@ export async function PATCH(
       } catch (err) {
         console.warn(`[Worker ${id}] orchestration touch label failed (non-fatal):`, err);
       }
+      });
     }
     updates.observedTouches = null;
   } else if (reportedTouches.length > 0) {
@@ -4390,12 +4439,14 @@ export async function PATCH(
         workerId: id,
       };
 
+      const completedTaskId = worker.taskId;
+      await afterReply('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
       // Skip when skipRelease is set (artifact_required satisfied by artifact, no PR).
       const releaseRuns = status === 'completed' && !shouldAutoRetry && !skipRelease && loop?.kind !== 'fail';
-      const releaseInput = { taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
+      const releaseInput = { taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, missionId: taskMissionId };
       if (releaseRuns) {
         try {
           const release = await COMPLETION_POLICIES.release.evaluate(releaseInput);
@@ -4418,7 +4469,7 @@ export async function PATCH(
                 result: resultWithRelease,
                 updatedAt: new Date(),
               })
-              .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
+              .where(and(eq(tasks.id, completedTaskId), notKernelMergedTaskSql()));
             taskUpdate.result = resultWithRelease;
             slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
@@ -4428,7 +4479,7 @@ export async function PATCH(
               title: 'Release failed',
               message: `${release.reason}${prLink}`,
               priority: 1,
-              url: release.prUrl || `https://buildd.dev/app/tasks/${worker.taskId}`,
+              url: release.prUrl || `https://buildd.dev/app/tasks/${completedTaskId}`,
               urlTitle: release.prUrl ? 'Open PR' : 'View task',
             });
           } else if (release.kind === 'hold') {
@@ -4440,7 +4491,7 @@ export async function PATCH(
               await db
                 .select({ context: tasks.context })
                 .from(tasks)
-                .where(eq(tasks.id, worker.taskId))
+                .where(eq(tasks.id, completedTaskId))
                 .limit(1)
             )[0]?.context as Record<string, unknown> | null ?? {};
             await db
@@ -4459,13 +4510,13 @@ export async function PATCH(
                 },
                 updatedAt: new Date(),
               })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           } else {
             await db
               .update(tasks)
               .set({ releaseResult, result: resultWithRelease, updatedAt: new Date() })
-              .where(eq(tasks.id, worker.taskId));
+              .where(eq(tasks.id, completedTaskId));
             taskUpdate.result = resultWithRelease;
           }
         } catch (releaseErr) {
@@ -4495,7 +4546,7 @@ export async function PATCH(
         const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
         if (!row?.deliveryId || retryCovers || releaseHeld) return;
         await workflowAttemptEnded({
-          task: { id: worker.taskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
+          task: { id: completedTaskId!, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
           workerId: id,
           ...end,
           source: 'runner',
@@ -4526,7 +4577,7 @@ export async function PATCH(
       if (ownerEndProjects && terminalRow?.deliveryId) {
         try {
           await projectOwnerEnd({
-            deliveryId: terminalRow.deliveryId, taskId: worker.taskId, workerId: id,
+            deliveryId: terminalRow.deliveryId, taskId: completedTaskId, workerId: id,
             status: contractViolation || slotFailure || status !== 'completed' ? 'failed' : 'completed',
           });
         } catch (projErr) {
@@ -4545,7 +4596,7 @@ export async function PATCH(
       // Subscribers (the evidence record) are awaited — a serverless function
       // may freeze an un-awaited write — and isolated by emit, which never throws.
       if (!shouldAutoRetry && loop?.kind !== 'hold' && !releaseHeld) {
-        await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
+        await emit({ type: 'task.terminal', taskId: completedTaskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -4556,11 +4607,11 @@ export async function PATCH(
       const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
       if (!shouldAutoRetry) {
         if (!releaseHeld) {
-          recordTaskOutcome({ ...outcomeAnalytics, taskId: worker.taskId, outcome: effectiveOutcome }).catch(() => {});
+          recordTaskOutcome({ ...outcomeAnalytics, taskId: completedTaskId, outcome: effectiveOutcome }).catch(() => {});
         }
         // Model policy: the run's duration and cost against the policy decision
         // the claim stored. A no-op unless a policy service issued it.
-        await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
+        await reportTaskPolicyOutcome(completedTaskId, codingRunObservations({
           durationMs,
           costUsd: updates.costUsd ?? worker.costUsd ?? null,
         }));
@@ -4575,8 +4626,8 @@ export async function PATCH(
       // Each step is guarded independently so one failure can't mask the others,
       // and every silent failure pages via reportOps instead of dying in logs.
       // Capture under the active non-null narrowing: inside the closures below,
-      // control-flow narrowing of worker.taskId (string | null) is dropped.
-      const taskId = worker.taskId;
+      // control-flow narrowing of completedTaskId (string | null) is dropped.
+      const taskId = completedTaskId;
       const runStep = async (label: string, fn: () => Promise<void>) => {
         try {
           await fn();
@@ -4814,7 +4865,7 @@ export async function PATCH(
           // trigger's scheduled row instead of spending an immediate no-op one.
           const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
           const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
-          await wakeTask(worker.taskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
+          await wakeTask(completedTaskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
         }
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
@@ -4854,6 +4905,7 @@ export async function PATCH(
       // Root causes: an auth failure records its runner's cause; a completed run
       // is the capability check that clears causes on its runner and workspace.
       await runStep('root-cause', () => recordRootCauseForOutcome({ taskId, accountId: worker.accountId, status, error }));
+      });
     }
   }
 
@@ -4903,14 +4955,10 @@ export async function PATCH(
     // the next check-in serves the queue again, and the runner skips text it
     // has already injected.
     if (queuedInstructions && instructionAckText.includes(queuedInstructions)) {
-      const [cleared] = await db
-        .update(workers)
-        .set({ pendingInstructions: null })
-        .where(and(eq(workers.id, id), eq(workers.pendingInstructions, queuedInstructions)))
-        .returning({ id: workers.id });
-      if (!cleared) {
-        console.log(`[workers PATCH] worker ${id}: instruction queue changed during delivery — keeping it queued`);
-      }
+      updates.pendingInstructions = sql`CASE
+        WHEN ${workers.pendingInstructions} = ${queuedInstructions} THEN NULL
+        ELSE ${workers.pendingInstructions} END` as unknown as string;
+
     }
   } else if (queuedInstructions) {
     if (!agentExcluded) pendingInstructions = queuedInstructions;
@@ -4942,20 +4990,58 @@ export async function PATCH(
       ? eq(workers.status, worker.status)
       : not(inArray(workers.status, TERMINAL_WORKER_STATUSES));
 
-  const [updated] = await db
-    .update(workers)
-    .set(updates)
-    .where(and(eq(workers.id, id), finalWriteGuard))
-    .returning();
+  // A progress report writes only what it changes, and a report that changes
+  // nothing writes nothing (spec 3ef37387 R-33): the runner re-sends its whole
+  // view every ~10 s. Redis records liveness; without it, updated_at moves on
+  // a safe floor, except under an interactive park, whose clock it is. A terminal transition
+  // or a reactivation writes as it always has.
+  const progressReport = !terminalTransitionReserved && !reactivatingTerminalWorker;
+  let writeSet: Partial<typeof workers.$inferInsert> | null = updates;
+  if (progressReport) {
+    const changed = changedFields(updates as Record<string, unknown>, worker as Record<string, unknown>);
+    if (changed.length > 0) {
+      writeSet = { updatedAt: updates.updatedAt };
+      if (updates.turns !== undefined) writeSet.turns = updates.turns;
+      for (const key of changed) (writeSet as Record<string, unknown>)[key] = (updates as Record<string, unknown>)[key];
+    } else if (!keepsParkClock(worker, { status, waitingFor })
+      && !(await markWorkerHeartbeat(id)) && livenessWriteDue(worker)) {
+      writeSet = { updatedAt: updates.updatedAt };
+    } else {
+      writeSet = null;
+    }
+  }
 
-  if (!updated) {
-    return workerConflictResponse(id);
+  let updated: typeof workers.$inferSelect;
+  if (writeSet) {
+    const [row] = await db
+      .update(workers)
+      .set(writeSet)
+      .where(and(eq(workers.id, id), finalWriteGuard))
+      .returning();
+    if (!row) {
+      return workerConflictResponse(id);
+    }
+    updated = row;
+  } else {
+    // Nothing to write. The write's guard is what told a runner its worker was
+    // ended under it; without one, the row read above says the same.
+    if (isTerminalWorkerStatus(worker.status)) {
+      return workerConflictResponse(id);
+    }
+    updated = worker;
   }
 
   // A question asked, answered or dropped changes the team's questions
-  // waiting: the cached list (lib/team-cache.ts) goes now.
-  if ('waitingFor' in updates || (worker.status !== updated.status && (worker.status === 'waiting_input' || updated.status === 'waiting_input'))) {
+  // waiting: the cached list (lib/team-cache.ts) goes now, before the reply.
+  if (writeSet && ('waitingFor' in writeSet || (worker.status !== updated.status && (worker.status === 'waiting_input' || updated.status === 'waiting_input')))) {
     await clearTeamCache(wsForSensitivity?.teamId, 'questions');
+  }
+
+  await afterReply('worker follow-up', async () => {
+  // A runner repeats status and PR fields on every sync. Only actual writes
+  // invalidate derived summaries; noteWorkChanged coalesces their listeners.
+  if (writeSet && ['status', 'waitingFor', 'prUrl', 'prNumber'].some(key => key in writeSet)) {
+    noteWorkChanged({ workerIds: [id] });
   }
 
   // Subscriptions ledger: "tell me when this task needs input". Only after the
@@ -5134,12 +5220,18 @@ export async function PATCH(
     }
   }
 
+  });
+
   // Detect heartbeat-ok suppression: silent completion for heartbeat tasks with status "ok"
+  // A progress report uses the opening read; a terminal one re-reads, since its
+  // own writes above may have moved the context.
   const taskContext = worker.taskId
-    ? (await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { context: true },
-      }))?.context as Record<string, unknown> | null
+    ? (isTerminalStatus
+        ? (await db.query.tasks.findFirst({
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
+            columns: { context: true },
+          }))?.context
+        : openingTask?.context) as Record<string, unknown> | null
     : null;
 
   // Serve pending worker-to-worker messages in the response. Written by
@@ -5226,10 +5318,7 @@ export async function PATCH(
       ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))]
       : newlyObservedPaths;
   if (workingSetDelta && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    const leaseTask = await db.query.tasks.findFirst({
-      where: sqlWhere(eq(tasks.id, worker.taskId)),
-      columns: { category: true, context: true },
-    }).catch(() => null);
+    const leaseTask = openingTask;
     const applied = await applyWorkingSetSync({
       worker: { id, workspaceId: worker.workspaceId, taskId: worker.taskId },
       delta: workingSetDelta,
@@ -5240,10 +5329,7 @@ export async function PATCH(
   }
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
-      const leaseTask = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { category: true, context: true },
-      });
+      const leaseTask = openingTask;
       const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
         ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
         : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
@@ -5317,12 +5403,16 @@ export async function PATCH(
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
   const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
-  if (accumulatedTouches && accumulatedTouches.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
-    try {
+  // Advisory and reply-independent: it runs after the reply (R-33). The ack of
+  // served worker messages below stays in the request.
+  const overlapWorkspaceId = worker.workspaceId;
+  const overlapTaskId = worker.taskId;
+  if (accumulatedTouches && accumulatedTouches.length > 0 && overlapWorkspaceId && overlapTaskId && !isTerminalStatus) {
+    await afterReply('passive overlap detection', async () => {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const siblings = await db.query.workers.findMany({
         where: sqlWhere(and(
-          eq(workers.workspaceId, worker.workspaceId),
+          eq(workers.workspaceId, overlapWorkspaceId),
           not(eq(workers.id, id)),
           not(inArray(workers.status, TERMINAL_WORKER_STATUSES)),
           isNull(workers.mergedAt),
@@ -5398,7 +5488,7 @@ export async function PATCH(
         // Emit Pusher event on workspace channel.
         const overlapEvent = {
           detectedWorkerId: id,
-          detectedTaskId: worker.taskId,
+          detectedTaskId: overlapTaskId,
           siblingWorkerId: sibling.id,
           siblingTaskId: sibling.taskId,
           overlappingPaths: contended,
@@ -5406,7 +5496,7 @@ export async function PATCH(
           detectedByBranch: updated.branch ?? worker.branch,
           detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
         };
-        await triggerEvent(channels.workspace(worker.workspaceId), 'path_overlap_detected', overlapEvent);
+        await triggerEvent(channels.workspace(overlapWorkspaceId), 'path_overlap_detected', overlapEvent);
 
         // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
         // One atomic append (capped in SQL): the sibling is checking in and
@@ -5431,7 +5521,7 @@ export async function PATCH(
         if (contended.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_blocked_on_you',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: contended,
@@ -5444,7 +5534,7 @@ export async function PATCH(
         if (regenerable.length > 0) {
           await deliver(buildWorkerMessage({
             type: 'path_regenerable_overlap',
-            fromTaskId: worker.taskId,
+            fromTaskId: overlapTaskId,
             toTaskId: sibling.taskId!,
             body: {
               overlappingPaths: regenerable.map(r => r.path),
@@ -5467,20 +5557,11 @@ export async function PATCH(
           .set({
             context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('notifiedOverlaps', ${JSON.stringify([...notifiedOverlaps, ...newNotifications])}::jsonb)`,
           })
-          .where(eq(tasks.id, worker.taskId));
+          .where(eq(tasks.id, overlapTaskId));
       }
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    } catch (err) {
-      console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
-      // Fall through — an ack still has to be honoured.
-      if (deliveredMessageIds.length > 0) {
-        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
-      }
-    }
-  } else if (deliveredMessageIds.length > 0 && worker.taskId) {
-    // No overlap detection this tick — honour the delivery ack on its own.
+    });
+  }
+  if (deliveredMessageIds.length > 0 && worker.taskId) {
     await clearWorkerMessages(worker.taskId, deliveredMessageIds);
   }
 
@@ -5526,18 +5607,27 @@ export async function PATCH(
   // nothing visible to subscribers has changed — this is the single biggest
   // lever for daily Pusher message volume, since runners sync every ~30 s
   // even when idle within a task.
+  // A report that leaves the current action alone (a bare delivery
+  // acknowledgement) has not cleared it.
   const shouldPublish = isTerminalEvent || hasVisibleWorkerChange(
     { status: worker.status, currentAction: worker.currentAction },
-    { status: updated.status, currentAction: updates.currentAction },
+    { status: updated.status, currentAction: updates.currentAction !== undefined ? updates.currentAction : worker.currentAction },
     taskProgress,
   );
+  // A human message moved to delivered or read. The task's steering
+  // conversation listens on the worker channel for it; nothing on the
+  // workspace channel shows delivery.
+  const deliveryMoved = !!writeSet && ('instructionHistory' in writeSet || 'pendingInstructions' in writeSet);
 
+  await afterReply('publish worker changes', async () => {
   if (shouldPublish) {
     await triggerEvent(channels.worker(id), eventName, pusherPayload);
 
     if (worker.workspaceId) {
       await triggerEvent(channels.workspace(worker.workspaceId), eventName, pusherPayload);
     }
+  } else if (deliveryMoved) {
+    await triggerEvent(channels.worker(id), events.WORKER_PROGRESS, { ...pusherPayload, delivery: true });
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
@@ -5608,6 +5698,8 @@ export async function PATCH(
     }
   }
 
+  });
+
   // ── Deliver undelivered user replies / mission guidance to this worker ──────
   //
   // Selection is by delivery state, not by note status. Answered questions stay
@@ -5642,30 +5734,40 @@ export async function PATCH(
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
-      const taskForNotes = await db.query.tasks.findFirst({
-        where: sqlWhere(eq(tasks.id, worker.taskId)),
-        columns: { missionId: true },
-      });
       // Task-scoped notes (a task with no mission) are addressed by taskId. The
       // block used to require a missionId, so replies on mission-less tasks were
       // never delivered at all.
-      const noteScope = taskForNotes?.missionId
-        ? eq(missionNotes.missionId, taskForNotes.missionId)
+      const noteScope = openingTask?.missionId
+        ? eq(missionNotes.missionId, openingTask.missionId)
         : and(isNull(missionNotes.missionId), eq(missionNotes.taskId, worker.taskId));
       // Not yet handed to THIS worker.
       const undeliveredToWorker = sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`;
       const servedNoteIds: string[] = [];
 
-      // Find this worker's answered questions
-      const workerQuestions = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.workerId, id),
-          eq(missionNotes.type, 'question'),
-          eq(missionNotes.status, 'answered'),
-        )),
-        columns: { id: true, title: true },
+      // This worker's answered questions and the mission guidance it has not
+      // seen, in one round trip; replies are read only when a question exists.
+      const noteReads = await readRound({
+        questions: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.workerId, id),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'answered'),
+          )),
+          columns: { id: true, title: true },
+        }),
+        guidance: db.query.missionNotes.findMany({
+          where: sqlWhere(and(
+            noteScope,
+            eq(missionNotes.type, 'guidance'),
+            eq(missionNotes.status, 'open'),
+            undeliveredToWorker,
+          )),
+          orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
+          limit: 5,
+        }),
       });
+      const workerQuestions = noteReads.questions ?? [];
 
       if (workerQuestions.length > 0) {
         // Fetch the undelivered replies to those questions
@@ -5692,17 +5794,7 @@ export async function PATCH(
       }
 
       // Also deliver mission-wide guidance notes this worker has not seen
-      const guidance = await db.query.missionNotes.findMany({
-        where: sqlWhere(and(
-          noteScope,
-          eq(missionNotes.type, 'guidance'),
-          eq(missionNotes.status, 'open'),
-          undeliveredToWorker,
-        )),
-        orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
-        limit: 5,
-      });
-
+      const guidance = noteReads.guidance ?? [];
       if (guidance.length > 0) {
         const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
         servedNoteIds.push(...guidance.map(g => g.id));
