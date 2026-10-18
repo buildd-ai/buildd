@@ -241,8 +241,38 @@ function footer(state: TopState, cols: number, p: Palette): string {
 /** The fewest title columns a mission row keeps before it drops its stage word: two letters and "…". */
 const MIN_MISSION_TITLE = 3;
 
-function leftWidth(cols: number): number {
-  return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
+/** The most lines the selected mission's name wraps onto (R-57). */
+const MAX_NAME_LINES = 4;
+
+/**
+ * The missions pane grows with the terminal, about a quarter of it, to 48
+ * columns; while you move between missions it takes about a third, to 64 (R-57).
+ */
+function leftWidth(cols: number, focused: boolean): number {
+  if (focused) return cols >= 110 ? Math.min(64, Math.max(36, Math.floor(cols / 3))) : cols >= 90 ? 30 : 28;
+  return cols >= 110 ? Math.min(48, Math.max(28, Math.floor(cols / 4))) : cols >= 90 ? 24 : 22;
+}
+
+/**
+ * Word-wrap `s` into lines: the first `first` columns wide, the rest `rest`,
+ * at most `max` lines, the last cut with "…" when words are left over.
+ */
+function wrapName(s: string, first: number, rest: number, max: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  const words = s.replace(/\s+/g, ' ').trim().split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const room = lines.length === 0 ? first : rest;
+    const next = line ? `${line} ${words[i]}` : words[i];
+    if (textWidth(next) <= room) { line = next; continue; }
+    if (lines.length === max - 1) return [...lines, fit(words.slice(i).reduce((a, w) => `${a} ${w}`, line).trim(), room).trimEnd()];
+    if (line) lines.push(line);
+    line = words[i];
+    // A single word wider than the line is cut on its own line.
+    if (textWidth(line) > (lines.length === 0 ? first : rest)) line = fit(line, lines.length === 0 ? first : rest).trimEnd();
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 /** A fold row's words: "Done this week · 4", or "Done · 4" where that does not fit. */
@@ -290,10 +320,17 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
       const count = delivered ? deliveredDay(m.deliveredAt!) : [fullCount, plain, tally].find(c => c && fits(c)) ?? (tally || plain || fullCount);
       const marker = isCurrent ? '▸' : ' ';
       const titleW = lw - 3 - (count ? count.length + 2 : 1);
-      const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
-      const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
-      if (isCurrent) selected = lines.length;
-      lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      const countText = count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : '';
+      const token: PaletteToken = delivered ? 'muted' : 'text';
+      // The selected mission shows its whole name, wrapped under itself (R-57).
+      const name = isCurrent ? wrapName(m.title, titleW, lw - 4, MAX_NAME_LINES) : [m.title];
+      name.forEach((part, k) => {
+        const line = k === 0
+          ? ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${p.fg(token, fit(part, titleW))}${countText} `
+          : `   ${p.fg(token, fit(part, lw - 4))} `;
+        lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      });
+      if (isCurrent) selected = lines.length - 1;
     });
     // Without team headings the pane keeps its MISSIONS label.
     if (!hasTeams) return { lines: [p.fg('muted', fit(' MISSIONS', lw)), ...lines], selected: selected + 1 };
@@ -309,7 +346,7 @@ function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean,
 }
 
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
-  const lw = leftWidth(cols);
+  const lw = leftWidth(cols, state.focus === 'missions');
   const rw = cols - lw - 1;
   const missions = missionList(state, now);
   const mission = currentMission(state, now);
