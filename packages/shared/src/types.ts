@@ -3472,7 +3472,17 @@ export interface RunnerQueueTask {
   alongside?: { prNumber: number | null; holderTaskId: string | null } | null;
   /** With the `advisory_manifest` hold: the task it waits for, running or ahead of it in this queue. */
   holderTaskId?: string | null;
+  /**
+   * Whose work it is (spec c7410e76 R-58): the task's owner (who filed it, else
+   * its mission's, else its schedule's) against the person behind the runner's
+   * key, never the runner or login that runs it. Absent from an older server.
+   */
+  owner?: RunnerQueueOwner;
+  /** With owner 'teammate': their first name, when buildd knows it. */
+  ownerName?: string;
 }
+
+export type RunnerQueueOwner = 'you' | 'teammate' | 'unattributed';
 
 export interface RunnerQueueTeam {
   teamId: string;
