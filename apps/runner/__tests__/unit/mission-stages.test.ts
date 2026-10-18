@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { attachMissionStages, listedMissionIds, withMissionStages } from '../../src/mission-stages';
+import { attachMissionStages, listedMissionIds, readTaskListWithStages, withMissionStages } from '../../src/mission-stages';
 
 const verifying = { step: 'verifying' as const, waitingOn: 'Unit tests pass: not checked' };
 
@@ -85,5 +85,26 @@ describe('openMissionIds', () => {
       { id: 'arch', status: 'archived', completedAt: null },
       { id: 7 as any, status: 'active', completedAt: null },
     ])).toEqual(['open']);
+  });
+});
+
+describe('readTaskListWithStages', () => {
+  it('one read when the server sends the stages with the list', async () => {
+    let stageReads = 0;
+    const tasks = await readTaskListWithStages({
+      listTasksWithStages: async () => ({ tasks: [{ id: 't', missionId: 'm', mission: { id: 'm' } }], missionStages: { m: { step: 'building' } } }),
+      listMissionStages: async () => { stageReads++; return {}; },
+    });
+    expect(tasks[0].mission.stage).toEqual({ step: 'building' });
+    expect(stageReads).toBe(0);
+  });
+  it('an older server without the include: the stages are asked separately', async () => {
+    const asked: string[][] = [];
+    const tasks = await readTaskListWithStages({
+      listTasksWithStages: async () => ({ tasks: [{ id: 't', missionId: 'm', mission: { id: 'm' } }], missionStages: null }),
+      listMissionStages: async (ids: string[]) => { asked.push(ids); return { m: { step: 'verifying' } }; },
+    });
+    expect(asked).toEqual([['m']]);
+    expect(tasks[0].mission.stage).toEqual({ step: 'verifying' });
   });
 });

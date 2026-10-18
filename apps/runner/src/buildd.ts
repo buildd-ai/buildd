@@ -7,7 +7,7 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse, WorkerStatusesResponse } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials, type RunnerLoginUse } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -50,6 +50,17 @@ const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
 // Claims include database arbitration and prompt assembly after worker creation.
 // Keep them bounded, but do not discard healthy answers at the ordinary 30s
 // ceiling. An explicit global timeout remains the operator override.
+/**
+ * How long one workspace list answers every reader (`buildd top`'s snapshot
+ * and talk context, the local UI, Pusher's channel set). The list changes when
+ * a workspace is linked or created, rarely; a create through this client drops
+ * it at once.
+ */
+export const WORKSPACES_CACHE_MS = 60_000;
+
+/** The most ids one GET /api/workers/status names (the route's own cap). */
+export const WORKER_STATUS_BATCH = 100;
+
 const CLAIM_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 90_000);
 
 /** Outcome of one path-claim request — see BuilddClient.claimPaths. */
@@ -90,6 +101,8 @@ export class BuilddClient {
   private async fetch(endpoint: string, options: RequestInit = {}, allowedErrors: number[] = []) {
     const method = options.method || 'GET';
     const isRead = method === 'GET' || method === 'HEAD';
+    // A write to workspaces (create, clone, match) may change the list.
+    if (!isRead && endpoint.startsWith('/api/workspaces')) this.workspacesCache = null;
     if (isRead) {
       const held = this.readBackoff.remainingSec(endpoint);
       if (held > 0) throw ServerRefusalError.from({ status: 429, raw: heldRefusalBody(held), method, endpoint });
@@ -216,7 +229,7 @@ export class BuilddClient {
    * then asks GET /api/missions/stages as before.
    */
   async listTasksWithStages(): Promise<{ tasks: BuilddTask[]; missionStages: Record<string, MissionStage> | null }> {
-    const data = await this.fetch('/api/tasks?include=missionStages');
+    const data = await this.getIfChanged('/api/tasks?include=missionStages');
     const stages = data?.missionStages;
     return {
       tasks: data?.tasks || [],
@@ -274,8 +287,10 @@ export class BuilddClient {
    * the throw; the two current call sites already wrap this in a try/catch
    * that leaves the worker untouched on failure.
    */
-  async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
-    const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
+  async getWorkerRemote(id: string): Promise<{ status: string; error?: string | null; task?: { status: string } | null } | null> {
+    // view=status: status, error and the task's status, no workspace or JSON
+    // columns. A server that predates the view ignores it and answers the full row.
+    const data = await this.fetch(`/api/workers/${id}?view=status`, {}, [404]);
     // Only the 404 body (`{ error }`, no status) means gone. A worker row has
     // its own `error` column: a question park writes `needs_input: …` there,
     // and reading that as a 404 made reconcile forget every parked question.
@@ -284,6 +299,26 @@ export class BuilddClient {
       throw new Error(`getWorkerRemote(${id}): response missing status field`);
     }
     return data;
+  }
+
+  /**
+   * Several workers' status in one read per WORKER_STATUS_BATCH ids
+   * (GET /api/workers/status), for reconcile. `missing` names ids no worker row
+   * has; an id that exists but is not this caller's is in neither, and the
+   * caller leaves it alone. Null when the server predates the route (its
+   * /api/workers/[id] answers 404 for "status"): read one by one instead.
+   * Every other failure throws, as getWorkerRemote does: unknown is not gone.
+   */
+  async getWorkerStatuses(ids: string[]): Promise<WorkerStatusesResponse | null> {
+    const out: WorkerStatusesResponse = { workers: {}, missing: [] };
+    for (let i = 0; i < ids.length; i += WORKER_STATUS_BATCH) {
+      const chunk = ids.slice(i, i + WORKER_STATUS_BATCH);
+      const data = await this.fetch(`/api/workers/status?ids=${chunk.map(encodeURIComponent).join(',')}`, {}, [404]);
+      if (!data || typeof data.workers !== 'object' || data.workers === null || !Array.isArray(data.missing)) return null;
+      Object.assign(out.workers, data.workers);
+      out.missing.push(...data.missing);
+    }
+    return out;
   }
 
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment, opts: { byPerson?: boolean; claudeLoginId?: string | null; loginUse?: RunnerLoginUse } = {}): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
@@ -797,9 +832,16 @@ export class BuilddClient {
     });
   }
 
+  private workspacesCache: { at: number; list: any[] } | null = null;
+
+  /** The key's workspaces; one server read per WORKSPACES_CACHE_MS, shared by every reader. */
   async listWorkspaces() {
+    const hit = this.workspacesCache;
+    if (hit && Date.now() - hit.at < WORKSPACES_CACHE_MS) return structuredClone(hit.list);
     const data = await this.fetch('/api/workspaces');
-    return data.workspaces || [];
+    const list = Array.isArray(data?.workspaces) ? data.workspaces : [];
+    this.workspacesCache = { at: Date.now(), list: structuredClone(list) };
+    return list;
   }
 
   /** `buildd top`'s talk session: the server's explain answer for a mission or task; null when it cannot be read. */
@@ -1268,8 +1310,21 @@ export class BuilddClient {
     return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed, claimsReleased: data.claimsReleased };
   }
 
-  async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {
-    return this.fetch('/api/tasks/cleanup', { method: 'POST' });
+  /** Set once the server refuses cleanup to this key (it needs an admin key): never asked again this process. */
+  private cleanupRefused = false;
+
+  /**
+   * POST /api/tasks/cleanup, an admin-key sweep. A member key is refused every
+   * time, so after the first 401/403 this answers null without asking.
+   */
+  async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } } | null> {
+    if (this.cleanupRefused) return null;
+    try {
+      return await this.fetch('/api/tasks/cleanup', { method: 'POST' });
+    } catch (err) {
+      if (isServerRefusal(err) && (err.status === 401 || err.status === 403)) this.cleanupRefused = true;
+      throw err;
+    }
   }
 
   async deleteTask(taskId: string): Promise<{ success: boolean; error?: string }> {

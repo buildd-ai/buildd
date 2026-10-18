@@ -38,7 +38,7 @@ import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
-import { attachMissionStages, openMissionIds, withMissionStages } from './mission-stages';
+import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
@@ -2006,10 +2006,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         // mission.stage comes from the missions module's own endpoint (R-18), best effort.
         // One server read where the server knows include=missionStages; an
         // older server answers without it and the stages are asked separately.
-        const listed = await buildd!.listTasksWithStages();
-        const tasks = listed.missionStages
-          ? attachMissionStages(listed.tasks, listed.missionStages)
-          : await withMissionStages(listed.tasks, ids => buildd!.listMissionStages(ids));
+        const tasks = await readTaskListWithStages(buildd!);
         return Response.json({ tasks }, { headers: corsHeaders });
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup

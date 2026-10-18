@@ -3513,6 +3513,22 @@ export interface RunnerQueueResponse {
   truncated: boolean;
 }
 
+/** One worker as `GET /api/workers/[id]?view=status` and `GET /api/workers/status` answer it. */
+export interface WorkerStatusView {
+  status: string;
+  error: string | null;
+  task: { status: string } | null;
+}
+
+/**
+ * `GET /api/workers/status?ids=…`: the caller's own workers by id, and the ids
+ * no worker row has. An id that exists but is not the caller's is in neither.
+ */
+export interface WorkerStatusesResponse {
+  workers: Record<string, WorkerStatusView>;
+  missing: string[];
+}
+
 export interface GoalCriteriaState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';
