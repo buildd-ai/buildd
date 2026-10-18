@@ -26,7 +26,7 @@ import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
-import { PR_OPENED_POLICY } from '@/modules';
+import { PR_OPENED_POLICY, republishPrHeads } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
 import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -91,6 +91,14 @@ export async function POST(req: NextRequest) {
 
       case 'check_suite':
         await handleCheckSuiteEvent(data as GitHubCheckSuiteEvent);
+        break;
+
+      case 'check_run':
+        // A required candidate check re-ran or finished: its head's approval status follows now (AC-39).
+        // Only a release candidate's answer reads checks, so any other PR is skipped unread.
+        if (data?.installation?.id && ['completed', 'rerequested'].includes(data.action)) {
+          await republishPrHeads(data.installation.id, data.repository?.full_name, checkEventHeads(data.check_run?.pull_requests, data.check_run?.head_sha), { candidatesOnly: true });
+        }
         break;
 
       case 'status':
@@ -416,12 +424,24 @@ async function handleStatusEvent(event: {
   }
 }
 
+/** A check event's PRs at its head, with the branches the payload names, so a non-candidate is skipped before any GitHub read. */
+function checkEventHeads(
+  prs: ReadonlyArray<{ number: number; head?: { ref?: string | null } | null; base?: { ref?: string | null } | null }> | null | undefined,
+  headSha: string | null | undefined,
+): Array<{ number: number; sha: string | null; headRef: string | null; baseRef: string | null }> {
+  return (prs ?? []).map((pr) => ({ number: pr.number, sha: headSha ?? null, headRef: pr.head?.ref ?? null, baseRef: pr.base?.ref ?? null }));
+}
+
 async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   const { action, check_suite, repository, installation } = event;
 
   if (!installation) {
     return;
   }
+
+  // A suite starting or finishing moves a release candidate's gate: its approval status follows now, not at the hourly floor (AC-39).
+  // Only a release candidate's answer reads checks, so any other PR is skipped unread.
+  await republishPrHeads(installation.id, repository.full_name, checkEventHeads(check_suite.pull_requests, check_suite.head_sha), { candidatesOnly: true });
 
   // CI started: mark worker PRs as ci_running so the Timeline shows live CI state.
   if (action === 'requested' || action === 'rerequested') {
@@ -715,6 +735,9 @@ async function handlePullRequestEvent(event: {
   // Home caches GitHub's approval state per PR (lib/github-approval.ts); any
   // PR action may move its head or base, so the cached answer goes first.
   if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
+  if ((action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') && event.installation?.id) {
+    await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
+  }
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
