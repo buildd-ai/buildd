@@ -239,7 +239,7 @@ export function missionPrCheck(pr: MissionIntegrationPrView, ctx: { mergeTier: M
   const row = (status: CheckStatus, text: string, detail: string, actor: CheckActor, extra: Partial<CheckRow> = {}): CheckRow => ({ ...base, status, state: text, detail, actor, ...extra });
   switch (pr.state) {
     case 'merged': return row('passed', 'merged', `Merged into ${into}.`, 'none');
-    case 'closed': return row('unable', 'closed', 'Closed without merging, so none of this work has shipped.', 'owner', { problem: 'product' });
+    case 'closed': return row('unable', 'closed', `Closed without merging, so none of this work reached ${into}.`, 'owner', { problem: 'product' });
     case 'not_opened':
       return row('queued', 'not open', ctx.buildComplete ? 'Opens when the last task PR merges.' : 'Opens when the build is done.', 'system');
     default:
@@ -259,10 +259,10 @@ export function releaseCheck(status: MissionReleaseStatus, label?: string | null
   const row = (s: CheckStatus, text: string, detail: string, actor: CheckActor, problem: CheckRow['problem'] = null): CheckRow => ({ ...base, status: s, state: text, detail, actor, problem });
   switch (status) {
     case 'waiting': return row('queued', 'waiting', 'Starts after the merge.', 'system');
-    case 'dispatched': return row('running', 'started', 'Shows delivered once production is healthy.', 'system');
-    case 'deploying': return row('running', 'deploying', 'Shows delivered once production is healthy.', 'system');
+    case 'dispatched': return row('running', 'started', 'Released once production is healthy.', 'system');
+    case 'deploying': return row('running', 'releasing', 'Released once production is healthy.', 'system');
     case 'healthy': return row('passed', 'healthy', 'Production is healthy.', 'none');
-    case 'failed': return row('finding', 'deploy failed', 'Not delivered until a deploy is healthy.', 'owner', 'system');
+    case 'failed': return row('finding', 'deploy failed', 'Not released until a deploy is healthy.', 'owner', 'system');
     default: return row('unable', 'unknown', 'The release state could not be read.', 'system', 'system');
   }
 }
@@ -301,7 +301,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
     ? { key: 'build', label: 'Build', state: 'todo', text: 'no tasks' }
     : buildComplete
       ? { key: 'build', label: 'Build', state: 'done', text: `${build.done} of ${build.total}` }
-      : { key: 'build', label: 'Build', state: 'now', text: `${build.done} of ${build.total} landed` };
+      : { key: 'build', label: 'Build', state: 'now', text: `${build.done} of ${build.total} done` };
 
   const passedCount = verifyRows.filter(r => r.status === 'passed').length;
   const counted = verifyRows.filter(r => r.status !== 'not_applicable').length;

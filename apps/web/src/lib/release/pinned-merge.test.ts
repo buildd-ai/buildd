@@ -115,6 +115,19 @@ describe('mergeReleasePrPinned', () => {
     expect('indeterminate' in r).toBe(false);
   });
 
+  test('§4 merge holds: a required check that has not passed yet on the candidate is a hold, named, never a failed release', async () => {
+    const thrown = github(open('verified1'), () => { throw new Error('GitHub API error: 405 {"message":"Required status check \\"Buildd / Review approval\\" is expected."}'); });
+    const r = await mergeReleasePrPinned(input(), { api: thrown.api, land: noKernel, owned: notOwned, reviewGate: passGate });
+    expect(r).toMatchObject({ merged: false, refused: 'required_check', hold: true, check: 'Buildd / Review approval', headSha: 'verified1' });
+    expect(r.message).toContain('"Buildd / Review approval"');
+    expect('indeterminate' in r).toBe(false);
+    const answered = github(open('verified1'), () => ({ message: '2 of 3 required status checks are expected.' }));
+    expect(await mergeReleasePrPinned(input(), { api: answered.api, land: noKernel, owned: notOwned, reviewGate: passGate })).toMatchObject({ merged: false, refused: 'required_check', hold: true, check: null });
+    // A failing required check is still a refusal.
+    const failing = github(open('verified1'), () => { throw new Error('GitHub API error: 405 {"message":"Required status check \\"build\\" is failing."}'); });
+    expect(await mergeReleasePrPinned(input(), { api: failing.api, land: noKernel, owned: notOwned, reviewGate: passGate })).toMatchObject({ merged: false, refused: 'merge_failed' });
+  });
+
   test('already merged is the answer; an unreadable PR merges nothing', async () => {
     const merged = github({ state: 'closed', merged: true, merge_commit_sha: 'm9', head: { sha: 'verified1' } });
     expect(await mergeReleasePrPinned(input(), { api: merged.api, land: noKernel, owned: notOwned, reviewGate: passGate })).toMatchObject({ merged: true, sha: 'm9', alreadyMerged: true });

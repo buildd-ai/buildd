@@ -165,6 +165,8 @@ describe('MissionBoard — planning (no tasks yet)', () => {
     const landed = html.split('data-testid="landed-band"')[1]?.split('data-testid="goal-band"')[0] ?? '';
     expect(landed).not.toContain('of 0');
     expect(landed).toContain('data-testid="landed-empty"');
+    expect(landed).toContain('Merged');
+    expect(landed).not.toMatch(/>\s*Landed\s*</);
     expect(landed).not.toMatch(/>\s*[-\u2013\u2014]\s*</);
   });
 });

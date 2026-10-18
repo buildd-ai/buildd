@@ -669,6 +669,15 @@ describe('MissionStateView invariants', () => {
       expect(nextActionFor(d), `${d.kind} must have a next action`).toBeTruthy();
     }
   });
+
+  it('merge next actions say merged, never landed or shipped', () => {
+    const merge = (over: Record<string, unknown>) => nextActionFor({ kind: 'merge', tone: 'warning', label: 'l', count: 1, prNumbers: [], taskIds: [], missionPr: false, ...over } as WaitingOnDescriptor);
+    expect(merge({})).toBe('Resolve and merge the open PR(s). A finished task is not done until its PR merges.');
+    expect(merge({ missionPr: true, missionPrState: 'not_opened' })).toContain('every task PR has merged into the integration branch');
+    for (const text of [merge({}), merge({ missionPr: true, missionPrState: 'not_opened' }), merge({ missionPr: true, missionPrState: 'closed' })]) {
+      expect(text).not.toMatch(/\b(landed|shipped|shipping)\b/i);
+    }
+  });
 });
 
 // ── Visual review hold (docs/design/visual-qa-human-review.md, part 5) ────────

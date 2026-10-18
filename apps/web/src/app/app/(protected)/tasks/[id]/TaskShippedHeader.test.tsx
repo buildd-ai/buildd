@@ -20,7 +20,8 @@ const view = (over: Partial<BuildTaskShippedViewInput> = {}) => buildTaskShipped
 describe('TaskShippedTitle', () => {
   it('renders the eyebrow and the plain title, and no status chips', () => {
     const html = renderToStaticMarkup(<TaskShippedTitle view={view()} title="Completed task page leads with what shipped" />);
-    expect(html).toContain('What shipped · Feature');
+    expect(html).toContain('What changed · Feature');
+    expect(html).not.toContain('What shipped');
     expect(html).toContain('Completed task page leads with what shipped');
     expect(html).not.toContain('Done');
     expect(html).not.toContain('Ready to merge');

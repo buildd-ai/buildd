@@ -293,6 +293,11 @@ describe('deriveMissionHealth — escalated (owner decision needed)', () => {
     expect(h).toBe('active');
   });
 
+  it('HEALTH_DISPLAY says Done for a closed mission and Not started for a held one', () => {
+    expect(HEALTH_DISPLAY.shipped.label).toBe('Done');
+    expect(HEALTH_DISPLAY.held.label).toBe('Not started');
+  });
+
   it('HEALTH_DISPLAY has a non-empty entry for escalated', () => {
     expect(HEALTH_DISPLAY.escalated.label).toBeTruthy();
     expect(HEALTH_DISPLAY.escalated.colorClass).toBeTruthy();

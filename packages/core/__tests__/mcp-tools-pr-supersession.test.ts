@@ -82,6 +82,8 @@ describe('record_pr_supersession', () => {
     const output = (result as { content: Array<{ text: string }> }).content[0]!.text;
     expect(output).toContain('PR #2287 recorded as superseded by PR #2293');
     expect(output).toContain('https://github.com/org/repo/pull/2293');
+    expect(output).toContain("now treat PR #2287's work as merged in PR #2293.");
+    expect(output).not.toMatch(/shipped/i);
   });
 
   it('sends the calling worker alongside an explicit prNumber, so the route can check the PR is its own', async () => {
@@ -202,8 +204,8 @@ describe('get_pr renders a recorded supersession edge', () => {
     const result = await handleBuilddAction(api, 'get_pr', { prNumber: 2289 }, context());
     const output = (result as { content: Array<{ text: string }> }).content[0]!.text;
 
-    expect(output).toContain('no supersession recorded');
-    expect(output).toContain('record_pr_supersession');
+    expect(output).toContain('Closed without merging — no supersession recorded (record_pr_supersession if the work merged in another PR)');
+    expect(output).not.toMatch(/shipped/i);
   });
 
   it('omits the superseded line entirely for an open PR', async () => {

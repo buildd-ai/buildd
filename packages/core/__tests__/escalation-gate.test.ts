@@ -262,6 +262,7 @@ describe('verdictAt', () => {
     const v = { owner: 'buildd' as const, by: 'jev' as const, action: 'hold' as const, reason: 'r', holdUntil: '2026-10-09T12:00:00Z' };
     expect(verdictAt(v, Date.parse('2026-10-09T11:00:00Z')).owner).toBe('buildd');
     expect(verdictAt(v, Date.parse('2026-10-09T13:00:00Z')).owner).toBe('person');
+    expect(verdictAt(v, Date.parse('2026-10-09T13:00:00Z')).reason).toBe('Kept back earlier and still waiting, so it is yours now.');
   });
 });
 

@@ -92,7 +92,7 @@ const VERBS: Record<string, string> = {
   edit: 'Edited', set: 'Set', patch: 'Updated', modify: 'Updated', save: 'Saved', store: 'Saved',
   write: 'Wrote', record: 'Recorded', delete: 'Deleted', remove: 'Removed', close: 'Closed',
   cancel: 'Cancelled', send: 'Sent', post: 'Posted', notify: 'Notified', merge: 'Merged', run: 'Ran',
-  execute: 'Ran', trigger: 'Triggered', dispatch: 'Dispatched', start: 'Started', complete: 'Completed',
+  execute: 'Ran', trigger: 'Triggered', dispatch: 'Dispatched', start: 'Started', complete: 'Finished',
   finish: 'Finished', claim: 'Claimed', request: 'Requested', upload: 'Uploaded', deploy: 'Deployed',
   register: 'Registered', receive: 'Received', emit: 'Emitted', suggest: 'Suggested', approve: 'Approved',
   reject: 'Rejected', assign: 'Assigned', resolve: 'Resolved', retry: 'Retried', release: 'Released',

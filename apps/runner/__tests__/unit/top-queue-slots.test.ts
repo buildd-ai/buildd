@@ -141,10 +141,10 @@ describe('a refused row says why, never "now" (AC-30)', () => {
     expect(starts(s)[0]).toEqual([1, 'now']);
   });
 
-  test('held: every row reads "on hold", and the slot count says so', () => {
+  test('runner paused: every row reads "paused", and the slot count says so', () => {
     const s = reduce(stateWith(9, 1), { type: 'runner_hold', hold: { since: iso(NOW - 10 * MIN), until: null } });
-    expect(starts(s).every(([, w]) => w === 'on hold')).toBe(true);
-    expect(slotsSummary(s, NOW)).toBe('9 slots · 1 running · on hold');
+    expect(starts(s).every(([, w]) => w === 'paused')).toBe(true);
+    expect(slotsSummary(s, NOW)).toBe('9 slots · 1 running · paused');
   });
 });
 
@@ -198,7 +198,7 @@ describe('what the claim loop did (task 9e12f377 part 3)', () => {
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'claimed', started: 2 } });
     expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · started 2');
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'all_candidates_deferred', deferrals: { soft_overlap: 3 } } });
-    expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: every waiting task is held (waits for work on the same files)');
+    expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: every waiting task: waits for work on the same files');
     s = reduce(s, { type: 'claim_outcome', outcome: { at, reason: 'no_pending_tasks' } });
     expect(claimLoopLine(s, NOW)).toBe('Looked for work 14:02 · nothing to start: nothing is waiting for this runner');
     s = reduce(s, { type: 'claim_loop', looking: true });

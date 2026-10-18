@@ -272,7 +272,7 @@ export function resolveEscalationAnswer(answer: EscalationAnswer, minConfidence:
 /** A stored verdict as of `nowMs`: an expired hold is the person's again. */
 export function verdictAt(v: EscalationVerdict, nowMs: number): EscalationVerdict {
   if (v.owner === 'buildd' && v.action === 'hold' && v.holdUntil && Date.parse(v.holdUntil) <= nowMs) {
-    return { owner: 'person', by: 'jev', reason: 'Held earlier and still waiting, so it is yours now.' };
+    return { owner: 'person', by: 'jev', reason: 'Kept back earlier and still waiting, so it is yours now.' };
   }
   return v;
 }
