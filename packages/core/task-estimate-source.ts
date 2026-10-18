@@ -51,7 +51,7 @@ import {
   type ClusterEvidence, type EstimateInputs, type NeighbourEvidence, type PriorCell, type PriorTable, type SizeBucket,
   type TaskEstimateResult,
 } from './task-estimate';
-import { resolveTaskEstimatesState, taskEstimatesDefaultOn, type TaskEstimatesState } from './task-estimate-rollout';
+import { resolveTaskEstimatesState, type TaskEstimatesState } from './task-estimate-rollout';
 import { defaultStore, neighbourSessionsWhere } from './task-size-estimate';
 import { sqlWhere } from './db/relational-sql';
 import type { TaskEstimateEvidence } from '@buildd/shared';
@@ -62,9 +62,9 @@ import { eligibleEstimateTasksQuery, historyEvidenceFrom, historyEvidenceQuery }
 /**
  * The stored value against the platform default (./task-estimate-rollout.ts):
  * a boolean `enabled` is the team's choice; NULL or anything else follows the
- * default, which is off until the quality gate passes.
+ * default. Calibration controls display confidence independently.
  */
-export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = taskEstimatesDefaultOn()): boolean {
+export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = true): boolean {
   return resolveTaskEstimatesState(raw, defaultOn).enabled;
 }
 
@@ -75,7 +75,8 @@ export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = task
 export async function loadTaskEstimatesState(teamId: string): Promise<TaskEstimatesState & { error?: true }> {
   try {
     const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { taskEstimates: true } });
-    return resolveTaskEstimatesState(row?.taskEstimates);
+    if (!row) return { ...resolveTaskEstimatesState(null), enabled: false, error: true };
+    return resolveTaskEstimatesState(row.taskEstimates);
   } catch {
     return { ...resolveTaskEstimatesState(null), enabled: false, error: true };
   }
@@ -237,7 +238,7 @@ export const PRIOR_MIN_CELL_N = 3;
  * columns are the two enum keys and numbers; grouped by the two keys only.
  * Snake-case aliases (mapped in `buildPriorTable`).
  */
-export function priorAggregateQuery(cutoff: Date): SQL {
+export function priorAggregateQuery(cutoff: Date, excludedWorkspaceId?: string): SQL {
   const at = cutoff.toISOString();
   return sql`
     WITH done AS (
@@ -255,6 +256,7 @@ export function priorAggregateQuery(cutoff: Date): SQL {
        WHERE t.task_class = 'work'
          AND t.status = 'completed'
          AND t.created_at < ${at}::timestamptz
+         ${excludedWorkspaceId ? sql`AND t.workspace_id <> ${excludedWorkspaceId}` : sql``}
          -- Whole tasks only: one with a session ending at/after the cutoff would
          -- be sized from a truncated slice of itself, biasing the prior low.
          AND NOT EXISTS (
@@ -355,14 +357,15 @@ export function resetTaskEstimateCaches(): void {
 const fresh = (c: { at: number; cutoff: number } | null | undefined, cutoff: Date) =>
   !!c && c.cutoff <= cutoff.getTime() && Date.now() - c.at < MODEL_TTL_MS;
 
-export async function loadPriorTable(cutoff: Date, onCutoff?: (at: Date) => void): Promise<PriorTable> {
-  if (fresh(priorCache, cutoff)) {
+export async function loadPriorTable(cutoff: Date, onCutoff?: (at: Date) => void, excludedWorkspaceId?: string): Promise<PriorTable> {
+  // Held-out replays must neither reuse nor populate the global live prior cache.
+  if (!excludedWorkspaceId && fresh(priorCache, cutoff)) {
     onCutoff?.(new Date(priorCache!.cutoff));
     return priorCache!.table;
   }
-  const result = await db.execute(priorAggregateQuery(cutoff));
+  const result = await db.execute(priorAggregateQuery(cutoff, excludedWorkspaceId));
   const table = buildPriorTable((result.rows ?? []) as Array<Record<string, unknown>>);
-  priorCache = { at: Date.now(), cutoff: cutoff.getTime(), table };
+  if (!excludedWorkspaceId) priorCache = { at: Date.now(), cutoff: cutoff.getTime(), table };
   onCutoff?.(cutoff);
   return table;
 }
@@ -429,6 +432,8 @@ export interface EstimateTask {
 }
 
 export interface LoadEstimateInputsDeps {
+  /** Strict cold-start replay: never train the prior from the held-out workspace. */
+  excludedPriorWorkspaceId?: string;
   /** The `task` corpus store. Default: the task-size estimate's, built only once the team is known to be opted in. */
   storeFactory?: () => Promise<TaskAreaQuerier>;
 }
@@ -520,7 +525,7 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
 
   const [bucket, prior, k0] = await Promise.all([
     read('recorded bucket', () => loadRecordedBucket(task.id), null),
-    read('prior', () => loadPriorTable(cutoff, at => { evidence.modelCutoffs!.prior = at.toISOString(); }), {} as PriorTable),
+    read('prior', () => loadPriorTable(cutoff, at => { evidence.modelCutoffs!.prior = at.toISOString(); }, deps.excludedPriorWorkspaceId), {} as PriorTable),
     loadTaskEstimateK0(),
   ]);
 

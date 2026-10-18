@@ -1,36 +1,6 @@
-import SettingsPage from '../_components/SettingsPage';
-import { loadSettingsContext } from '../_lib/settings-context';
-import { settingsReadOnly } from '@/lib/settings-nav';
-import { loadTaskEstimatesState } from '@buildd/core/task-estimate-source';
-import TaskEstimatesFeature from './TaskEstimatesFeature';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
-
-/**
- * Settings › Team › Features: optional features for the active team. Owners and
- * admins (manage_team_settings) switch them; members see the state read-only.
- */
-export default async function FeaturesSettingsPage() {
-  const { currentTeamId, perms } = await loadSettingsContext();
-  if (!currentTeamId) {
-    return (
-      <SettingsPage title="Features">
-        <p className="text-sm text-text-muted">Not on a team.</p>
-      </SettingsPage>
-    );
-  }
-  const state = await loadTaskEstimatesState(currentTeamId);
-  return (
-    <SettingsPage title="Features" readOnly={settingsReadOnly('features', perms)}>
-      {state.error ? (
-        <p className="text-sm text-text-muted" role="alert">Couldn&apos;t load this team&apos;s features. Try again in a moment.</p>
-      ) : (
-        <TaskEstimatesFeature
-          teamId={currentTeamId}
-          initial={{ enabled: state.enabled, source: state.source, defaultOn: state.defaultOn }}
-          canManage={perms.manage_team_settings}
-        />
-      )}
-    </SettingsPage>
-  );
+/** Preserve bookmarks to the retired single-feature settings page. */
+export default function FeaturesSettingsPage() {
+  redirect('/app/health/estimates');
 }
