@@ -14,7 +14,7 @@ import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, SwipeProvider, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveDayBands } from '@/lib/condensed-timeline';
 import type { ChainPositionResult } from '@/lib/task-presentation';
-import { TERMS, type LoopState } from '@buildd/shared';
+import { TERMS, OPEN_TASK_STATUSES, type LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -537,7 +537,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
   const statusGroups = useMemo((): StatusGroup[] => {
     if (effectiveGroupBy !== 'status') return [];
     const order: { keys: string[]; label: string }[] = [
-      { keys: ['in_progress', 'assigned'], label: TERMS['work.working'].word },
+      { keys: OPEN_TASK_STATUSES.filter(s => s !== 'pending') as string[], label: TERMS['work.working'].word },
       { keys: ['pending'], label: TERMS['work.ready'].word },
       { keys: ['completed'], label: TERMS['work.done'].word },
       { keys: ['failed'], label: 'Failed' },
