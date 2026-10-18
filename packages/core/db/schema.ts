@@ -1775,6 +1775,13 @@ export const tasks = pgTable('tasks', {
   releaseRunIdIdx: index('tasks_release_run_id_idx')
     .on(sql`((release_result->>'runId'))`)
     .where(sql`release_result IS NOT NULL`),
+  // The release page's "a degradation task was filed for this release"
+  // lookup (releases/[id]): partial, so it holds only the release watcher's
+  // degradation tasks, and keyed by the release they name, so the page reads
+  // one index entry instead of scanning tasks (spec 3ef37387 R-23).
+  degradationReleaseIdx: index('tasks_degradation_release_idx')
+    .on(t.workspaceId, sql`((context->>'releaseId'))`)
+    .where(sql`(context->>'type') = 'degradation'`),
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
@@ -5730,6 +5737,8 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
   versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+  // The platform operator's kernel view reads the log by time (recent transitions, the count on host=web).
+  createdIdx: index('workflow_transitions_created_idx').on(t.createdAt),
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;

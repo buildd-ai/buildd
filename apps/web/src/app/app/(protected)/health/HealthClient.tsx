@@ -17,6 +17,7 @@ import type {
   StrandedBackendRow,
   BudgetForecast,
   FailureAnalytics,
+  FailureHeadline,
   FailureWindow,
   GateAnalytics,
   OrphanedPrRow,
@@ -272,6 +273,8 @@ interface Props {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
+  /** Failures' headline rate, counted in SQL; else read from failureAnalytics. */
+  failureHeadline?: FailureHeadline | null;
   gateAnalytics: GateAnalytics | null;
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
@@ -339,6 +342,7 @@ export function HealthClient({
   wsFilter,
   budgetForecast,
   failureAnalytics,
+  failureHeadline = null,
   gateAnalytics,
   window: activeWindow,
   subagentDelegation,
@@ -1057,7 +1061,7 @@ export function HealthClient({
         {show('failureGroups') && (
           <FailureGroupsSection
             groups={failureGroupsView}
-            headline={failureAnalytics ? { failureRatePct: failureAnalytics.totals.failureRatePct, failed: failureAnalytics.totals.failed, terminal: failureAnalytics.totals.terminal } : null}
+            headline={failureHeadline ?? (failureAnalytics ? { failureRatePct: failureAnalytics.totals.failureRatePct, failed: failureAnalytics.totals.failed, terminal: failureAnalytics.totals.terminal } : null)}
             windowLabel={activeWindow}
             now={now}
           />

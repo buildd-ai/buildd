@@ -12,6 +12,13 @@
  * capped at {@link MAX_REMOTE_REF_CHECKS} per run. A workspace with no
  * integration branches makes zero GitHub calls.
  *
+ * Every read is a bounded batch (a time window and a row cap), and JSON
+ * documents are never sent whole: the keys a predicate reads (a task's
+ * `context.baseBranch`, its plan, a review's verdict, a mission's criteria
+ * verdict, a workspace's trunk names) are lifted in SQL. Living Spec "Fast at
+ * any size", R-25: at most 5 MB per run, pinned at large scale by
+ * tests/db/mission-invariants-budget.test.ts.
+ *
  * ── Unknown is not gone ─────────────────────────────────────────────────────
  * `orphaned_integration_base` is the one invariant that files a task. Its input
  * is the remote-ref map built here, and this module records `false` ONLY on a
@@ -50,7 +57,7 @@ import {
   type SnapshotWorker,
 } from '@/lib/mission-invariants';
 import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const DAY_MS = 86_400_000;
 
@@ -102,6 +109,36 @@ export const MAX_REMOTE_REF_CHECKS = 25;
 
 /** Trunk names assumed when a workspace declares none. Never a guess about a mission branch. */
 const FALLBACK_TRUNK = ['main', 'master'];
+
+/**
+ * A JSON key lifted in SQL, as text: the string it holds, or NULL for a
+ * missing key, an empty string or any other JSON type. Same answer as
+ * `stringOrNull(asRecord(col).key)`, without sending the document (R-25).
+ */
+function jsonText(doc: unknown, ...path: string[]) {
+  const value = sql`${doc} #> ${`{${path.join(',')}}`}::text[]`;
+  return sql<string | null>`CASE WHEN jsonb_typeof(${value}) = 'string' THEN NULLIF(${value} #>> '{}', '') END`;
+}
+
+/**
+ * Mission rows read only the two facts of their criteria the predicates use,
+ * never the criteria documents themselves.
+ */
+const MISSION_EXTRAS = sqlExtras({
+  hasGoalCriteriaSql: sql<boolean>`COALESCE(jsonb_typeof(${missions.goalCriteria}) = 'array' AND jsonb_array_length(${missions.goalCriteria}) > 0, false)`,
+  criteriaOverallVerdictSql: jsonText(missions.goalCriteriaState, 'overall'),
+});
+
+/**
+ * Task rows read three keys of `context` and the plan of a completed planning
+ * task (the only rows a plan predicate reads), never the whole documents:
+ * they are most of a task row's size.
+ */
+const TASK_EXTRAS = sqlExtras({
+  contextBaseBranchSql: jsonText(tasks.context, 'baseBranch'),
+  requiresPlanApprovalSql: sql<boolean>`COALESCE(${tasks.context} -> 'requiresPlanApproval' = 'true'::jsonb, false)`,
+  planSql: sql<unknown>`CASE WHEN ${tasks.mode} = 'planning' AND ${tasks.status} = 'completed' THEN ${tasks.result} #> '{structuredOutput,plan}' END`,
+});
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
@@ -182,10 +219,9 @@ export async function loadInvariantSnapshot(
       integrationBranchEnabled: true,
       workingBranch: true,
       criteriaEscalatedAt: true,
-      goalCriteria: true,
-      goalCriteriaState: true,
       updatedAt: true,
     },
+    extras: MISSION_EXTRAS,
     orderBy: sqlOrderBy(desc(missions.updatedAt)),
     limit: MAX_MISSIONS,
   })) as Array<Record<string, any>>;
@@ -205,8 +241,8 @@ export async function loadInvariantSnapshot(
       integrationBranchEnabled: Boolean(m.integrationBranchEnabled),
       workingBranch: m.workingBranch ?? null,
       criteriaEscalatedAt: m.criteriaEscalatedAt ?? null,
-      hasGoalCriteria: Array.isArray(m.goalCriteria) && m.goalCriteria.length > 0,
-      criteriaOverallVerdict: stringOrNull(asRecord(m.goalCriteriaState).overall),
+      hasGoalCriteria: m.hasGoalCriteriaSql === true,
+      criteriaOverallVerdict: stringOrNull(m.criteriaOverallVerdictSql),
       updatedAt: m.updatedAt,
     }));
 
@@ -229,8 +265,6 @@ export async function loadInvariantSnapshot(
     mode: true,
     taskClass: true,
     outputRequirement: true,
-    context: true,
-    result: true,
     createdAt: true,
     updatedAt: true,
   } as const;
@@ -245,9 +279,9 @@ export async function loadInvariantSnapshot(
     mode: t.mode ?? 'execution',
     taskClass: t.taskClass ?? 'work',
     outputRequirement: t.outputRequirement ?? null,
-    contextBaseBranch: stringOrNull(asRecord(t.context).baseBranch),
-    requiresPlanApproval: asRecord(t.context).requiresPlanApproval === true,
-    planRaw: asRecord(asRecord(t.result).structuredOutput).plan ?? null,
+    contextBaseBranch: stringOrNull(t.contextBaseBranchSql),
+    requiresPlanApproval: t.requiresPlanApprovalSql === true,
+    planRaw: t.planSql ?? null,
     childCount: 0,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
@@ -257,6 +291,9 @@ export async function loadInvariantSnapshot(
     const rows = (await db.query.tasks.findMany({
       where: sqlWhere(inArray(tasks.missionId, missionIds)),
       columns: TASK_COLUMNS,
+      extras: TASK_EXTRAS,
+      // Newest first, so the cap drops the oldest rows, not an arbitrary set.
+      orderBy: sqlOrderBy(desc(tasks.updatedAt)),
       limit: MAX_MISSION_TASKS,
     })) as Array<Record<string, any>>;
     for (const t of rows) taskById.set(t.id, toSnapshotTask(t));
@@ -269,6 +306,7 @@ export async function loadInvariantSnapshot(
       gt(tasks.updatedAt, recentCutoff),
     )),
     columns: TASK_COLUMNS,
+      extras: TASK_EXTRAS,
     orderBy: sqlOrderBy(desc(tasks.updatedAt)),
     limit: MAX_RECENT_TASKS,
   })) as Array<Record<string, any>>;
@@ -362,6 +400,7 @@ export async function loadInvariantSnapshot(
     const rows = (await db.query.tasks.findMany({
       where: sqlWhere(inArray(tasks.id, missingTaskIds)),
       columns: TASK_COLUMNS,
+      extras: TASK_EXTRAS,
       limit: MAX_MISSION_TASKS,
     })) as Array<Record<string, any>>;
     for (const t of rows) if (!taskById.has(t.id)) taskById.set(t.id, toSnapshotTask(t));
@@ -486,13 +525,17 @@ export async function loadInvariantSnapshot(
       eq(tasks.status, 'completed'),
       gt(tasks.updatedAt, reviewCutoff),
     )),
-    columns: { workspaceId: true, context: true, result: true, updatedAt: true },
+    columns: { workspaceId: true, updatedAt: true },
+    extras: sqlExtras({
+      prNumberSql: sql<unknown>`${tasks.context} -> 'prNumber'`,
+      verdictSql: jsonText(tasks.result, 'structuredOutput', 'verdict'),
+    }),
     orderBy: sqlOrderBy(desc(tasks.updatedAt)),
     limit: MAX_RECENT_TASKS,
   })) as Array<Record<string, any>>;
   const reviewByPr = new Map<string, SnapshotReview>();
   for (const r of reviewRows) {
-    const raw = asRecord(r.context).prNumber;
+    const raw = r.prNumberSql;
     const prNumber = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
     if (!Number.isFinite(prNumber)) continue;
     const key = `${r.workspaceId} ${prNumber}`;
@@ -500,7 +543,7 @@ export async function loadInvariantSnapshot(
     reviewByPr.set(key, {
       prNumber,
       workspaceId: r.workspaceId,
-      verdict: stringOrNull(asRecord(asRecord(r.result).structuredOutput).verdict),
+      verdict: stringOrNull(r.verdictSql),
       decidedAt: r.updatedAt,
     });
   }
@@ -518,11 +561,14 @@ export async function loadInvariantSnapshot(
   if (workspaceIds.length > 0) {
     const rows = (await db.query.workspaces.findMany({
       where: sqlWhere(inArray(workspaces.id, workspaceIds)),
-      columns: { id: true, teamId: true, repo: true, githubRepoId: true, gitConfig: true },
+      columns: { id: true, teamId: true, repo: true, githubRepoId: true },
+      extras: sqlExtras({
+        targetBranchSql: jsonText(workspaces.gitConfig, 'targetBranch'),
+        defaultBranchSql: jsonText(workspaces.gitConfig, 'defaultBranch'),
+      }),
     })) as Array<Record<string, any>>;
     for (const ws of rows) {
-      const cfg = asRecord(ws.gitConfig);
-      const declared = [cfg.targetBranch, cfg.defaultBranch].filter(
+      const declared = [ws.targetBranchSql, ws.defaultBranchSql].filter(
         (b): b is string => typeof b === 'string' && b.length > 0,
       );
       snapshot.trunkBranches.set(
