@@ -118,6 +118,45 @@ describe('opening the mission integration PR', () => {
     expect(rows).toHaveLength(1);
   });
 
+  test('AC-20: epoch 2, once its work is in, gets exactly one PR into trunk, however many opens race', async () => {
+    w = await world();
+    off = w.gh.onWebhook(toRoute);
+    const { missionId } = await seedShippableMission(w);
+    // Work remains when epoch 1 merges, so the merge cuts a successor.
+    const [later] = await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, mission_id, title, status, task_class)
+      VALUES (${w.workspaceId}::uuid, ${missionId}::uuid, 'the later work', 'pending', 'work') RETURNING id`);
+    const first = await openMissionIntegrationPr(missionId);
+    if (!first.ok) throw new Error(`epoch 1 PR did not open: ${JSON.stringify(first)}`);
+    await w.deliver();
+    w.gh.mergePr(w.repo, first.prNumber);
+    await w.deliver();
+
+    const [m] = await q<{ working_branch: string }>(sql`SELECT working_branch FROM missions WHERE id = ${missionId}::uuid`);
+    const successor = m.working_branch;
+    const epochs = await q<{ epoch: number; state: string }>(sql`SELECT epoch, state FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid ORDER BY epoch`);
+    expect(epochs.map((e) => e.epoch)).toEqual([1, 2]);
+    expect(w.gh.branchHead(w.repo, successor)).toBeTruthy();
+
+    // The remaining task lands its PR on epoch 2's branch.
+    w.gh.push(w.repo, successor, { 'src/later.ts': 'export const later = 2;\n' }, { message: 'feat: the later work' });
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${later.id}::uuid`);
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url, pr_base_ref, merged_at, pr_lifecycle_status)
+      VALUES (${w.workspaceId}::uuid, ${later.id}::uuid, 'w2', 'test', 'buildd/the-later-work', 'completed', 901, ${`https://github.com/${w.repo}/pull/901`}, ${successor}, now(), 'merged')`);
+
+    const results = await Promise.all([openMissionIntegrationPr(missionId), openMissionIntegrationPr(missionId)]);
+    await w.deliver();
+    for (const r of results) expect(r).toMatchObject({ ok: true });
+    const prNumbers = new Set(results.map((r) => (r.ok ? r.prNumber : 0)));
+    expect(prNumbers.size).toBe(1);
+
+    const open = [...prNumbers][0];
+    expect(open).not.toBe(first.prNumber);
+    const pr = w.gh.pr(w.repo, open);
+    expect(pr).toMatchObject({ state: 'open', baseRef: 'dev', headRef: successor });
+    const intoTrunk = (await q<{ pr_number: number }>(sql`SELECT pr_number FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid AND base_ref = 'dev' AND pr_number <> ${first.prNumber}`));
+    expect(intoTrunk.map((d) => d.pr_number)).toEqual([open]);
+  });
+
   test('AC-13: a request for changes on the mission PR refuses the merge at the door, and nothing is merged', async () => {
     w = await world();
     off = w.gh.onWebhook(toRoute);
