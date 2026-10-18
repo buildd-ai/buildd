@@ -583,6 +583,8 @@ describe('an imported spec: confirm the repo baseline first, then amendments are
     expect(q('spec-page-review')).toBeNull();
     expect(container.textContent).not.toMatch(/Approve revision|Review revision/);
     expect(q('spec-page-reading')).toBeNull();
+    // The path and commit are said once, in the panel, not again in the header.
+    expect(q('spec-page-source')).toBeNull();
     expect(q('spec-page-import')!.textContent).toContain('Revision 2 is docs/specs/mission-flow-timeline.md at 87ee184');
     expect(q('spec-page-import-no-changes')!.textContent).toMatch(/^No proposed changes yet\./);
     // The repo's own change between the two imports, labelled as that, not as an amendment.
@@ -672,7 +674,7 @@ describe('reviewing a first revision, and on a phone (320 and 390 wide)', () => 
 
   it('a long 12-section first revision opens as the rendered spec: no +192 diff, no Spec/Changes switch, no row of Added labels', () => {
     act(() => root.render(<SpecPage view={{ ...draft, review: first }} />));
-    expect(q('spec-page-review-first')!.textContent).toContain('nothing to compare it with');
+    expect(q('spec-page-review-first')!.textContent).toBe('The whole spec, as approving would put it in force.');
     expect(q('spec-page-review-body')!.querySelectorAll('h2')).toHaveLength(12);
     expect(q('spec-approval-diff')).toBeNull();
     expect(q('spec-page-full-diff')).toBeNull();

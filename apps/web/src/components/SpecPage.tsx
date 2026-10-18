@@ -152,8 +152,8 @@ function ImportPanel({ specId, c }: { specId: string; c: NonNullable<Ok['importC
       <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
         Revision {c.revision} is{' '}
         {c.href ? <a href={c.href} className="font-mono text-meta underline" rel="noreferrer" target="_blank">{c.path}</a> : <span className="font-mono text-meta">{c.path}</span>}{' '}
-        at {c.commit}, as the repo has it. Until it is confirmed the repo file is its source, and nothing here can be revised or approved.
-        {c.canConfirm ? ' Confirming approves it as the baseline and makes buildd its source.' : ' A person who approves specs here confirms it.'}
+        at {c.commit}, as the repo has it. Until it is confirmed the repo file is its source: nothing here can be revised or approved.
+        {c.canConfirm ? ' Confirming approves it as the baseline.' : ' A person who approves specs here confirms it.'}
       </p>
       <p className="text-body text-text-secondary" data-testid="spec-page-import-no-changes">
         No proposed changes yet. A change is a new revision after confirming, reviewed against this one.
@@ -332,7 +332,7 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
           ) : (
             <>
               {summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
-              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">Nothing is approved yet, so there is nothing to compare it with. This is the whole spec.</p>
+              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">The whole spec, as approving would put it in force.</p>
               {repoChecks ? <RepoChecks specId={spec.id} /> : null}
               <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
                 <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} />
@@ -602,7 +602,8 @@ export default function SpecPage({ view }: { view: Ok }) {
         </Link>
         <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
         <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
-        {view.source?.path ? (
+        {/* An unconfirmed import names its file and commit in its own panel, below. */}
+        {importing ? null : view.source?.path ? (
           <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">
             {view.source.href ? <a href={view.source.href} className="font-mono underline">{view.source.path}</a> : <span className="font-mono">{view.source.path}</span>}
           </p>
