@@ -9,7 +9,7 @@ describe('TaskShipBadge', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="false" />);
     expect(html).toContain('Skip release');
     expect(html).not.toContain('Force release');
-    expect(html).not.toContain('Shipped');
+    expect(html).not.toContain('Released');
   });
 
   it('renders "Force release" (amber) when release=true', () => {
@@ -30,25 +30,25 @@ describe('TaskShipBadge', () => {
   });
 
   // AC-48 — attributed via release_tasks to a healthy release.
-  it('renders "Shipped" (muted-success) linking to the release page when attributed to a healthy release', () => {
+  it('renders "Released" (muted-success) linking to the release page when attributed to a healthy release', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="inherit" shippedReleaseId="rel-123" />);
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
     expect(html).toContain('/app/releases/rel-123');
     expect(html).toContain('status-success');
   });
 
   // States are additive: force-released AND that release is now healthy.
-  it('shows both "Force release" and "Shipped" together (additive)', () => {
+  it('shows both "Force release" and "Released" together (additive)', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="true" shippedReleaseId="rel-123" />);
     expect(html).toContain('Force release');
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
     expect(html).toContain('/app/releases/rel-123');
   });
 
-  it('shows both "Skip release" and "Shipped" together (additive)', () => {
+  it('shows both "Skip release" and "Released" together (additive)', () => {
     const html = renderToStaticMarkup(<TaskShipBadge release="false" shippedReleaseId="rel-9" />);
     expect(html).toContain('Skip release');
-    expect(html).toContain('Shipped');
+    expect(html).toContain('Released');
   });
 
   // Regression: the task detail page (a server component) mounts this badge,

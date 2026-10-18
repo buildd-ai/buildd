@@ -18,6 +18,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import type { MergePullRequestResult } from '@/lib/github';
 import { classifyMergeFailure } from '@/lib/conflict-retry';
+import { requiredCheckHold } from '@/lib/required-check-hold';
 import { finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { runMergedPrWork } from '@/lib/pr-merged-work';
 import { legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
@@ -59,6 +60,8 @@ export function classifyMergeCall(res: MergeAnswer): MergeOutcome {
   if (/head branch was modified/i.test(m)) return 'not_merged';
   // A draft waits for ready_for_review (the kernel refuses to land one; this is a draft made between the read and the call).
   if (/\bdraft\b/i.test(m)) return 'not_merged';
+  // §4 merge holds: a required check has not passed yet. A wait the merge effect sits out, not a person's.
+  if (requiredCheckHold(m)) return 'held';
   // Branch protection wants an up-to-date branch, or the base moved during the call: refresh.
   if (/base branch was modified|(is|was) (out of date|not up to date)/i.test(m)) return 'behind';
   if (classifyMergeFailure(m) === 'conflict') return 'conflict';
@@ -90,7 +93,11 @@ export function mergeRetryAt(res: MergeAnswer, now = Date.now()): string | null 
 
 /** GitHub's merge answer as the port's `MergeAnswer`: the T16 outcome, what GitHub said, and when to call again. */
 export function mergeAnswerOf(res: MergeAnswer, now = Date.now()): PortMergeAnswer {
-  return { outcome: classifyMergeCall(res), detail: res.message, retryAt: mergeRetryAt(res, now) };
+  const outcome = classifyMergeCall(res);
+  return {
+    outcome, detail: res.message, retryAt: mergeRetryAt(res, now),
+    ...(outcome === 'held' ? { check: requiredCheckHold(res.message)?.check ?? null } : {}),
+  };
 }
 
 // ── post-merge work (T17) ───────────────────────────────────────────────────

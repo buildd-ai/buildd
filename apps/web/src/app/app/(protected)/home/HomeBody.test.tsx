@@ -36,7 +36,7 @@ describe('Home inbox', () => {
     expect(html.indexOf('First-run checklist')).toBeLessThan(html.indexOf('Typo-tolerant search'));
     expect(html.indexOf('Typo-tolerant search')).toBeLessThan(html.indexOf('Quarantine flaky tests'));
     expect(html).not.toContain('Runner on arm64');
-    expect(html).toContain('1 of 2 landed');
+    expect(html).toContain('1 of 2 done');
     expect(html).toContain('not yet on trunk');
     expect(html).toContain('11 open missions');
   });

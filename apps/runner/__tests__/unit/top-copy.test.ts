@@ -18,10 +18,12 @@ const stage = (step: any, waitingOn: string | null = null) => ({ stage: { step, 
 const key = (ch: string) => ({ name: 'char' as const, ch });
 
 describe('the status line under a mission\'s title', () => {
-  test('the stage, then what it waits on, in the server\'s words ("landed" is merged)', () => {
-    expect(missionStatusLine(row(stage('building', '5 of 6 landed')))).toBe('Building · 5 of 6 landed');
-    expect(missionStatusLine(row(stage('delivering', 'approve the mission PR')))).toBe('Delivering · approve the mission PR');
-    expect(missionStatusLine(row(stage('on_hold')))).toBe('On hold');
+  test('the stage, then what it waits on, in catalog words (an older server\'s "landed" reads merged)', () => {
+    expect(missionStatusLine(row(stage('building', '5 of 6 landed')))).toBe('Building · 5 of 6 merged');
+    expect(missionStatusLine(row(stage('delivering', 'approve the mission PR')))).toBe('Merging · approve the mission PR');
+    expect(missionStatusLine(row(stage('delivered')))).toBe('Done');
+    expect(missionStatusLine(row(stage('on_hold')))).toBe('Paused');
+    expect(missionStatusLine(row({ held: true }))).toBe('Paused');
   });
 
   test('a finished visual review says what happened, not where to look', () => {
@@ -31,9 +33,9 @@ describe('the status line under a mission\'s title', () => {
 
   test('without a stage it counts tasks in words; a local session\'s mission says who runs it', () => {
     expect(missionStatusLine(row({ done: 2, total: 8 }))).toBe('2 of 8 tasks done');
-    expect(missionStatusLine(row({ ...stage('building', '1 of 2 landed'), local: true }))).toBe('Building · 1 of 2 landed · Managed from a local session');
+    expect(missionStatusLine(row({ ...stage('building', '1 of 2 landed'), local: true }))).toBe('Building · 1 of 2 merged · Managed from a local session');
     expect(missionStatusLine(row({ planning: true }))).toBe('Planning');
-    expect(missionStatusLine(row({ deliveredAt: NOW }))).toMatch(/^Delivered [A-Z][a-z]{2} \d{1,2}$/);
+    expect(missionStatusLine(row({ deliveredAt: NOW }))).toMatch(/^Done [A-Z][a-z]{2} \d{1,2}$/);
   });
 
   test('loose tasks, and the fold row, which has no status line', () => {

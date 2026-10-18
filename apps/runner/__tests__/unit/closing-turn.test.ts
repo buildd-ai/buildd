@@ -671,7 +671,7 @@ function askGateReply() {
 function holdGateReply() {
   return {
     verdict: 'send', outcome: 'held', disposition: 'hold',
-    holdReason: 'Held — it did not look urgent enough to interrupt someone right now.',
+    holdReason: 'Not sent yet: it did not look urgent enough to interrupt someone right now.',
     resurfaceAt: new Date().toISOString(),
     version: 'qd1', latencyMs: 5,
   };

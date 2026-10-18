@@ -78,7 +78,7 @@ describe('MissionGrid portfolio', () => {
   it('renders one row per open mission still moving or waiting; completed and on-dev ones collapsed', () => {
     expect(html.match(/data-testid="portfolio-row"/g)?.length).toBe(11);
     const history = html.match(/<section[^>]*data-group="completed"[\s\S]*?<\/section>/)![0];
-    expect(history).toContain('Completed this week');
+    expect(history).toContain('Done this week');
     expect(history).toContain('aria-expanded="false"');
     // Collapsed: the rows mount when it opens.
     expect(history).not.toContain('Workspace settings split into tabs');
@@ -117,7 +117,7 @@ describe('MissionGrid portfolio', () => {
 
   it('folds missions whose every task landed into one collapsed Landed, checks pending group', () => {
     const group = html.match(/<section[^>]*data-section="landed"[\s\S]*?<\/section>/)![0];
-    expect(group).toContain('Landed, checks pending');
+    expect(group).toContain('Done, checks pending');
     expect(group).toContain('aria-expanded="false"');
     // The subtitle names what is actually left (spec f7f67f1a R-32), not a fixed line.
     expect(group).toContain('Ready to complete.');
@@ -190,16 +190,18 @@ describe('MissionGrid portfolio', () => {
     expect(rowHtml('m02')).toContain('data-kind="audit"');
   });
 
-  it('shows the verified landed fraction, a small task strip and the next milestone', () => {
+  it('shows the verified merged fraction, a small task strip and the next milestone', () => {
     const r = rowHtml('m01');
-    expect(r).toContain('2 of 3 landed');
+    expect(r).toContain('2 of 3 merged');
+    expect(r).not.toContain('2 of 3 landed');
     expect(r).toContain('Next');
     expect(r).toContain('role="img"'); // TaskStrip size sm
   });
 
   it('shows a state as glyph + word', () => {
     expect(rowHtml('m02')).toContain('Auditing');
-    expect(rowHtml('m03')).toContain('Not landed');
+    expect(rowHtml('m03')).toContain('Closed without merging');
+    expect(rowHtml('m03')).not.toContain('Not landed');
   });
 
   it('a closed PR still being reconciled is In motion and reads Recovering, never Needs you', () => {
@@ -230,7 +232,7 @@ describe('MissionGrid portfolio', () => {
     const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[\s\S]*?<\/div>/)![0];
     expect(filters).toContain('data-testid="segmented"');
     expect(filters).toContain('role="radiogroup"');
-    for (const label of ['All', 'Waiting on you', 'In motion', 'Waiting', 'Landed']) expect(filters).toContain(label);
+    for (const label of ['All', 'Waiting on you', 'In motion', 'Waiting', 'Done']) expect(filters).toContain(label);
     expect(filters).not.toContain('Executing');
   });
 
@@ -259,6 +261,8 @@ describe('MissionGrid portfolio', () => {
     const one = renderToStaticMarkup(<DoneRow row={done[0]} now={NOW} />);
     const doneRow = one.match(/<div[^>]*data-testid="portfolio-done-row"[^>]*>/)![0];
     expect(one).toContain('Workspace settings split into tabs');
+    expect(one).toContain('1/1 merged');
+    expect(one).not.toContain('landed');
     expect(doneRow).not.toContain('border-l-4');
     expect(doneRow).not.toContain('bg-card');
   });

@@ -15,8 +15,8 @@ import type { DeliveryCounts, MissionDelivery, QuietMissionCause } from '@/lib/d
 
 /** Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */
 const BODY_GRID = {
-  split: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'landed'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']",
-  side: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'landed'] min-[900px]:grid-cols-2 min-[900px]:[grid-template-areas:'agents_landed']",
+  split: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'done'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_done']",
+  side: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'done'] min-[900px]:grid-cols-2 min-[900px]:[grid-template-areas:'agents_done']",
   single: 'flex flex-col gap-8',
 } as const;
 

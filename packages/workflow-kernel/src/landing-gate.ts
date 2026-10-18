@@ -117,6 +117,7 @@ export const REVIEW_STATUS_TERMS = {
   finding: 'Unresolved review finding',
   ready: 'Ready to merge',
   blocked: 'Merge blocked',
+  repairing: 'Branch update in progress',
 } as const;
 
 const T = REVIEW_STATUS_TERMS;
@@ -150,6 +151,17 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
     return status('success', T.ready, `${at} approved by ${by}`);
   }
+  const gateFailure = (r: ReviewGate): LandingStatus | null => {
+    if (r.ok) return null;
+    if (r.blocker === 'open_finding' && r.findings?.length) {
+      const more = r.findings.length > 1 ? ` (and ${r.findings.length - 1} more)` : '';
+      return status('failure', T.finding, `${describeFinding(r.findings[0]!)}${more}`);
+    }
+    if (r.blocker === 'open_verdict' && r.round && (r.round.effectiveVerdict ?? r.round.verdict) !== 'escalate') {
+      return status('failure', T.changesRequested, r.reason);
+    }
+    return null;
+  };
   // Review not finished is not a refusal: GitHub shows it as pending, never as a red CI.
   if (g.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
   if (g.blocker === 'not_approved') {
@@ -157,14 +169,18 @@ export function landingStatusOf(view: KernelView, o: { detail?: string | null } 
     if (d.state === 'WORKING' || d.state === 'AWAITING_PUSH') return status('pending', T.inProgress, 'work on the PR is still running');
     if (d.state === 'CHANGES_REQUESTED') return status('failure', T.changesRequested, `waiting for a fix to ${at}`);
     if (d.state === 'FIXING') return status('failure', T.changesRequested, `a fix for ${at} is in progress`);
+    // A repair (behind, conflict, CI) is landing eligibility, not a verdict on the review: while the
+    // review of this head stands clean the check is pending, never a red that reads as a rejection.
+    if (d.state === 'REPAIRING') {
+      const review = reviewGate(view, { states: ['REPAIRING'] });
+      if (review.ok) return status('pending', T.repairing, `review approved ${at}; the PR is being repaired (${plainCode(d.stateReason, 'repair')})`);
+      if (review.blocker === 'review_missing') return status('pending', T.inProgress, `no review covers ${at} yet`);
+      const failedReview = gateFailure(review);
+      if (failedReview) return failedReview;
+    }
   }
-  if (g.blocker === 'open_finding' && g.findings?.length) {
-    const more = g.findings.length > 1 ? ` (and ${g.findings.length - 1} more)` : '';
-    return status('failure', T.finding, `${describeFinding(g.findings[0]!)}${more}`);
-  }
-  if (g.blocker === 'open_verdict' && g.round && (g.round.effectiveVerdict ?? g.round.verdict) !== 'escalate') {
-    return status('failure', T.changesRequested, g.reason);
-  }
+  const failed = gateFailure(g);
+  if (failed) return failed;
   // The detail the transition named (a lasting rail's refusal), while the delivery still waits on a person for it.
   if (o.detail && d.state === 'ESCALATED') return status('failure', T.blocked, o.detail);
   if (g.blocker === 'not_approved' && d.state === 'ESCALATED') return status('failure', T.blocked, `a person has to decide (${plainCode(d.stateReason, 'escalated')})`);

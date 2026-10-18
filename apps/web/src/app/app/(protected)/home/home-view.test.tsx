@@ -19,7 +19,14 @@ import {
   inFlightKind,
   homeAudience,
   homeChatPlacement,
+  IN_FLIGHT_GROUP_COPY,
 } from './home-view';
+
+describe('IN_FLIGHT_GROUP_COPY words', () => {
+  it('merged doc fixes read Doc fixes merged', () => {
+    expect(IN_FLIGHT_GROUP_COPY['docfix-rerun'].chip).toBe('Doc fixes merged');
+  });
+});
 
 const item = (chip: ActionQueueItem['chip'], key: string) => ({ chip, subjectKey: key }) as ActionQueueItem;
 
