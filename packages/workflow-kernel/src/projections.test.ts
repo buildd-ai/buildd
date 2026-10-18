@@ -332,6 +332,19 @@ describe('landing_needs_human says which refusal it was (88318f31)', () => {
       .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
   });
 
+  // dc4436aa: release version bumps were reported as "the base keeps changing what this PR changes".
+  test('a risky path in the gap is not the base changing this PR\'s files', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', deltaBasis: 'risky_path', files: ['apps/web/package.json'] })))
+      .toEqual({ headline: 'Merge held: the base or this PR touches a migration, lockfile, manifest or CI file', detail: 'the gap touches apps/web/package.json' });
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', deltaBasis: 'overlap', files: ['src/a.ts'] })))
+      .toEqual({ headline: 'Merge held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts' });
+    // Evidence recorded before deltaBasis existed: the rule's own words tell them apart.
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, cause: 'refresh_unsafe', deltaReason: 'the gap involves a migration, schema, lockfile, manifest, CI workflow or repo-wide test (bun.lock)', files: ['bun.lock'] })).headline)
+      .toBe('Merge held: the base or this PR touches a migration, lockfile, manifest or CI file');
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, cause: 'refresh_unsafe', deltaReason: 'the base changed files this PR changes (src/a.ts)', files: ['src/a.ts'] })).headline)
+      .toBe('Merge held: the base keeps changing what this PR changes');
+  });
+
   test('the base only kept moving: the refresh count and the gap', () => {
     expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
       .toEqual({ headline: 'Merge held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });

@@ -11,7 +11,7 @@ import { isBaseDiffEquivalent, isContentEquivalentHead, readReviewedDelta } from
 import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, latestRunPerName, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
-import type { BaseDeltaFact } from './base-delta';
+import { versionBumpManifests, type BaseDeltaFact } from './base-delta';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 interface GithubPull {
@@ -239,8 +239,8 @@ const names = (files: unknown): string[] | null => (Array.isArray(files)
 
 /**
  * S15's base delta (base-delta.ts), read live: `compare/{head}...{base}` gives the
- * commits the base gained since the head's merge-base (`ahead_by`) and the files
- * they changed; the PR's own files come from `pulls/{n}/files`. A list that may
+ * commits the base gained since the head's merge-base (`ahead_by`), the files
+ * they changed and which of those are only a version bump; the PR's own files come from `pulls/{n}/files`. A list that may
  * be truncated, or a read that fails, is null on that side.
  */
 export async function readBaseDelta(
@@ -251,15 +251,17 @@ export async function readBaseDelta(
   const baseCommits = typeof cmp?.ahead_by === 'number' ? cmp.ahead_by : null;
   let baseFiles = names(cmp?.files);
   if (baseFiles && baseFiles.length >= COMPARE_FILE_LIMIT) baseFiles = null;
+  const bumps = baseFiles ? versionBumpManifests(cmp?.files) : [];
+  const base = { baseCommits, baseFiles, ...(bumps.length ? { versionBumpFiles: bumps } : {}) };
   const prFiles: string[] = [];
   for (let page = 1; page <= PR_FILES_MAX_PAGES; page++) {
     const batch = names(await get(`/repos/${repoFullName}/pulls/${prNumber}/files?per_page=${PR_FILES_PAGE}&page=${page}`).catch(() => null));
-    if (!batch) return { baseCommits, baseFiles, prFiles: null };
+    if (!batch) return { ...base, prFiles: null };
     prFiles.push(...batch);
-    if (batch.length < PR_FILES_PAGE) return { baseCommits, baseFiles, prFiles };
+    if (batch.length < PR_FILES_PAGE) return { ...base, prFiles };
   }
   // Every page was full: there may be more than we read.
-  return { baseCommits, baseFiles, prFiles: null };
+  return { ...base, prFiles: null };
 }
 
 export interface WorkspaceRepo {
