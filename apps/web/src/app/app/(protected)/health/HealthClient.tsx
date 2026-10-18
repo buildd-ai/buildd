@@ -820,7 +820,15 @@ export function HealthClient({
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h3 className="text-xs font-medium text-text-secondary">{g.title}</h3>
-          <span className="text-[11px] text-text-muted">{countOf(g.list.length, 'runner')}</span>
+          <span data-testid={`health-runners-${g.key}-capacity`} className="text-[11px] text-text-muted">
+            {(() => {
+              // Aggregate over this section's online runners, same counts as each row.
+              const on = g.list.filter(r => (fleetById.get(r.id)?.online ?? isRunnerOnline(r.lastHeartbeatAt, now)));
+              const slots = on.reduce((n, r) => n + (fleetById.get(r.id)?.maxSlots ?? r.maxConcurrentWorkers), 0);
+              const busy = on.reduce((n, r) => { const f = fleetById.get(r.id); return n + (f ? f.slots.filter(x => x.worker).length : r.activeWorkerCount); }, 0);
+              return `${countOf(g.list.length, 'runner')} · ${busy} of ${slots} slots busy`;
+            })()}
+          </span>
         </div>
         <div className="border-y border-border-default">
           {(

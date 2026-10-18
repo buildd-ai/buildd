@@ -343,3 +343,19 @@ describe('classifyRunnerOwnership', () => {
     expect(classifyRunnerOwnership(null)).toBe('unknown');
   });
 });
+
+describe('per-member runner usage', () => {
+  it('splits runner slots by owner, leaves sessions and unowned work out, marks the viewer', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        row({ ownerId: 'me', startedAt: NOW - 3 * H, completedAt: NOW - H }),
+        row({ ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        row({ ownerId: null, startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        row({ runner: 'mcp', ownerId: 'you', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+      ],
+    });
+    expect(s.members?.map(m => [m.id, m.isMe])).toEqual([['me', true], ['you', false]]);
+    expect(s.members![0].avg).toBeGreaterThan(s.members![1].avg);
+  });
+});

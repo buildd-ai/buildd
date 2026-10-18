@@ -127,6 +127,19 @@ export interface OccupancySeries {
     /** Identity completeness of the runner work in the window; see `OccupancyCoverage`. */
     coverage: OccupancyCoverage;
   };
+  /**
+   * Runner-slot usage per attributed member over the window, busiest first.
+   * Work with no recorded owner is not here (it is `runnerBy.unattributed`).
+   * `name` is filled in by the API from the member's profile, never guessed.
+   */
+  members?: OccupancyMember[];
+}
+
+export interface OccupancyMember extends OccupancyLevel {
+  id: string;
+  name?: string | null;
+  /** The viewer's own row. */
+  isMe?: boolean;
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
@@ -221,24 +234,34 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   const { from, bucketMs, count } = occupancyBuckets(window, now, input.tzOffsetMs ?? 0);
   const runnerEdges = emptyEdges();
   const sessionEdges = emptyEdges();
+  const memberEdges = new Map<string, Edge[]>();
   const coverage: OccupancyCoverage = { total: 0, ownerMissing: 0, runnerMissing: 0 };
   const classEdges = Object.fromEntries(RUNNER_CLASSES.map(c => [c, [] as Edge[]])) as Record<RunnerClass, Edge[]>;
   for (const w of workers) {
-    if (w.startedAt == null) continue;
-    const executor = executorOf(w.runner);
-    if (executor === 'other') continue;
-    const start = w.startedAt;
-    const end = Math.min(occupancyEnd(w, now), now);
-    if (end <= start || end <= from) continue;
-    const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId, executor)];
-    into.push({ t: start, d: 1 }, { t: end, d: -1 });
-    if (executor === 'runner') {
-      classEdges[w.runnerClass ?? 'unknown'].push({ t: start, d: 1 }, { t: end, d: -1 });
-      coverage.total += 1;
-      if (ownerOf(w, null, executor) === 'unattributed') coverage.ownerMissing += 1;
-      if ((w.runnerClass ?? 'unknown') === 'unknown') coverage.runnerMissing += 1;
+  if (w.startedAt == null) continue;
+  const executor = executorOf(w.runner);
+  if (executor === 'other') continue;
+  const start = w.startedAt;
+  const end = Math.min(occupancyEnd(w, now), now);
+  if (end <= start || end <= from) continue;
+  const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId, executor)];
+  into.push({ t: start, d: 1 }, { t: end, d: -1 });
+  if (executor !== 'interactive' && w.ownerId) {
+      const e = memberEdges.get(w.ownerId) ?? [];
+      e.push({ t: start, d: 1 }, { t: end, d: -1 });
+      memberEdges.set(w.ownerId, e);
     }
+  if (executor === 'runner') {
+    classEdges[w.runnerClass ?? 'unknown'].push({ t: start, d: 1 }, { t: end, d: -1 });
+    coverage.total += 1;
+    if (ownerOf(w, null, executor) === 'unattributed') coverage.ownerMissing += 1;
+    if ((w.runnerClass ?? 'unknown') === 'unknown') coverage.runnerMissing += 1;
   }
+  }
+  const members: OccupancyMember[] = [...memberEdges].map(([id, edges]) => {
+    const s = level(edges, from, now, bucketMs, count).summary;
+    return { id, avg: s.avg, peak: s.peak, isMe: !!input.viewerId && id === input.viewerId };
+  }).sort((a, b) => b.avg - a.avg || a.id.localeCompare(b.id));
   const runner = split(runnerEdges, from, now, bucketMs, count);
   const sessions = split(sessionEdges, from, now, bucketMs, count);
   const runnerByClass = Object.fromEntries(RUNNER_CLASSES.map(c => [c, level(classEdges[c], from, now, bucketMs, count).summary])) as Record<RunnerClass, OccupancyLevel>;
@@ -254,6 +277,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
       sessionsBy: sessions.at(k),
     })),
     summary: { runner: runner.total.summary, sessions: sessions.total.summary, runnerBy: runner.summary, sessionsBy: sessions.summary, runnerByClass, coverage },
+    members,
   };
 }
 
