@@ -383,7 +383,8 @@ describe('/api/mcp self-call origin', () => {
   async function selfCallUrl(res: Response): Promise<string> {
     expect(res.status).toBe(200);
     const api = (mockHandleBuilddAction.mock.calls[0] as any[])[0];
-    await api('/api/tasks', {});
+    // A write: reads run in process (lib/mcp-read-dispatch.ts), writes still call this origin.
+    await api('/api/tasks', { method: 'POST', body: '{}' });
     return urls[0];
   }
 

@@ -94,6 +94,14 @@ mock.module('@buildd/core/mcp-tools', () => ({
   handleLearnAction: mockHandleLearnAction,
 }));
 
+// MCP reads run the API route in this process (lib/mcp-read-dispatch.ts), not over fetch:
+// the lazy workspace resolver's task list comes from this stub.
+let routeTasks: unknown[] = [];
+mock.module('@/app/api/tasks/route', () => ({ GET: async () => Response.json({ tasks: routeTasks }) }));
+let routeRoles: unknown[] = [];
+const routeReads: string[] = [];
+mock.module('@/app/api/roles/route', () => ({ GET: async (req: Request) => { routeReads.push(new URL(req.url).pathname); return Response.json({ roles: routeRoles }); } }));
+
 import { POST } from './route';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -430,6 +438,7 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     mockHandleBuilddAction.mockClear();
     mockGetMemoryStoreForTeam.mockResolvedValue({ id: 'store-1' });
     authenticateAs({ level: 'worker', authType: 'api' });
+    routeTasks = [{ id: 't1', workspaceId: LAZY_WS, status: 'pending' }];
     globalThis.fetch = mock(async () =>
       new Response(JSON.stringify({ tasks: [{ id: 't1', workspaceId: LAZY_WS, status: 'pending' }] }), {
         status: 200,
@@ -641,20 +650,18 @@ describe('MCP tool gating — personal roles (skill actions with { personal: tru
 
   it('lets a worker-level OAuth member list their own and shared personal roles, through GET /api/roles', async () => {
     asPerson('worker');
-    globalThis.fetch = mock(async (url: string, init: RequestInit = {}) => {
-      fetched.push({ url: String(url), method: init.method ?? 'GET', body: undefined });
-      return new Response(JSON.stringify({ roles: [
-        { id: 'team-role', slug: 'builder', name: 'Builder' },
-        { id: 'role-1', slug: 'helper', name: 'Helper', personal: true, mine: true, visibility: 'private' },
-      ] }), { status: 200 });
-    }) as any;
+    // A read: it runs the roles route in process (lib/mcp-read-dispatch.ts), never fetch.
+    routeReads.length = 0;
+    routeRoles = [
+      { id: 'team-role', slug: 'builder', name: 'Builder' },
+      { id: 'role-1', slug: 'helper', name: 'Helper', personal: true, mine: true, visibility: 'private' },
+    ];
     const result = await callTool('buildd_admin', { action: 'list_skills', params: { personal: true } }, `?workspace=${WORKSPACE_ID}`);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('1 personal role(s)');
     expect(result.content[0].text).not.toContain('Builder');
-    expect(fetched).toHaveLength(1);
-    expect(fetched[0].method).toBe('GET');
-    expect(new URL(fetched[0].url).pathname).toBe('/api/roles');
+    expect(fetched).toHaveLength(0);
+    expect(routeReads).toEqual(['/api/roles']);
   });
 
   it('refuses a worker-level team list_skills / get_skill as forbidden, without any API call', async () => {

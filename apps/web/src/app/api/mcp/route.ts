@@ -72,6 +72,7 @@ import {
 import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
 import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { withInProcessReads } from '@/lib/mcp-read-dispatch';
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -142,20 +143,18 @@ function extractBearerToken(req: Request): string | null {
  * cannot resolve it refuses before building the API.
  */
 function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
+  const headersFor = (options: RequestInit): Record<string, string> => ({
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+    ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
+    ...(options.headers as Record<string, string> | undefined),
+    // An account-level grant session acts in exactly this workspace on
+    // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
+    ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
+  });
 
-  return async (endpoint, options = {}) => {
-    const response = await fetch(`${baseUrl}${endpoint}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
-        ...options.headers,
-        // An account-level grant session acts in exactly this workspace on
-        // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
-        ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
-      },
-    });
+  const http: ApiFn = async (endpoint, options = {}) => {
+    const response = await fetch(`${baseUrl}${endpoint}`, { ...options, headers: headersFor(options) });
 
     if (!response.ok) {
       const error = await response.text();
@@ -164,6 +163,9 @@ function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string |
 
     return response.json();
   };
+
+  // Reads run the route's own handler in this process (spec 3ef37387 R-22); writes stay on HTTP.
+  return withInProcessReads(http, { baseUrl, bearer: apiKey, headersFor });
 }
 
 // ── Memory Helper ────────────────────────────────────────────────────────────

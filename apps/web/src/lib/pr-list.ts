@@ -30,6 +30,8 @@ const TERMINAL: Lifecycle[] = ['merged', 'closed', 'unresolvable'];
 
 export const DEFAULT_MERGED_WINDOW_DAYS = 7;
 export const MAX_PR_LIST = 50;
+/** open/merged read this many candidate PRs per shown PR: room for one the collapse drops. */
+export const CANDIDATE_SLACK = 3;
 
 export function parsePrListState(raw: string | null | undefined): { state: PrListState } | { error: string } {
   if (!raw) return { state: 'open' };
@@ -298,7 +300,16 @@ export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrList
   if (opts.workspaceIds.length === 0) return [];
   // Every row of each candidate PR, so the collapse sees a newer merged or
   // closed row even when only an older row matched the candidate filter.
-  const candidates = db.selectDistinct({ prUrl: workers.prUrl }).from(workers).where(buildPrListWhere(opts));
+  const limit = Math.min(opts.limit ?? 20, MAX_PR_LIST);
+  // open and merged show the newest `limit` PRs, so only the newest PRs are
+  // candidates (with slack for one the collapse drops): a call reads what it
+  // shows, not every open PR (spec 3ef37387 R-22). attention, conflict and
+  // ci_failed are decided after the collapse and read every open PR.
+  const bounded = opts.state === 'open' || opts.state === 'merged';
+  const candidates = bounded
+    ? db.select({ prUrl: workers.prUrl }).from(workers).where(buildPrListWhere(opts))
+      .groupBy(workers.prUrl).orderBy(desc(sql`max(${workers.startedAt})`)).limit(limit * CANDIDATE_SLACK)
+    : db.selectDistinct({ prUrl: workers.prUrl }).from(workers).where(buildPrListWhere(opts));
   const rows = await db
     .select({
       workerId: workers.id,
@@ -326,7 +337,6 @@ export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrList
     .where(and(inArray(workers.workspaceId, opts.workspaceIds), inArray(workers.prUrl, candidates)))
     .orderBy(desc(workers.startedAt))
     .limit(1000);
-  const limit = Math.min(opts.limit ?? 20, MAX_PR_LIST);
   const kernel = kernelPrStatuses(await getDeliveryViewsForTasks(rows.flatMap(r => (r.taskId ? [r.taskId] : []))));
   const shaped = shapePrRows(rows as PrListRow[], opts.state, kernel);
   // attention filters on the signals, so it reads them for every open PR first.
