@@ -29,7 +29,7 @@ function getRunOutcome(run: HeartbeatTimelineProps['runs'][0]): RunOutcome | nul
 function getSummary(run: HeartbeatTimelineProps['runs'][0]): string {
   const summary = run.result?.structuredOutput?.summary || run.result?.summary;
   if (summary) return summary;
-  if (isOpenTaskStatus(run.status)) return 'Running';
+  if (isOpenTaskStatus(run.status)) return 'Working';
   const outcome = getRunOutcome(run);
   if (outcome === 'ok') return 'No action';
   if (outcome === 'action_taken') return 'Planned the next step';

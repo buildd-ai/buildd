@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. dropped first, never wrapped 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams           2 of 3 busy · ● online 
+" buildd · laptop-1234 · 2 workspaces · 2 teams   2 of 3 slots in use · ● online 
  Missions  [ Queue ]   t team: all · w workspace: all          3 slots · 1 free 
 ────────────────────────────────────────────────────────────────────────────────
  Team One · next for this runner     mission          starts                    
@@ -28,7 +28,7 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
 `;
 
 exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on, and not for the one that does not 1`] = `
-" buildd · laptop-1234 · 2 workspaces · 2 teams                                        2 of 3 busy · ● online · v0.340.0 
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                2 of 3 slots in use · ● online · v0.340.0 
  Missions  [ Queue ]   t team: all · w workspace: all                    3 slots · 2 running · 1 free   - fewer  + more 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Team One · next for this runner                workspace    mission          est.  starts                              

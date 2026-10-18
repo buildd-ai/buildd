@@ -14,7 +14,7 @@ const USAGE_LIMIT = TERMS['wait.usage_limit'].short;
 const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
 
 const REASON_WORDS: Record<string, string> = {
-  no_slots: 'every slot is busy',
+  no_slots: 'every slot is in use',
   no_workspaces: 'no workspace to claim from',
   no_pending_tasks: 'nothing waiting',
   capability_mismatch: 'waiting work needs something this runner lacks',

@@ -36,7 +36,7 @@ export const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string
   dispatched: { label: 'Dispatched', cls: 'text-status-info border-status-info/30' },
   failed: { label: 'Failed', cls: 'text-status-error border-status-error/30' },
   degraded: { label: 'Degraded', cls: 'text-status-warning border-status-warning/30' },
-  pending_external: { label: 'Pending', cls: 'text-text-muted border-border-default' },
+  pending_external: { label: 'Waiting for merge', cls: 'text-text-muted border-border-default' },
 };
 
 /**

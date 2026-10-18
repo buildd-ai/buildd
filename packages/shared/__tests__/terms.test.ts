@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  BANNED_WORDS, MISSION_STAGE_STEPS, NOUNS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, termFor,
+  BANNED_WORDS, MISSION_STAGE_STEPS, NOUNS, TERMS, bannedWordsIn, displayTitle, findTerm, missionGateTerm, slotsInUse, termFor,
   titleWithAttempt,
   type InternalKind, type TermKey,
 } from '../src/terms';
@@ -96,6 +96,72 @@ describe('terms catalog: landing reads GitHub’s words (§2.2)', () => {
     expect(termFor({ kind: 'mission.stage', value: 'delivered' }).word).toBe('Done');
     expect(TERMS['total.done_this_week'].word).toBe('Done this week');
   });
+});
+
+describe('terms catalog: waiting, blocked, ready (§2.3)', () => {
+  it.each([
+    ['task.status', 'pending', 'Ready'],
+    ['worker.status', 'idle', 'Ready'],
+    ['strip', 'ready', 'Ready'],
+    ['strip', 'queued', 'Blocked'],
+    ['strip', 'blocked', 'Blocked'],
+    ['waiting', 'dep_declared', 'Blocked'],
+    ['worker.status', 'waiting_input', 'Has a question'],
+    ['strip', 'waiting', 'Has a question'],
+    ['strip', 'needs_you', 'Waiting on you'],
+    ['kernel', 'AWAITING_PUSH', 'Waiting for push'],
+    ['kernel', 'BLOCKED_ON_TRUNK', 'Blocked on base'],
+  ] as const)('%s %s reads %s', (kind, value, word) => {
+    expect(termFor({ kind, value }).word).toBe(word);
+  });
+
+  it('Waiting is always followed by its reason', () => {
+    for (const t of Object.values(TERMS)) expect(t.word).not.toMatch(/^Waiting$/);
+    expect(TERMS['wait.agent'].word).toBe('Waiting for an agent');
+    expect(TERMS['wait.checks'].word).toBe('Waiting for checks');
+    expect(TERMS['wait.review'].word).toBe('Waiting for review');
+  });
+});
+
+describe('terms catalog: building, verifying, working (§2.4)', () => {
+  it.each([
+    ['task.status', 'assigned', 'Working'],
+    ['task.status', 'in_progress', 'Working'],
+    ['worker.status', 'starting', 'Working'],
+    ['worker.status', 'running', 'Working'],
+    ['strip', 'running', 'Working'],
+    ['kernel', 'WORKING', 'Working'],
+    ['strip', 'review', 'In review'],
+    ['kernel', 'AWAITING_REVIEW', 'In review'],
+    ['strip', 'fixing', 'Fixing'],
+    ['kernel', 'REPAIRING', 'Fixing'],
+    ['mission.stage', 'building', 'Building'],
+    ['mission.stage', 'verifying', 'Verifying'],
+  ] as const)('%s %s reads %s', (kind, value, word) => {
+    expect(termFor({ kind, value }).word).toBe(word);
+  });
+
+  it('checks running on a revision read Checking', () => {
+    expect(TERMS['pr.checking'].word).toBe('Checking');
+  });
+
+  it('capacity reads "N of M slots in use"', () => {
+    expect(slotsInUse(2, 3)).toBe('2 of 3 slots in use');
+    expect(slotsInUse(1, 1)).toBe('1 of 1 slot in use');
+    expect(slotsInUse(0, 4, 'short')).toBe('0/4 in use');
+  });
+});
+
+describe('BANNED_WORDS (slice 2)', () => {
+  it.each([
+    'Auditing', 'In audit', 'Repairing', 'Pending', 'Queued', 'Never started', 'Assigned', 'Starting', 'Running now',
+    'waiting for a worker', '3 of 6 busy', 'every slot is busy',
+  ])('bans "%s"', (s) => {
+    expect(bannedWordsIn(s).length).toBeGreaterThan(0);
+  });
+
+  it.each(['Working', 'Ready', 'Blocked', 'Checking', 'Fixing', '2 of 3 slots in use', 'Waiting for an agent', 'a fix is queued behind CI'])(
+    'allows "%s"', (s) => { expect(bannedWordsIn(s)).toEqual([]); });
 });
 
 describe('BANNED_WORDS', () => {

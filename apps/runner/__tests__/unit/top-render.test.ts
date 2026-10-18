@@ -85,7 +85,7 @@ describe('list view', () => {
     s = reduce(s, { type: 'connection', online: false });
     expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ loading');
     s = reduce(s, { type: 'init', workers: [], config: { maxConcurrent: 4 } });
-    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('0 of 4 busy · ● online');
+    expect(stripAnsi(frame(s, 80, 24)[0])).toContain('0 of 4 slots in use · ● online');
     // Only a connection that was up and dropped reads reconnecting.
     s = reduce(s, { type: 'connection', online: false });
     expect(stripAnsi(frame(s, 80, 24)[0])).toContain('○ reconnecting');

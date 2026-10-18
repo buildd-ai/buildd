@@ -2401,7 +2401,7 @@ function renderArtifactRead(read: any): string {
 export function describeCreatedTaskState(task: any): string {
   if (task.startAt) return `Deferred until ${new Date(task.startAt).toISOString()}`;
   if (task.status === 'assigned') return 'Claimed — a runner has picked it up';
-  if (task.status === 'in_progress') return 'Running';
+  if (task.status === 'in_progress') return 'Working';
   if (task.status === 'completed' || task.status === 'failed') return `Terminal (${task.status})`;
   const blocker = task.blockedByPr ?? task.deferral?.blockedByPr;
   if (blocker?.prNumber || task.deferral?.reason) {

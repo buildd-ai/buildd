@@ -291,7 +291,7 @@ export function projectIncident(
     else if (n >= 2) phase = 'retrying';
     else phase = 'repair_running';
     if (phase === 'retrying') stateWord = `Retrying (${Math.min(n, r.budget.limit)} of ${r.budget.limit})`;
-    const label = r.nextAction?.label ?? 'Buildd is repairing this.';
+    const label = r.nextAction?.label ?? 'Buildd is fixing this.';
     sentence = nextCheckAt ? `${label} Buildd checks the result at ${at(nextCheckAt)}.` : label;
   } else {
     // waiting
