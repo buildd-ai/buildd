@@ -10,19 +10,27 @@ const githubApi = mock(async (_id: number, path: string): Promise<any> =>
   path.includes('/files?') ? files : { head: { sha: head }, merged });
 mock.module('@/lib/github', () => ({ githubApi }));
 mock.module('@buildd/core/db', () => ({ db: {
-  query: { systemCache: { findFirst: async ({ where }: any) => {
-    if (failDb) throw new Error('cache unavailable');
-    return rows.get(where);
-  } } },
+  query: { systemCache: {
+    findFirst: async ({ where }: any) => {
+      if (failDb) throw new Error('cache unavailable');
+      return rows.get(where);
+    },
+    findMany: async ({ where }: any) => {
+      manyReads++;
+      if (failDb) throw new Error('cache unavailable');
+      return (where as string[]).flatMap(k => (rows.has(k) ? [rows.get(k)] : []));
+    },
+  } },
   insert: () => ({ values: (row: any) => ({ onConflictDoUpdate: async () => { rows.set(row.key, row); } }) }),
 } }));
 mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (x: any) => x }));
 mock.module('@buildd/core/db/schema', () => ({ systemCache: { key: 'key' } }));
-mock.module('drizzle-orm', () => ({ eq: (_a: any, b: any) => b }));
-const { loadPrSurfaceFiles, persistMergedSurfaceEvidence } = await import('./pr-surface-evidence');
+mock.module('drizzle-orm', () => ({ eq: (_a: any, b: any) => b, inArray: (_a: any, b: any) => b }));
+let manyReads = 0;
+const { loadPrSurfaceFiles, loadMergedSurfaceEvidence, persistMergedSurfaceEvidence } = await import('./pr-surface-evidence');
 const repo = { installationId: 7, fullName: 'acme/app' };
 const fileCalls = () => githubApi.mock.calls.filter(c => c[1].includes('/files?')).length;
-beforeEach(() => { rows.clear(); failDb = false; head = 'a'; merged = false; files = []; githubApi.mockClear(); });
+beforeEach(() => { manyReads = 0; rows.clear(); failDb = false; head = 'a'; merged = false; files = []; githubApi.mockClear(); });
 
 it('caches unchanged authoritative open heads, including empty evidence', async () => {
   expect(await loadPrSurfaceFiles(repo, 1)).toEqual([]);
@@ -89,4 +97,15 @@ it('records merged evidence only for a merged PR at the reported merged head', a
   githubApi.mockClear();
   await persistMergedSurfaceEvidence(repo, 1, 'b');
   expect(githubApi).not.toHaveBeenCalled();
+});
+it('a render reads every PR\'s merged evidence in one query and never GitHub (spec 3ef37387 R-12)', async () => {
+  merged = true; files = [{ filename: UI, patch: '+<div />' }];
+  await persistMergedSurfaceEvidence(repo, 1);
+  githubApi.mockClear();
+  const got = await loadMergedSurfaceEvidence(repo, [1, 2]);
+  expect([...got.entries()]).toEqual([[1, [{ path: UI, patch: '+<div />' }]]]);
+  expect(manyReads).toBe(1);
+  expect(githubApi).not.toHaveBeenCalled();
+  failDb = true;
+  expect((await loadMergedSurfaceEvidence(repo, [1])).size).toBe(0);
 });

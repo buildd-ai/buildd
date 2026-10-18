@@ -770,3 +770,12 @@ function bootFailureOf(auditTasks: readonly VisualReviewTaskInput[]): VisualRevi
 
 /** Phase copy lives with the text rendering, so the MCP action and chat read one source. */
 export { describeVisualPhase } from '@buildd/core/visual-review-text';
+
+/**
+ * The model of a mission with no audit and no fix from one: what
+ * `loadVisualReview` returns for it, without its reads (every input it reads
+ * is about an audit). A page that knows the mission has none uses this.
+ */
+export function emptyVisualReviewModel(missionId: string, now: number): VisualReviewModel {
+  return buildVisualReviewModel({ missionId, shots: [], tasks: [], reviews: [], roundCapOpen: false, browserRunnerOnline: null, captureRef: null, missionIntegrationBranch: null, now });
+}

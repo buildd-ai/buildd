@@ -99,7 +99,7 @@ describe('Mission page load budget', () => {
   it('builds only the layout on screen (R-18)', async () => {
     expect(builtLayouts((await renderMission(team.userId, busiest)).rendered.tree)).toEqual(['board']);
     expect(builtLayouts((await renderMission(team.userId, busiest, { layout: 'flow' })).rendered.tree)).toEqual(['flow']);
-    expect(builtLayouts((await renderMission(team.userId, busiest, { layout: 'history' })).rendered.tree)).toEqual(['feed']);
+    expect(builtLayouts((await renderMission(team.userId, busiest, { layout: 'feed' })).rendered.tree)).toEqual(['feed']);
   }, 300_000);
 });
 
