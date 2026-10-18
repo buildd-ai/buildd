@@ -418,7 +418,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           if (headSha) {
             const liveStatus = await fetchCiLifecycleStatus(installationId, repo, headSha);
             if (liveStatus !== null && liveStatus !== worker.prLifecycleStatus) {
-              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha });
+              await recordPrFact({ workerId: worker.id }, { kind: 'ci', status: liveStatus, headSha, currentHeadSha: headSha }, { scope: factFunnelScope });
             }
           }
         }

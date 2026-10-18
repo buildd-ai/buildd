@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { MISSION_SUMMARY_VERSION } from '@buildd/shared';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from './workflow/pr-fact-scope';
 import { computeMissionSummary, summariesEqual } from './mission-summary';
 import { createMissionSummaryStore, type MissionSummaryStoreDeps, type StoredMissionSummary } from './mission-summary-store';
 import { flushWorkChanges, noteWorkChanged, setWorkChangeListenersForTests, workChangeOfEvent, workChangeOfKernelInput } from './work-changed';
@@ -153,6 +154,7 @@ describe('AC-2: stored == computed after each kind of write', () => {
     Object.assign(world.workers.find(w => w.id === 'w-b2')!, { prLifecycleStatus: 'ci_failed', updatedAt: new Date(clock) });
     await recordPrFact({ workerId: 'w-b2' }, { kind: 'ci', status: 'ci_failed' as never }, {
       exec: async () => [{ id: 'w-b2', task_id: 't-b2', workspace_id: 'ws-1', previous_status: 'pr_open' }],
+      scope: factFunnelScope,
     });
     await flushWorkChanges();
     expect(loads.flat()).toContain('m-build');
