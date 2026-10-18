@@ -70,8 +70,21 @@ describe('T12: a conflict or a migration collision on an escalated PR is repaire
     expect(reason(conflict(V(D()), { mergeable: 'behind' }))).toEqual({ result: 'stale', reason: 'state_not_allowed' });
   });
 
-  test('a landing hand-off is still a person\'s', () => {
-    expect(reason(conflict(V(D({ stateReason: 'landing_needs_human' })), { migrationCollision: true }))).toEqual({ result: 'stale', reason: 'state_not_allowed' });
+  // dc4436aa: a treadmill hand-off whose base then conflicts sat with a person, who cannot merge it either.
+  test('a landing hand-off that now conflicts or collides → the repair, not a person', () => {
+    const dec = applied(conflict(V(D({ stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }))));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.patch).toMatchObject({ stateReason: 'conflict' });
+    expect(dec.patch.resumeState).toBeUndefined();
+    expect(applied(conflict(V(D({ stateReason: 'landing_needs_human' })), { migrationCollision: true })).toState).toBe('REPAIRING');
+  });
+
+  test('a landing hand-off that is only behind is still a person\'s (the sweep restarts the treadmill)', () => {
+    expect(reason(conflict(V(D({ stateReason: 'landing_needs_human' })), { mergeable: 'behind' }))).toEqual({ result: 'stale', reason: 'state_not_allowed' });
+  });
+
+  test.each(['conflict_exhausted', 'ci_exhausted'])('a spent budget (%s) is still a person\'s', (why) => {
+    expect(reason(conflict(V(D({ stateReason: why }))))).toEqual({ result: 'stale', reason: 'state_not_allowed' });
   });
 });
 
