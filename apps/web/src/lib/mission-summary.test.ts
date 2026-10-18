@@ -10,6 +10,7 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { assembleMissionStages } from './mission-stage-assemble';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 import { inputsFromWorld, makeWorld, NOW } from './mission-summary.fixtures';
+import { taskRowsStripProjection } from './mission-strip-order';
 
 const summaryOf = (id: string, world = makeWorld(), now = NOW) => computeMissionSummary(inputsFromWorld(world, [id]).get(id)!, now);
 
@@ -147,6 +148,35 @@ describe('computeMissionSummary: Home\'s reading (3ef37387 R-13)', () => {
     const s = computeMissionSummary({ ...input, visualReview: review }, NOW);
     expect(s.visualReview).toEqual(review as never);
     expect(homeReadingOf(s).delivery.visualOpen).toMatchObject({ text: 'Visual review queued' });
+  });
+});
+
+describe('computeMissionSummary: the missions list\'s reading (3ef37387 R-2, R-13)', () => {
+  it('the strip is the mission page\'s strip over the same rows, in its order', () => {
+    for (const id of ['m-build', 'm-branch', 'm-held', 'm-plan']) {
+      const input = inputsFromWorld(makeWorld(), [id]).get(id)!;
+      const tasks = input.taskRows.map(t => ({ ...t, workers: input.workerRows.filter(w => w.taskId === t.id) }));
+      const projection = taskRowsStripProjection(tasks as never);
+      expect(summaryOf(id).list.strip).toEqual(projection.order.flatMap(t => projection.states.get(t) ?? []));
+    }
+    expect(summaryOf('m-build').list.strip.length).toBe(4);
+  });
+
+  it('last advanced is the latest task update or task start, and null with neither', () => {
+    // t-b3 moved 40 minutes ago, after the mission's last start an hour ago.
+    expect(summaryOf('m-build').list.lastAdvancedAt).toBe(new Date(NOW - 40 * 60_000).toISOString());
+    const world = makeWorld();
+    world.tasks = world.tasks.filter(t => t.missionId !== 'm-held');
+    expect(summaryOf('m-held', world).list.lastAdvancedAt).toBeNull();
+  });
+
+  it('only a recurring open mission has a next run; a check-in schedule is not recurring work', () => {
+    expect(summaryOf('m-cron').list.nextRunAt).toBe(new Date(NOW + 30 * 60_000).toISOString());
+    expect(summaryOf('m-build').list.nextRunAt).toBeNull();
+    const world = makeWorld();
+    const cron = world.missions.find(m => m.id === 'm-cron')! as { schedule: { taskTemplate: unknown } };
+    cron.schedule.taskTemplate = { context: { heartbeat: true } };
+    expect(summaryOf('m-cron', world).list.nextRunAt).toBeNull();
   });
 });
 

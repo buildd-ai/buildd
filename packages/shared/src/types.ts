@@ -3307,7 +3307,7 @@ export interface MissionProgressCell {
  * changes what it derives. A stored summary of another version is read as
  * missing: readers derive live, and the reconcile job rewrites it first.
  */
-export const MISSION_SUMMARY_VERSION = 2;
+export const MISSION_SUMMARY_VERSION = 3;
 
 /** The mission's current delivery: its mission PR, else the newest deliverable task PR. */
 export interface MissionSummaryDelivery {
@@ -3348,6 +3348,8 @@ export interface MissionSummary {
   lastActivityAt: string | null;
   /** What Home shows of the mission: its delivery row, quiet cause and card facts. */
   home: MissionSummaryHome;
+  /** What the missions list shows beside Home's reading: the row's strip, last advance and next run. */
+  list: MissionSummaryList;
   /**
    * The visual review state (`getMissionVisualReviewState`), read only while
    * the review can still say something: an open audit or fix, or an open
@@ -3359,6 +3361,19 @@ export interface MissionSummary {
    * merge yet because of its work (`missionWorkHolder`), else null.
    */
   missionPrWorkHolder: string | null;
+}
+
+/**
+ * The missions list's reading of one mission, beside Home's (spec 3ef37387
+ * R-13): the row's delivery is `home.delivery`, the same card Home shows.
+ */
+export interface MissionSummaryList {
+  /** One display state per task in strip order (`taskRowsStripProjection`, a `StateKey` each). */
+  strip: string[];
+  /** The latest task update or task start; null when the mission has neither. ISO. */
+  lastAdvancedAt: string | null;
+  /** A recurring open mission (a schedule that is not the check-in): its next run, ISO. Null otherwise. */
+  nextRunAt: string | null;
 }
 
 /**

@@ -16,6 +16,9 @@
  *   - Home's reading (`home`): the delivery projection (`projectMissionDelivery`
  *     with `missionDeliveryFacts`), its quiet cause, and the list card's kind,
  *     held, done and strand facts (`buildMissionListCard`), as Home built them;
+ *   - the missions list's reading (`list`): the row's strip
+ *     (`taskRowsStripProjection`, as the mission page draws it), its last
+ *     advance and a recurring mission's next run;
  *   - the visual review state, when the loader read it (an open audit or fix,
  *     or an open mission PR), for the card's delivery line and the mission PR
  *     gate, so no page reads it (or GitHub) while it renders.
@@ -25,7 +28,7 @@
  * (lib/mission-summary-store.ts) writes the output; the loader
  * (lib/mission-summary-load.ts) reads the input.
  */
-import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelivery, type MissionSummaryHome } from '@buildd/shared';
+import { MISSION_SUMMARY_VERSION, type MissionSummary, type MissionSummaryDelivery, type MissionSummaryHome, type MissionSummaryList } from '@buildd/shared';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { assembleMissionStages, type MissionStageRows } from './mission-stage-assemble';
@@ -39,6 +42,7 @@ import { missionWorkHolder, missionWorkStateFromRows } from './mission-work-stat
 import { missionNeedsYou } from './mission-state-view';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { overlayDeliveryLifecycle } from './delivery-overlay';
+import { taskRowsStripProjection } from './mission-strip-order';
 
 /** One mission's rows, as `loadMissionSummaryInputs` reads them. */
 export interface MissionSummaryInput extends MissionStageRows {
@@ -177,6 +181,7 @@ export function computeMissionSummary(input: MissionSummaryInput, now: number): 
     delivery: currentDelivery(mission, cardTasks),
     lastActivityAt: lastActivity(mission, taskRows),
     home,
+    list: listReading(mission, cardTasks, card, input.deliveries as ReadonlyMap<string, unknown>),
     visualReview: visualReview as unknown as Record<string, unknown> | null,
     missionPrWorkHolder: mission.integrationBranchEnabled === true && mission.status !== 'completed' && mission.status !== 'archived'
       ? missionWorkHolder(missionWorkStateFromRows(mission, taskRows as never, input.workerRows as never))
@@ -219,6 +224,25 @@ function homeReading(
       held: model.held,
       strand: model.strand,
     },
+  };
+}
+
+/**
+ * The missions list's reading of one mission: the strip's cells in the
+ * mission page's dependency-first order (each task with its kernel delivery
+ * display, as the page passes it), the latest task movement, and when a
+ * recurring mission runs next (a check-in schedule is not recurring work).
+ */
+function listReading(mission: Row, cardTasks: Row[], card: MissionCardSummary, deliveries: ReadonlyMap<string, unknown>): MissionSummaryList {
+  const projection = taskRowsStripProjection(cardTasks.map(t => ({ ...t, delivery: deliveries.get(t.id) ?? null })) as never);
+  let advanced = ms(mission.lastTaskStartedAt) || 0;
+  for (const t of cardTasks) advanced = Math.max(advanced, ms(t.updatedAt) || 0);
+  const schedule = mission.schedule as { cronExpression?: string | null; taskTemplate?: { context?: { heartbeat?: unknown } } | null } | null;
+  const recurring = !!schedule?.cronExpression && schedule.taskTemplate?.context?.heartbeat !== true && mission.status !== 'completed';
+  return {
+    strip: projection.order.flatMap(id => projection.states.get(id) ?? []),
+    lastAdvancedAt: advanced > 0 ? new Date(advanced).toISOString() : null,
+    nextRunAt: recurring ? card.nextRunAt : null,
   };
 }
 
