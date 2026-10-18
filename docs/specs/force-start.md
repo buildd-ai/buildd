@@ -87,8 +87,8 @@ claim's own per-edge SQL predicate (`dependencySatisfied`).
   the id to be in `pathDeclaration.inferredDependsOn`.
 - Forcing an inferred or migration overlap changes claim order only. The edit-time path lease
   (including the migration anchor) still applies, so migration numbering stays serialized.
-- The admin MCP `claim_task {force: true}` keeps its own gate set; it does not lift
-  `advisory_manifest`.
+- The admin MCP `claim_task {force: true}` keeps its own gate set; it lifts
+  `advisory_manifest` only from a verified interactive session (recorded in the force audit).
 - Declared dependencies and coordination-only holds are counted apart in every headline:
   incidental overlap ordering reads "Waiting on migration slot · N tasks also editing {area}",
   never "waiting on N dependencies".
