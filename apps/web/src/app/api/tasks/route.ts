@@ -373,6 +373,23 @@ export async function GET(req: NextRequest) {
     const nextCursor = hasMore && last ? encodeTaskListCursor(last.createdAt, last.id) : null;
     const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
+    // include=missionStages: each listed mission's stage in this same reply, so
+    // `buildd top` makes one read where it made two (/api/tasks, then
+    // /api/missions/stages; spec 3ef37387 AC-5). The stage is the missions
+    // module's projection, so core reaches it through the composition root,
+    // loaded only when asked. Best effort: a failure answers without stages.
+    const wantsStages = (req.nextUrl.searchParams.get('include') ?? '').split(',').includes('missionStages');
+    let missionStages: Record<string, unknown> | undefined;
+    if (wantsStages) {
+      const ids = [...new Set(listedTasks.map((t: { missionId?: string | null }) => t.missionId).filter((id): id is string => !!id))];
+      try {
+        const { TASK_LIST_MISSION_STAGES } = await import('@/modules');
+        missionStages = Object.fromEntries(await TASK_LIST_MISSION_STAGES(ids, workspaceIds));
+      } catch (err) {
+        console.error('[tasks] mission stages failed:', err);
+      }
+    }
+
     // No PR refresh per poll (spec 3ef37387 R-24): the webhook and the
     // pr-reconcile cron keep PR state fresh.
 
@@ -380,6 +397,7 @@ export async function GET(req: NextRequest) {
       tasks: listedTasks,
       hasMore,
       nextCursor,
+      ...(missionStages ? { missionStages } : {}),
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,

@@ -22,12 +22,11 @@ import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
 import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
-import SpecRepoChecks from '@/components/SpecRepoChecks';
+import SpecRepoChecksFetch from '@/components/SpecRepoChecksFetch';
 import SpecDelivery from '@/components/SpecDelivery';
 import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView, SpecPanes } from '@/lib/specs/page-view';
-import type { RepoCopyPreflight } from '@/lib/specs/repo-copy';
 import { nativeHistoryData } from '@/lib/native-history';
 import type { CriterionMark } from '@/lib/specs/delivery-words';
 
@@ -248,31 +247,6 @@ function Compare({ specId, revisions, from, to }: { specId: string; revisions: n
   );
 }
 
-/**
- * The repo checks on the would-be copy (R-34), fetched after the panel shows:
- * they ask GitHub, which is never on the path of opening Review (R-9).
- */
-function RepoChecks({ specId }: { specId: string }) {
-  const [got, setGot] = useState<{ preflight: RepoCopyPreflight | null } | 'loading' | 'unread'>('loading');
-  useEffect(() => {
-    let live = true;
-    fetch(`/api/specs/${encodeURIComponent(specId)}/preflight`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((b: { preflight?: RepoCopyPreflight | null }) => { if (live) setGot({ preflight: b.preflight ?? null }); })
-      .catch(() => { if (live) setGot('unread'); });
-    return () => { live = false; };
-  }, [specId]);
-  if (got === 'loading') {
-    return (
-      <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-repo-checks-loading">
-        <Spinner size="xs" aria-label="Running the repo checks" /> Running the repo checks…
-      </p>
-    );
-  }
-  if (got === 'unread') return <p className="text-meta text-text-muted" data-testid="spec-repo-checks-unread">Couldn&apos;t run the repo checks. You can still approve; the PR runs them.</p>;
-  return <SpecRepoChecks preflight={got.preflight} />;
-}
-
 type ReviewPanes = SpecPanes & { version?: number };
 const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
 
@@ -321,7 +295,7 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
           {panes.replaces ? (
             <>
               {panes.changes ? <SpecReviewChanges {...panes.changes} /> : null}
-              {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
               <Disclosure
                 summary={<span data-testid="spec-page-full-diff">Show line diff <span className="font-mono text-meta"><span className="text-status-success">+{panes.linesAdded}</span> <span className="text-status-error">−{panes.linesRemoved}</span></span></span>}
                 defaultOpen={!panes.changes}
@@ -333,7 +307,7 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
             <>
               {summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
               <p className="text-body text-text-secondary" data-testid="spec-page-review-first">The whole spec, as approving would put it in force.</p>
-              {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+              {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
               <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
                 <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} />
               </Card>
@@ -346,7 +320,7 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
         </>
       ) : (
         <>
-          {repoChecks ? <RepoChecks specId={spec.id} /> : null}
+          {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
           <p className="flex items-center gap-2 text-meta text-text-muted" data-testid="spec-page-review-loading">
             <Spinner size="sm" aria-label="Reading the changes" /> Reading what changed…
           </p>

@@ -109,7 +109,7 @@ describe('Queue view, live', () => {
     expect(queueReads).toBe(1);
 
     t.type('\t');
-    await until(() => firstRow(t.screen()).includes('fix(kernel): review composition'));
+    await until(() => firstRow(t.screen()).includes('fix(kernel): review compo'));
     expect(queueReads).toBe(2);
 
     // Another runner takes position 1; the server's next answer no longer has it first.
