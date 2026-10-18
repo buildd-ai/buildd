@@ -37,8 +37,8 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { isReviewBudgetSpent, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
-import { openKernelDelivery } from '@/lib/workflow/kernel-client';
+import { policyFindingFor } from '@/lib/workflow/seam';
+import { observeHead, openKernelDelivery, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -596,7 +596,7 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
       installationId: e.installationId,
       hintedHeadSha: e.pr.headSha,
       source: 'webhook:synchronize',
-    }).catch((err) => {
+    }, { principal: systemPrincipal('system:webhook:synchronize') }).catch((err) => {
       // Ownership could not even be read: behave as before the kernel.
       console.error(`[reviewer] workflow kernel ownership check failed for PR #${e.pr.number}:`, err);
       return false;

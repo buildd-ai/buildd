@@ -102,6 +102,22 @@ export interface KernelOps {
   observe_conflict: { input: Parameters<Seam['observeConflict']>[0]; result: Awaited<ReturnType<Seam['observeConflict']>> };
   /** T9: a fix claimed by the claim route, revalidated live (§10.5). The task's workspace rides at the top level, as attempt_ended's. */
   claim_fix: { input: { task: Parameters<Seam['claimFix']>[0]; workspaceId: string }; result: Awaited<ReturnType<Seam['claimFix']>> };
+  /**
+   * T17 to T19: a PR closed, merged or reopened (the webhook, the reconcile and refresh sweeps, the
+   * dependency gate). The control plane reads the live PR. A failed read is an answer, not a throw:
+   * the caller's `pull` is recorded unapplied, the fast heal scheduled, and `observationFailed` says so.
+   */
+  observe_pr_state: { input: Parameters<Seam['observePrState']>[0]; result: PrStateObservation };
+  /** T3: the PR head moved (webhook `synchronize`). True = the kernel owns the PR; legacy must not act. */
+  observe_head: { input: Parameters<Seam['observeHead']>[0]; result: Awaited<ReturnType<Seam['observeHead']>> };
+  /** T29: the PR's base changed (webhook `edited` with `changes.base`). True = the kernel owns the PR. */
+  observe_base: { input: Parameters<Seam['observeBase']>[0]; result: Awaited<ReturnType<Seam['observeBase']>> };
+}
+
+/** `owned` false: not the kernel's PR. `observationFailed`: the kernel owns it but its live read failed (S4a). */
+export interface PrStateObservation {
+  owned: boolean;
+  observationFailed?: { deliveryId: string; reason: string };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -134,6 +150,17 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
     if (task?.workspaceId !== workspaceId) throw new Error('claim_fix: input.workspaceId is not the task\'s workspace');
     return s.claimFix(task);
   },
+  observe_pr_state: async (s, i) => {
+    // A throw would reach the door as `command_failed`; the failed read is the answer itself.
+    try {
+      return { owned: await s.observePrState(i) };
+    } catch (err) {
+      if (err instanceof s.KernelObservationFailed) return { owned: true, observationFailed: { deliveryId: err.deliveryId, reason: err.reason } };
+      throw err;
+    }
+  },
+  observe_head: (s, i) => s.observeHead(i),
+  observe_base: (s, i) => s.observeBase(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];
@@ -144,6 +171,7 @@ type InstallationOp = { [K in KernelOp]: 'installationId' extends keyof KernelOp
 // A record, so the type check fails when an op gains or loses an installationId and this list does not follow.
 const INSTALLATION_OP: Record<InstallationOp, true> = {
   land: true, request_review: true, request_ci_retry: true, record_supersession: true, abandon: true, open_delivery: true, observe_ci_failure: true, observe_ci_green: true, observe_conflict: true,
+  observe_pr_state: true, observe_head: true, observe_base: true,
 };
 /**
  * The control plane acts through the installation it resolves for the command's workspace and repo,

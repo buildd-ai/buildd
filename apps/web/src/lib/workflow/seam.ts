@@ -47,6 +47,7 @@ import { recordPrStateObserved } from './render-observation';
 import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
+import { KernelObservationFailed } from './kernel-observation';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 import { wakeHeldMergesOn } from '@buildd/workflow-kernel/merge-hold';
 
@@ -1055,17 +1056,7 @@ export async function observeBase(p: {
 // AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
 export { deliveryOwnedWorkers, recordPrStateObserved } from './render-observation';
 
-/**
- * A kernel-owned PR whose close or merge the kernel could not take in (S4a): its own live read
- * of GitHub failed, so no transition ran. A fast heal is scheduled (kernel-heal.ts); the caller
- * must not take a legacy path for the PR (the kernel still owns it) and must not report success.
- */
-export class KernelObservationFailed extends Error {
-  constructor(readonly deliveryId: string, readonly reason: string) {
-    super(`kernel could not observe the PR of delivery ${deliveryId}: ${reason}`);
-    this.name = 'KernelObservationFailed';
-  }
-}
+export { KernelObservationFailed } from './kernel-observation';
 
 /**
  * Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C).

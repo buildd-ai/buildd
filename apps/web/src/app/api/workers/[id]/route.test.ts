@@ -760,7 +760,10 @@ mock.module('@/lib/repair-completion', () => ({
 // T4 goes through the one client (AC-9): the kernel's door, not the seam.
 const realKernelClient = await import('@/lib/workflow/kernel-client');
 // T6 too (recorded or adopted): the verdict is the kernel's door, not the seam's.
-mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict }));
+mock.module('@/lib/workflow/kernel-client', () => ({
+  ...realKernelClient, attemptEnded: mockWorkflowAttemptEnded, recordReviewVerdict: mockRecordReviewVerdict, adoptReviewVerdict: mockAdoptReviewVerdict,
+  observeHead: mock(async () => false), observePrState: mock(async () => false),
+}));
 const realHandOff = await import('@/lib/workflow/hand-off');
 mock.module('@/lib/workflow/seam', () => ({
   attemptEnded: mockWorkflowAttemptEnded,
@@ -776,8 +779,6 @@ mock.module('@/lib/workflow/seam', () => ({
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
   openKernelDelivery: mock(async () => ({ owned: false })),
-  observeHead: mock(async () => false),
-  observePrState: mock(async () => false),
   requestReview: mock(async () => ({ handled: false })),
   claimFix: mock(async () => ({ action: 'proceed' })),
   cancelSkippedTask: mock(async () => undefined),
