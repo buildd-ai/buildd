@@ -28,6 +28,8 @@ export interface DeliveryDisplay {
   attemptLine: string | null;
   /** The next transition a person can trigger (S37's "Run fix"), the one Home's card offers. */
   cta: DeliveryCta | null;
+  /** A review escalation's cause label ("Automated fixes exhausted · 2 of 2 used"); null for any other state. */
+  escalationTitle?: string | null;
 }
 
 export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
@@ -43,6 +45,7 @@ export function toDeliveryDisplay(v: DeliveryView): DeliveryDisplay {
     prState: v.prState,
     attemptLine: attemptLine(v.attempts),
     cta: v.cta,
+    escalationTitle: v.escalation?.title ?? null,
   };
 }
 
@@ -115,7 +118,7 @@ export interface DeliveryReading {
   action: { label: string; taskId: string } | null;
 }
 
-export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null };
+export type DeliveryReadingInput = Pick<DeliveryDisplay, 'stage' | 'state' | 'headline' | 'owner'> & { cta?: DeliveryCta | null; escalationTitle?: string | null };
 
 const reading = (label: string, tone: DeliveryTone, action: DeliveryReading['action'] = null): DeliveryReading =>
   ({ label, tone, needsYou: tone === 'needs', failed: tone === 'failed', action });
@@ -152,7 +155,8 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
     // auto-threshold the landing path merges it, so it is live (S35).
     case 'approved': return d.owner === 'human' ? reading('Ready to merge', 'needs') : reading('Approved · merging', 'live');
     case 'landing': return reading('Merging', 'live');
-    case 'needs_you': return reading('Waiting on you', 'needs');
+    // A review escalation names its cause; only an escalation with no brief keeps the generic words.
+    case 'needs_you': return reading(d.escalationTitle ?? 'Waiting on you', 'needs');
     case 'merged': return reading('Merged', 'landed');
     // Not "Merged in #N": the task header pill's input does not carry the
     // successor PR, and every surface must read the same label (S17).
