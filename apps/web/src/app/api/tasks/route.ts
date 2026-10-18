@@ -9,6 +9,7 @@ import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, i
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
+import { listCallerKey, withChangeVersion } from '@/lib/change-version';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
@@ -73,6 +74,7 @@ import { terminalAuditFields } from './audit-fields';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
 import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
+import { settleWorkChanges } from '@/lib/settle-work-changes';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -142,7 +144,7 @@ export async function GET(req: NextRequest) {
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
-  const user = await getCurrentUser();
+  const user = apiAccount ? null : await getCurrentUser();
 
   if (!apiAccount && !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -152,9 +154,11 @@ export async function GET(req: NextRequest) {
     // Same reach rule as workspace listing and task/mission creation
     // (lib/workspace-access.ts): an account sees its own team's open
     // workspaces plus its explicit links; a user sees their teams' workspaces.
-    let workspaceIds: string[] = await listReachableWorkspaceIds(
-      apiAccount ? { account: apiAccount } : { userId: user!.id },
-    );
+    // Resolved fresh on every read, never cached: an unlink, a switch to
+    // restricted access or a team removal must drop the workspace from the very next read.
+    const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
+    const listCaller = listCallerKey(accessCaller);
+    let workspaceIds: string[] = await listReachableWorkspaceIds(accessCaller);
     if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
 
     // Optional query filters to scope the list and shrink the payload.
@@ -198,6 +202,9 @@ export async function GET(req: NextRequest) {
       workspaceIds = workspaceIds.filter(id => id === requestedWorkspaceId);
     }
 
+    // R-20: a poll that sent the current change version gets 304 before any row is read.
+    // budgetWindows reads the account's own reset time, which no counter sees: it varies the key.
+    return await withChangeVersion(req, { scopes: workspaceIds, caller: listCaller, vary: [apiAccount?.budgetResetsAt ?? null] }, async () => {
     const terminalStatuses = [...TERMINAL_TASK_STATUSES];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
@@ -409,6 +416,7 @@ export async function GET(req: NextRequest) {
         },
       } : undefined,
     }, undefined, { route: req.nextUrl.pathname });
+    });
   } catch (error) {
     // Audit mode (a terminal ?status) reaches a workspace's entire history with
     // no 24h window — the one query path where an unusual row shape or a slow
@@ -474,6 +482,9 @@ async function withTaskListAggregates<T extends { id: string; status: string; mi
 }
 
 export async function POST(req: NextRequest) {
+  // Read-your-writes (spec 3ef37387 R-20): the change version moves before this answers.
+  // The body is deliberately not re-indented, so this stays a small diff.
+  try {
   // Dev mode returns mock
   if (process.env.NODE_ENV === 'development') {
     return NextResponse.json({ id: 'dev-task', title: 'Dev Task' });
@@ -2116,4 +2127,5 @@ export async function POST(req: NextRequest) {
     console.error('Create task error:', error);
     return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });
   }
+  } finally { await settleWorkChanges(); }
 }
