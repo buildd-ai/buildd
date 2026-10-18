@@ -12,7 +12,8 @@
  *  2. The plan, in Redis, for the read limiter (lib/read-rate-limit.ts), which
  *     runs in proxy.ts before any route and has no database.
  *
- * Plan lookups are cached in process, so this adds no query to a warm request.
+ * Plan lookups are cached (a team's in Redis via lib/team-cache.ts, a user's
+ * best plan in process), so this adds no query to a warm request.
  */
 import { trace, type Attributes, type Span } from '@opentelemetry/api';
 import type { TeamPlan } from '@buildd/shared';
@@ -83,19 +84,22 @@ const noteRequestTenant = createTenantNoter({
   setPlan: async (subject, plan, ttl) => (await import('./redis')).setReadPlan(subject, plan, ttl),
 });
 
-const teamPlans = new TTLCache<TeamPlan>({ maxSize: 2_000, ttlMs: 5 * 60_000 });
 const userTenants = new TTLCache<Tenant | null>({ maxSize: 2_000, ttlMs: 5 * 60_000 });
 
-async function teamPlan(teamId: string): Promise<TeamPlan> {
-  const hit = teamPlans.get(teamId);
-  if (hit) return hit;
-  const [{ db }, { teams }, { eq }, { sqlWhere }] = await Promise.all([
+/**
+ * A team's plan, from the per-team cache (lib/team-cache.ts: 30 s, cleared
+ * when the plan changes, shared by every instance; in process with no Redis).
+ */
+export async function teamPlan(teamId: string): Promise<TeamPlan> {
+  const [{ db }, { teams }, { eq }, { sqlWhere }, { cachedTeamRead }] = await Promise.all([
     import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'), import('@buildd/core/db/relational-sql'),
+    import('./team-cache'),
   ]);
-  const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { plan: true } });
-  const plan = normalizePlan(row?.plan);
-  teamPlans.set(teamId, plan);
-  return plan;
+  const plan = await cachedTeamRead<TeamPlan>(teamId, 'plan', async () => {
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { plan: true } });
+    return normalizePlan(row?.plan);
+  }, { localWithoutRedis: true });
+  return normalizePlan(plan);
 }
 
 async function userTenant(userId: string): Promise<Tenant | null> {

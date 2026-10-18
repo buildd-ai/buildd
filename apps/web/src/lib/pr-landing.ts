@@ -262,11 +262,19 @@ export interface LandPrDeps {
    * Defaults to the seam's `kernelLandingView`.
    */
   kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
+  /** AC-13: adopts a PR with no delivery before the door decides who owns it (pr-landing-adoption.ts). Injected by tests. */
+  adoptBeforeMerge?: typeof import('@/lib/pr-landing-adoption').adoptBeforeMerge;
+  /** The release gate's merge for a PR adoption answered `gate` for. Injected by tests. */
+  mergeOutsideKernel?: typeof import('@/lib/pr-landing-adoption').mergeOutsideKernel;
   /** Runs a delivery's due effects (a REPAIRING delivery's backed-off repair). Defaults to the seam's `drainDelivery`. */
   drainDelivery?: (deliveryId: string) => Promise<unknown>;
   /** The mission-PR / delivery-target hold. Defaults to mission-pr.ts `guardMissionPrMerge`. */
   guardMissionPrMerge?: typeof guardMissionPrMerge;
 }
+
+// AC-13: the adoption step every worker merge door runs (pr-landing-adoption.ts), re-exported for doors
+// that already import this module.
+export { adoptBeforeMerge, mergeOutsideKernel } from './pr-landing-adoption';
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
 
@@ -900,6 +908,24 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
+  //
+  // AC-13 (workflow-kernel-library.md §4): a PR with no delivery is adopted before this door
+  // decides who owns it (open_delivery, the PR's task as the owner), so it lands through the
+  // kernel's gate, which owes it a review of this head. One nothing can adopt is refused, never
+  // merged on the legacy arm. Observe-only evaluation (`!act`) opens nothing.
+  let adoption: import('@/lib/pr-landing-adoption').MergeAdoption | null = null;
+  if (act) {
+    const adoptBeforeMerge = deps.adoptBeforeMerge ?? (await import('@/lib/pr-landing-adoption')).adoptBeforeMerge;
+    adoption = await adoptBeforeMerge(
+      { workspaceId, installationId, repoFullName, prNumber, taskId: owner.taskId ?? null, door: `land_pr:${input.door}` },
+      { principal: input.principal },
+    );
+    if (adoption.kind === 'refused') {
+      if (adoption.reason === 'adoption_failed:adoption_unavailable') return waiting(adoption.message, { adoption: adoption.reason });
+      return human('unsafe_other', adoption.message, { adoption: adoption.reason });
+    }
+    if (adoption.kind === 'kernel' && adoption.adopted) kernelViewPromise = null;
+  }
   kernelView = await kernelStatus();
   if (kernelView?.current.state === 'REPAIRING') {
     // edc02148: a repair whose effect backed off (a refresh that threw once) is owed again once due,
@@ -1094,13 +1120,22 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }, { principal: input.principal });
     if (kernel) return { kernel };
     if (lastingHold) return { held: true as const };
+    // Only the adoption's legacy answer (kill switch off, a released delivery) reaches GitHub here.
+    if (adoption?.kind === 'gate') {
+      const outside = deps.mergeOutsideKernel ?? (await import('@/lib/pr-landing-adoption')).mergeOutsideKernel;
+      return { legacy: await outside({ workspaceId, installationId, repoFullName, prNumber, headSha: liveHead, mergeMethod, door: `land_pr:${input.door}`, actorUserId: actor.kind === 'human' ? actor.userId ?? null : null, taskId: owner.taskId ?? null }) };
+    }
+    if (adoption?.kind !== 'legacy') return { notLanded: true as const };
     return { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
   const slot = slotted.result;
   if ('kernel' in slot && slot.kernel) return kernelLanded(slot.kernel);
+  if ('notLanded' in slot) return waiting(`the workflow owns PR #${prNumber} and did not take the merge; nothing was merged`, { kernel: 'not_landed' });
   if ('held' in slot || !slot.legacy) return human('unsafe_other', lastingHold ?? 'a merge rail refused', { waitingOn: 'delivery_target' });
   const result = slot.legacy;
+  // The release gate is waiting (a required check, the review): a wait, never a failed merge.
+  if (!result.merged && 'hold' in result && result.hold) return waiting(result.message || 'the release gate is waiting');
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';

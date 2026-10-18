@@ -821,7 +821,7 @@ describe('a green head from the check_suite webhook is a door too (AC-9): CiGree
   });
 });
 
-describe('AC-35: a door command the control plane never answered is parked for the floor, under its own key', () => {
+describe('AC-74: a door command the control plane never answered is parked for the floor, under its own key', () => {
   const end = {
     task: { id: 't-1', workspaceId: WS, deliveryId: DELIVERY, deliveryRole: 'fix', context: { workflowAttemptId: 'a-1' } },
     workerId: 'w-1', status: 'completed' as const, localHeadSha: 'H1', commitCount: 1, source: 'runner',
@@ -1647,4 +1647,182 @@ describe('T17 to T19, T3 and T29 from the webhook and the sweeps are doors too (
     }
     expect([shouldPark('observe_pr_state'), shouldPark('observe_head'), shouldPark('observe_base')]).toEqual([false, true, true]);
   });
+});
+
+describe('a person-only op is refused for any other caller, on this host too', () => {
+  const disposeInput = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, actor: `human:${USER}`, findingId: 'r1:0', disposition: 'waived' as const, reason: 'covered' };
+  it('an account, a system caller or no principal never reaches the kernel', async () => {
+    for (const p of [{ kind: 'account' as const, id: '44444444-4444-4444-8444-444444444444' }, { kind: 'system' as const, id: 'sweep' }, null]) {
+      const { ran, deps } = local();
+      await expect(submitKernelCommand('dispose_finding', disposeInput, { principal: p, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+      expect(ran).toEqual([]);
+    }
+  });
+  it('a person acting as someone else is refused; as themselves it runs', async () => {
+    const { ran, deps } = local();
+    await expect(submitKernelCommand('dispose_finding', { ...disposeInput, actor: 'human:other' }, { principal, deps })).rejects.toBeInstanceOf(KernelCommandRefusedError);
+    expect(ran).toEqual([]);
+    await submitKernelCommand('dispose_finding', disposeInput, { principal, deps });
+    expect(ran).toEqual(['dispose_finding']);
+  });
+});
+
+describe('a webhook request answers inside GitHub\'s timeout when the control plane hangs', () => {
+  const webhook = { kind: 'system' as const, id: 'system:webhook:check_suite' };
+  const hanging = ((_u: string, init: RequestInit) => new Promise((_res, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); })) as unknown as typeof fetch;
+  const greenFor = (prNumber: number) => ({ workspaceId: WS, repoFullName: 'acme/w', prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' });
+  const parker = () => {
+    const parked: Array<Record<string, unknown>> = [];
+    return { parked, park: (async (p: Record<string, unknown>) => { parked.push(p); return true; }) as never };
+  };
+
+  afterEach(async () => { (await import('./kernel-client')).resetWebhookBreaker(); });
+
+  it('the budgets sit well under the ten seconds GitHub allows', async () => {
+    const { WEBHOOK_BUDGET_MS, WEBHOOK_DOOR_BUDGET_MS } = await import('./kernel-client');
+    expect(WEBHOOK_DOOR_BUDGET_MS).toBeLessThanOrEqual(WEBHOOK_BUDGET_MS);
+    expect(WEBHOOK_BUDGET_MS).toBeLessThanOrEqual(7_000);
+  });
+
+  it('three doors against a hanging control plane: back within the bound, the first waits its budget, the rest skip it, and every green is parked under a key from the delivery', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const k = parker();
+    let sent = 0;
+    const counting = ((u: string, init: RequestInit) => { sent++; return (hanging as unknown as (u: string, i: RequestInit) => Promise<Response>)(u, init); }) as unknown as typeof fetch;
+    const deps = { ...local().deps, sleep: undefined, env: OWN, fetch: counting, park: k.park };
+    const t0 = Date.now();
+    const errs = await withWebhookBudget('delivery-abc', async () => {
+      const out: unknown[] = [];
+      for (const n of [1, 2, 3]) out.push(await observeCiGreen(greenFor(n), { principal: webhook, deps }).catch((e) => e));
+      return out;
+    });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    for (const e of errs) expect(e).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(sent).toBe(1);
+    expect(k.parked).toHaveLength(3);
+    for (const p of k.parked) expect(p).toMatchObject({ op: 'observe_ci_green', principal: webhook });
+    expect(new Set(k.parked.map((p) => p.key)).size).toBe(3);
+    for (const p of k.parked) expect(String(p.key)).toMatch(/^webhook:delivery-abc:observe_ci_green:[0-9a-f]{16}$/);
+  }, 15_000);
+
+  it('a push and a retarget are parked the same way (and ownership is still read here)', async () => {
+    const { observeHead, observeBase, withWebhookBudget } = await import('./kernel-client');
+    const k = parker();
+    const deps = { ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '200' }, fetch: hanging, park: k.park, kernelDeliveryOf: async () => DELIVERY };
+    const t0 = Date.now();
+    const [head, base] = await withWebhookBudget('delivery-def', async () => [
+      await observeHead({ workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedHeadSha: 'H2', source: 'webhook:synchronize' }, { principal: webhook, deps }),
+      await observeBase({ workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hintedFromBase: 'dev', source: 'webhook:edited' }, { principal: webhook, deps }),
+    ], { env: deps.env });
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect([head, base]).toEqual([true, true]);
+    expect(k.parked.map((p) => p.op)).toEqual(['observe_head', 'observe_base']);
+  });
+
+  it('a close is recorded unapplied for the fast heal, and the caller is told the read failed', async () => {
+    const { observePrState, withWebhookBudget, KernelObservationFailed } = await import('./kernel-client');
+    const recorded: Array<[string, unknown]> = [];
+    const deps = {
+      ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '200' }, fetch: hanging,
+      kernelDeliveryOf: async () => DELIVERY, recordUnapplied: async (d: string, p: unknown) => { recorded.push([d, p]); },
+    };
+    const t0 = Date.now();
+    const err = await withWebhookBudget('delivery-ghi', () => observePrState(
+      { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:closed', pull: { number: 7, state: 'closed', merged: true } },
+      { principal: { kind: 'system', id: 'system:webhook:closed' }, deps },
+    ), { env: deps.env }).catch((e) => e);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(err).toBeInstanceOf(KernelObservationFailed);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0][0]).toBe(DELIVERY);
+  });
+
+  it('a door with no durable fallback (open_delivery, land) is not capped, never trips the breaker and is not refused by a spent request budget', async () => {
+    const { openKernelDelivery, landThroughKernel, observeCiGreen, withWebhookBudget, WEBHOOK_CAPPED_OPS } = await import('./kernel-client');
+    expect([...WEBHOOK_CAPPED_OPS].sort()).toEqual(['observe_base', 'observe_ci_failure', 'observe_ci_green', 'observe_conflict', 'observe_head', 'observe_pr_state']);
+    const sent: string[] = [];
+    // Answers after 400 ms: far past the 100 ms cap below, so a capped door would give up and legacy would take the PR.
+    const slow = ((_u: string, init: RequestInit) => {
+      const op = JSON.parse(String(init.body)).op as string;
+      sent.push(op);
+      return new Promise((res) => setTimeout(() => res(answer({ op, result: op === 'open_delivery' ? { owned: true } : { merged: true } })), 400));
+    }) as unknown as typeof fetch;
+    const env = { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '100', KERNEL_WEBHOOK_BUDGET_MS: '100' };
+    const deps = { ...local().deps, sleep: undefined, env, fetch: slow, park: parker().park };
+    const opened = { workspaceId: WS, ownerTaskId: 't-1', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:opened' };
+    const out = await withWebhookBudget('delivery-open', async () => {
+      const first = await openKernelDelivery(opened as never, { principal: webhook, deps });
+      const landed = await landThroughKernel(input as never, { principal: webhook, deps });
+      // The request's own budget is spent by now; the uncapped doors still ran, and the breaker is closed.
+      const green = await observeCiGreen(greenFor(7), { principal: webhook, deps }).catch((e) => e);
+      return { first, landed, green };
+    }, { env });
+    expect(out.first).toEqual({ owned: true });
+    expect(out.landed).toEqual({ merged: true });
+    expect(sent.slice(0, 2)).toEqual(['open_delivery', 'land']);
+    // The capped door is the one that gave up (and is parked); the uncapped ones did not open the breaker beforehand.
+    expect(out.green).toBeInstanceOf(ControlPlaneUnavailableError);
+  });
+
+  it('outside a webhook the door keeps its own budget (no cap, no breaker)', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const down = (async () => { throw refusedErr(); }) as unknown as typeof fetch;
+    // A webhook door that fails opens the breaker...
+    let t = 0;
+    const now = () => t;
+    await withWebhookBudget('delivery-x', () => observeCiGreen(greenFor(1), { principal: webhook, deps: { ...local().deps, env: OWN, fetch: down, now, sleep: async (ms: number) => { t += ms + 5_000; }, park: parker().park } }).catch(() => null), { now });
+    // ...but a sweep's door call is not skipped by it.
+    let sent = 0;
+    const ok = (async () => { sent++; return answer({ op: 'observe_ci_green', result: { handled: false } }); }) as unknown as typeof fetch;
+    expect(await observeCiGreen(greenFor(2), { principal: webhook, deps: { ...local().deps, env: OWN, fetch: ok, now } })).toEqual({ handled: false });
+    expect(sent).toBe(1);
+  });
+
+  it('a redelivery after a slow apply that succeeded is a no-op: same key, one apply, and the floor\'s replay of the parked row is the same command', async () => {
+    const { observeCiGreen, withWebhookBudget } = await import('./kernel-client');
+    const { drainParkedCommands, resubmitFromWeb } = await import('./command-outbox');
+    // A control plane with a ledger: it applies a command once per key and answers a repeat with what was done.
+    const ledger = new Map<string, unknown>();
+    let applied = 0;
+    let slow = true;
+    const controlPlane = ((_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { idempotencyKey: string };
+      const seen = ledger.has(body.idempotencyKey);
+      if (!seen) { applied++; ledger.set(body.idempotencyKey, { handled: true }); }
+      if (slow && !seen) return new Promise((_r, rej) => { init.signal?.addEventListener('abort', () => rej(init.signal!.reason)); });
+      return Promise.resolve(answer({ op: 'observe_ci_green', idempotencyKey: body.idempotencyKey, result: ledger.get(body.idempotencyKey), replayed: seen }));
+    }) as unknown as typeof fetch;
+    const k = parker();
+    const deps = { ...local().deps, sleep: undefined, env: { ...OWN, KERNEL_WEBHOOK_DOOR_BUDGET_MS: '150' }, fetch: controlPlane, park: k.park };
+    const deliver = () => withWebhookBudget('delivery-redo', () => observeCiGreen(greenFor(7), { principal: webhook, deps }).catch((e) => e), { env: deps.env });
+
+    // First delivery: applied, but the answer came too late. It is parked under the delivery's key.
+    expect(await deliver()).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(applied).toBe(1);
+    expect(k.parked).toHaveLength(1);
+    const key = String(k.parked[0].key);
+    const { resetWebhookBreaker } = await import('./kernel-client');
+    resetWebhookBreaker();
+
+    // GitHub's redelivery: the same key, answered from the ledger.
+    slow = false;
+    expect(await deliver()).toEqual({ handled: true });
+    expect(applied).toBe(1);
+    expect(k.parked).toHaveLength(1);
+
+    // The floor's replay of the parked row: still the same command.
+    const row = { key, op: 'observe_ci_green', input: k.parked[0].input as Record<string, unknown>, principal: webhook, priorUnknown: true, attempt: 1 };
+    const log: string[] = [];
+    await drainParkedCommands({
+      outbox: {
+        park: async () => true, claimDue: async () => [row],
+        settle: async (_r, outcome) => { log.push(outcome); return true; }, retry: async () => true, bury: async () => true, prune: async () => 0,
+      },
+      ledger: { read: async () => null } as never,
+      host: () => 'web',
+      resubmit: (r) => resubmitFromWeb(r, { priorUnknown: r.priorUnknown, deps: { ...deps, env: OWN } }),
+    });
+    expect(applied).toBe(1);
+    expect(log).toEqual(['replayed:answered']);
+  }, 15_000);
 });

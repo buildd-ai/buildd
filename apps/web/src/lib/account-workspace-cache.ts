@@ -1,12 +1,7 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { TTLCache } from './cache';
-import {
-  getCachedAccountWorkspaces,
-  setCachedAccountWorkspaces,
-  invalidateCachedAccountWorkspaces,
-} from './redis';
+import { cachedCaller, clearCallerCache, callerDep } from './caller-cache';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { liveGrantedWorkspaceIds } from './granted-links';
 
@@ -31,19 +26,16 @@ export interface AccountWorkspacePermission {
 }
 
 /**
- * Cache account → workspace permissions.
+ * Account → workspace permissions, cached in Redis for at most 60 s
+ * (lib/caller-cache.ts). Queried on every claim, active workers check, task
+ * list and workspace list.
  *
- * Keyed by accountId, returns the list of workspace permissions for that account.
- * This is queried on every claim, active workers check, task list, and workspace list.
- *
- * 5-minute TTL — permission changes (linking/unlinking accounts from workspaces)
- * are rare admin actions that can tolerate brief staleness.
+ * Cleared on every instance at once when a link is created, updated or
+ * deleted (invalidateAccountWorkspaceCache) or a linked workspace's access
+ * mode changes (invalidateWorkspacePermissionsCache). An account with no
+ * links is cached too; every link write clears it, so a new link is seen on
+ * the next call.
  */
-const permissionsCache = new TTLCache<AccountWorkspacePermission[]>({
-  maxSize: 500,
-  ttlMs: 5 * 60 * 1000, // 5 minutes
-});
-
 /**
  * Get workspace permissions for an account, with caching.
  *
@@ -70,57 +62,43 @@ export async function getAccountWorkspacePermissions(
 }
 
 async function loadAccountWorkspacePermissions(accountId: string): Promise<AccountWorkspacePermission[]> {
-  // L1: in-memory TTL cache
-  const cached = permissionsCache.get(accountId);
-  if (cached) return cached;
-
-  // L2: Redis (survives cold starts across serverless instances)
-  const redisPerms = await getCachedAccountWorkspaces<AccountWorkspacePermission[]>(accountId);
-  if (redisPerms) {
-    permissionsCache.set(accountId, redisPerms);
-    return redisPerms;
-  }
-
-  // L3: DB
-  const rows = await db.query.accountWorkspaces.findMany({
-    where: sqlWhere(eq(accountWorkspaces.accountId, accountId)),
+  const hit = await cachedCaller(`acct-ws:${accountId}`, async () => {
+    const rows = await db.query.accountWorkspaces.findMany({
+      where: sqlWhere(eq(accountWorkspaces.accountId, accountId)),
+    });
+    const permissions: AccountWorkspacePermission[] = rows.map((r) => ({
+      workspaceId: r.workspaceId,
+      canClaim: r.canClaim,
+      canCreate: r.canCreate,
+      ...(r.grantedByUserId ? { grantedByUserId: r.grantedByUserId } : {}),
+    }));
+    // Wrapped: an empty list is an answer, not a miss.
+    return { permissions };
+  }, {
+    known: [callerDep.account(accountId), callerDep.accountLinks(accountId)],
+    depsOf: (v) => v.permissions.map((p) => callerDep.workspace(p.workspaceId)),
   });
-
-  const permissions: AccountWorkspacePermission[] = rows.map((r) => ({
-    workspaceId: r.workspaceId,
-    canClaim: r.canClaim,
-    canCreate: r.canCreate,
-    ...(r.grantedByUserId ? { grantedByUserId: r.grantedByUserId } : {}),
-  }));
-
-  permissionsCache.set(accountId, permissions);
-  await setCachedAccountWorkspaces(accountId, permissions);
-  return permissions;
+  return hit?.permissions ?? [];
 }
 
 /**
- * Invalidate permissions cache for a specific account.
+ * Invalidate permissions for a specific account, on every instance.
  * Call when account-workspace links are created, updated, or deleted.
  */
-export function invalidateAccountWorkspaceCache(accountId: string): void {
-  permissionsCache.delete(accountId);
-  void invalidateCachedAccountWorkspaces(accountId);
+export async function invalidateAccountWorkspaceCache(accountId: string): Promise<void> {
+  await clearCallerCache(callerDep.accountLinks(accountId));
 }
 
 /**
- * Invalidate permissions cache for all accounts linked to a workspace.
+ * Invalidate permissions for all accounts linked to a workspace.
  * Call when a workspace's accessMode changes (since it affects claim routing).
  */
-export function invalidateWorkspacePermissionsCache(workspaceId: string): void {
-  permissionsCache.deleteWhere((key) => {
-    const perms = permissionsCache.get(key);
-    return perms?.some((p) => p.workspaceId === workspaceId) ?? false;
-  });
+export async function invalidateWorkspacePermissionsCache(workspaceId: string): Promise<void> {
+  await clearCallerCache(callerDep.workspace(workspaceId));
 }
 
 /**
- * Clear the entire permissions cache. Mainly for testing.
+ * Nothing is held in process any more (every entry lives in Redis and is
+ * cleared by the hooks above); kept so tests can still reset between cases.
  */
-export function clearAccountWorkspaceCache(): void {
-  permissionsCache.clear();
-}
+export function clearAccountWorkspaceCache(): void {}

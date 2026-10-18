@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { clearCallerCache, callerDep } from '@/lib/caller-cache';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -302,6 +303,9 @@ export async function POST(req: NextRequest) {
         teamId,
       })
       .returning();
+
+    // Created open: the team's accounts reach it on their next call.
+    await clearCallerCache(callerDep.teamOpenWorkspaces(teamId));
 
     // Modules react (e.g. connectors preinstalled from the team's catalog).
     await emit({ type: 'workspace.created', workspaceId: workspace.id, teamId, origin: req.nextUrl.origin });

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/command-outbox.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
+verified_by: [packages/workflow-kernel/src/review-verdict-authority.test.ts, apps/web/tests/db/escalation-decisions.test.ts, packages/workflow-kernel/src/decision-refusal.test.ts, packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/attempt-writers-slice9.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/reaper-attempt-end.test.ts, apps/web/tests/db/attempt-requeue.test.ts, apps/web/tests/db/claim-attempt-start.test.ts, apps/web/tests/db/attempt-writers-kernel.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, apps/web/tests/db/mission-pr-delivery.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/pr-landing-adoption.test.ts, apps/web/tests/db/merge-adoption.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/src/lib/workflow/command-outbox.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/merge-hold.test.ts, apps/web/src/lib/required-check-hold.test.ts, packages/workflow-kernel/src/open-pr-status.test.ts, apps/web/src/lib/workflow/open-pr-status.test.ts, apps/web/tests/db/workflow-open-pr-status.test.ts, apps/web/src/lib/workflow/fix-completion-gate.test.ts, apps/web/tests/db/workflow-seam.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -256,10 +256,20 @@ GitHub or Next.js.
   for every handler family (a `handlers/...` scenario may also run a handler
   directly, past the drain's guards, so the handler's own guard is what it
   tests). The host's `policy` is part of the `ConformanceHost`: the drain
-  reads the kill switch from it on both stores. NOT IMPLEMENTED: the rest of
-  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences as
-  conformance scenarios (they run today as the epoch reducer's package tests
-  and the Postgres epoch suite, §6).
+  reads the kill switch from it on both stores. Every kernel-decided §16
+  matrix row is a scenario too (`matrix-scenarios.ts`, see
+  workflow-state-kernel.md §16). The incident sequences are scenarios of
+  their own (`incident-scenarios.ts`): the #3787 double ingest of a merged
+  epoch (one successor), the #4663/#4670 refresh with unique work left on a
+  merged branch (held, never retargeted to trunk), the §15 replay of #3754
+  (`head_already_reviewed`), and the #4686 chain end to end (a mission
+  delivery opens, changes are requested, a coordination repair ends with no
+  edits, a person merges on GitHub). The epoch scenarios reach the host's
+  epoch rows through `ConformanceHost.epochs` (`EpochHost`: seed a mission,
+  load its epochs, apply one transition's ops all or nothing), so the
+  in-memory store and buildd's `applyEpochOpsSql` meet the same CAS and
+  unique-index expectations. `conformance.test.ts` plants one adapter fault
+  per incident and checks its scenario fails at the step it guards.
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -510,7 +520,9 @@ the control plane, authenticated as the caller).
   due delivery (`heal`); the floor pass, and any T17 to T19 it applies, runs
   there. An unconfirmed heal is re-marked while the delivery is still owed,
   and the floor backs it. GitHub sends `synchronize` and a retarget once, so
-  an unanswered `observe_head` or `observe_base` is parked (AC-35); unanswered,
+  an unanswered `observe_head` or `observe_base` is parked (AC-74), and the
+  webhook route gives every door a short shared budget so its response beats
+  GitHub's timeout (AC-65); unanswered,
   refused or failed, ownership is read on the web host so legacy never acts
   beside the kernel. `recordLocalHead` is one provenance
   statement on an attempt row, not a command. `cancelSkippedTask` writes a
@@ -660,7 +672,7 @@ the web host.
   later THEN it takes the claim over and runs, while a live command's renewed
   claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
-- AC-35 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
+- AC-74 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
   unreachable for a door's whole budget WHEN an attempt end, a reviewer's
   verdict or a CI green is submitted THEN it is parked under its idempotency key, and once the control
   plane answers the floor applies it exactly once (a repeat is answered from
@@ -669,10 +681,43 @@ the web host.
   stale (a verdict) or as for another head (a green) and settled, never
   applied; and a fix claim is never parked (`kernel-command-host.test.ts`,
   `command-outbox.test.ts`, `kernel-client.test.ts`).
+  replaces: AC-35
+
+- AC-65 (failure): GIVEN `EXECUTION_MODE=own` and a control plane that is slow
+  or hangs WHEN GitHub delivers a webhook whose handler submits a door op
+  (`observe_ci_green`, `observe_pr_state`, `observe_head`, `observe_base`)
+  THEN the response is back well inside GitHub's ten seconds: each door waits
+  at most `WEBHOOK_DOOR_BUDGET_MS` (2.5 s), the request's doors together at most
+  `WEBHOOK_BUDGET_MS` (6 s), and a door left unanswered opens a process-level
+  breaker (`WEBHOOK_SKIP_MS`, 45 s) so the rest of the request and the
+  deliveries after it skip the wait. Nothing is lost: a green, a push and a
+  retarget are parked (AC-74), a close is recorded unapplied and healed
+  (AC-3), and a kernel-owned PR is never handed to legacy. A door's command key
+  derives from the delivery id, the op and the input, so GitHub's redelivery
+  of a request that did apply, slowly, is the same command: the ledger answers
+  with what was done, and the floor's replay of the parked row applies nothing
+  twice. The cap, the request budget and the breaker apply only to doors with a
+  durable fallback (`WEBHOOK_CAPPED_OPS`): the parked ops above, `observe_pr_state`,
+  and two that are not parked, `observe_ci_failure` and `observe_conflict`, which
+  the red-PR sweep and the conflict sweeps re-send. Every other door
+  (`open_delivery`, `land`, the rest) keeps its own budget and runs outside the
+  webhook's scope: a timed-out `open_delivery` would hand the PR to legacy review
+  while the control plane may still finish it, and a timed-out `land` would leave
+  a release PR to the held-release sweep. Such a door is never capped, never opens
+  the breaker and is never refused for a spent request budget
+  (`kernel-client.test.ts`, `route.test.ts` beside
+  `apps/web/src/app/api/github/webhook/route.ts`).
 
 Criterion numbering note: the sweep-budget and command-lease criterion in §3
 was formerly labeled AC-13 and is now AC-30. The findings criterion in §4
 keeps AC-13; evidence tables below reference criteria rather than define them.
+
+Criterion numbering note, second: the Living Spec of this library and `workflow-state-kernel.md`
+both own AC-31 to AC-42 (state-kernel §13.13 rules and the review-approval criteria), so this
+file's own landing, epoch, projection and open-PR-status criteria, once numbered AC-31 to AC-39,
+are AC-70 to AC-78 (31 to 70, 32 to 71, 33 to 72, 34 to 73, 35 to 74, 36 to 75, 37 to 76,
+38 to 77, 39 to 78), each with a `replaces:` line. A test tagged AC-31 to AC-42 now means the
+Living Spec's criterion of that number.
 
 ## 4. One landing authority
 
@@ -754,7 +799,7 @@ recorded as such, never as an approval.
   doors hold on the same answer instead of failing the release.
 - Every open PR head in a linked repo carries `Buildd / Review approval`,
   not only a kernel-owned one, so a required check never waits on a context
-  nothing will publish (AC-37). A head the kernel answers for (a live
+  nothing will publish (AC-76). A head the kernel answers for (a live
   delivery at that head) gets the kernel's answer above, written by its own
   effect. A frozen release candidate gets the release gate's answer at its
   SHA: `success` only when every required candidate check passed on that SHA
@@ -765,7 +810,7 @@ recorded as such, never as an approval.
   over while its PR stays open) is `pending`, "Review not requested" or
   "Review in progress", and never `success`: only a delivery's gate says a
   head may merge. A success given to one head never carries over to another
-  (AC-38).
+  (AC-77).
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
@@ -843,7 +888,7 @@ recorded as such, never as an approval.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
-- Events publish it without waiting for the floor (AC-39):
+- Events publish it without waiting for the floor (AC-78):
   `publishOpenPrHead` (`apps/web/src/lib/workflow/open-pr-status.ts`), called
   through `republishPrHeads` (`open-pr-events.ts`) from the `pull_request`
   (opened, reopened, synchronize, ready_for_review), `check_suite` and
@@ -859,7 +904,7 @@ recorded as such, never as an approval.
   later verdict flips a verified candidate at once. On the web host it writes
   commit statuses only; a head a delivery owns is republished by the kernel
   through its own door and by the floor, never by this path.
-- Every open PR carries it (AC-37, AC-38): `openHeadStatus`,
+- Every open PR carries it (AC-76, AC-77): `openHeadStatus`,
   `releaseCandidateStatus`, `unownedPrStatus` and `statusCoverage`
   (`packages/workflow-kernel/src/open-pr-status.ts`) decide; the host's
   `publishOpenPrStatuses` (`apps/web/src/lib/workflow/open-pr-status.ts`) is a
@@ -885,10 +930,36 @@ recorded as such, never as an approval.
 - D4 refuses when no workspace resolves; D5 `force` no longer skips the review
   verdict. `apps/web/src/lib/workflow/merge-door-inventory.test.ts` fails on
   any merge call not in the inventory.
-- Deviation: a PR with no delivery is still merged by its door's legacy arm
-  (worker doors under their own review gate; release PRs under the release
-  gate above). Adopting the delivery first is the follow-up slice; release
-  PRs need an owner decision, since their bookkeeping lives outside the kernel.
+- A PR with no delivery is adopted before a worker door merges it (AC-13,
+  #4686): `adoptBeforeMerge` (`apps/web/src/lib/pr-landing-adoption.ts`)
+  runs in D2/D3 `landPr` (when it acts), D4 `tryAutoMergeWorkerPr`, D5
+  `merge_pr` and D6 the dashboard merge, before the door reads who owns the
+  PR. With no delivery row it calls `open_delivery` with the door's task
+  (an attempt walked to its owner) and the door's principal; the delivery
+  starts as a late open does (the owner's end forwarded, a review of the live
+  head owed), so the door lands it through T15 and a legacy reviewer's
+  approval never carries it. Before opening anything it reads the PR live: a
+  release PR (`classifyReleasePr`: the legacy release branch, or a trusted
+  frozen candidate) or a dependency bot's PR opens no delivery, even when a
+  bookkeeping task owns it (`ci-failure-retry.ts` and `request_pr_review`
+  give a PR with no worker one). The door merges such a PR through the release
+  gate (`mergeOutsideKernel` → `mergeReleasePrPinned`: review gate at the
+  head, GitHub's `sha` pin), so a candidate keeps `releaseCandidateStatus` and
+  no kernel repair ever pushes to a candidate's or a bot's branch. A fork PR
+  cannot be bound, so it is refused at every buildd door, the dashboard
+  included: a fork PR merges only on GitHub. If nothing can adopt a PR (a
+  fork, no task, a review or attempt task, a task bound to another PR, a PR
+  that cannot be bound or read, the control plane unreachable) the door merges
+  nothing and says why. Its legacy
+  merge call is reached only when the workspace's kill switch is off or the
+  PR's delivery was released to legacy (sticky, §14); an adopted PR whose
+  landing the kernel does not answer is refused, never merged on that arm.
+  `merge-door-inventory.test.ts` holds each of these doors to it.
+- Deviation: the release doors D7–D10 do not adopt. A release PR with no
+  delivery merges under the release gate above (`pinned-merge.ts`: review
+  gate, verified head, `sha` pin), because its bookkeeping (the held release
+  task, the release record and its candidate status) lives outside the kernel;
+  moving it is an owner decision.
 
 **Acceptance criteria**:
 - AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked
@@ -904,12 +975,13 @@ recorded as such, never as an approval.
 - AC-16 (failure): GIVEN the release executor merging a release PR WHEN its
   head moved after verification THEN the merge is refused, not merged
   unpinned.
-- AC-31 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
+- AC-70 (failure): GIVEN an approved kernel-owned PR whose mission-PR hold is
   lasting WHEN the sweep or any door asks to land it THEN the delivery is
   `ESCALATED(landing_needs_human)` once with the hold named, nothing merges,
   and the sweep does not request landing again for that head; a CI-fix
   attempt's worker on the PR gets the same answer as its owner.
-- AC-36 (failure): GIVEN an approved kernel-owned PR WHEN GitHub refuses the
+  replaces: AC-31
+- AC-75 (failure): GIVEN an approved kernel-owned PR WHEN GitHub refuses the
   merge because a required check has not passed yet THEN the delivery stays
   `LANDING` with the approval standing and nobody notified, the merge is asked
   again once a check reports on that head (or after its backoff), and only a
@@ -917,8 +989,9 @@ recorded as such, never as an approval.
   merge call never runs before the head's own `Buildd / Review approval`
   success is on GitHub; a release door holds the release on the same answer
   instead of failing it.
+  replaces: AC-36
 
-- AC-37: GIVEN open PRs in a linked repo with no delivery (a dependency bot's,
+- AC-76: GIVEN open PRs in a linked repo with no delivery (a dependency bot's,
   a draft), a kernel-owned PR whose head shows a status other than the
   kernel's answer, and a frozen release candidate WHEN the kernel floor runs
   THEN each head carries `Buildd / Review approval` (pending "Review not
@@ -926,26 +999,29 @@ recorded as such, never as an approval.
   effect, the release gate's answer at the candidate SHA), a second pass
   writes nothing, and a head still without it is listed and counted as an
   error of the run.
-- AC-38 (failure): GIVEN a head approved at H1 WHEN H2 is pushed and the
+  replaces: AC-37
+- AC-77 (failure): GIVEN a head approved at H1 WHEN H2 is pushed and the
   kernel has not seen it, or the delivery is over while the PR stays open,
   THEN the open head's status is `pending`, never H1's `success`; a release
   candidate is `success` only with every required check passed on its SHA
   and no review standing against it.
-- AC-39 (event; implements Living Spec criteria AC-40 and AC-42 of the
+  replaces: AC-38
+- AC-78 (event; implements Living Spec criteria AC-40 and AC-42 of the
   workflow kernel spec): GIVEN a PR opened or pushed, or a release candidate's
   check re-run, review requested or review verdict changed WHEN the event
   arrives THEN the head's status is rewritten at once to the answer true now
   (a verified candidate flips to `failure` or `pending`), a duplicate or older
   event changes nothing, and a check event on a PR that cannot be a candidate
   reads nothing from GitHub.
+  replaces: AC-39
 
 | AC | Test |
 | --- | --- |
-| Criterion AC-39 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/src/lib/reviewer.test.ts` › "a stored review request republishes"; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-39" |
-| Criterion AC-36 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
-| Criterion AC-37 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-37" |
-| Criterion AC-38 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-38"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-38" |
-| Criterion AC-31 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
+| Criterion AC-78 | `apps/web/src/lib/workflow/open-pr-head.test.ts`; `apps/web/src/lib/reviewer.test.ts` › "a stored review request republishes"; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-78" |
+| Criterion AC-75 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "merge holds"; `packages/workflow-kernel/src/merge-hold.test.ts`; `apps/web/src/lib/workflow/pr-landing-effects.test.ts` › "a required check that has not passed yet is a hold"; `apps/web/src/lib/release/pinned-merge.test.ts` › "§4 merge holds"; `apps/web/src/app/api/github/webhook/route.test.ts` › "§4 merge holds" |
+| Criterion AC-76 | `apps/web/tests/db/workflow-open-pr-status.test.ts`; `apps/web/src/lib/workflow/open-pr-status.test.ts`; `apps/web/src/lib/workflow/kernel-floor.test.ts` › "open PR status coverage"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-76" |
+| Criterion AC-77 | `packages/workflow-kernel/src/open-pr-status.test.ts`; `apps/web/tests/db/workflow-open-pr-status.test.ts` › "AC-77"; `apps/web/src/lib/workflow/open-pr-status.test.ts` › "AC-77" |
+| Criterion AC-70 | `apps/web/src/lib/pr-landing.test.ts` › "a lasting delivery-target hold"; `apps/web/src/lib/workflow/auto-merge-rails.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "a CI-fix attempt on a refresh PR"; `packages/workflow-kernel/src/conformance/scenarios.ts` › "a lasting rail" |
 
 ## 5. Findings that survive
 
@@ -1020,12 +1096,15 @@ push, refresh, completion or owner change can make it disappear.
   repair's head and an own refresh never address anything (rule 5).
 - A person's `FindingDisposed` (waived, or deferred to a named task) closes
   one finding with who and why; an agent is refused.
-- Deviation: no door submits `FindingDisposed` yet (no command-API op, route
-  or dashboard action). The command and its rules are in the kernel; the door
-  is a person-only command-API op plus a route, left out of this slice because
-  the command API and its ledger are being changed by the control-plane
-  cutover work at the same time. Until then a person passes an open finding
-  through the landing override (rule 6).
+- The dashboard submits it: a person-only command-API op (`dispose_finding`)
+  and `POST /api/prs/[prNumber]/dispose-finding`, from the escalation card,
+  bound to the head and version the card showed (the same decision again is one
+  transition; a finding a later round restates is a new decision). A duplicate
+  reads as success only while the finding is closed the way asked.
+- Deviation: no MCP action submits `FindingDisposed` yet, and the route reads
+  only the cookie session. A finding on a changes-requested PR that is not
+  escalated cannot be waived from the dashboard; the reducer accepts it in any
+  state. Who may waive is workspace membership, as for a re-review.
 - The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
   `buildd/landing` read open required findings and name the first
   one. Only a person's verdict override or their own approval of the head
@@ -1171,6 +1250,11 @@ push, refresh, completion or owner change can make it disappear.
   no-op evidence WHEN it tries to complete THEN completion is refused, the
   attempt counts against the round limit, the findings stay `open`, and the
   attempt is shown as "no change".
+- AC-66 (implements Living Spec criterion AC-44): GIVEN a delivery held
+  `ESCALATED(review_exhausted)` with two open findings WHEN a push touches one
+  finding's path and CI goes green on it THEN that finding is `addressed`
+  (awaiting verification) and the other `open`, nothing is verified, no review
+  or fix is dispatched, nothing merges, and the delivery stays the person's.
 - AC-79 (failure; implements Living Spec criterion AC-36): GIVEN a running
   review fix WHEN the PR head moves by a merge of the base only THEN the push
   is recorded as foreign and not credited to the fix, the fix cannot complete
@@ -1178,8 +1262,16 @@ push, refresh, completion or owner change can make it disappear.
   to the refresh is queued; WHEN the fix pushed its own work before the merge
   THEN only that push is credited and the fix completes on the merged head.
 
-| Criterion | Verified by |
-|---|---|
+Counting (Living Spec r7 §7, task 59f2c591). Every surface counts findings
+from one partition, `findingTotals`: each required finding is in exactly one
+of `open`, `addressedAwaitingVerification`, `verifiedResolved`, `waived` and
+`deferred`; optional findings are counted apart as `advisory`. A pushed fix is
+never counted as verified, and a waived or deferred finding is never counted
+as resolved. `open + addressedAwaitingVerification` is what blocks landing.
+
+| AC | Test |
+| --- | --- |
+| Criterion AC-66 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-44"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-44 / AC-47" |
 | Criterion AC-79 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "AC-79"; `packages/workflow-kernel/src/reducer.test.ts` › "AC-79"; `apps/web/src/lib/workflow/fix-completion-gate.test.ts` › "AC-79"; `apps/web/tests/db/workflow-seam.test.ts` › "AC-79" |
 
 ## 6. Mission deliveries and epochs
@@ -1344,19 +1436,21 @@ later work and nothing refreshes or re-ships a branch that already landed.
   refresh task is filed (the ecea17f3 sequence).
 - AC-22: GIVEN a refresh builder whose branch already contains trunk WHEN it
   completes THEN completion succeeds with the ancestry evidence and no PR.
-- AC-32: GIVEN a refresh whose task was requeued after an infra failure WHEN
+- AC-71: GIVEN a refresh whose task was requeued after an infra failure WHEN
   any door asks whether its PR may land THEN the branch it was filed for is
   the mission branch, never its own head, and a refresh retargeted to trunk is
   still refused.
+  replaces: AC-32
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
-- AC-34: GIVEN an open delivery whose integration PR closed unmerged, with an
+- AC-73: GIVEN an open delivery whose integration PR closed unmerged, with an
   open refresh PR on its branch WHEN the delivery is reconciled THEN the
   refresh PR stays open while the closed PR's work is neither recorded as
   landed elsewhere nor in trunk, and is closed with a comment (and recorded as
   superseded by that merged PR, when there is one) once it is; a successor PR
   from the branch keeps it open (the #4909/#4913 sequence).
+  replaces: AC-34
 
 | AC | Test |
 | --- | --- |
@@ -1364,8 +1458,8 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | Criterion AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | Criterion AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | Criterion AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
-| Criterion AC-32 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
-| Criterion AC-34 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
+| Criterion AC-71 | `apps/web/src/lib/integration-refresh.test.ts` › "refreshFiledFor"; `apps/web/src/lib/stale-workers.test.ts` › "#4909"; `apps/web/src/lib/mission-pr.test.ts` › "#4909" |
+| Criterion AC-73 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "deliveryBranchFinished"; `apps/web/src/lib/workflow/delivery-epochs.test.ts` › "settleFinishedBranch"; `apps/web/src/lib/mission-integration-pr.test.ts` › "a closed mission PR whose work landed elsewhere" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
@@ -1405,20 +1499,64 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
 **Acceptance criteria**:
 - AC-24: GIVEN a delivery with two review rounds WHEN `get_pr`, the task page
   and the activity comment render THEN all three show the same round count,
-  latest verdict and open findings.
+  latest verdict and finding totals.
 - AC-25: GIVEN a mission whose epoch merged and has no other open work WHEN
   `explain` reads it THEN it is not "stalled".
 - AC-26 (failure): GIVEN a worker row that says merged and a delivery that says
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
-- AC-33 (failure): GIVEN a CI fix that pushed a new head and is still open
+- AC-72 (failure): GIVEN a CI fix that pushed a new head and is still open
   WHEN one check fails on that head while others run THEN the PR reads CI
   failed, not running; WHEN that check is re-run THEN it reads running, and
   WHEN everything passes THEN it reads passed with no state change; a green
   for the older head changes nothing, and the next commit reads running.
+  replaces: AC-33
+- AC-67 (implements Living Spec criterion AC-45): GIVEN a review escalation
+  WHEN a person asks for a forced re-review or one more bounded fix from the
+  decision surface THEN it is one kernel command (`ReviewRequested` forced, or
+  `HumanResolve(apply_recommendation)`) bound to the head and version the
+  person saw, applied through the control-plane door, recorded with the person
+  and the head on its transition; the same decision submitted again is
+  answered by the first (`duplicate`) and dispatches nothing; the escalation
+  note clears only after the command applied, and a replay that reaches a PR
+  escalated again since clears nothing.
+- AC-68 (failure; implements Living Spec criterion AC-46): GIVEN a review
+  escalation WHEN a decision names a head that is no longer current, is made
+  by an agent, or approves past findings without merge permission THEN it is
+  refused (`decision_head_stale`, `human_required`, `no_merge_permission`),
+  nothing moves or is dispatched, the note stays, and the door answers with a
+  plain sentence that names what was wrong and what to do, never a bare code.
+- AC-69 (implements Living Spec criterion AC-47): GIVEN findings in every
+  disposition WHEN `get_pr`, the task page, the activity comment and the
+  DeliveryView count them THEN each required finding is counted once, in one
+  of open, addressed awaiting verification, verified resolved, waived or
+  deferred, and the totals add up.
+
+Decisions (Living Spec r7 §7, task 59f2c591). A person's decision on an
+escalation carries `decision: { id, headSha }`. The id is the action, the head
+and the delivery version the decision card showed (`humanDecision`, e.g.
+`force_re_review:<head>:v<version>`); the transition's idempotency key is
+derived from it (`humanDecisionKey`), so a double tap, a retried request or a
+door re-sent after an unknown outcome finds the first transition. A decision
+is checked before anything else the command reads: only a `human:` actor may
+make one, and its head must be the delivery's current head. The doors are the
+existing `request_review` and `apply_recommendation` operations, so the single
+host rule holds unchanged. The re-review and apply-recommendation routes read
+`headSha` and `version` from the card (the forced review also as its
+`expectedVersion`), clear the escalation note on `applied`, or on `duplicate`
+only while the PR is no longer `ESCALATED`: a stale tab replaying a decision
+after the PR escalated again ran nothing, so it is refused as
+`decision_already_answered` and the new note stays. Refusals are answered with
+`explainDecisionRefusal`, on these doors and on `request_pr_review`.
+`DeliveryView` carries `findingTotals`, and the escalation brief carries the
+same groups (`open`, `addressedAwaitingVerification`, `resolved`, `waived`,
+`deferred`), their `totals`, and `decisionHead { headSha, version }` for the
+card to send back. Whether the brief offers approve-and-override is whatever
+the surface passes as `escalationPermissions` per workspace
+(`getDeliveryViewsForTasks`); absent, the override is not offered.
 
 How (S7, task c16eb202). The review line ("2 rounds · latest: changes
-requested · 1 open finding") and a repair's phase are pure readings in the
+requested · 1 open finding, 1 verified resolved") and a repair's phase are pure readings in the
 package (`reviewSummaryOf`, `repairPhaseOf`); `get_pr`, the task page's checks
 list and PR card, and the activity comment all print the first, and `get_pr`
 and the checks list the second. Surfaces that derive merged, open or closed
@@ -1435,7 +1573,10 @@ as a candidate whatever its worker row says.
 | Criterion AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
 | Criterion AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
-| Criterion AC-33 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
+| Criterion AC-67 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-45"; `apps/web/tests/db/escalation-decisions.test.ts` › "AC-45 / AC-46"; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "Living Spec r7"; `apps/web/src/app/api/prs/[prNumber]/apply-recommendation/route.test.ts` › "Living Spec r7" |
+| Criterion AC-68 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "r7 AC-46"; `packages/workflow-kernel/src/decision-refusal.test.ts`; `apps/web/src/app/api/prs/[prNumber]/re-review/route.test.ts` › "AC-46" |
+| Criterion AC-69 | `packages/workflow-kernel/src/findings.test.ts` › "findingTotals"; `packages/workflow-kernel/src/escalation-brief.test.ts` › "AC-47"; `packages/workflow-kernel/src/delivery-summary.test.ts` › "AC-47"; `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/lib/workflow/delivery-view.test.ts` › "follow-up 22" |
+| Criterion AC-72 | `packages/workflow-kernel/src/conformance/scenarios.ts` › "6900a317"; `packages/workflow-kernel/src/reducer.test.ts` › "CiObserved"; `apps/web/src/lib/workflow/github-facts.test.ts` › "a re-run supersedes"; `apps/web/tests/db/workflow-seam.test.ts` › "6900a317"; `apps/web/src/app/app/(protected)/tasks/[id]/PrDetailsCard.test.tsx` › "re-run replaced" |
 
 ## 8. Order of work
 

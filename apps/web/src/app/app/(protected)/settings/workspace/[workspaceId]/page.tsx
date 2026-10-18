@@ -2,7 +2,7 @@ import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import {
-  workspaces, workspaceSkills, missions, tasks,
+  workspaceSkills, missions, tasks,
   type WorkspaceGitConfig, type WorkspaceReleaseConfig, type WorkspaceWorkTrackerConfig,
 } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
@@ -47,6 +47,7 @@ import WorkspaceModels from './WorkspaceModels';
 import ConcurrencySection from './ConcurrencySection';
 import PauseStartsSection from './PauseStartsSection';
 import { isPaused } from '@/lib/workspace-pause';
+import { loadWorkspaceSettings } from '@/lib/workspace-settings';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -79,23 +80,8 @@ export default async function WorkspaceSettingsPage({
   const access = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!access) notFound();
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: sqlWhere(eq(workspaces.id, workspaceId)),
-    columns: {
-      id: true,
-      name: true,
-      repo: true,
-      teamId: true,
-      gitConfig: true,
-      configStatus: true,
-      accessMode: true,
-      releaseConfig: true,
-      workTrackerConfig: true,
-      webhookConfig: true,
-      maxConcurrentTasks: true,
-      newStartsPausedUntil: true,
-    },
-  });
+  // Cached per team for 30 s, cleared by the workspace's writers (lib/workspace-settings.ts).
+  const workspace = await loadWorkspaceSettings(access.teamId, workspaceId);
   if (!workspace) notFound();
 
   const gitConfig = workspace.gitConfig as WorkspaceGitConfig | null;

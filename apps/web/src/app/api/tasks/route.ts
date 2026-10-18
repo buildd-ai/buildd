@@ -107,6 +107,28 @@ function detectContentBearingSchemaFields(schema: Record<string, unknown>): stri
     .map(([name]) => name);
 }
 
+/** The list's order key at millisecond precision: what the cursor carries. */
+const createdAtMs = sql`date_trunc('milliseconds', ${tasks.createdAt})`;
+
+/** Rows per page of the full (un-`limit`ed) task list; `cursor` continues it. */
+export const FULL_LIST_PAGE = 200;
+
+/** Opaque to callers: the last row's createdAt and id, in the list's own order. */
+export function encodeTaskListCursor(createdAt: Date | string, id: string): string {
+  return Buffer.from(`${new Date(createdAt).toISOString()}|${id}`).toString('base64url');
+}
+
+export function decodeTaskListCursor(raw: string): { createdAt: Date; id: string } | null {
+  try {
+    const [at, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
+    const createdAt = new Date(at ?? '');
+    if (!id || !isUuid(id) || Number.isNaN(createdAt.getTime())) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
   if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
@@ -262,11 +284,22 @@ export async function GET(req: NextRequest) {
     // Returns all active tasks + completed/failed from the last 24h, with the
     // wide column set the dashboard reads. budgetWindows is included for MCP
     // callers that need budget-reset info alongside the task list.
-    const allTasks = workspaceIds.length > 0
+    // A page of FULL_LIST_PAGE, newest first, with hasMore + nextCursor
+    // (spec 3ef37387 R-19, R-10): the list used to stop at 200 and say nothing.
+    const cursorParam = req.nextUrl.searchParams.get('cursor');
+    const cursor = cursorParam ? decodeTaskListCursor(cursorParam) : null;
+    if (cursorParam && !cursor) {
+      return NextResponse.json({ error: 'cursor is not one this list handed out — pass nextCursor back unchanged.' }, { status: 400 });
+    }
+    const fetched = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
           where: sqlWhere(and(
             inArray(tasks.workspaceId, workspaceIds),
             missionScope,
+            cursor
+              // Compared at the cursor's own precision (ms), so a row is never skipped between pages.
+              ? sql`(${createdAtMs}, ${tasks.id}) < (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+              : undefined,
             activeOnly
               ? // Only active (non-terminal) tasks
                 notInArray(tasks.status, terminalStatuses)
@@ -280,8 +313,8 @@ export async function GET(req: NextRequest) {
                   ),
                 ),
           )),
-          orderBy: sqlOrderBy(desc(tasks.createdAt)),
-          limit: 200,
+          orderBy: sqlOrderBy([desc(createdAtMs), desc(tasks.id)]),
+          limit: FULL_LIST_PAGE + 1,
           columns: {
             id: true,
             workspaceId: true,
@@ -334,13 +367,37 @@ export async function GET(req: NextRequest) {
           },
         })
       : [];
+    const hasMore = fetched.length > FULL_LIST_PAGE;
+    const allTasks = hasMore ? fetched.slice(0, FULL_LIST_PAGE) : fetched;
+    const last = allTasks.at(-1);
+    const nextCursor = hasMore && last ? encodeTaskListCursor(last.createdAt, last.id) : null;
     const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
+
+    // include=missionStages: each listed mission's stage in this same reply, so
+    // `buildd top` makes one read where it made two (/api/tasks, then
+    // /api/missions/stages; spec 3ef37387 AC-5). The stage is the missions
+    // module's projection, so core reaches it through the composition root,
+    // loaded only when asked. Best effort: a failure answers without stages.
+    const wantsStages = (req.nextUrl.searchParams.get('include') ?? '').split(',').includes('missionStages');
+    let missionStages: Record<string, unknown> | undefined;
+    if (wantsStages) {
+      const ids = [...new Set(listedTasks.map((t: { missionId?: string | null }) => t.missionId).filter((id): id is string => !!id))];
+      try {
+        const { TASK_LIST_MISSION_STAGES } = await import('@/modules');
+        missionStages = Object.fromEntries(await TASK_LIST_MISSION_STAGES(ids, workspaceIds));
+      } catch (err) {
+        console.error('[tasks] mission stages failed:', err);
+      }
+    }
 
     // No PR refresh per poll (spec 3ef37387 R-24): the webhook and the
     // pr-reconcile cron keep PR state fresh.
 
     return jsonResponse({
       tasks: listedTasks,
+      hasMore,
+      nextCursor,
+      ...(missionStages ? { missionStages } : {}),
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,

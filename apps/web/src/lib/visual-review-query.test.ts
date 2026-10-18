@@ -9,6 +9,8 @@ import {
   WORKSPACE_AWAITING_MISSIONS_LIMIT,
   visualReviewTasksQuery,
   visualReviewWorkersQuery,
+  visualReviewWorkersForMissionsQuery,
+  visualShotsForMissionsQuery,
   workspaceAwaitingMissionsQuery,
 } from './visual-review-query';
 
@@ -63,5 +65,29 @@ describe('audit why columns', () => {
   it('reads the worker error and base ref for audits', () => {
     const { sql } = visualReviewWorkersQuery(qb(), MISSION).toSQL();
     expect(sql).toMatch(/"merged_at", "pr_base_ref", "error" from "workers"/);
+  });
+});
+
+describe('batch reads for the scheduler (spec 3ef37387 R-25)', () => {
+  const OTHER = '33333333-3333-4333-8333-333333333333';
+
+  it("ties each shot to an auditor of the shot's own mission, so a batch never lends one mission's auditor to another", () => {
+    const { sql, params } = visualShotsForMissionsQuery(qb(), [MISSION, OTHER]).toSQL();
+    expect(sql).toMatch(/"artifacts"\."mission_id" in \(\$1, \$2\)/);
+    expect(sql).toContain(`where "t"."mission_id" = "artifacts"."mission_id" and "t"."role_slug" = `);
+    expect(sql).toContain(`jsonb_typeof("artifacts"."metadata" -> 'qa') = 'object'`);
+    expect(params.slice(0, 2)).toEqual([MISSION, OTHER]);
+  });
+
+  it('keeps the newest shots per mission, not across the batch', () => {
+    const { sql } = visualShotsForMissionsQuery(qb(), [MISSION, OTHER]).toSQL();
+    expect(sql).toContain('row_number() over (partition by "artifacts"."mission_id" order by "artifacts"."created_at" desc)');
+    expect(sql).toMatch(/"shot_rank" <= \$\d+/);
+  });
+
+  it('reads only audit and fix workers of the batch missions', () => {
+    const { sql, params } = visualReviewWorkersForMissionsQuery(qb(), [MISSION, OTHER]).toSQL();
+    expect(sql).toMatch(/"t"\."mission_id" in \(\$1, \$2\) and \("t"\."role_slug" = \$3/);
+    expect(params.slice(0, 2)).toEqual([MISSION, OTHER]);
   });
 });

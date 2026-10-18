@@ -13,6 +13,7 @@
  * the rules already chose, and only when its answer was made for the same
  * state and cause (`causeKey`); see `applyVerdictDecision`.
  */
+import { waitingOnFailedCopy } from '@buildd/core/dependency-failure';
 import type { TaskMismatch } from '@buildd/shared';
 import { REVIEW_VERDICT_LABEL, type ReviewVerdictWord } from './task-result';
 
@@ -82,6 +83,11 @@ export interface VerdictInput {
     awaitingVerification: number;
     resolved: number;
   } | null;
+  /**
+   * A failed task that never ran: a task it depends on failed (`failedDependencyOf`,
+   * spec 072de598 I-14). The verdict names that task instead of a run that did not happen.
+   */
+  waitingOnFailed?: { taskId: string; title: string | null; requeuesItself: boolean } | null;
   /**
    * How long the merged PR took from claim to merge ("2h 14m"). The status
    * row is the one place a merged PR is stated, so it carries the time too.
@@ -229,6 +235,20 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
       cause: null,
       actions: [],
       causeKey: 'in_progress:worker',
+    };
+  }
+
+  // 4a. Failed without running: a task it depends on failed, and the way on is there.
+  if (input.taskStatus === 'failed' && input.waitingOnFailed) {
+    const w = input.waitingOnFailed;
+    const copy = waitingOnFailedCopy(w, { requeuesItself: w.requeuesItself });
+    return {
+      ...base,
+      state: 'blocked',
+      headline: copy.state,
+      cause: copy.cause,
+      actions: [link('Open the failed task', `/app/tasks/${encodeURIComponent(w.taskId)}`, 'primary', false)],
+      causeKey: 'blocked:dependency_failed',
     };
   }
 

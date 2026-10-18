@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { clearCallerCache, callerDep } from './caller-cache';
 
 const COORDINATION_WORKSPACE_NAME = '__coordination';
 
@@ -27,6 +28,8 @@ export async function getOrCreateCoordinationWorkspace(teamId: string): Promise<
       accessMode: 'open',
     })
     .returning({ id: workspaces.id });
+  // Open to the team's accounts from their next call.
+  await clearCallerCache(callerDep.teamOpenWorkspaces(teamId));
 
   return created;
 }

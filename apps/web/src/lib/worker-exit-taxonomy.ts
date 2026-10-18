@@ -414,11 +414,11 @@ function hasNoModelUsage(meta: Parameters<typeof isSilentStartShape>[0]['resultM
  * failure rate. infra_failure and silent_start are deliberately NOT here —
  * they are real failures, just not chargeable ones.
  */
+/** The exits isBookkeepingExit names, for a query that counts in SQL. */
+export const BOOKKEEPING_EXIT_CAUSES = ['needs_input', 'never_started', 'condition_unmet', 'task_cancelled'] as const satisfies readonly WorkerExitCause[];
+
 export function isBookkeepingExit(exitCause: WorkerExitCause | null | undefined): boolean {
-  return exitCause === 'needs_input'
-    || exitCause === 'never_started'
-    || exitCause === 'condition_unmet'
-    || exitCause === 'task_cancelled';
+  return (BOOKKEEPING_EXIT_CAUSES as readonly string[]).includes(exitCause ?? '');
 }
 
 /**

@@ -12,8 +12,9 @@
  *
  * `changed` = incidents opened or updated this run — a detector job, so a
  * nonzero count means "found a systemic pattern", not "did work" (see
- * `CRON_JOB_REGISTRY` below). A quiet fleet costs the window queries and
- * nothing else.
+ * `CRON_JOB_REGISTRY` below). A quiet fleet costs a handful of set queries
+ * (every watermark, which workspaces have anything to find, one watermark
+ * write) and nothing per workspace (spec "Fast at any size", R-25).
  *
  * Auth: Bearer CRON_SECRET (via withCronRun).
  */

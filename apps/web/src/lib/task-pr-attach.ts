@@ -19,6 +19,7 @@ import { githubApi } from './github';
 import { insertPrOwnerWorker, type AdoptablePr, type PrMergeState } from './pr-review-request';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { taskPrOf } from '@/lib/workflow/task-pr';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 const PR_URL = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
 
@@ -175,6 +176,8 @@ export async function attachPrToTask(params: {
     ...(existingResult.branch ? {} : pr.head?.ref ? { branch: pr.head.ref } : {}),
   };
   await db.update(tasks).set({ result, updatedAt: new Date() }).where(eq(tasks.id, task.id));
+  // The PR now belongs to this task: its mission's delivery changes, and no core event says so.
+  noteWorkChanged({ taskIds: [task.id], workerIds: [workerId] });
 
   return { ok: true, alreadyAttached: Boolean(owner) && !movedFromPlaceholder, workerId, prNumber, prUrl: pr.html_url, prState, result };
 }

@@ -10,6 +10,7 @@ import { randomBytes } from 'crypto';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
+import { clearTeamCache } from '@/lib/team-cache';
 
 export function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -29,5 +30,6 @@ export async function mintApiKeyAccount(
   for (const workspaceId of linkWorkspaceIds) {
     await db.insert(accountWorkspaces).values({ accountId: account.id, workspaceId, canClaim: true, canCreate: true });
   }
+  await clearTeamCache(account.teamId, 'runners');
   return { account, plaintextKey };
 }

@@ -200,6 +200,23 @@ export interface SweepDeps {
   setWatermark(workspaceId: string, at: string): Promise<void>;
   collectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts>;
   /**
+   * Full sweeps only (spec "Fast at any size", R-25): every workspace's
+   * watermark in one read. Absent: `getWatermark` per workspace.
+   */
+  getWatermarks?(workspaceIds: string[]): Promise<Map<string, string | null>>;
+  /** Full sweeps only: advance many watermarks in one write. Absent: `setWatermark` per workspace. */
+  setWatermarks?(workspaceIds: string[], at: string): Promise<void>;
+  /**
+   * Full sweeps only: which workspaces have anything a rule could read since
+   * `floors` (`facts`), and which have an unresolved incident of one of
+   * `rules` to re-assess (`recovery`). A workspace in neither set has nothing
+   * to find: its sweep would collect empty facts, open nothing and assess
+   * nothing, so it is skipped and only its watermark moves. The predicate
+   * must be a superset of every collector's own (see `dbSelectActiveWorkspaces`
+   * and its real-database test). Absent, or throwing: every workspace is swept.
+   */
+  selectActiveWorkspaces?(workspaceIds: string[], floors: SweepFloors, now: string, rules: FailureIncidentRule[]): Promise<ActiveWorkspaces>;
+  /**
    * The recovery layer (docs/specs/failure-incident-recovery.md): the families
    * that assess their open incidents, and the existing writers their repairs
    * go through. Absent: no incident is assessed, repaired or auto-resolved.
@@ -236,6 +253,27 @@ export interface SweepDeps {
    * resets to 0. Never throws; a storage failure here must not crash the sweep.
    */
   recordSelfHealth(ok: boolean, now: string): Promise<{ consecutiveFailures: number }>;
+}
+
+/** The answer of `selectActiveWorkspaces`: workspace ids by why they must be swept. */
+export interface ActiveWorkspaces {
+  facts: Set<string>;
+  recovery: Set<string>;
+}
+
+/**
+ * The earliest of each floor across the given watermarks: one window that
+ * covers every workspace's own, so a set query over it misses none of them.
+ */
+export function earliestSweepFloors(watermarks: Iterable<string | null>, now: string): SweepFloors {
+  let out = computeSweepFloors(null, now);
+  for (const w of watermarks) {
+    const f = computeSweepFloors(w, now);
+    out = Object.fromEntries(
+      (Object.keys(out) as Array<keyof SweepFloors>).map(k => [k, f[k] < out[k] ? f[k] : out[k]]),
+    ) as unknown as SweepFloors;
+  }
+  return out;
 }
 
 // ── Counters ─────────────────────────────────────────────────────────────────
@@ -361,10 +399,12 @@ async function sweepOneWorkspace(
   workspaceId: string,
   now: string,
   counters: SweepRunCounters,
+  pre?: { watermark: string | null; facts: boolean; recovery: boolean; advanced: string[] },
 ): Promise<void> {
-  const watermark = await deps.getWatermark(workspaceId);
+  const watermark = pre ? pre.watermark : await deps.getWatermark(workspaceId);
   const floors = computeSweepFloors(watermark, now);
-  const facts = await deps.collectFacts(workspaceId, floors, now);
+  // A workspace with nothing since its floor yields empty facts: no read.
+  const facts = !pre || pre.facts ? await deps.collectFacts(workspaceId, floors, now) : { workspaceId, now };
 
   const candidates = detectFailurePatterns(facts);
   counters.candidates += candidates.length;
@@ -406,11 +446,14 @@ async function sweepOneWorkspace(
     }
   }
 
-  await recoverOpenIncidents(deps, workspaceId, now, counters);
+  // An incident opened just now is assessed in this sweep, so a workspace with
+  // facts always runs recovery.
+  if (!pre || pre.facts || pre.recovery) await recoverOpenIncidents(deps, workspaceId, now, counters);
 
   // Advance the watermark even on a quiet sweep (no candidates): "nothing new"
   // is still progress, and the next run's floor should start from here.
-  await deps.setWatermark(workspaceId, now);
+  if (pre) pre.advanced.push(workspaceId);
+  else await deps.setWatermark(workspaceId, now);
   counters.workspacesEvaluated++;
   counters.windowsEvaluated++;
 }
@@ -605,9 +648,17 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
     return counters;
   }
 
+  const plan = opts.workspaceIds ? null : await planFullSweep(deps, workspaceIds, now);
+  const advanced: string[] = [];
   for (const workspaceId of workspaceIds) {
     try {
-      await sweepOneWorkspace(deps, workspaceId, now, counters);
+      const pre = plan ? {
+        watermark: plan.watermarks.get(workspaceId) ?? null,
+        facts: !plan.active || plan.active.facts.has(workspaceId),
+        recovery: !plan.active || plan.active.recovery.has(workspaceId),
+        advanced,
+      } : undefined;
+      await sweepOneWorkspace(deps, workspaceId, now, counters, pre);
     } catch (err) {
       counters.runFailures++;
       console.error(`[failure-pattern-sweep] workspace ${workspaceId} failed:`, err);
@@ -616,6 +667,15 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
         err instanceof Error ? err.message : String(err),
         'error',
       ).catch(() => {});
+    }
+  }
+
+  if (advanced.length > 0) {
+    try {
+      await deps.setWatermarks!(advanced, now);
+    } catch (err) {
+      // Not a workspace failure: the next run reads from the older floor, a wider window.
+      console.error('[failure-pattern-sweep] watermark write failed:', err);
     }
   }
 
@@ -647,6 +707,38 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
   return counters;
 }
 
+/**
+ * A full sweep's up-front reads: every watermark in one query, then the
+ * workspaces that have anything to find (R-25). Null when the deps cannot
+ * batch (the sweep then reads per workspace, as before). A failed activity
+ * read sweeps every workspace: it can cost queries, never a finding.
+ */
+async function planFullSweep(
+  deps: SweepDeps,
+  workspaceIds: string[],
+  now: string,
+): Promise<{ watermarks: Map<string, string | null>; active: ActiveWorkspaces | null } | null> {
+  if (!deps.getWatermarks || !deps.setWatermarks || workspaceIds.length === 0) return null;
+  let watermarks: Map<string, string | null>;
+  try {
+    watermarks = await deps.getWatermarks(workspaceIds);
+  } catch (err) {
+    console.error('[failure-pattern-sweep] watermark read failed; reading per workspace:', err);
+    return null;
+  }
+  let active: ActiveWorkspaces | null = null;
+  if (deps.selectActiveWorkspaces) {
+    const floors = earliestSweepFloors(workspaceIds.map(id => watermarks.get(id) ?? null), now);
+    const rules = [...new Set((deps.recovery?.families ?? []).map(f => f.rule))];
+    try {
+      active = await deps.selectActiveWorkspaces(workspaceIds, floors, now, rules);
+    } catch (err) {
+      console.error('[failure-pattern-sweep] activity read failed; sweeping every workspace:', err);
+    }
+  }
+  return { watermarks, active };
+}
+
 async function finishDegradedRun(deps: SweepDeps, now: string, counters: SweepRunCounters): Promise<void> {
   let consecutiveFailures = 0;
   try {
@@ -673,7 +765,7 @@ const watermarkKey = (workspaceId: string) => `failure-sentinel-watermark:${work
 async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: string): Promise<SentinelFacts> {
   const { db } = await import('@buildd/core/db');
   const { workers, tasks, gateEvents } = await import('@buildd/core/db/schema');
-  const { and, eq, gte, lt, inArray, isNotNull, isNull, or, desc } = await import('drizzle-orm');
+  const { and, eq, gte, lt, inArray, isNotNull, isNull, or, desc, sql } = await import('drizzle-orm');
   const { GATE_SLUGS } = await import('@buildd/core/gate-slugs');
   const { normalizeErrorSignature } = await import('./error-signature');
   const { IN_FLIGHT_WORKER_STATUSES } = await import('./failure-analytics');
@@ -699,10 +791,10 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
   const failedTaskIds = [...new Set(failedWorkerRows.map(r => r.taskId).filter((id): id is string => !!id))];
   const rootByTask = new Map<string, string>();
   if (failedTaskIds.length > 0) {
-    const taskRows = await db.select({ id: tasks.id, context: tasks.context }).from(tasks).where(inArray(tasks.id, failedTaskIds));
+    // Only the key read, not the whole context (R-25).
+    const taskRows = await db.select({ id: tasks.id, rootTaskId: sql<unknown>`${tasks.context}->'rootTaskId'` }).from(tasks).where(inArray(tasks.id, failedTaskIds));
     for (const t of taskRows) {
-      const ctx = (t.context ?? {}) as Record<string, unknown>;
-      rootByTask.set(t.id, typeof ctx.rootTaskId === 'string' && ctx.rootTaskId ? ctx.rootTaskId : t.id);
+      rootByTask.set(t.id, typeof t.rootTaskId === 'string' && t.rootTaskId ? t.rootTaskId : t.id);
     }
   }
 
@@ -830,7 +922,8 @@ async function dbCollectFacts(workspaceId: string, floors: SweepFloors, now: str
       conflictRetryHeadSha: tasks.conflictRetryHeadSha,
       reviewerRetryPrNumber: tasks.reviewerRetryPrNumber,
       reviewerRetryHeadSha: tasks.reviewerRetryHeadSha,
-      context: tasks.context,
+      // The three keys read below, not the whole context (R-25).
+      context: sql<Record<string, unknown> | null>`jsonb_build_object('iteration', ${tasks.context}->'iteration', 'conflictIteration', ${tasks.context}->'conflictIteration', 'rootTaskId', ${tasks.context}->'rootTaskId')`,
       createdAt: tasks.createdAt,
     })
     .from(tasks)
@@ -980,7 +1073,7 @@ async function dbCollectWorkerInfra(workspaceId: string, sinceIso: string): Prom
   const out: WorkerInfraFact[] = [];
 
   const held = await db
-    .select({ id: tasks.id, context: tasks.context })
+    .select({ id: tasks.id, context: sql<Record<string, unknown>>`jsonb_build_object('credentialHold', ${tasks.context}->'credentialHold')` })
     .from(tasks)
     .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, 'pending'), sql`${tasks.context} ? 'credentialHold'`))
     .limit(SWEEP_MAX_ROWS);
@@ -991,7 +1084,7 @@ async function dbCollectWorkerInfra(workspaceId: string, sinceIso: string): Prom
   }
 
   const stalled = await db
-    .select({ id: tasks.id, context: tasks.context, updatedAt: tasks.updatedAt })
+    .select({ id: tasks.id, context: sql<Record<string, unknown>>`jsonb_build_object('infraRetryCount', ${tasks.context}->'infraRetryCount')`, updatedAt: tasks.updatedAt })
     .from(tasks)
     .where(and(
       eq(tasks.workspaceId, workspaceId),
@@ -1079,6 +1172,92 @@ async function dbObservePathOverlapSubjects(workspaceId: string, taskIds: string
   return { tasks: taskState, prs };
 }
 
+/**
+ * Which of `workspaceIds` a full sweep must look at (R-25), in one query.
+ *
+ * `facts`: the workspace has a row one of `dbCollectFacts`'s reads would
+ * return over `floors` — a failed worker (created since the worker-failure
+ * floor, or ended inside the failure-rate recent window: a spike needs a
+ * recent failure), a stranded or path-overlap gate event, a retry child, a
+ * pending task carrying a credential hold, an infra-stalled failed task, a
+ * failed visual audit, or an audit waiting on a question. Every clause is
+ * the collector's own predicate with the workspace in place of the id, so a
+ * workspace outside the set would collect nothing a rule could fire on.
+ * `recovery`: an unresolved incident of one of `rules`.
+ *
+ * tests/db/failure-pattern-sentinel-budget.test.ts seeds each kind and holds
+ * both halves: each is selected, and every workspace left out collects empty.
+ */
+export async function dbSelectActiveWorkspaces(
+  workspaceIds: string[],
+  floors: SweepFloors,
+  _now: string,
+  rules: FailureIncidentRule[],
+): Promise<ActiveWorkspaces> {
+  const out: ActiveWorkspaces = { facts: new Set(), recovery: new Set() };
+  if (workspaceIds.length === 0) return out;
+  const { db } = await import('@buildd/core/db');
+  const { workers, tasks, gateEvents, failureIncidents, workspaces } = await import('@buildd/core/db/schema');
+  const { and, eq, exists, gte, inArray, isNotNull, like, ne, or, sql } = await import('drizzle-orm');
+  const { GATE_SLUGS } = await import('@buildd/core/gate-slugs');
+  const { VISUAL_AUDITOR_ROLE_SLUG } = await import('@buildd/shared');
+  const { SURFACE_AUDIT_TITLE_PREFIX } = await import('@buildd/core/surface-audit');
+  const since = (iso: string) => new Date(iso);
+  const failed = [...FAILED_WORKER_STATUSES];
+  const isAudit = or(eq(tasks.roleSlug, VISUAL_AUDITOR_ROLE_SLUG), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`));
+  const one = sql`1`;
+
+  const facts = or(
+    exists(db.select({ one }).from(workers).where(and(
+      eq(workers.workspaceId, workspaces.id),
+      inArray(workers.status, failed),
+      or(
+        gte(workers.createdAt, since(floors.workerFailuresSince)),
+        gte(workers.completedAt, since(floors.failureRateRecentSince)),
+        and(sql`${workers.completedAt} IS NULL`, gte(workers.createdAt, since(floors.failureRateRecentSince))),
+      ),
+    ))),
+    exists(db.select({ one }).from(gateEvents).where(and(
+      eq(gateEvents.workspaceId, workspaces.id),
+      or(
+        and(eq(gateEvents.outcome, 'stranded'), gte(gateEvents.occurredAt, since(floors.gateEventsSince))),
+        and(
+          eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL), eq(gateEvents.outcome, 'deferred'), eq(gateEvents.reason, 'path_overlap'),
+          isNotNull(gateEvents.taskId), gte(gateEvents.occurredAt, since(floors.pathOverlapSince)),
+        ),
+      ),
+    ))),
+    exists(db.select({ one }).from(tasks).where(and(
+      eq(tasks.workspaceId, workspaces.id),
+      or(
+        and(
+          gte(tasks.createdAt, since(floors.retrySince)),
+          or(isNotNull(tasks.ciRetryPrNumber), isNotNull(tasks.conflictRetryPrNumber), isNotNull(tasks.reviewerRetryPrNumber)),
+        ),
+        and(eq(tasks.status, 'pending'), sql`${tasks.context} ? 'credentialHold'`),
+        and(eq(tasks.status, 'failed'), sql`${tasks.result}->>'errorType' = 'infra_stalled'`, gte(tasks.updatedAt, since(floors.failureRateBaselineSince))),
+        and(eq(tasks.status, 'failed'), gte(tasks.updatedAt, since(floors.retrySince)), isAudit),
+      ),
+    ))),
+    exists(db.select({ one }).from(workers).innerJoin(tasks, eq(workers.taskId, tasks.id)).where(and(
+      eq(tasks.workspaceId, workspaces.id), eq(workers.status, 'waiting_input'), isAudit,
+    ))),
+  );
+  const recovery = rules.length === 0 ? sql`false` : exists(db.select({ one }).from(failureIncidents).where(and(
+    eq(failureIncidents.workspaceId, workspaces.id), inArray(failureIncidents.rule, rules), ne(failureIncidents.status, 'resolved'),
+  )));
+
+  const rows = await db
+    .select({ id: workspaces.id, facts: sql<boolean>`${facts}`, recovery: sql<boolean>`${recovery}` })
+    .from(workspaces)
+    .where(inArray(workspaces.id, workspaceIds));
+  for (const r of rows) {
+    if (r.facts) out.facts.add(r.id);
+    if (r.recovery) out.recovery.add(r.id);
+  }
+  return out;
+}
+
 /** Lazily built, DB-backed `SweepDeps`. The only export here that touches Postgres. */
 export function productionSweepDeps(): SweepDeps {
   return {
@@ -1112,6 +1291,33 @@ export function productionSweepDeps(): SweepDeps {
           setWhere: sql`(${systemCache.value}->>'at') < ${at}`,
         });
     },
+    async getWatermarks(workspaceIds) {
+      const { db } = await import('@buildd/core/db');
+      const { systemCache } = await import('@buildd/core/db/schema');
+      const { inArray, sql } = await import('drizzle-orm');
+      const rows = await db
+        .select({ key: systemCache.key, at: sql<string | null>`${systemCache.value}->>'at'` })
+        .from(systemCache)
+        .where(inArray(systemCache.key, workspaceIds.map(watermarkKey)));
+      const byKey = new Map(rows.map(r => [r.key, typeof r.at === 'string' ? r.at : null]));
+      return new Map(workspaceIds.map(id => [id, byKey.get(watermarkKey(id)) ?? null]));
+    },
+    async setWatermarks(workspaceIds, at) {
+      const { db } = await import('@buildd/core/db');
+      const { systemCache } = await import('@buildd/core/db/schema');
+      const { sql } = await import('drizzle-orm');
+      const updatedAt = new Date();
+      await db
+        .insert(systemCache)
+        .values(workspaceIds.map(id => ({ key: watermarkKey(id), value: { at }, updatedAt })))
+        .onConflictDoUpdate({
+          target: systemCache.key,
+          set: { value: { at }, updatedAt },
+          // Monotonic, as setWatermark.
+          setWhere: sql`(${systemCache.value}->>'at') < ${at}`,
+        });
+    },
+    selectActiveWorkspaces: dbSelectActiveWorkspaces,
     collectFacts: dbCollectFacts,
     recovery: {
       families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily(), dispatchRecoveryFamily],
