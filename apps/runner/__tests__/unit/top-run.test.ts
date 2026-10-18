@@ -20,7 +20,12 @@ let sse: ReadableStreamDefaultController<Uint8Array> | null = null;
 const posts: Array<{ path: string; body: any }> = [];
 let missionFetches = 0;
 let taskFetches = 0;
+let tasksServed = 0;
 let serveMissions = false;
+/** Hold /api/tasks and /api/missions/recent until this resolves (a slow server read). */
+let slowReads: Promise<void> | null = null;
+/** The next N task-list reads answer 429 (the server's read rate limit, passed through). */
+let rateLimitTasks = 0;
 
 function push(event: unknown) {
   sse?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -32,7 +37,10 @@ beforeEach(() => {
   posts.length = 0;
   missionFetches = 0;
   taskFetches = 0;
+  tasksServed = 0;
   serveMissions = false;
+  slowReads = null;
+  rateLimitTasks = 0;
   sse = null;
 });
 
@@ -56,13 +64,20 @@ function serveFakeRunner() {
       case '/api/runner': return Response.json({ pid: 4242, version: '0.340.0' });
       case '/api/config': return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
       case '/api/workers': return Response.json({ workers: WORKERS });
-      case '/api/tasks': taskFetches++; return Response.json({ tasks: TASKS });
+      case '/api/tasks':
+        taskFetches++; if (slowReads) await slowReads;
+        if (rateLimitTasks > 0) {
+          rateLimitTasks--;
+          return Response.json({ error: 'The server is rate limiting reads; retrying after 1s.', retryAfterSec: 1, tasks: [] }, { status: 429, headers: { 'Retry-After': '1' } });
+        }
+        tasksServed++; return Response.json({ tasks: TASKS });
       case '/api/workspaces': return Response.json({ workspaces: [
         { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
         { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
       ] });
       case '/api/missions/recent':
         missionFetches++;
+        if (slowReads) await slowReads;
         return Response.json({ missions: !serveMissions ? [] : [
           { id: 'm-quiet', title: 'Quiet mission', workspaceId: 'ws-b', status: 'active', isHeld: false, executor: 'runner', completedAt: null, stage: { step: 'building', waitingOn: null } },
         ] });
@@ -327,6 +342,23 @@ describe('runTop', () => {
     await done;
   });
 
+  test('a 429 from the server holds task-list reads for Retry-After, says so, then catches up once', async () => {
+    serveFakeRunner();
+    rateLimitTasks = 1;
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false, timing: { taskEventMinMs: 50 } });
+    await until(() => taskFetches === 1 && sse !== null);
+    await until(() => /rate limit/i.test(t.screen()));
+    // Queue events during the hold do not ask again (no hot retry).
+    for (let i = 0; i < 3; i++) { push({ type: 'task_assigned' }); await Bun.sleep(100); }
+    expect(taskFetches).toBe(1);
+    // After Retry-After, one catch-up read.
+    await until(() => taskFetches === 2, 2_500);
+    await until(() => t.screen().includes('name override'));
+    t.type('q');
+    await done;
+  });
+
   test('left idle, top stops asking the server, says so, and catches up on the next key', async () => {
     serveFakeRunner();
     const intervals: Array<{ callback: () => void; ms: number }> = [];
@@ -394,6 +426,27 @@ describe('runTop', () => {
     expect(t2.screen()).toContain('Quiet mission');
     t2.type('q');
     await done2;
+  });
+
+  test('first load: says loading, then the stream fills the header while the task list is still loading', async () => {
+    let release!: () => void;
+    slowReads = new Promise<void>(r => { release = r; });
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'test-host', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {} });
+
+    await until(() => t.screen().length > 0);
+    const first = t.screen().split('\n')[0];
+    expect(first).not.toContain('reconnecting');
+    // The event stream opens beside the snapshot: online with the real slots before the slow reads answer.
+    await until(() => t.screen().split('\n')[0].includes('of 3 busy · ● online'));
+    // Nothing has answered the task list yet: the header did not wait for it.
+    expect(tasksServed).toBe(0);
+
+    release();
+    await until(() => tasksServed > 0);
+    t.type('q');
+    expect(await done).toBe(0);
   });
 
   test('ctrl-c restores the terminal too', async () => {

@@ -583,15 +583,7 @@ directly off the files cited.
    triggered the background refresh. That is evidence about the values being
    replaced, not about the replacements.
 
-6. **Registered `redirect_uris` are not a strict allowlist.** Registration
-    and authorize refuse dangerous schemes and any URI with a fragment
-    (`isSafeRedirectUri()`, tested in `apps/web/src/app/api/oauth/register/route.test.ts`
-    and `authorize/route.test.ts`). It is deliberately not a strict
-    https-plus-loopback list: native clients register private-use schemes,
-    and non-loopback `http:` is still accepted. Tightening that needs an
-    audit of the redirect URIs already registered.
-
-7. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
+6. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
     through `OAUTH_JWT_SECRET → AUTH_SECRET → NEXTAUTH_SECRET`
     (`apps/web/src/lib/oauth/config.ts`, `getJwtSecret()`). Access tokens carry no `kid`
     and there is no two-key overlap window, so changing that secret invalidates
@@ -602,6 +594,12 @@ directly off the files cited.
 
 Kept as a record so a reader who remembers the longer list can see where the
 entries went, and so the same claims are not re-derived from an older copy.
+
+- *"Registration accepts private-use schemes and non-loopback HTTP."* Registration
+  and authorization now require HTTPS or loopback HTTP and reject fragments and
+  credentials. Open registration, reserved names, consent identity, rate limiting
+  and unused-client pruning are specified in
+  [Auth & OAuth Boundaries](auth-oauth-boundaries.md#open-dynamic-client-registration).
 
 - *"Single-use codes and refresh rotation are untested."* Covered by
   `apps/web/src/lib/oauth/storage.test.ts` (`consumeAuthCode`,

@@ -52,6 +52,16 @@ describe('AC-24: the three surfaces agree on a delivery with two review rounds',
     expect(reviewLine).toBe(`Reviews: ${LINE}`);
   });
 
+  test('R-43: get_pr names the Review approval apart from CI, in plain review terms', () => {
+    const report = prDeliveryReport(dv);
+    expect(report.reviewApproval).toEqual({ state: 'failure', description: 'Unresolved review finding: src/a.ts:3: rename the flag' });
+    const { approvalLine } = formatGetPrDelivery({ reviews: { approved: 0, changesRequested: 0 }, delivery: report });
+    expect(approvalLine).toBe('Review approval: Unresolved review finding: src/a.ts:3: rename the flag');
+    expect(approvalLine).not.toMatch(/\bCI\b|\bland/);
+    // A PR with no delivery says nothing about it rather than guessing.
+    expect(formatGetPrDelivery({ reviews: null, delivery: null }).approvalLine).toBe('');
+  });
+
   test('the task page: the checks list and the PR card', () => {
     const checks = deriveTaskChecks(dv);
     expect(checks.review).toBe(LINE);

@@ -243,6 +243,18 @@ describe('HealthClient — Problems', () => {
     expect(html).toContain('only its operator');
   });
 
+  it('keeps a confined runner row to identity, platform, capacity and heartbeat', () => {
+    const html = render({
+      runners: [runner({ lastHeartbeatAt: ago(60 * 1000), isolation: isolation('darwin', { mechanism: 'seatbelt', scope: ['write'] }) })],
+    });
+    expect(html).toContain('macOS');
+    expect(html).toContain('sandboxed');
+    expect(html).not.toContain('data-testid="runner-isolation"');
+    expect(html).not.toContain('Seatbelt');
+    expect(html).not.toContain('Check health');
+    expect(html).not.toMatch(/>checked |checked \d|checked just/);
+  });
+
   it('flags the same opt-out on a runner other people use', () => {
     const html = render({
       runners: [runner({ lastHeartbeatAt: ago(60 * 1000), shared: true, isolation: isolation('linux', none('opt_out')) })],

@@ -6335,9 +6335,12 @@ export const deploymentAuditEvents = pgTable('deployment_audit_events', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The signed-in person, for principal 'user'.
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   // 'operator': an agent role acting under its workspace grant.
   // 'admin': a human's admin API key, the escape hatch.
-  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  // 'user': a team owner or admin signed in (the Settings Deploy button).
+  principal: text('principal').notNull().$type<'operator' | 'admin' | 'user'>(),
   roleSlug: text('role_slug'),
   operation: text('operation').notNull(),
   capabilities: jsonb('capabilities').$type<string[]>().notNull(),

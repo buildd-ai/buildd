@@ -14,6 +14,7 @@ import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { effectiveVisibleRoles, personalRoleVisibleSql, TEAM_SCOPED_BY_QUERY } from '@buildd/core/role-visibility';
 import type { TaskHandoff } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { taskHasPrSql, withTaskPrs } from '@/lib/workflow/task-pr';
 
 /**
  * Flatten active tasks' pathManifests into concrete search paths for the
@@ -530,7 +531,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   // ── Standard mission context ──
   // Last 10 completed tasks
-  const completedTasks = await db.query.tasks.findMany({
+  // Each result carries the task's PR derived on read (workflow/task-pr.ts), not a stored snapshot.
+  const completedTasks = await withTaskPrs(await db.query.tasks.findMany({
     where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.status, 'completed')
@@ -538,7 +540,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 10,
     columns: { id: true, title: true, mode: true, result: true, createdAt: true, roleSlug: true },
-  });
+  }));
 
   // Detect build mission for conditional PR context
   const isBuild = isBuildMission(templateContext, completedTasks);
@@ -546,15 +548,15 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // Query tasks that created PRs (build missions only)
   let taskPRs: Array<{ title: string; prUrl: string; prNumber: number }> = [];
   if (isBuild) {
-    const tasksWithPRs = await db.query.tasks.findMany({
+    const tasksWithPRs = await withTaskPrs(await db.query.tasks.findMany({
       where: sqlWhere(and(
         eq(tasks.missionId, missionId),
         eq(tasks.status, 'completed'),
-        sql`${tasks.result}->>'prUrl' IS NOT NULL`
+        taskHasPrSql(),
       )),
       limit: 20,
       columns: { id: true, title: true, result: true },
-    });
+    }));
     taskPRs = tasksWithPRs.map(t => {
       const r = t.result as Record<string, unknown>;
       return { title: t.title, prUrl: r.prUrl as string, prNumber: r.prNumber as number };
@@ -1129,11 +1131,11 @@ async function buildHeartbeatContext(mission: {
       where: sqlWhere(and(
         eq(tasks.missionId, mission.id),
         eq(tasks.status, 'completed'),
-        sql`${tasks.result}->>'prUrl' IS NOT NULL`
+        taskHasPrSql(),
       )),
       limit: 20,
-      columns: { title: true, result: true },
-    }),
+      columns: { id: true, title: true, result: true },
+    }).then((rows) => withTaskPrs(rows)),
   ]);
 
   // Non-auto-generated artifacts (actual deliverables, not heartbeat/mission summaries)

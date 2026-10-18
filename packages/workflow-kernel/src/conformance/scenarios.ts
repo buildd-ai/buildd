@@ -238,6 +238,7 @@ function fakePorts(host: ConformanceHost, o: {
   const ports: KernelPorts = {
     store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), policy: host.policy,
     notify, ingest, lifecycle, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails,
+    links: { review: (d) => `https://host.test/review/${d.ownerTaskId}` },
   };
   for (const k of o.omit ?? []) delete ports[k];
   return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails };
@@ -818,16 +819,22 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       await drainKernel(host, s, f.ports);
       eq(published().at(-1), { sha: 'H1', state: 'pending', context: 'Buildd / Review approval' }, 'review pending: pending, not failure');
       ok(published().some((x) => x.context === 'buildd/landing' && x.sha === 'H1'), 'the legacy name carries the same answer');
-      ok(lastDesc().includes('review of H1 is pending'), `names the wait: ${lastDesc()}`);
+      eq(lastDesc(), 'Review in progress: H1 is waiting for its review', 'names the wait in plain review terms (R-43)');
+      const lastTarget = () => f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.targetUrl;
+      ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => w.targetUrl === `https://host.test/review/${s.ownerTaskId}`), 'every write links to the delivery\'s review page (R-43)');
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
       await drainKernel(host, s, f.ports);
       eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'Buildd / Review approval' }, 'changes asked: failure');
+      eq(lastDesc(), 'Unresolved review finding: the review asked for changes', 'changes asked reads as a review finding, not as a CI failure');
+      eq(lastTarget(), `https://host.test/review/${s.ownerTaskId}`, 'the failure links to the findings');
       const fix = await s.startFix();
       applied(await s.push('H2', { attribution: { descendsFromBound: true } }), 'FIXING', 'fix pushed');
       applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
       applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
       await drainKernel(host, s, f.ports);
       eq(published().at(-1), { sha: 'H2', state: 'success', context: 'Buildd / Review approval' }, 'approved: success at H2');
+      eq(lastDesc(), 'Ready to merge: H2 approved by review', 'approved reads Ready to merge');
+      ok(f.github.written.filter((w) => w.op === 'publishStatus').every((w) => !/\bland/i.test(String(w.description))), 'no published description says "land"');
       ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
       const count = published().length;
       // Every version owes one effect, and only the newest publishes: no older answer was written after a newer one.
@@ -1697,7 +1704,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const v = await s.view();
       const gate = reviewGate(v, { states: ['APPROVED', 'LANDING', 'ESCALATED'] });
       eq(gate.ok ? null : { blocker: gate.blocker, reason: gate.reason }, { blocker: 'open_finding', reason: 'open finding src/flag.ts:3: the flag is never read' }, 'the gate names it');
-      eq(pick(landingStatusOf(v), ['state', 'sha', 'description']), { state: 'failure', sha: 'H2', description: 'buildd will not land H2: open finding src/flag.ts:3: the flag is never read' }, 'buildd/landing failure at H2, naming it');
+      eq(pick(landingStatusOf(v), ['state', 'sha', 'description']), { state: 'failure', sha: 'H2', description: 'Unresolved review finding: src/flag.ts:3: the flag is never read' }, 'Buildd / Review approval failure at H2, naming the finding (AC-13, R-43)');
       // A person's verdict override is the recorded decision past it (rule 6).
       applied(await s.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H2', live: s.live('H2'), override: { reason: 'accepted as is' } }), 'LANDING', 'a person lands it');
     },
@@ -1832,6 +1839,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq((await s.view()).rounds.length, 1, 'no second review of the same head');
       eq(await s.count('dispatch_review'), 0, 'no reviewer filed');
       eq((await s.d()).approvedHeads, ['H1'], 'H1 approved');
+    },
+  },
+  {
+    name: 'an approval kept while the owner works applies only at the head it was given for: approve at H1, the owner pushes H2 and ends, and H2 is reviewed, not landed',
+    async run(host) {
+      const s = await new Delivery(host, 79).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept while the owner works');
+      applied(await s.push('H2'), 'WORKING', 'the owner pushed on past the approved head');
+      applied(await s.ownerPushed('H2'), 'AWAITING_REVIEW', 'the end at H2: the kept approval does not cover it');
+      eq((await s.d()).approvedHeads, [], 'nothing approved at H2');
+      notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'H2 does not land on the strength of H1\'s approval');
+    },
+  },
+  {
+    name: 'an approval kept while the owner works lets the delivery land the moment the owner ends at the same head',
+    async run(host) {
+      const s = await new Delivery(host, 80).open();
+      await s.push('H1');
+      const reviewer = host.newTaskId ? await host.newTaskId(s.workspaceId) : host.newId();
+      applied(await s.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: reviewer, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'WORKING', 'kept');
+      notApplied(await s.land('H1'), 'rejected', 'state_not_allowed', 'not landable while the owner still works');
+      applied(await s.ownerPushed('H1'), 'APPROVED', 'the end applies the kept approval');
+      applied(await s.land('H1'), 'LANDING', 'and the landing gate now passes');
+      eq(await s.count('merge_call'), 1, 'one merge call');
     },
   },
   {

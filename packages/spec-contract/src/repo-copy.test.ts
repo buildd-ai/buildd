@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { contentHash } from './hash';
-import { renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopyInput } from './repo-copy';
+import { isRepoPath, renderRepoCopy, specShortId, verifyRepoCopy, type RepoCopyInput } from './repo-copy';
 import { buildSpecIndex, lintSpecFile, parseSpecFrontmatter, validSpecSummary } from './repo-spec';
 
 // docs/specs/living-specs.md §18: R-14, R-15, R-16, AC-74, AC-75.
@@ -122,6 +122,25 @@ describe('renderRepoCopy', () => {
     const b = await render({ metadata: { ...input().metadata, verified_by: ['apps/web/src/lib/widget.test.ts', 'apps/web/src/lib/widget-2.test.ts'] } });
     expect(b.contentHash).toBe(a.contentHash);
     expect(b.metadataHash).not.toBe(a.metadataHash);
+  });
+});
+
+describe('route-group and dynamic-segment paths', () => {
+  const ROUTE = 'apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecPicker.dom.test.tsx';
+
+  it('a repo path may name a Next.js route group and a dynamic segment', () => {
+    expect(isRepoPath(ROUTE)).toBe(true);
+    expect(isRepoPath('apps/web/src/app/api/specs/[specId]/route.test.ts')).toBe(true);
+  });
+
+  it('a repo path is still relative, without traversal, a comma or whitespace', () => {
+    for (const p of ['/etc/passwd', 'apps/../secrets.ts', 'a,b.ts', 'a b.ts', 'a\nb.ts', '']) expect(isRepoPath(p)).toBe(false);
+  });
+
+  it('a copy lists such a path in verified_by, and the repo lint reads it back whole', async () => {
+    const r = await render({ metadata: { verified_by: [ROUTE, 'apps/web/src/lib/widget.test.ts'] } });
+    expect(r.text).toContain(`verified_by: [${ROUTE}, apps/web/src/lib/widget.test.ts]`);
+    expect(parseSpecFrontmatter(r.text).fm?.verified_by).toEqual([ROUTE, 'apps/web/src/lib/widget.test.ts']);
   });
 });
 

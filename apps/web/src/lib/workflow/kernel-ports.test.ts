@@ -88,8 +88,22 @@ test('the composed ports carry every port the package handlers reach', () => {
     reviews: {} as never, conflicts: {} as never, handOff: {} as never, decide: {} as never, rails: {} as never,
   });
   expect(Object.keys(ports).sort()).toEqual([
-    'clock', 'conflicts', 'decide', 'escalate', 'evidence', 'githubFor', 'handOff', 'ingest', 'lifecycle', 'notify', 'policy', 'rails', 'reviews', 'store', 'trunk', 'work',
+    'clock', 'conflicts', 'decide', 'escalate', 'evidence', 'githubFor', 'handOff', 'ingest', 'lifecycle', 'links', 'notify', 'policy', 'rails', 'reviews', 'store', 'trunk', 'work',
   ]);
+});
+
+test('R-43: the review status links to the owner task\'s page on the app\'s public name, never a Vercel deployment host', () => {
+  const env = { ...process.env };
+  try {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_URL = 'buildd-abc123-team.vercel.app';
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    const ports = builddKernelPorts({ mergeAnswerOf } as never);
+    expect(ports.links?.review({ ownerTaskId: 't-owner' } as never)).toBe('https://buildd.dev/app/tasks/t-owner');
+  } finally {
+    process.env = env;
+  }
 });
 
 describe('builddWork', () => {

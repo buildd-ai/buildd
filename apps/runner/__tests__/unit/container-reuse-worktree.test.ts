@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import * as cp from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -25,8 +26,9 @@ import { ensureIsolatedClone } from '../../src/workspace';
 import type { CloneHooks } from '../../src/warm-repo';
 import { makeDeepOrigin } from '../fixtures/deep-origin';
 
-// Real git throughout: well under a second alone, slower under the full suite's concurrency.
-setDefaultTimeout(15_000);
+// Real git throughout: well under a second alone, slower under the full suite's concurrency
+// and on a loaded CI host (the seed tests create 300 random files per growOrigin call).
+setDefaultTimeout(60_000);
 
 const WS = 'ws-reuse-1';
 let dir: string;
@@ -144,8 +146,16 @@ beforeEach(() => {
   marker = join(dir, 'planted-hook-ran');
 
   // Read in-process by keptDirForClone, cloneRepo and the phase lines.
-  savedEnv = { HOME: process.env.HOME, BUILDD_EXECUTOR: process.env.BUILDD_EXECUTOR };
+  savedEnv = {
+    HOME: process.env.HOME, BUILDD_EXECUTOR: process.env.BUILDD_EXECUTOR,
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+  };
   process.env.HOME = home;
+  // No detached `git gc --auto` writing into the clone while the reset wipes it.
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = 'gc.auto';
+  process.env.GIT_CONFIG_VALUE_0 = '0';
   process.env.BUILDD_EXECUTOR = 'cloud';
   lines = [];
   savedLog = console.log;
@@ -224,7 +234,7 @@ describe('reset → next task: setupWorktree in the reused clone', () => {
     expect(fs.existsSync(join(third.path, '.buildd-worktrees'))).toBe(false);
     expect(next!.base).toBe('origin/mission/x');
     assertNothingPlanted(next!.path);
-  }, 60_000);
+  }, 120_000);
 
   test('origin moved on between the tasks: the next worktree is cut from the new tip', async () => {
     const first = acquire();
@@ -265,7 +275,7 @@ describe('the seed fetches only what origin added', () => {
   function growOrigin(): string {
     const other = join(dir, 'grow');
     git(dir, 'clone', '-q', '--branch', 'dev', url, other);
-    for (let i = 0; i < 300; i++) fs.writeFileSync(join(other, `big-${i}.bin`), cp.execFileSync('head', ['-c', '1024', '/dev/urandom']));
+    for (let i = 0; i < 300; i++) fs.writeFileSync(join(other, `big-${i}.bin`), crypto.randomBytes(1024));
     git(other, 'add', '.');
     git(other, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'big tree');
     git(other, 'push', '-q', 'origin', 'HEAD:refs/heads/dev');
