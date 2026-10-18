@@ -49,18 +49,18 @@ export type DeliveryTone = 'success' | 'info' | 'warning' | 'ink' | 'muted' | 'e
 
 /** Glyph + word for every kind: never colour alone. */
 export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string; tone: DeliveryTone }> = {
-  landed: { label: 'Landed', glyph: '■', tone: 'success' },
-  landing: { label: 'Landing', glyph: '▲', tone: 'success' },
-  audit: { label: 'In audit', glyph: '◐', tone: 'info' },
-  repair: { label: 'Repairing', glyph: '↻', tone: 'warning' },
-  build: { label: 'Building', glyph: '▶', tone: 'ink' },
-  waiting: { label: 'Waiting', glyph: '◇', tone: 'muted' },
+  landed: { label: "Merged", glyph: "■", tone: "success" },
+  landing: { label: "Ready to merge", glyph: "▲", tone: "success" },
+  audit: { label: "In audit", glyph: "◐", tone: "info" },
+  repair: { label: "Repairing", glyph: "↻", tone: "warning" },
+  build: { label: "Building", glyph: "▶", tone: "ink" },
+  waiting: { label: "Waiting", glyph: "◇", tone: "muted" },
   // A held start gate; deliveryKindLabel says Paused for one that ran before.
-  held: { label: 'Not started', glyph: '‖', tone: 'muted' },
-  planning: { label: 'Planning', glyph: '○', tone: 'muted' },
-  unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
-  notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
-  needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
+  held: { label: "Not started", glyph: "‖", tone: "muted" },
+  planning: { label: "Planning", glyph: "○", tone: "muted" },
+  unavailable: { label: "Audit can’t run", glyph: "⊘", tone: "warning" },
+  notlanded: { label: "Merge blocked", glyph: "✕", tone: "error" },
+  needs: { label: "Waiting on you", glyph: "!", tone: "ink" },
 };
 
 /** A mission's delivery kind as the shared state vocabulary (glyph + word). */

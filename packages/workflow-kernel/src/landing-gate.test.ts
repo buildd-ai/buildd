@@ -130,6 +130,6 @@ describe('reviewGate with findings (workflow-kernel-library.md §5, AC-13)', () 
     expect(reviewGate(VF(D({ approvalBasis: 'policy_rule' }), [F()]))).toMatchObject({ blocker: 'open_finding' });
   });
   test('buildd/landing is failure at the head, naming the finding', () => {
-    expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd will not land abcdef1: open finding src/a.ts:4: rename the flag' });
+    expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'Unresolved review finding: src/a.ts:4: rename the flag' });
   });
 });

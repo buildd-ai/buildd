@@ -228,6 +228,15 @@ describe('stage track and repair badge', () => {
       expect(k.label.length).toBeGreaterThan(0);
     }
   });
+  it('delivery pills use R-43 plain terms and never say landing/landed', () => {
+    expect(DELIVERY_KIND.landing.label).toBe('Ready to merge');
+    expect(DELIVERY_KIND.landed.label).toBe('Merged');
+    expect(DELIVERY_KIND.notlanded.label).toBe('Merge blocked');
+    // Verify no "land" terms in any pills
+    Object.entries(DELIVERY_KIND).forEach(([key, { label }]) => {
+      expect(label.toLowerCase()).not.toContain('land');
+    });
+  });
 });
 
 // ── Mission projection ──────────────────────────────────────────────────────
