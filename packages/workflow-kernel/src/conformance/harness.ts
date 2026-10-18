@@ -15,6 +15,7 @@ import type { KernelView } from '../types';
 import { controllableClock, sequentialIds, type ControllableClock } from '../memory/clock';
 import { MemoryStore, type EffectRecord, type TransitionRecord } from '../memory/store';
 import { staticPolicy } from '../memory/ports';
+import { EpochConflict, MemoryEpochStore } from '../memory/delivery-epochs';
 import type { ConformanceHost } from './scenarios';
 
 export { controllableClock, sequentialIds, type ControllableClock } from '../memory/clock';
@@ -53,6 +54,8 @@ export class InMemoryKernel {
 /** The shared scenarios' host on the in-memory store. */
 export function memoryHost(k: InMemoryKernel = new InMemoryKernel()): ConformanceHost & { kernel: InMemoryKernel } {
   let owners = 0;
+  let missions = 0;
+  const epochs = new MemoryEpochStore();
   // §14: the kill switch per workspace, as the host's policy reads it.
   const switchedOff: Record<string, { kernelEnabled: boolean }> = {};
   return {
@@ -71,5 +74,12 @@ export function memoryHost(k: InMemoryKernel = new InMemoryKernel()): Conformanc
     })),
     passTime: async (ms) => { k.clock.advance(ms); },
     setKernelEnabled: async (workspaceId, on) => { if (on) delete switchedOff[workspaceId]; else switchedOff[workspaceId] = { kernelEnabled: false }; },
+    epochs: {
+      seedMission: async (branch) => { const id = `m${++missions}`; epochs.setMissionBranch(id, branch); return id; },
+      load: async (missionId) => ({ integrationBranch: epochs.missionBranch(missionId), epochs: epochs.epochs(missionId) }),
+      apply: async (ops) => {
+        try { epochs.apply(ops); return true; } catch (err) { if (err instanceof EpochConflict) return false; throw err; }
+      },
+    },
   };
 }
