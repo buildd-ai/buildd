@@ -2,7 +2,7 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
-import { eq, desc, and, lt, gte } from 'drizzle-orm';
+import { eq, desc, and, lt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import {
@@ -82,19 +82,10 @@ export async function GET(
   const url = new URL(req.url);
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
   const cursor = url.searchParams.get('cursor'); // noteId for cursor-based pagination
-  // since=<noteId>: only what was posted (or collapsed into an existing note,
-  // which bumps its createdAt) at or after that note, so a live feed fetches
-  // what is new instead of re-reading its whole page per event (spec 3ef37387
-  // R-21). An unknown since note answers the newest page with `since: null`:
-  // the client replaces its list rather than merging.
-  const sinceParam = url.searchParams.get('since');
   const typeFilter = url.searchParams.get('type');
 
   if (cursor && !isUuid(cursor)) {
     return invalidUuid('cursor', cursor, 400);
-  }
-  if (sinceParam && !isUuid(sinceParam)) {
-    return invalidUuid('since', sinceParam, 400);
   }
 
   try {
@@ -108,18 +99,6 @@ export async function GET(
       });
       if (cursorNote) {
         conditions.push(lt(missionNotes.createdAt, cursorNote.createdAt));
-      }
-    }
-
-    let since: string | null = null;
-    if (sinceParam) {
-      const sinceNote = await db.query.missionNotes.findFirst({
-        where: sqlWhere(and(eq(missionNotes.id, sinceParam), eq(missionNotes.missionId, id))),
-        columns: { createdAt: true },
-      });
-      if (sinceNote) {
-        conditions.push(gte(missionNotes.createdAt, sinceNote.createdAt));
-        since = sinceParam;
       }
     }
 
@@ -141,7 +120,6 @@ export async function GET(
       notes: results,
       nextCursor,
       hasMore,
-      since,
     });
   } catch (error) {
     console.error('Get mission notes error:', error);
