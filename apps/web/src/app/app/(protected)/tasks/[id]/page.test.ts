@@ -5,6 +5,7 @@ import { describe, it, expect } from 'bun:test';
 // tasks/page.test.ts's mission-budget plumbing suite — a re-derivation of the
 // wiring in this test file would prove nothing about the actual page.
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
+const missionContextLoadSource = await Bun.file(new URL('./mission-context-load.ts', import.meta.url)).text();
 // The load (lib/task-view.ts) and the pick it makes (lib/task-view-pick.ts).
 const taskViewSource = (await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text())
   + (await Bun.file(new URL('../../../../../lib/task-view-pick.ts', import.meta.url)).text());
@@ -33,7 +34,7 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
     // included in the chain so the user can navigate from reviewer to builder.
     expect(pageSource).toContain('if (task.parentTaskId && task.parentTask) {');
     // The parent carries its classification so selectExecutionPlan can drop attempts (D9).
-    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, context: task.parentTask.context },');
+    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, roleInferred: task.parentTask.roleInferred },');
   });
 
   it('filters out one-phase chains (a self-loop, or another task alone)', () => {
@@ -89,7 +90,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(pageSource).toContain('missionContextBarFor(');
     expect(pageSource).toContain('<MissionContextBar bar={missionContextBar} />');
     // The sibling query selects the card's columns, never task result/context or artifact content.
-    expect(pageSource).toContain('columns: MISSION_CARD_TASK_COLUMNS');
+    expect(pageSource).toContain('missionContextReads(task.missionId)');
+    expect(missionContextLoadSource).toContain('pick(tasks as never, MISSION_CARD_TASK_COLUMNS)');
   });
 
   it('drops the `!task.missionId` gates: a mission task shows its scoped questions', () => {
@@ -252,7 +254,7 @@ describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
 
   it('never orders tasks by createdAt without an id tiebreak', () => {
     expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?asc\(tasks\.createdAt\)\)?\s*[,}]/);
-    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*(sqlOrderBy\()?\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*extras: ROLE_INFERRED_EXTRAS,\s*orderBy:\s*(sqlOrderBy\()?\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
   });
 
   it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
@@ -318,12 +320,15 @@ describe('task header — full-width title on a phone, actions on the title row 
 });
 
 describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
-  it('reads its workers and question through loadTaskView, as /api/tasks/[id]/summary does', async () => {
+  it('reads its workers and question as /api/tasks/[id]/summary does, and picks them with the same pickTaskView', async () => {
     const summarySource = await Bun.file(new URL('../../../../api/tasks/[id]/summary/route.ts', import.meta.url)).text();
-    for (const src of [pageSource, summarySource]) {
-      expect(src).toContain("import { loadTaskView } from '@/lib/task-view'");
-      expect(src).toContain('loadTaskView(task, ');
-    }
+    expect(summarySource).toContain("import { loadTaskView } from '@/lib/task-view'");
+    expect(summarySource).toContain('loadTaskView(task, ');
+    // The page batches the same two reads with its own (lib/task-view.ts taskViewReads) and picks as loadTaskView does.
+    expect(pageSource).toContain('taskViewReads(task.id)');
+    expect(pageSource).toContain('loadTaskViewRecovery(task, viewer)');
+    expect(pageSource).toContain('const taskView = pickTaskView({');
+    expect(taskViewSource).toContain('return pickTaskView({ task, workers: workerRows ?? [], openQuestions: openQuestions ?? [], recovery });');
     // No second worker pick beside it.
     expect(pageSource).not.toContain('selectTaskWorkers(');
     expect(pageSource).not.toContain('linkQuestionNote(');
