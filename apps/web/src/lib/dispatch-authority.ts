@@ -46,6 +46,7 @@ import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, t
 import { dispatchTransportConfig, publishPendingDispatches } from '@/lib/dispatch-transport';
 import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { noteWorkChanged } from '@/lib/work-changed';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -101,6 +102,10 @@ export async function wakeTask(
   /** `byPerson`: a person aimed it at `targetLocalUiUrl`, so that runner runs it even on hold. */
   opts: { notBefore?: Date; targetLocalUiUrl?: string | null; byPerson?: boolean; metadata?: Record<string, unknown> } = {},
 ): Promise<void> {
+  // A woken task is changed work: its workspace's list version moves (spec
+  // 3ef37387 R-20). Nearly every task-creating path wakes the task it
+  // inserted, so this is the choke point for new tasks too.
+  noteWorkChanged({ taskIds: [taskId] });
   try {
     const metadata = {
       ...(opts.metadata ?? {}),
@@ -139,6 +144,7 @@ export async function dispatchIntent(input: {
 /** `wakeTask` for many tasks with one cause (a mission released, a parent's children). */
 export async function wakeTasks(taskIds: readonly string[], cause: DispatchCause): Promise<void> {
   if (taskIds.length === 0) return;
+  noteWorkChanged({ taskIds });
   const results = await Promise.allSettled(taskIds.map(id => db.execute(enqueueDispatchSql({ taskId: id, cause }))));
   const failed = results.filter(r => r.status === 'rejected').length;
   if (failed) console.error(`[dispatch] wakeTasks: ${failed}/${taskIds.length} enqueues failed (${cause})`);
@@ -147,6 +153,8 @@ export async function wakeTasks(taskIds: readonly string[], cause: DispatchCause
 
 /** Dashboard-only realtime event for a new task. Not a wake: runners ignore it. */
 export async function announceTaskCreated(task: DispatchTask, workspace: DispatchWorkspace): Promise<void> {
+  // A new task is changed work (spec 3ef37387 R-20), whether or not it is woken.
+  noteWorkChanged({ taskIds: [task.id] });
   await triggerEvent(channels.workspace(task.workspaceId), events.TASK_CREATED, { task: buildTaskPayload(task, workspace) });
 }
 

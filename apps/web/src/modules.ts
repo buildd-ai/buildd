@@ -121,7 +121,9 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
  * Told every write of work (lib/work-changed.ts): a task's status or mission,
  * a worker's status or PR, a delivery, a review, and every core event's ids.
  * The missions module refreshes the stored summary of each mission they
- * belong to, after the response (spec 3ef37387 R-13).
+ * belong to, after the response (spec 3ef37387 R-13). (Before these run,
+ * core itself bumps the change version of the batch's workspaces:
+ * lib/work-changed.ts, R-20.)
  */
 export const WORK_CHANGE_LISTENERS: readonly WorkChangeListener[] = [
   async (batch) => { await refreshMissionSummariesFor(batch); },
