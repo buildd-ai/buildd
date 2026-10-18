@@ -6,7 +6,7 @@ import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } fr
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
+import { classifyStaleExit, consumesRetryAttempt, CLAIM_RESPONSE_LOST_ERROR, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -351,7 +351,7 @@ async function resolveStaleTask(
       const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
 
       // An interactive worker never reaches here: resolveTasksOfReapedWorkers
-      // routes it to resolveAbandonedInteractiveTask, and the heartbeat-orphan
+      // routes it to resolveUnexecutedTask, and the heartbeat-orphan
       // scope excludes it.
       if (infraRetryCount >= MAX_INFRA_RETRIES) {
         // Infra retry cap reached — mark as stalled so mission health surfaces the issue
@@ -418,35 +418,49 @@ async function resolveStaleTask(
  * claim it again at once, on the worker's branch; a terminal one keeps its
  * status (failure-incident-recovery §18.3, I-15: never `failed`). The same
  * outcome as "Release slot" (lib/interactive-detach.ts).
+ *
+ * Undelivered runner claims share this guarded writer. They back off using
+ * claimLostCount (bookkeeping, never a retry budget), without ending a kernel
+ * attempt or stalling the task. Terminal and already pending tasks stay put.
  */
-async function resolveAbandonedInteractiveTask(
+async function resolveUnexecutedTask(
   taskId: string,
   workspaceId: string,
   staleWorker: { branch?: string | null; error?: string | null } | undefined,
+  undelivered = false,
 ) {
   noteWorkChanged({ taskIds: [taskId] });
   const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
   if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
     const existingCtx = (current.context || {}) as Record<string, unknown>;
+    // Lost claims back off without charging a retry budget; interactive sessions
+    // can re-claim immediately. Neither release ends a kernel attempt.
+    const claimLostCount = ((existingCtx.claimLostCount as number) || 0) + 1;
+    const backoffMinutes = [1, 2, 5, 10, 15];
+    const startAt = undelivered
+      ? new Date(Date.now() + backoffMinutes[Math.min(claimLostCount, backoffMinutes.length) - 1] * 60_000)
+      : null;
     await db
       .update(tasks)
       .set({
         status: 'pending',
         claimedBy: null,
         claimedAt: null,
-        expiresAt: null,
-        startAt: null,
+        ...(!undelivered ? { expiresAt: null } : {}),
+        startAt,
         context: {
           ...withoutForceClaim(existingCtx),
           ...requeueBranchContext(existingCtx, staleWorker?.branch),
-          failureContext: staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
-          // Carried as it was: an interactive release is never charged.
+          failureContext: undelivered ? CLAIM_RESPONSE_LOST_ERROR : staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
+          ...(undelivered ? { claimLostCount } : {}),
+          // Both bookkeeping releases carry the infra retry budget as it was.
           infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
         },
         updatedAt: new Date(),
       })
       .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
-    await wakeTask(taskId, 'task.requeued');
+    if (startAt) await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
+    else await wakeTask(taskId, 'task.requeued');
   }
   await releaseAndNotify(taskId, 'abandoned').catch(e =>
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
@@ -847,6 +861,8 @@ type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
 export async function resolveTasksOfReapedWorkers(
   reaped: readonly ReapedWorker[],
   exitCauseOverride?: WorkerExitCause,
+  /** `undelivered`: the runner reported it never received these claims (resolveUnexecutedTask). */
+  opts: { undelivered?: boolean } = {},
 ): Promise<void> {
   const taskIds = reaped.map(w => w.taskId).filter(Boolean) as string[];
   if (taskIds.length === 0) return;
@@ -872,7 +888,11 @@ export async function resolveTasksOfReapedWorkers(
     if (otherActiveWorkers.length === 0) {
       const staleWorker = reaped.find(w => w.taskId === t.id);
       if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
-        await resolveAbandonedInteractiveTask(t.id, t.workspaceId, staleWorker);
+        await resolveUnexecutedTask(t.id, t.workspaceId, staleWorker);
+        continue;
+      }
+      if (opts.undelivered) {
+        await resolveUnexecutedTask(t.id, t.workspaceId, staleWorker, true);
         continue;
       }
       // Determine exit cause for this worker so reviewer tasks can distinguish
