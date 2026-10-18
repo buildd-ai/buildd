@@ -38,6 +38,8 @@ mock.module('drizzle-orm', () => ({
   ...realDrizzleOrm,
   eq: (field: any, value: any) => ({ type: 'eq', field, value }),
   inArray: (field: any, values: any) => ({ type: 'inArray', field, values }),
+  and: (...args: any[]) => ({ type: 'and', args }),
+  lt: (field: any, value: any) => ({ type: 'lt', field, value }),
 }));
 
 const { selectMissionsToArchive, archiveStaleDoneMissions } = await import('./mission-archive');
@@ -132,16 +134,22 @@ describe('selectMissionsToArchive', () => {
   });
 });
 
+/**
+ * A candidate row as the archive read returns it: the SQL already kept only
+ * missions whose tasks are all completed and quiet (cron-schedules-selection
+ * .test.ts pins that on real Postgres), so the tasks arrive as their newest
+ * update in epoch ms, and the criteria as a count and the stored verdict.
+ */
 function dbRow(overrides: Record<string, any> = {}) {
   return {
     id: 'm1',
     status: 'active',
     updatedAt: new Date(NOW.getTime() - 30 * HOURS),
     scheduleId: 'sched-1',
-    goalCriteria: [],
-    goalCriteriaState: null,
+    criteriaCount: 0,
+    criteriaOverall: null,
     schedule: { enabled: false },
-    tasks: [{ status: 'completed', updatedAt: new Date(NOW.getTime() - 30 * HOURS) }],
+    lastTaskUpdateMs: NOW.getTime() - 30 * HOURS,
     ...overrides,
   };
 }
