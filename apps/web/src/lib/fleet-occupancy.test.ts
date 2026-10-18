@@ -5,8 +5,10 @@ import {
   occupancyWindowMs,
   isOccupancyWindow,
   MAX_UNENDED_RUN_MS,
+  occupancyDiscrepancies,
   type OccupancyWorkerRow,
 } from './fleet-occupancy';
+import { classifyRunnerOwnership, RUNNER_CLASSES } from './runner-ownership';
 import { MAX_UNENDED_RUN_MS as INSIGHTS_UNENDED_CAP } from './insights-flow';
 
 const MIN = 60_000;
@@ -262,6 +264,70 @@ describe('owner attribution reconciles to the total', async () => {
 
   it('empty input reconciles at zero', () => {
     expect(occupancyDiscrepancies(buildOccupancySeries({ window: '7d', now: NOW, workers: [], viewerId: 'me' }))).toEqual([]);
+  });
+});
+
+describe('task owner and runner ownership (AC-2)', () => {
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  it('a task on a managed runner is its task owner\'s, and the slot is the managed runner\'s', () => {
+    // Claimed by a bld_ key (no claimer), so the old claimer-only rule said unattributed.
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: null, taskOwnerId: 'me', runnerClass: 'managed' })],
+    });
+    expect(s.summary.runnerBy.mine.avg).toBeGreaterThan(0);
+    expect(s.summary.runnerBy.unattributed.avg).toBe(0);
+    expect(s.summary.runnerByClass.managed.peak).toBe(1);
+    expect(s.summary.runnerByClass.personal.peak).toBe(0);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+
+  it('another member\'s task on my personal runner is theirs, not mine, and the slot stays personal', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: 'you', runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerBy.others.peak).toBe(1);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+    expect(s.summary.runnerByClass.personal.peak).toBe(1);
+  });
+
+  it('a service-owned task is unattributed even when a person\'s runner claimed it', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, ownerId: 'me', taskOwnerId: null, runnerClass: 'personal' })],
+    });
+    expect(s.summary.runnerBy.unattributed.peak).toBe(1);
+    expect(s.summary.runnerBy.mine.peak).toBe(0);
+  });
+
+  it('a session belongs to its claimer whatever the task owner, and uses no runner class', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [row({ ...span, runner: 'mcp', ownerId: 'me', taskOwnerId: 'you' })],
+    });
+    expect(s.summary.sessionsBy.mine.peak).toBe(1);
+    expect(RUNNER_CLASSES.every(c => s.summary.runnerByClass[c].peak === 0)).toBe(true);
+  });
+
+  it('a runner with no recorded class reads unknown; classes reconcile to the total', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW,
+      workers: [row({ ...span }), row({ ...span, runnerClass: 'team' })],
+    });
+    expect(s.summary.runnerByClass.unknown.peak).toBe(1);
+    expect(occupancyDiscrepancies(s)).toEqual([]);
+  });
+});
+
+describe('classifyRunnerOwnership', () => {
+  it('classifies by account, personal stays personal regardless of team', () => {
+    expect(classifyRunnerOwnership({ managedRunner: true, createdByUserId: 'u' })).toBe('managed');
+    expect(classifyRunnerOwnership({ hostRunner: true, createdByUserId: 'u' })).toBe('team');
+    expect(classifyRunnerOwnership({ createdByUserId: 'u' })).toBe('personal');
+    expect(classifyRunnerOwnership({})).toBe('unknown');
+    expect(classifyRunnerOwnership(null)).toBe('unknown');
   });
 });
 

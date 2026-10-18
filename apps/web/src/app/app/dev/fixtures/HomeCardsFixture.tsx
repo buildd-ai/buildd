@@ -43,7 +43,7 @@ function series(levels: number[]): OccupancySeries {
     buckets: levels.map((v, i) => ({ t: from + i * bucketMs, runner: lvl(v), sessions: lvl(0), runnerBy: by(v), sessionsBy: by(0) })),
     summary: (() => {
       const runner = { avg: levels.reduce((a, b) => a + b, 0) / levels.length, peak: Math.max(...levels) };
-      return { runner, sessions: lvl(0), runnerBy: { mine: runner, others: lvl(0), unattributed: lvl(0) }, sessionsBy: by(0) };
+      return { runner, sessions: lvl(0), runnerBy: { mine: runner, others: lvl(0), unattributed: lvl(0) }, sessionsBy: by(0), runnerByClass: { managed: lvl(0), team: lvl(0), personal: runner, unknown: lvl(0) } };
     })(),
   };
 }
