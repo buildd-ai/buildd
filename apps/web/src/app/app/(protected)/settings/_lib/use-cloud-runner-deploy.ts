@@ -124,6 +124,7 @@ export function useCloudRunnerDeploy() {
           ...s,
           phase: 'error',
           error: err instanceof Error ? err.message : 'Deploy failed.',
+          failedStep: step,
           progress: i / DEPLOY_STEPS.length,
         }));
         return;
