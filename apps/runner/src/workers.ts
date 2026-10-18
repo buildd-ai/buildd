@@ -1120,6 +1120,11 @@ export class WorkerManager {
     }
   }
 
+  /** Watch these missions' channels for `buildd top` (mission-loop events; pusher-manager.ts). */
+  watchMissions(missionIds: string[]) {
+    this.pusherManager.watchMissions(missionIds);
+  }
+
   // Set whether to accept remote task assignments
   setAcceptRemoteTasks(enabled: boolean) {
     this.acceptRemoteTasks = enabled;

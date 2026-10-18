@@ -162,6 +162,21 @@ export class BuilddClient {
   }
 
   /**
+   * The task list and its missions' stages in one server read
+   * (`/api/tasks?include=missionStages`; spec 3ef37387 AC-5), for `buildd top`.
+   * `missionStages` is null when the server predates the include: the caller
+   * then asks GET /api/missions/stages as before.
+   */
+  async listTasksWithStages(): Promise<{ tasks: BuilddTask[]; missionStages: Record<string, MissionStage> | null }> {
+    const data = await this.fetch('/api/tasks?include=missionStages');
+    const stages = data?.missionStages;
+    return {
+      tasks: data?.tasks || [],
+      missionStages: stages && typeof stages === 'object' && !Array.isArray(stages) ? stages : null,
+    };
+  }
+
+  /**
    * Each named mission's stage (spec c7410e76 R-18), from the missions
    * module's GET /api/missions/stages. Keyed by mission id; a mission the
    * server could not place is absent.

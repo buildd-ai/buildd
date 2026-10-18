@@ -49,3 +49,14 @@ export async function withMissionStages<T extends TaskWithMission>(
     return tasks;
   }
 }
+
+/**
+ * The open missions of a /api/missions/recent answer, the ones whose
+ * mission-loop events `buildd top` listens for (delivered missions no longer
+ * loop).
+ */
+export function openMissionIds(missions: ReadonlyArray<{ id?: unknown; completedAt?: unknown; status?: unknown }>): string[] {
+  return missions
+    .filter(m => typeof m.id === 'string' && !m.completedAt && m.status !== 'completed' && m.status !== 'archived')
+    .map(m => m.id as string);
+}

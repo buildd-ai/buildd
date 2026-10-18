@@ -44,3 +44,46 @@ describe('mission stages on the runner task list (R-18)', () => {
     expect(out).toEqual(tasks());
   });
 });
+
+describe('one combined read for top (spec 3ef37387 AC-5)', () => {
+  const realFetch = globalThis.fetch;
+  const client = async () => {
+    const { BuilddClient } = await import('../../src/buildd');
+    return new BuilddClient({ apiKey: 'bld_test', builddServer: 'http://127.0.0.1:1' } as any);
+  };
+  const answer = (body: unknown, urls: string[]) => (async (url: string) => {
+    urls.push(String(url));
+    return { ok: true, status: 200, headers: new Headers(), text: async () => JSON.stringify(body), json: async () => body };
+  }) as any;
+
+  it('asks the task list with its missions\' stages in the same request', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = answer({ tasks: [{ id: 't1' }], missionStages: { m1: verifying } }, urls);
+    try {
+      const out = await (await client()).listTasksWithStages();
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain('/api/tasks?include=missionStages');
+      expect(out).toEqual({ tasks: [{ id: 't1' }] as any, missionStages: { m1: verifying } });
+    } finally { globalThis.fetch = realFetch; }
+  });
+
+  it('an older server answers without stages: null, so the caller asks for them separately', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = answer({ tasks: [] }, urls);
+    try {
+      expect((await (await client()).listTasksWithStages()).missionStages).toBeNull();
+    } finally { globalThis.fetch = realFetch; }
+  });
+});
+
+describe('openMissionIds', () => {
+  it('watches open missions only, not the delivered ones', async () => {
+    const { openMissionIds } = await import('../../src/mission-stages');
+    expect(openMissionIds([
+      { id: 'open', status: 'active', completedAt: null },
+      { id: 'done', status: 'completed', completedAt: '2026-10-18T10:00:00Z' },
+      { id: 'arch', status: 'archived', completedAt: null },
+      { id: 7 as any, status: 'active', completedAt: null },
+    ])).toEqual(['open']);
+  });
+});
