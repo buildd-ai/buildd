@@ -4629,6 +4629,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('completes normally when commits belong to a pre-existing PR opened by an earlier worker on the same branch (auto mode)', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -4639,7 +4641,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -4689,7 +4691,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(77);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(77);
     });
 
     it('returns 400 without updating task when pr_required and no PR', async () => {
@@ -4958,6 +4961,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('completes a dirty-worktree worker whose branch already has an open PR (retry/CI-fix continuation, auto mode)', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // The retry/CI-fix exemption: a worker row with no prUrl of its own, on
       // a branch whose PR was opened by an earlier worker row, must not be
       // blocked by a dirty worktree — the GitHub auto-detect above already
@@ -4972,7 +4977,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5020,7 +5025,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(77);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(77);
     });
 
     it.each([false, true])('completes a none work task after a verified sibling merge (dirtyWorktree=%s)', async (dirtyWorktree) => {
@@ -5179,6 +5185,8 @@ describe('PATCH /api/workers/[id]', () => {
     };
 
     it('auto-detects PR from GitHub and allows completion', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -5189,7 +5197,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5228,8 +5236,10 @@ describe('PATCH /api/workers/[id]', () => {
       );
       // Verify task result includes auto-detected PR
       expect(capturedTaskSet).not.toBeNull();
-      expect(capturedTaskSet.result.prUrl).toBe('https://github.com/org/repo/pull/42');
-      expect(capturedTaskSet.result.prNumber).toBe(42);
+      expect(capturedTaskSet?.result?.prUrl).toBeUndefined();
+      expect(workerSet.prUrl).toBe('https://github.com/org/repo/pull/42');
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(42);
     });
 
     it('refuses completion when no PR found on GitHub either (auto mode)', async () => {
@@ -5521,6 +5531,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('pr_required + no branch PR + referenced PR is merged → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -5530,7 +5542,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5570,7 +5582,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(2165);
     });
 
     it('pr_required + a merged PR the task only names in its text → not recorded', async () => {
@@ -5774,6 +5787,8 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('pr_required + referenced PR is open but its head SHA matches the worker\'s last commit → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // Covers the "rebase an EXISTING PR's own branch, push, request review"
       // shape: the worker's own branch never carries the PR (auto-detect above
       // finds nothing), and the referenced PR is still open when complete_task
@@ -5789,7 +5804,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5834,10 +5849,13 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(15);
     });
 
     it('pr_required + referenced PR is open, head SHA matches the SAME request\'s reported lastCommitSha (not yet persisted on the worker row) → completes and records it', async () => {
+      // AC-1 slice 4: the PR is recorded on the worker row; the task's result no longer snapshots it.
+      const workerSet: Record<string, unknown> = {};
       // The runner's real completion payload is one PATCH carrying
       // `{ status: 'completed', ...gitStats }`, where gitStats.lastCommitSha is
       // collected immediately before sending — so the freshly-pushed head SHA
@@ -5853,7 +5871,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
       mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
+        set: mock((u: any) => (Object.assign(workerSet, u), {
           where: mock(() => ({
             returning: mock(() => [updatedWorker]),
           })),
@@ -5898,7 +5916,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedTaskSet?.result?.prNumber).toBe(15);
+      expect(capturedTaskSet?.result?.prNumber).toBeUndefined();
+      expect(workerSet.prNumber).toBe(15);
     });
 
     it('pr_required + referenced PR is open with a different head SHA → still refuses completion', async () => {
@@ -10004,6 +10023,9 @@ describe('PATCH /api/workers/[id]', () => {
         workingBranch: 'mission/illustrative-goal',
         integrationBranchEnabled: true,
       });
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',
@@ -10072,6 +10094,9 @@ describe('PATCH /api/workers/[id]', () => {
         workingBranch: 'mission/illustrative-goal',
         integrationBranchEnabled: true,
       });
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',
@@ -11290,6 +11315,9 @@ describe('PATCH /api/workers/[id]', () => {
       // losing every commit the mission had already merged. baseBranch must carry
       // the PR's actual base (workers.prBaseRef) so that fallback lands somewhere real.
       setupReviewerTaskCompletion('request-changes');
+      // setupReviewerTaskCompletion already queued the reviewer worker once; this chain replaces it
+      // (the completion no longer re-reads the worker for PR fields, AC-1 slice 4).
+      mockWorkersFindFirst.mockReset();
       mockWorkersFindFirst
         .mockResolvedValueOnce({
           id: 'worker-1',

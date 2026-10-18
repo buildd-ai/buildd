@@ -166,74 +166,56 @@ async function getReleasePrCiState(
   }
 }
 
-// Merge a feature branch into prodBranch via GitHub API.
+// Release a worker's PR into prodBranch (D9, every_merge): the same gate the
+// other release doors take (workflow-kernel-library.md §4, workflow-state-kernel.md
+// §13.13). The PR's live head is read, CI is read at that head, and the merge is
+// pinned to it: the review gate at that head, then GitHub's own `sha` pin
+// (`mergeReleasePrPinned`). A head that moves after CI was read is refused.
+//
+// There is no arm for a branch without a PR. It used to POST /merges the branch
+// straight into prodBranch, reading no review verdict and no CI and pinning no
+// head; `executeRelease` now refuses that before anything is called.
 //
 // `merged: true` is only ever returned when GitHub confirms prod contains the
-// work: this call merged it, the tracked PR reads `merged`, or the branch-merge
-// API answered 204 (prodBranch already contains the head). Anything else is a
-// failure — a caller that reports `completed` off this result is telling the
-// task, the mission and the dashboard that production moved.
+// work: this call merged it, or the PR reads `merged`. A tracked PR that cannot
+// be merged fails the release — it never falls back to pushing the branch around
+// the PR, because "not mergeable" (405) is exactly the answer from required
+// reviews, required checks, conflicts or a draft: the gates the PR exists to
+// enforce.
 async function mergeIntoProd(
   installationId: number,
   repoFullName: string,
-  workerBranch: string,
-  prNumber: number | null | undefined,
-  prodBranch: string,
+  prNumber: number,
   gate: { workspaceId: string; taskId: string },
 ): Promise<{ merged: boolean; sha?: string; message: string; hold?: boolean }> {
-  // A tracked PR is the release unit. If it cannot be merged, the release
-  // fails — it never falls back to pushing the branch around the PR, because
-  // "not mergeable" (405) is exactly the answer from required reviews, required
-  // checks, conflicts or a draft: the gates the PR exists to enforce.
-  if (prNumber) {
-    // D9 (workflow-kernel-library.md §4): the review gate at the head it merges, pinned to
-    // that head. A moved head is refused, never merged unpinned.
-    const r = await mergeReleasePrPinned({
-      workspaceId: gate.workspaceId, installationId, repoFullName, prNumber, verifiedHeadSha: null,
-      mergeMethod: 'squash', surface: 'release-executor every_merge', taskId: gate.taskId,
-    });
-    if (r.merged) return { merged: true, sha: r.sha ?? undefined, message: r.alreadyMerged ? `PR #${prNumber} already merged` : 'PR merged via squash' };
-    if (r.hold) return { merged: false, hold: true, message: `PR #${prNumber} is not landed yet: ${r.message}` };
-    return { merged: false, message: `PR #${prNumber} merge failed: ${r.message}` };
+  let liveHead: string | null = null;
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (pr?.merged === true) return { merged: true, sha: (pr.merge_commit_sha as string | undefined) ?? undefined, message: `PR #${prNumber} already merged` };
+    liveHead = (pr?.head?.sha as string | undefined) ?? null;
+  } catch { /* unreadable: the pinned merge reads it again and refuses if it still cannot */ }
+
+  if (liveHead) {
+    // CI at the head that will merge. Red refuses; still running holds the release
+    // on the PR (settled when the PR merges or closes, held-pr-tasks.ts). No checks
+    // reported, or a read that failed, leaves CI to the base branch's required
+    // checks on GitHub, which refuse the merge itself.
+    const { ciState, failingChecks } = await getReleasePrCiState(installationId, repoFullName, liveHead);
+    if (ciState === 'failing') {
+      return { merged: false, message: `PR #${prNumber} has failing CI at ${liveHead.slice(0, 9)}: ${failingChecks.join(', ')}; nothing was merged` };
+    }
+    if (ciState === 'pending') {
+      return { merged: false, hold: true, message: `PR #${prNumber} is not landed yet: CI is still running at ${liveHead.slice(0, 9)}` };
+    }
   }
 
-  // No PR — use GitHub merge API to merge the branch into prodBranch
-  // This handles conflicts properly: GitHub will reject with 409 if conflicted
-  try {
-    const mergeResp = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/merges`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          base: prodBranch,
-          head: workerBranch,
-          commit_message: `chore: release ${workerBranch} → ${prodBranch}`,
-        }),
-      }
-    );
-    // githubApi returns null for 204: prodBranch already contains the head.
-    // GitHub has verified the work is in prod, so this is a confirmed state,
-    // but no new commit was made — say so rather than "merged".
-    if (mergeResp == null) {
-      return { merged: true, message: `${prodBranch} already contains ${workerBranch} — nothing new merged` };
-    }
-    return { merged: true, sha: mergeResp.sha, message: `Branch merged into ${prodBranch}` };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // 404 "Head does not exist" used to be reported as success ("likely already
-    // merged"). A deleted branch is equally what an UNmerged, deleted branch
-    // looks like, and with no PR there is nothing to confirm against — so this
-    // is a failure, not a release.
-    if (msg.includes('404') && msg.includes('Head does not exist')) {
-      return {
-        merged: false,
-        message: `head branch ${workerBranch} no longer exists and no PR records a merge — cannot confirm it reached ${prodBranch}`,
-      };
-    }
-    return { merged: false, message: `Merge failed: ${msg}` };
-  }
+  const r = await mergeReleasePrPinned({
+    workspaceId: gate.workspaceId, installationId, repoFullName, prNumber, verifiedHeadSha: liveHead,
+    mergeMethod: 'squash', surface: 'release-executor every_merge', taskId: gate.taskId,
+  });
+  if (r.merged) return { merged: true, sha: r.sha ?? undefined, message: r.alreadyMerged ? `PR #${prNumber} already merged` : 'PR merged via squash' };
+  if (r.hold) return { merged: false, hold: true, message: `PR #${prNumber} is not landed yet: ${r.message}` };
+  return { merged: false, message: `PR #${prNumber} merge failed: ${r.message}` };
 }
 
 // Returns the id of the `releases` row this call inserted, or null when it
@@ -696,7 +678,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
   // deliverable task of an A′ mission. It says nothing about the mission's own
   // bookkeeping owner row, whose `prBaseRef` is TRUNK — the mission PR's base —
   // while its `workers.branch` IS the integration branch. The worker-branch path
-  // below would then mergeIntoProd(worker.branch): `mission/<slug>` straight into
+  // below would then merge `mission/<slug>` (or the mission PR) straight into
   // the prod branch, bypassing both the mission PR and trunk, carrying every
   // sibling commit on that branch to production unreviewed.
   //
@@ -890,8 +872,25 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
     mergeSha = rbMergeSha;
 
     createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, repo });
-  } else if (worker?.branch) {
-    // Worker-branch path: merge the worker's feature branch into prodBranch
+  } else if (worker?.branch && !worker.prNumber) {
+    // A branch with no PR is not a door (workflow-state-kernel.md §13.13 D9): it has
+    // no review verdict to read, no PR head to pin and no delivery for the kernel to
+    // gate. It is refused before anything is called, never merged into prodBranch
+    // with POST /merges. A release needs a PR, which then lands through D9 below.
+    const reason = `the worker branch ${worker.branch} has no PR, and a branch is never merged into ${prodBranch} without one`;
+    if (releaseFlag === 'true') {
+      return {
+        status: 'failed',
+        message: `Release: FAILED — ${reason}. Open a PR for it; the release merges that PR once it is reviewed and green.`,
+        error: 'No PR to release',
+      };
+    }
+    return {
+      status: 'skipped',
+      message: `Release: nothing released — ${reason}, so ${prodBranch} is unchanged.`,
+    };
+  } else if (worker?.branch && worker.prNumber) {
+    // Worker-PR path (D9): merge the worker's PR into prodBranch through the gate
 
     // Fetch prodBranch HEAD before merge so releases row has previousSha
     let wbPreviousSha: string | undefined;
@@ -903,13 +902,11 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
     const mergeResult = await mergeIntoProd(
       repo.installation.installationId,
       repo.fullName,
-      worker.branch,
       worker.prNumber,
-      prodBranch,
       { workspaceId, taskId },
     );
 
-    if (!mergeResult.merged && mergeResult.hold && worker.prNumber) {
+    if (!mergeResult.merged && mergeResult.hold) {
       return {
         status: 'pending_ci',
         message: `Release: waiting — ${mergeResult.message}`,
