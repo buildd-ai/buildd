@@ -60,3 +60,19 @@ export function reviewRoundsOf(rounds: readonly RoundSnapshot[] | null | undefin
     githubNote: posted ? GITHUB_COMMENTED_NOTE : null,
   };
 }
+
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+const countWord = (n: number): string => COUNT_WORDS[n] ?? String(n);
+
+/**
+ * GitHub's formal review states on the PR, in GitHub's own words, printed beside
+ * buildd's verdict and never in place of it (AC-24): a COMMENTED review is not a
+ * request for changes, and buildd's verdict is not a GitHub review state.
+ */
+export function githubReviewStatesLine(r: { approved?: number; changesRequested?: number; commented?: number } | null | undefined): string | null {
+  if (!r) return null;
+  const parts = ([[r.approved ?? 0, 'Approved'], [r.changesRequested ?? 0, 'Changes requested'], [r.commented ?? 0, 'Commented']] as const)
+    .filter(([n]) => n > 0)
+    .map(([n, state], i) => (i === 0 ? `${countWord(n)} ${n === 1 ? 'review' : 'reviews'} ${state}` : `${countWord(n)} ${state}`));
+  return parts.length > 0 ? `On GitHub: ${parts.join(', ')}` : null;
+}

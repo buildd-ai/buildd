@@ -1,4 +1,5 @@
 import { Fragment } from 'react';
+import { githubReviewStatesLine } from '@/lib/pr-activity-rounds';
 import Link from 'next/link';
 import { PR_PILL, resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';
@@ -93,6 +94,8 @@ export interface PrCardProps {
     approved: number;
     changesRequested: number;
     pending: number;
+    /** GitHub's COMMENTED reviews, shown beside buildd's rounds (AC-24). */
+    commented?: number;
   } | null;
   /** Mergeable state from GitHub — shown on task detail page (AC-4). */
   mergeable?: boolean | null;
@@ -264,7 +267,8 @@ export default function PrCard(props: PrCardProps) {
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
   const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
 
-  const reviewLine = reviewRounds ? reviewRounds : reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
+  const githubStates = reviewRounds ? githubReviewStatesLine(reviews) : null;
+  const reviewLine = reviewRounds ? (githubStates ? `${reviewRounds} · ${githubStates}` : reviewRounds) : reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
         reviews.changesRequested > 0 ? `${countOf(reviews.changesRequested, 'change')} requested` : null,
@@ -610,7 +614,8 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
   const action = primaryAction(prUrl, state, ciChecks, openAttempt, mergeable);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
-  const reviewLine = reviewRounds ? `review ${reviewRounds}` : reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
+  const githubStates = reviewRounds ? githubReviewStatesLine(reviews) : null;
+  const reviewLine = reviewRounds ? `review ${reviewRounds}${githubStates ? ` · ${githubStates}` : ''}` : reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
         reviews.changesRequested > 0 ? `${countOf(reviews.changesRequested, 'change')} requested` : null,

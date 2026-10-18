@@ -418,14 +418,14 @@ A delivery parked in `ESCALATED` for a review-family reason (`review_escalated`,
   (`deriveEscalationBrief`, workflow-kernel).
 - The verdict row leads with the question ("How should the two unresolved findings
   be settled?", counts in words, no PR number), then says why automation stopped
-  (rounds and fixes spent, in words) and names each unresolved finding: still open,
-  or fixed and waiting for a review (spec r7 §7, AC-43). Its primary button names the
+  (rounds and fixes spent, in words) (spec r7 §7, AC-43). Its primary button names the
   action it takes (Request another fix, Request a forced re-review, else Review
   findings) and links `#task-decision-<action>`; the PR on GitHub is the second
   link (AC-48). The wording is `decisionCopy` (components/escalation-decision-copy.ts),
   shared by the verdict row, the card and get_pr.
-- The card, `#task-decision`, repeats the question and the named findings, and lists
-  only the actions this person may take now: Review findings (opens every finding
+- The card, `#task-decision`, right under the verdict row, names each unresolved
+  finding (still open, or fixed and waiting for a review) and lists only the actions
+  this person may take now: Review findings (opens every finding
   with its path, resolved ones too), then each available action. Choosing an action
   opens a sheet that says what it does and who may do it; only its confirm calls the
   route. Approve and override is not offered here: no route on the page records it.
@@ -444,7 +444,13 @@ Under the review summary line the checks list prints each round as buildd judged
 and, once buildd has posted a verdict, that on a PR buildd opened GitHub lists those
 reviews as Commented (`reviewRoundsOf`, lib/pr-activity-rounds.ts). get_pr
 (`Review rounds:`) and the PR activity comment (`Rounds:`) print the same line and
-note (spec r7 §7, AC-24).
+note (spec r7 §7, AC-24). Where GitHub's reviews were read (get_pr, the PR card) the
+line also gives GitHub's own states in words ("On GitHub: two reviews Commented"),
+beside buildd's verdicts and never in their place (`githubReviewStatesLine`).
+
+The PR activity comment and get_pr carry the escalation decision in the same words
+as the task page: the question, why automation stopped, each unresolved finding and
+the actions open on the task page (AC-43, AC-48).
 
 ## Out of scope
 

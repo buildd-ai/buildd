@@ -58,7 +58,7 @@ describe('task page regression cases', () => {
     expect(f.verdict?.state).toBe('needs_you');
     expect(f.verdict?.headline).toBe('How should the two unresolved findings be settled?');
     expect(f.verdict?.cause).toContain('Automation stopped after three review rounds');
-    expect(f.verdict?.cause).toContain('Still open:');
+    expect(f.escalation?.copy.unresolved.open).toEqual(['Mutation testing does not cover the new guard']);
     expect(f.verdict?.actions[0]).toMatchObject({ label: 'Request another fix', href: '#task-decision-request_fix', tone: 'primary' });
     expect(f.escalation?.copy.actions.map(a => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
     expect(f.checks.rounds?.githubNote).toContain('Commented');

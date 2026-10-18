@@ -32,12 +32,13 @@ const view: KernelView = {
 };
 
 describe('EscalationDecision', () => {
-  test('question, why, named findings, and only authorized actions', () => {
+  test('named findings and only authorized actions, without repeating the verdict row', () => {
     const brief = deriveEscalationBrief(view)!;
     const copy = decisionCopy(brief, { rounds: view.rounds, ledger: view.attempts });
     const html = renderToStaticMarkup(<EscalationDecision brief={brief} copy={copy} prNumber={7} workspaceId="w1" />);
-    expect(html).toContain('How should the two unresolved findings be settled?');
-    expect(html).toContain('Automation stopped after three review rounds');
+    // The verdict row above carries the question and why; the card is labelled by the question and names what is left.
+    expect(html).toContain('aria-label="How should the two unresolved findings be settled?"');
+    expect(html).not.toContain('Automation stopped');
     expect(html).toContain('Mutation tests do not cover the new guard');
     expect(html).toContain('Verify against a real Postgres');
     expect(html).toContain('data-testid="decision-action-review_findings"');

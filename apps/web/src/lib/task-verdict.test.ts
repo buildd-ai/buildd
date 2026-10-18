@@ -230,7 +230,7 @@ describe('review escalation verdict (PR #4996 shape)', () => {
     primary: { label: 'Request another fix', href: '#task-decision-request_fix' },
   };
 
-  it('names the cause, leads with the question and names the blocker instead of "Waiting on you"', () => {
+  it('names the cause, leads with the question and says why automation stopped instead of "Waiting on you"', () => {
     const v = deriveTaskVerdict({ ...base, escalation })!;
     expect(v.state).toBe('needs_you');
     expect(v.label).toBe('Automated fixes exhausted · 2 of 2 used');
@@ -238,8 +238,8 @@ describe('review escalation verdict (PR #4996 shape)', () => {
     // Copy rule 3: no PR number in the headline.
     expect(v.headline).not.toContain('#7');
     expect(v.cause).toContain('Automation stopped after three review rounds');
-    expect(v.cause).toContain('Still open: Mutation tests do not cover the new guard.');
-    expect(v.cause).toContain('Fixed, waiting for a review: Verify against a real Postgres.');
+    // The decision card right below names the findings; the row does not repeat them.
+    expect(v.cause).not.toContain('Mutation tests');
     expect(v.cause).not.toMatch(/waiting on you/i);
   });
 
