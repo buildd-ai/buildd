@@ -1,51 +1,37 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 /**
- * PrDetailsCard is the GitHub half of the PR panel, moved off the task-detail
- * critical path and behind a Suspense boundary. Two things have to hold:
+ * PrDetailsCard is the GitHub half of the PR panel, behind a Suspense
+ * boundary. Rendering it never calls GitHub (spec 3ef37387 R-14, R-15): it
+ * reads the answer cached for this PR head and, when that is missing or old,
+ * refreshes it after the response (lib/pr-details-cache.ts), so an open
+ * page's live refreshes do not each make GitHub calls.
  *
- *  - when GitHub answers, the card carries the live CI/review/mergeability view;
- *  - when anything on that path fails — no installation, no repo, a throwing
- *    REST call — the card still renders from stored state, because merge state
- *    is already in the database and the panel was non-fatal before this moved.
- *
- * The second is the one worth testing: an exception escaping an async server
- * component inside a Suspense boundary is an error boundary, not a degraded
- * card, so "non-fatal" stopped being free the moment this stopped being a
- * try/catch in the page body.
+ *  - a cached answer carries the CI/review/mergeability view and the runs of
+ *    each attempt's commit;
+ *  - nothing cached, or the cache unreadable, renders the stored card; an
+ *    exception escaping an async server component inside a Suspense boundary
+ *    is an error boundary, not a degraded card.
  */
 
-let workspaceRow: any = {
-  githubInstallation: { installationId: 42 },
-  githubRepo: { fullName: 'owner/repo' },
-};
-let workspaceThrows = false;
+let cached: { details: any; fresh: boolean } = { details: null, fresh: false };
+let readThrows = false;
+const refreshes: unknown[] = [];
+const afterCalls: Array<() => unknown> = [];
+const keys: unknown[] = [];
 
-mock.module('@buildd/core/db', () => ({
-  db: {
-    query: {
-      workspaces: {
-        findFirst: async () => {
-          if (workspaceThrows) throw new Error('db down');
-          return workspaceRow;
-        },
-      },
-    },
+const realCache = await import('@/lib/pr-details-cache');
+mock.module('@/lib/pr-details-cache', () => ({
+  ...realCache,
+  readPrDetails: async (key: string) => {
+    keys.push(key);
+    if (readThrows) throw new Error('db down');
+    return cached;
   },
+  refreshPrDetails: async (input: unknown) => { refreshes.push(input); },
 }));
-
-const githubResponses = new Map<string, unknown>();
-let githubThrowsOn: string | null = null;
-
-mock.module('@/lib/github', () => ({
-  githubApi: async (_installId: number, path: string) => {
-    if (githubThrowsOn && path.includes(githubThrowsOn)) throw new Error('github down');
-    for (const [fragment, value] of githubResponses) {
-      if (path.includes(fragment)) return value;
-    }
-    return null;
-  },
-}));
+const nextServer = await import('next/server');
+mock.module('next/server', () => ({ ...nextServer, after: (fn: () => unknown) => { afterCalls.push(fn); } }));
 
 const PrCard = (await import('@/components/task/PrCard')).default;
 const mod = await import('./PrDetailsCard');
@@ -61,6 +47,15 @@ const FACTS = {
   filesChanged: 3,
 };
 
+const DETAILS = {
+  headSha: 'headsha2',
+  ciChecks: { total: 2, passed: 1, failed: 1, pending: 0, runs: [{ name: 'unit', status: 'completed', conclusion: 'success', detailsUrl: null }] },
+  reviews: { approved: 1, changesRequested: 0, pending: 0 },
+  mergeable: true,
+  mergeableState: 'clean',
+  runsByRef: { failedsha1: [{ name: 'unit', status: 'completed', conclusion: 'failure', detailsUrl: null }] },
+};
+
 /** Resolves one level of indirection so assertions read the PrCard props. */
 function prCardPropsOf(element: any): any {
   if (element.type === StoredPrCard) return prCardPropsOf(StoredPrCard(element.props));
@@ -70,57 +65,30 @@ function prCardPropsOf(element: any): any {
 
 describe('PrDetailsCard', () => {
   beforeEach(() => {
-    workspaceThrows = false;
-    githubThrowsOn = null;
-    workspaceRow = {
-      githubInstallation: { installationId: 42 },
-      githubRepo: { fullName: 'owner/repo' },
-    };
-    githubResponses.clear();
+    cached = { details: null, fresh: false };
+    readThrows = false;
+    refreshes.length = 0;
+    afterCalls.length = 0;
+    keys.length = 0;
   });
 
-  it('carries the live CI, review and mergeability view when GitHub answers', async () => {
-    githubResponses.set('/pulls/7/reviews', [
-      { user: { login: 'a' }, state: 'APPROVED' },
-      { user: { login: 'b' }, state: 'CHANGES_REQUESTED' },
-    ]);
-    githubResponses.set('/check-runs', {
-      check_runs: [
-        { name: 'build', status: 'completed', conclusion: 'success' },
-        { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://x.test/1' },
-        { name: 'lint', status: 'in_progress', conclusion: null },
-      ],
-    });
-    githubResponses.set('/pulls/7', { head: { sha: 'abc' }, mergeable: true, mergeable_state: 'clean' });
-
-    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
-    expect(props.ciChecks).toEqual({
-      total: 3,
-      passed: 1,
-      failed: 1,
-      pending: 1,
-      runs: [
-        { name: 'build', conclusion: 'success', status: 'completed', detailsUrl: null },
-        { name: 'e2e', conclusion: 'failure', status: 'completed', detailsUrl: 'https://x.test/1' },
-        { name: 'lint', conclusion: null, status: 'in_progress', detailsUrl: null },
-      ],
-    });
-    expect(props.reviews).toEqual({ approved: 1, changesRequested: 1, pending: 0 });
+  it('a fresh cached answer carries the CI, review and mergeability view, and schedules nothing', async () => {
+    cached = { details: DETAILS, fresh: true };
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', headSha: 'headsha2', ...FACTS }));
+    expect(props.ciChecks).toEqual(DETAILS.ciChecks);
+    expect(props.reviews).toEqual(DETAILS.reviews);
     expect(props.mergeable).toBe(true);
     expect(props.mergeableState).toBe('clean');
     // Stored facts survive the enrichment.
     expect(props.prNumber).toBe(7);
     expect(props.linesAdded).toBe(10);
+    expect(afterCalls).toHaveLength(0);
+    // Keyed by the PR head the page knows.
+    expect(keys).toEqual([realCache.prDetailsKey('ws-1', 7, 'headsha2')]);
   });
 
-  it('fetches check runs for an earlier attempt head (the CI-retry commit) as well as the PR head', async () => {
-    githubResponses.set('/commits/failedsha1/check-runs', {
-      check_runs: [{ name: 'unit', status: 'completed', conclusion: 'failure' }],
-    });
-    githubResponses.set('/commits/headsha2/check-runs', {
-      check_runs: [{ name: 'unit', status: 'completed', conclusion: 'success' }],
-    });
-    githubResponses.set('/pulls/7', { head: { sha: 'headsha2' } });
+  it('applies each commit its own runs: the head from the PR, an earlier attempt head from runsByRef', async () => {
+    cached = { details: DETAILS, fresh: true };
     const outcome = {
       totals: { add: 1, rem: 0, files: 1, commits: 2, attempts: 2, claimToMerge: null },
       attempts: [{ add: 1, rem: 0, files: 1 }],
@@ -130,73 +98,37 @@ describe('PrDetailsCard', () => {
         { attempt: 2, sha: 'headsha', ref: 'headsha2', state: 'passed' as const, failure: null },
       ],
     };
-    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS, outcome }));
-    expect(props.outcome.commits[0].runs).toEqual([{ name: 'unit', status: 'completed', conclusion: 'failure', detailsUrl: null }]);
-    expect(props.outcome.commits[1].runs).toEqual([{ name: 'unit', status: 'completed', conclusion: 'success', detailsUrl: null }]);
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS, outcome } as any));
+    expect(props.outcome.commits[0].runs).toEqual(DETAILS.runsByRef.failedsha1);
+    expect(props.outcome.commits[1].runs).toEqual(DETAILS.ciChecks.runs);
   });
 
-  it('a run its re-run replaced is not counted, on the head or an earlier commit (6900a317)', async () => {
-    // One gate triggered twice on the same commit: GitHub keeps the first run's failure beside the re-run.
-    const runs = [
-      { id: 1, name: 'build', status: 'completed', conclusion: 'success' },
-      { id: 2, name: 'check', status: 'completed', conclusion: 'failure' },
-      { id: 3, name: 'check', status: 'completed', conclusion: 'success' },
-      { id: 4, name: 'next build', status: 'in_progress', conclusion: null },
-    ];
-    githubResponses.set('/commits/oldsha1/check-runs', { check_runs: runs });
-    githubResponses.set('/commits/headsha2/check-runs', { check_runs: runs });
-    githubResponses.set('/pulls/7', { head: { sha: 'headsha2' } });
-    const outcome = {
-      totals: { add: 1, rem: 0, files: 1, commits: 2, attempts: 2, claimToMerge: null },
-      attempts: [{ add: 1, rem: 0, files: 1 }],
-      lineage: [],
-      commits: [
-        { attempt: 1, sha: 'oldsha1', ref: 'oldsha1', state: 'failed' as const, failure: null },
-        { attempt: 2, sha: 'headsha', ref: 'headsha2', state: 'running' as const, failure: null },
-      ],
-    };
-    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS, outcome }));
-    expect(props.ciChecks).toMatchObject({ total: 3, passed: 2, failed: 0, pending: 1 });
-    for (const c of props.outcome.commits) {
-      expect(c.runs.map((r: { name: string; conclusion: string | null }) => [r.name, r.conclusion])).toEqual([['build', 'success'], ['check', 'success'], ['next build', null]]);
-    }
+  it('an old answer still renders, and is refreshed after the response with the attempt heads', async () => {
+    cached = { details: DETAILS, fresh: false };
+    const outcome = { totals: {}, attempts: [], lineage: [], commits: [{ attempt: 1, sha: 'x', ref: 'failedsha1', state: 'failed', failure: null }] };
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', headSha: 'headsha2', ...FACTS, outcome } as any));
+    expect(props.ciChecks).toEqual(DETAILS.ciChecks);
+    expect(refreshes).toHaveLength(0);
+    expect(afterCalls).toHaveLength(1);
+    await afterCalls[0]();
+    expect(refreshes).toEqual([{ key: realCache.prDetailsKey('ws-1', 7, 'headsha2'), workspaceId: 'ws-1', prNumber: 7, otherRefs: ['failedsha1'] }]);
   });
 
-  it('counts only the latest review per user', async () => {
-    githubResponses.set('/pulls/7/reviews', [
-      { user: { login: 'a' }, state: 'CHANGES_REQUESTED' },
-      { user: { login: 'a' }, state: 'APPROVED' },
-      { user: { login: 'a' }, state: 'COMMENTED' },
-    ]);
-    githubResponses.set('/pulls/7', { head: { sha: 'abc' } });
+  it('with nothing cached it renders the stored card and refreshes after the response', async () => {
     const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
-    expect(props.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0 });
+    expect(props.prUrl).toBe(FACTS.prUrl);
+    expect(props.ciChecks).toBeNull();
+    expect(props.reviews).toBeNull();
+    expect(props.mergeable).toBeNull();
+    expect(afterCalls).toHaveLength(1);
   });
 
-  const degradations: Array<[string, () => void]> = [
-    ['the workspace read throws', () => { workspaceThrows = true; }],
-    ['the workspace has no GitHub installation', () => { workspaceRow = { githubRepo: { fullName: 'owner/repo' } }; }],
-    ['the workspace has no linked repo', () => { workspaceRow = { githubInstallation: { installationId: 42 } }; }],
-    ['fetching the PR throws', () => { githubThrowsOn = '/pulls/7'; }],
-  ];
-
-  for (const [label, arrange] of degradations) {
-    it(`still renders the card from stored state when ${label}`, async () => {
-      arrange();
-      const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
-      expect(props.prUrl).toBe(FACTS.prUrl);
-      expect(props.prNumber).toBe(7);
-      expect(props.prLifecycleStatus).toBe('open');
-      expect(props.filesChanged).toBe(3);
-      expect(props.ciChecks).toBeNull();
-      expect(props.reviews).toBeNull();
-      expect(props.mergeable).toBeNull();
-    });
-  }
-
-  it('never rejects — a throw would trip an error boundary, not degrade the card', async () => {
-    workspaceThrows = true;
-    await expect(PrDetailsCard({ workspaceId: 'ws-1', ...FACTS })).resolves.toBeDefined();
+  it('never rejects: an unreadable cache renders the stored card', async () => {
+    readThrows = true;
+    const props = prCardPropsOf(await PrDetailsCard({ workspaceId: 'ws-1', ...FACTS }));
+    expect(props.prNumber).toBe(7);
+    expect(props.filesChanged).toBe(3);
+    expect(props.ciChecks).toBeNull();
   });
 
   it('renders the stored-state fallback without touching GitHub or the database', () => {
