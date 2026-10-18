@@ -29,7 +29,8 @@ describe('canonical estimate display', () => {
   test('true cold start differs from existing history without matches', () => {
     const cold = estimate(); cold.explanation.evidence = evidence(0);
     const existing = estimate(); existing.explanation.evidence = evidence(80);
-    expect(formatTaskEstimate(cold).provenance).toContain('builds history');
+    expect(formatTaskEstimate(cold).provenance).toContain('no completed work history');
+    expect(formatTaskEstimate(cold).provenance).not.toContain('will improve');
     expect(formatTaskEstimate(existing).provenance).toContain('limited comparable history');
     expect(formatTaskEstimate(existing).provenance).not.toContain('builds history');
   });

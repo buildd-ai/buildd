@@ -4,8 +4,9 @@ import { NextRequest } from 'next/server';
 let caller: unknown = { kind: 'user', userId: 'u1' };
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
 let missing = false;
+let readOptions: unknown;
 mock.module('@/lib/specs/store', () => ({
-  getSpec: async (_c: unknown, _id: string, o: { revision?: number }) => (missing ? { ok: false, status: 404, error: 'Spec not found' } : { ok: true, view: { revision: { revision: o.revision ?? 2 } } }),
+  getSpec: async (_c: unknown, _id: string, o: { revision?: number }) => (readOptions = o, missing ? { ok: false, status: 404, error: 'Spec not found' } : { ok: true, view: { revision: { revision: o.revision ?? 2 } } }),
   reviseSpecDraft: async () => ({ ok: false, status: 409, error: 'changed', currentVersion: 3 }),
 }));
 const sectionCalls: unknown[] = [];
@@ -28,6 +29,11 @@ const { GET, PATCH } = await import('./route');
 const params = Promise.resolve({ specId: 's1' });
 
 describe('/api/specs/[specId]', () => {
+  it('passes bounded revision history options and rejects invalid cursors', async () => {
+    await GET(new NextRequest('http://l/api/specs/s1?revisionsLimit=5&revisionsBefore=12'), { params });
+    expect(readOptions).toMatchObject({ revisionsLimit: 5, revisionsBefore: 12 });
+    expect((await GET(new NextRequest('http://l/api/specs/s1?revisionsBefore=no'), { params })).status).toBe(400);
+  });
   it('a stale revise answers 409 version_conflict with the current version', async () => {
     const res = await PATCH(new NextRequest('http://l/api/specs/s1', { method: 'PATCH', body: JSON.stringify({ expectedVersion: 1, body: 'x' }) }), { params });
     expect(res.status).toBe(409);

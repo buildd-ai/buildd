@@ -18,6 +18,8 @@
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { taskEstimatesDefaultOn } from '@buildd/core/task-estimate-rollout';
+import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { db } from '@buildd/core/db';
 import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
@@ -200,8 +202,10 @@ export interface QueueOverlapState {
 }
 
 export interface RunnerQueueDeps {
+  calibrated?: () => boolean;
   read?: (opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) => Promise<RunnerQueueRow[]>;
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
+  workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
 }
 
@@ -264,7 +268,6 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       pathManifest: tasks.pathManifest,
-      gitConfig: workspaces.gitConfig,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)
@@ -277,23 +280,28 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
     .limit(RUNNER_QUEUE_LIMIT + 1);
 }
 
+async function readWorkspaceConfigs(workspaceIds: string[]) {
+  return db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces).where(inArray(workspaces.id, workspaceIds));
+}
+
 async function readRows(opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }): Promise<RunnerQueueRow[]> {
   return (await buildRunnerQueueQuery(db, opts)) as unknown as RunnerQueueRow[];
 }
 
-export type EstimateRow = { taskId: string; p50Minutes: number };
+export type EstimateRow = { estimatorVersion: string; taskId: string; p50Minutes: number };
 
 /**
  * Teams with task estimates on get each queued task's frozen p50, from the
  * same rows the mission Overview and Plan page read, under the same team
- * switch; a team with them off gets none (null). Newest row first.
+ * availability; numeric projections additionally require calibrated running
+ * version rows. A team with them off gets none (null). Newest row first.
  */
 async function readEstimates(teamId: string, taskIds: string[]): Promise<EstimateRow[] | null> {
   if (taskIds.length === 0 || !(await taskEstimatesEnabled(teamId))) return null;
   return db
-    .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes })
+    .select({ taskId: taskEstimates.taskId, estimatorVersion: taskEstimates.estimatorVersion, p50Minutes: taskEstimates.p50Minutes })
     .from(taskEstimates)
-    .where(and(eq(taskEstimates.teamId, teamId), inArray(taskEstimates.taskId, taskIds)))
+    .where(and(eq(taskEstimates.teamId, teamId), eq(taskEstimates.estimatorVersion, ESTIMATOR_VERSION), inArray(taskEstimates.taskId, taskIds)))
     .orderBy(desc(taskEstimates.createdAt));
 }
 
@@ -329,8 +337,17 @@ export async function loadRunnerQueue(
   // read leaves every row without `alongside`.
   const declaring = kept.filter(r => Array.isArray(r.pathManifest) && r.pathManifest.length > 0);
   if (declaring.length > 0) {
-    const state = await (deps.overlaps ?? readOverlaps)([...new Set(declaring.map(r => r.workspaceId))]).catch(() => null);
-    if (state) {
+    const workspaceIds = [...new Set(declaring.map(r => r.workspaceId))];
+    const [state, configs] = await Promise.all([
+      (deps.overlaps ?? readOverlaps)(workspaceIds).catch(() => null),
+      (deps.workspaceConfigs ?? readWorkspaceConfigs)(workspaceIds).catch(() => null),
+    ]);
+    // A failed configuration read must not weaken the workspace overlap policy.
+    if (configs) {
+      const byWorkspace = new Map(configs.map(r => [r.id, r.gitConfig]));
+      for (const row of declaring) row.gitConfig = byWorkspace.get(row.workspaceId) ?? null;
+    }
+    if (state && configs) {
       const byId = new Map(declaring.map(r => [r.id, r]));
       for (const team of teamsOut) for (const t of team.queue) {
         const r = byId.get(t.id);
@@ -341,13 +358,13 @@ export async function loadRunnerQueue(
   }
   const estimates = deps.estimates ?? readEstimates;
   await Promise.all(teamsOut.map(async (team) => {
-    if (team.queue.length === 0) return;
+    if (team.queue.length === 0 || !(deps.calibrated ?? taskEstimatesDefaultOn)()) return;
     const est = await estimates(team.teamId, team.queue.map(t => t.id)).catch(() => null);
     if (!est) return;
     team.estimatesOn = true;
     // Newest first: the first row per task is its estimate.
     const first = new Map<string, number>();
-    for (const r of est) if (!first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
+    for (const r of est) if (r.estimatorVersion === ESTIMATOR_VERSION && !first.has(r.taskId)) first.set(r.taskId, r.p50Minutes);
     for (const t of team.queue) t.estimateMinutes = first.has(t.id) ? Math.round(first.get(t.id)!) : null;
   }));
   return { teams: teamsOut, truncated };

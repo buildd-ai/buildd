@@ -243,7 +243,7 @@ async function workspaceOf(env: PreviewEnv, ref: string | null): Promise<{ id: s
 async function missionOf(env: PreviewEnv, id: unknown): Promise<Obj | null> {
   const mid = str(id) ?? env.scope.missionId ?? null;
   if (!mid) return null;
-  try { return await env.read(`/api/missions/${mid}`); } catch { return null; }
+  try { return await env.read(`/api/missions/${mid}?include=details`); } catch { return null; }
 }
 
 /** What chat says instead of filing a visual-auditor task. */
