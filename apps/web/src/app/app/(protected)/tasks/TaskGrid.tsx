@@ -536,17 +536,16 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
 
   const statusGroups = useMemo((): StatusGroup[] => {
     if (effectiveGroupBy !== 'status') return [];
-    const order: { key: string; label: string }[] = [
-      { key: 'in_progress', label: 'Running' },
-      { key: 'assigned', label: 'Assigned' },
-      { key: 'pending', label: 'Pending' },
-      { key: 'completed', label: TERMS['work.done'].word },
-      { key: 'failed', label: 'Failed' },
+    const order: { keys: string[]; label: string }[] = [
+      { keys: ['in_progress', 'assigned'], label: TERMS['work.working'].word },
+      { keys: ['pending'], label: TERMS['work.ready'].word },
+      { keys: ['completed'], label: TERMS['work.done'].word },
+      { keys: ['failed'], label: 'Failed' },
     ];
     return order
-      .map(({ key, label }) => ({
+      .map(({ keys, label }) => ({
         label,
-        tasks: sortByRecency(nonWaitingTasks.filter(t => t.status === key)),
+        tasks: sortByRecency(nonWaitingTasks.filter(t => keys.includes(t.status))),
       }))
       .filter(g => g.tasks.length > 0);
   }, [nonWaitingTasks, effectiveGroupBy]);
@@ -896,7 +895,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
         {!missionFilter && mobileRecentTasks.length > 0 && filter !== 'active' && (
           <div className="sm:hidden px-4 mb-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">Running now</span>
+              <span className="text-[11px] font-mono uppercase tracking-wide text-text-muted">Working now</span>
               <button
                 onClick={() => updateFilter('active')}
                 className="text-[12px] text-accent-text hover:underline"

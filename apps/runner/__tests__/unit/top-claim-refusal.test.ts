@@ -30,7 +30,7 @@ describe('top says why, short', () => {
   });
 
   test('the account limit names the number', () => {
-    expect(said({ error: 'Max concurrent workers limit reached', serverStatus: 429, code: 'max_concurrent_workers', limit: 3, current: 3 })).toBe('Not claimed: your account allows 3 at once and all 3 are busy.');
+    expect(said({ error: 'Max concurrent workers limit reached', serverStatus: 429, code: 'max_concurrent_workers', limit: 3, current: 3 })).toBe('Not claimed: your account allows 3 at once and all 3 are in use.');
     expect(said({ error: 'x', serverStatus: 429 })).toBe("Not claimed: every slot the account may use is in use.");
   });
 

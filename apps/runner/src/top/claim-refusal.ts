@@ -62,7 +62,7 @@ export function claimRefusalWords(body: unknown, status: number): string {
   if (b.code === 'max_concurrent_workers' || b.serverStatus === 429) {
     if (typeof b.limit === 'number') {
       const busy = typeof b.current === 'number' ? b.current : b.limit;
-      return `your account allows ${b.limit} at once and ${busy === b.limit ? `all ${busy}` : busy} are busy`;
+      return `your account allows ${b.limit} at once and ${busy === b.limit ? `all ${busy}` : busy} are in use`;
     }
     return "every slot the account may use is in use";
   }

@@ -439,7 +439,7 @@ describe('runTop', () => {
     const first = t.screen().split('\n')[0];
     expect(first).not.toContain('reconnecting');
     // The event stream opens beside the snapshot: online with the real slots before the slow reads answer.
-    await until(() => t.screen().split('\n')[0].includes('of 3 busy · ● online'));
+    await until(() => t.screen().split('\n')[0].includes('of 3 slots in use · ● online'));
     // Nothing has answered the task list yet: the header did not wait for it.
     expect(tasksServed).toBe(0);
 
