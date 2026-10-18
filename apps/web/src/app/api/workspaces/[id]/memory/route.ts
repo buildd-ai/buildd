@@ -20,6 +20,7 @@ import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { retrieveMemory } from '@buildd/core/memory-retrieval';
 import { MEMORY_STATES, type MemoryState } from '@buildd/core/memory-candidates';
 import { afterResponseMemoryLedger } from '@/lib/memory-ledger';
+import { normalizeProject } from '@buildd/core/project-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
@@ -109,6 +110,24 @@ export async function GET(
   const unavailable = () => NextResponse.json({ memories: [], total: 0, memoryUnavailable: true });
 
   try {
+    // Explicit hydration is bounded independently of the recent list. Batch
+    // is team-scoped, so verify the workspace project before returning bodies.
+    if (searchParams.has('ids')) {
+      const ids = [...new Set(searchParams.getAll('ids').map(value => value.trim()).filter(Boolean))];
+      if (ids.length > 50) {
+        return NextResponse.json({ error: 'At most 50 memory ids may be requested' }, { status: 400 });
+      }
+      const project = await getWorkspaceProject(id);
+      if (!project) return unavailable();
+      const batch = await memClient.batch(ids);
+      const memories = batch.memories.filter(memory =>
+        normalizeProject(memory.project) === project
+        && (!memory.state || memory.state === 'active')
+        && !memory.supersededBy,
+      );
+      return NextResponse.json({ memories, total: memories.length });
+    }
+
     // A search (a query or a file scope) is a memory read an agent receives:
     // the runner's `## Workspace Memory` block is built from it. It goes
     // through the one door, which resolves the workspace's project key itself

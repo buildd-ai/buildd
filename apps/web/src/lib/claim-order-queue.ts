@@ -202,6 +202,7 @@ export interface QueueOverlapState {
 export interface RunnerQueueDeps {
   read?: (opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }) => Promise<RunnerQueueRow[]>;
   estimates?: (teamId: string, taskIds: string[]) => Promise<EstimateRow[] | null>;
+  workspaceConfigs?: (workspaceIds: string[]) => Promise<Array<{ id: string; gitConfig: unknown }>>;
   overlaps?: (workspaceIds: string[]) => Promise<QueueOverlapState>;
 }
 
@@ -264,7 +265,6 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
       ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       pathManifest: tasks.pathManifest,
-      gitConfig: workspaces.gitConfig,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)
@@ -275,6 +275,10 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
     // The claim candidate query's own ORDER BY.
     .orderBy(...claimOrderBy(tasks, { desc, asc }))
     .limit(RUNNER_QUEUE_LIMIT + 1);
+}
+
+async function readWorkspaceConfigs(workspaceIds: string[]) {
+  return db.select({ id: workspaces.id, gitConfig: workspaces.gitConfig }).from(workspaces).where(inArray(workspaces.id, workspaceIds));
 }
 
 async function readRows(opts: { workspaceIds: string[]; gates: Partial<Record<QueueGateName, SQL>> }): Promise<RunnerQueueRow[]> {
@@ -329,8 +333,17 @@ export async function loadRunnerQueue(
   // read leaves every row without `alongside`.
   const declaring = kept.filter(r => Array.isArray(r.pathManifest) && r.pathManifest.length > 0);
   if (declaring.length > 0) {
-    const state = await (deps.overlaps ?? readOverlaps)([...new Set(declaring.map(r => r.workspaceId))]).catch(() => null);
-    if (state) {
+    const workspaceIds = [...new Set(declaring.map(r => r.workspaceId))];
+    const [state, configs] = await Promise.all([
+      (deps.overlaps ?? readOverlaps)(workspaceIds).catch(() => null),
+      (deps.workspaceConfigs ?? readWorkspaceConfigs)(workspaceIds).catch(() => null),
+    ]);
+    // A failed configuration read must not weaken the workspace overlap policy.
+    if (configs) {
+      const byWorkspace = new Map(configs.map(r => [r.id, r.gitConfig]));
+      for (const row of declaring) row.gitConfig = byWorkspace.get(row.workspaceId) ?? null;
+    }
+    if (state && configs) {
       const byId = new Map(declaring.map(r => [r.id, r]));
       for (const team of teamsOut) for (const t of team.queue) {
         const r = byId.get(t.id);

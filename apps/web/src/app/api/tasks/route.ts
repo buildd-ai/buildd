@@ -38,7 +38,6 @@ import { overlapTouchesSerializedSurface, resolveAnchorInjections } from '@/lib/
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
-import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -250,15 +249,6 @@ export async function GET(req: NextRequest) {
       const total = countsResult[0]?.total ?? 0;
       const pendingCount = countsResult[0]?.pendingCount ?? 0;
 
-      try {
-        after(() =>
-          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
-            console.error('[pr-state-refresh] task list refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
-      }
 
       return jsonResponse({
         tasks: leanTasks,
@@ -346,19 +336,8 @@ export async function GET(req: NextRequest) {
       : [];
     const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
-    // Stale-while-revalidate: refresh stale PR state for workers in these
-    // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
-    if (workspaceIds.length > 0) {
-      try {
-        after(() =>
-          refreshStaleWorkersForWorkspaces(workspaceIds).catch(err =>
-            console.error('[pr-state-refresh] task list refresh failed:', err)
-          )
-        );
-      } catch {
-        // after() unavailable outside request scope (tests/build)
-      }
-    }
+    // No PR refresh per poll (spec 3ef37387 R-24): the webhook and the
+    // pr-reconcile cron keep PR state fresh.
 
     return jsonResponse({
       tasks: listedTasks,
