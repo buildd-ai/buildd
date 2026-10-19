@@ -63,7 +63,7 @@ export default function DelegationGrantCard({
 
   return (
     <div data-testid="delegation-grant" className="bg-status-warning/10 border border-status-warning/20 p-4 mb-6">
-      <p className="text-sm font-medium text-status-warning">Held: it needs access to another workspace that nobody has granted yet</p>
+      <p className="text-sm font-medium text-status-warning">Needs access to another workspace before it can start.</p>
       <ul className="mt-2 text-sm text-text-secondary list-disc pl-5">
         {needs.map(n => (
           <li key={`${n.workspaceId}-${n.capability}`} data-testid="delegation-grant-need">
@@ -85,7 +85,7 @@ export default function DelegationGrantCard({
         <p className="mt-2 text-sm text-text-muted">Someone who reaches each of these workspaces can grant it here.</p>
       )}
       {error && <p className="mt-2 text-sm text-status-error">{error}</p>}
-      <p className="mt-2 text-meta text-text-muted">A runner that reaches the workspace starts it on its next poll.</p>
+      <p className="mt-2 text-meta text-text-muted">A runner with access to the workspace will start it.</p>
     </div>
   );
 }
