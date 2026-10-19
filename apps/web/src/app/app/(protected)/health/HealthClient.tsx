@@ -2410,8 +2410,8 @@ function FailureAnalyticsSection({
 export function routeLine(r: { requested: string; effective: string } | undefined): string {
   if (!r) return '';
   return r.requested === r.effective
-    ? `preference ${r.requested}, routes to ${r.effective}, not yet executed; `
-    : `preference ${r.requested}, team mask moves it to ${r.effective}, not yet executed; `;
+    ? `preference ${r.requested}, routes to ${r.effective}, queued; `
+    : `preference ${r.requested}, team mask moves it to ${r.effective}, queued; `;
 }
 
 /**
