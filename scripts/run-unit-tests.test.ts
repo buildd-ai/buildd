@@ -31,6 +31,7 @@ import {
   formatDurationHintsFile,
   formatDurations,
   formatHeartbeat,
+  summarizeHostBusy,
   mergeDurationHints,
   orderByDuration,
   parseRunnerArgs,
@@ -811,6 +812,21 @@ describe('duration hints file', () => {
       { file: 'c.test.ts', durationMs: 4_000 },
     ], 2);
     expect(lines).toEqual(['   57.3s  b.test.ts', '    4.0s  c.test.ts']);
+  });
+
+  it('summarizeHostBusy names foreign CPU hogs and skips this run\'s own tree', () => {
+    const ps = [
+      '  100     1  3.0 bun run scripts/run-unit-tests.ts',
+      '  101   100 95.0 bun test /x/a.test.ts',
+      '  200     1 129.0 next-build (v16.3.6)',
+      '  201   200 63.0 /usr/bin/node /tmp/ci/node_modules/typescript/bin/tsc --noEmit',
+      '  300     1  2.0 sleep 5',
+    ].join('\n');
+    expect(summarizeHostBusy(ps, 100)).toBe('next-build 129%, tsc 63%');
+    expect(summarizeHostBusy('garbage', 100)).toBe('');
+    const line = formatHeartbeat({ done: 1, total: 2, failed: 0, running: [], elapsedMs: 1000, load1: 9, cpus: 4, remainingHintMs: null, hostBusy: 'next-build 129%' });
+    expect(line).toContain('host busy: next-build 129%');
+    expect(formatHeartbeat({ done: 1, total: 2, failed: 0, running: [], elapsedMs: 1000, load1: 1, cpus: 4, remainingHintMs: null, hostBusy: 'x 50%' })).not.toContain('host busy');
   });
 
   it('formatHeartbeat reports progress, flags an oversubscribed host, and omits unknown ETA', () => {

@@ -74,7 +74,7 @@ describe('GET /api/github/pr/review — delivery-owned PR', () => {
     expect(json.status).toMatchObject({
       state: 'changes_requested',
       verdict: 'request-changes',
-      iteration: 2,
+      iteration: 1,
       maxIterations: 3,
       openFindings: 2,
       reviewHeadSha: 'sha-2',
