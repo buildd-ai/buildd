@@ -110,6 +110,14 @@ function detectContentBearingSchemaFields(schema: Record<string, unknown>): stri
     .map(([name]) => name);
 }
 
+/** Context with a declared need set to its parsed value, or the key removed when there is none. */
+function withDeclared(context: unknown, key: string, value: readonly unknown[]): unknown {
+  if (value.length > 0) return { ...((context as Record<string, unknown> | null | undefined) ?? {}), [key]: value };
+  if (!context || typeof context !== 'object' || !(key in context)) return context;
+  const { [key]: _dropped, ...rest } = context as Record<string, unknown>;
+  return rest;
+}
+
 /** The list's order key at millisecond precision: what the cursor carries. */
 const createdAtMs = sql`date_trunc('milliseconds', ${tasks.createdAt})`;
 
@@ -778,16 +786,14 @@ export async function POST(req: NextRequest) {
     }
     // Declared filing targets and reads are a need, not a grant: the claim
     // holds the task until a delegation covers them (claim/delegation-gate.ts).
+    // The parsed value is what is stored: a top-level [] overrides the context's
+    // declaration, so the key is dropped rather than left for the claim to read.
     const filingTargets = parseFilingTargets(rawFilingTargets ?? (incomingContext as Record<string, unknown> | undefined)?.[FILING_TARGETS_CONTEXT_KEY]);
     if (!filingTargets.ok) return NextResponse.json({ error: filingTargets.error }, { status: 400 });
-    if (filingTargets.targets.length > 0) {
-      incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
-    }
+    incomingContext = withDeclared(incomingContext, FILING_TARGETS_CONTEXT_KEY, filingTargets.targets) as typeof rawIncomingContext;
     const readsFrom = parseReadsFrom(rawReadsFrom ?? (incomingContext as Record<string, unknown> | undefined)?.[READS_FROM_CONTEXT_KEY]);
     if (!readsFrom.ok) return NextResponse.json({ error: readsFrom.error }, { status: 400 });
-    if (readsFrom.entries.length > 0) {
-      incomingContext = { ...(incomingContext ?? {}), [READS_FROM_CONTEXT_KEY]: readsFrom.entries } as typeof rawIncomingContext;
-    }
+    incomingContext = withDeclared(incomingContext, READS_FROM_CONTEXT_KEY, readsFrom.entries) as typeof rawIncomingContext;
     gateWorkspaceId = workspaceId;
 
     // Validate workspace exists and fetch webhook config in one query

@@ -56,7 +56,7 @@ mock.module('@/lib/team-access', () => ({
 
 const { mintTaskToken } = await import('./task-token');
 const { authenticateTaskScopedCaller, taskScopeAllowsDelegated } = await import('./task-token-auth');
-const { preflightTaskDelegation } = await import('./task-delegation-checks');
+const { preflightTaskDelegation, delegationGrantOffer, resolveTaskDelegationWrite } = await import('./task-delegation-checks');
 const { buildContinuationTaskValues } = await import('./answer-resume');
 const { checkDelegationGate } = await import('@/app/api/workers/claim/delegation-gate');
 
@@ -137,7 +137,35 @@ describe('a task that declares it will read another workspace (readsFrom)', () =
     ]);
     const gate = await checkDelegationGate(taskRow as any, account as any);
     expect(gate?.grant).toEqual({ grants: [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }] });
+    expect(gate?.detail).toContain(`Grant access on the task page (/app/tasks/${TASK})`);
     expect(gate?.detail).toContain(`update_task { taskId: "${TASK}", delegation: {"grants":[{"workspaceId":"${TARGET_WS}","capabilities":["analytics:read"]}]} }`);
+  });
+
+  it('I-20: a person is shown the uncovered read, one grant writes it, and a runner with access then claims it', async () => {
+    taskRow = { ...taskRow, delegation: null, context: reads };
+    // Shown: the task page reads this for a pending task.
+    const offer = await delegationGrantOffer(taskRow as any);
+    expect(offer?.gaps).toEqual([{ workspaceId: TARGET_WS, capability: 'analytics:read', reason: 'not_granted' }]);
+    expect(offer?.grant).toEqual({ grants: [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }] });
+    expect(await checkDelegationGate(taskRow as any, account as any)).not.toBeNull();
+
+    // The one action: the card PATCHes { delegation: offer.grant }; the route
+    // validates it as a person's write and stores what this returns.
+    expect((await resolveTaskDelegationWrite(offer!.grant, HOME_WS, null)).ok).toBe(false);
+    const write = await resolveTaskDelegationWrite(offer!.grant, HOME_WS, 'user-owner');
+    expect(write.ok).toBe(true);
+    taskRow = { ...taskRow, delegation: (write as { value: unknown }).value };
+
+    expect(await delegationGrantOffer(taskRow as any)).toBeNull();
+    expect(await checkDelegationGate(taskRow as any, account as any)).toBeNull();
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'analytics:read')).toBe(true);
+  });
+
+  it('I-20: the grant keeps what the task already had', async () => {
+    taskRow = { ...taskRow, delegation: GRANT, context: { ...reads, filingTargets: [TARGET_WS] } };
+    const offer = await delegationGrantOffer(taskRow as any);
+    expect(offer?.grant).toEqual({ grants: [{ workspaceId: TARGET_WS, capabilities: ['tasks:create', 'analytics:read'] }] });
   });
 
   it('a grant that covers it lets the run start, and its token reads there', async () => {

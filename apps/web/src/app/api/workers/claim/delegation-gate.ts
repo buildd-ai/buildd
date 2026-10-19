@@ -15,8 +15,10 @@ import { preflightTaskDelegation } from '@/lib/task-delegation-checks';
  * targets or reads (filingTargets, readsFrom) are not granted, or a grant
  * names a workspace the token minted from this claiming account could not
  * use. Not forceable: forcing would only start the agent that then discovers
- * the gap. A person fixes it with the one write `grant` spells out
- * (update_task { delegation }, before claim), or a runner account that
+ * the gap. A person fixes it with the one write `grant` spells out: the
+ * task page shows the held task's uncovered needs with a Grant access action
+ * (tasks/[id]/DelegationGrantCard.tsx, from delegationGrantOffer), the same
+ * person-only update_task { delegation } write. Or a runner account that
  * reaches the target claims it.
  */
 export interface DelegationGateResult {
@@ -34,7 +36,7 @@ export async function checkDelegationGate(
   if (!gaps.length) return null;
   const grant = delegationGrantCovering(gaps, readScheduleDelegation(task.delegation));
   const action = grant
-    ? ` One action grants it, by a person who reaches each workspace: update_task { taskId: "${task.id}", delegation: ${JSON.stringify(grant)} }.`
+    ? ` One action grants it, by a person who reaches each workspace: Grant access on the task page (/app/tasks/${task.id}), or update_task { taskId: "${task.id}", delegation: ${JSON.stringify(grant)} }.`
     : '';
   return { gaps, grant, detail: `${describeDelegationGaps(gaps)}.${action}` };
 }

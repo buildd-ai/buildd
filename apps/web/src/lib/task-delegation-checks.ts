@@ -8,6 +8,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import {
+  delegationGrantCovering,
   findDelegationGaps,
   mergeDelegationGrants,
   parseScheduleDelegationInput,
@@ -17,6 +18,7 @@ import {
   removeDelegationCapability,
   type DelegationGap,
   type ScheduleDelegationCapability,
+  type ScheduleDelegationGrant,
   type TaskDelegation,
 } from '@buildd/core/token-delegation';
 import { accountReachesDelegatedTarget, loadRawTaskGrants, teamsOf } from './task-delegation';
@@ -60,6 +62,34 @@ export async function preflightTaskDelegation(
     teamOf: ws => teams.get(ws),
     accountReaches: (ws, cap) => reach.get(`${ws}|${cap}`) === true,
   });
+}
+
+/**
+ * What a person is shown for a pending task whose declared filing targets or
+ * reads no grant covers: each uncovered need, and the one `delegation` write
+ * (PATCH /api/tasks/[id], validated by resolveTaskDelegationWrite) that covers
+ * them all. Independent of which runner claims it: reach gaps are a runner's
+ * to fix, not a grant's. Null when nothing is uncovered (spec
+ * workspace-routing-and-reach I-20).
+ */
+export interface DelegationGrantOffer {
+  gaps: DelegationGap[];
+  grant: { grants: ScheduleDelegationGrant[] };
+}
+
+export async function delegationGrantOffer(
+  task: DelegatedTaskRow & { context?: unknown },
+): Promise<DelegationGrantOffer | null> {
+  const filingTargets = readFilingTargets(task.context).filter(t => t !== task.workspaceId);
+  const readsFrom = readReadsFrom(task.context).filter(r => r.workspaceId !== task.workspaceId);
+  if (!filingTargets.length && !readsFrom.length) return null;
+  const grants = await loadRawTaskGrants(task);
+  const gaps = findDelegationGaps({
+    grants, filingTargets, readsFrom,
+    ownTeamId: 'n/a', teamOf: () => 'n/a', accountReaches: () => true,
+  }).filter(g => g.reason === 'not_granted');
+  const grant = delegationGrantCovering(gaps, readScheduleDelegation(task.delegation as TaskDelegation | null));
+  return grant ? { gaps, grant } : null;
 }
 
 export type DelegationWrite =

@@ -27,6 +27,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { delegationGrantOffer } from '@/lib/task-delegation-checks';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -48,6 +49,7 @@ import TaskAutoRefresh from './TaskAutoRefresh';
 import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
 import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-reason';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
+import DelegationGrantCard from './DelegationGrantCard';
 import TaskQuestionFeed from './TaskQuestionFeed';
 import CollapsibleDescription from './CollapsibleDescription';
 import { StatusPill } from '@/components/ui/StatePill';
@@ -356,6 +358,25 @@ export default async function TaskDetailPage({
       })
         .then((diagnosis) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role) } : null)
         .catch(() => null)
+    : Promise.resolve(null);
+  // A pending task held at claim for reads or filing targets no grant covers
+  // (delegation_unmet): the needs, named, and the one grant a person writes
+  // (spec workspace-routing-and-reach I-20). Started here, awaited below.
+  const delegationGrantLoad = task.status === 'pending'
+    ? delegationGrantOffer(task).then(async (offer) => {
+        if (!offer) return null;
+        const ids = [...new Set(offer.gaps.map(g => g.workspaceId))];
+        const [rows, reach] = await Promise.all([
+          db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, ids)), columns: { id: true, name: true } }),
+          Promise.all(ids.map(ws => verifyWorkspaceAccess(user.id, ws))),
+        ]);
+        const names = new Map(rows.map(w => [w.id, w.name]));
+        return {
+          grant: offer.grant,
+          needs: offer.gaps.map(g => ({ workspaceId: g.workspaceId, workspaceName: reach[ids.indexOf(g.workspaceId)] ? names.get(g.workspaceId) ?? null : null, capability: g.capability })),
+          canGrant: reach.every(Boolean),
+        };
+      }).catch(() => null)
     : Promise.resolve(null);
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
@@ -1202,6 +1223,7 @@ export default async function TaskDetailPage({
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
   });
   const hostedRunnerUsage = await hostedRunnerUsagePromise;
+  const delegationGrant = await delegationGrantLoad;
   const runDetails: RunDetail[] = [];
   if (shippedView) {
     const runWorkers = workerHistory.map(h => h.worker);
@@ -1800,6 +1822,10 @@ export default async function TaskDetailPage({
               waits for more budget. Raise the mission budget to start them, or force-start this task.
             </p>
           </div>
+        )}
+
+        {delegationGrant && (
+          <DelegationGrantCard taskId={id} needs={delegationGrant.needs} grant={delegationGrant.grant} canGrant={delegationGrant.canGrant} />
         )}
 
         {/* Budget Exhausted Banner — shown when task was reset to pending due to budget exhaustion */}

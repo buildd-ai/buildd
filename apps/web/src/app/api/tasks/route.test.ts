@@ -51,6 +51,7 @@ mock.module('@/lib/subject-intake', () => ({
 import { NextRequest } from 'next/server';
 import { canAccessTokenRoute } from '@/lib/token-route-policy';
 import { signInteractiveSession } from '@/lib/interactive-session';
+import { readFilingTargets, readReadsFrom } from '@buildd/core/token-delegation';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -1063,6 +1064,23 @@ describe('POST /api/tasks', () => {
       const row = values.mock.calls[0][0];
       expect(row.context.readsFrom).toEqual([{ workspaceId: TARGET, capabilities: ['analytics:read'] }]);
       expect(row.delegation ?? null).toBeNull();
+    });
+
+    it('an empty top-level readsFrom overrides one in context: no read is stored, so the claim does not hold it', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({
+        readsFrom: [],
+        filingTargets: [],
+        context: { readsFrom: [{ workspaceId: TARGET, capabilities: ['analytics:read'] }], filingTargets: [TARGET] },
+      });
+      expect(response.status).toBe(200);
+      const row = values.mock.calls[0][0];
+      expect(row.context?.readsFrom).toBeUndefined();
+      expect(row.context?.filingTargets).toBeUndefined();
+      expect(readReadsFrom(row.context)).toEqual([]);
+      expect(readFilingTargets(row.context)).toEqual([]);
     });
 
     it('refuses malformed readsFrom rather than dropping it', async () => {
