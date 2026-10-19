@@ -129,13 +129,15 @@ import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { readRound } from '@/lib/read-round';
+import { withPageBudget } from '@/lib/page-budget-watch';
+import { qaHistoryNotes } from '@/lib/mission-history-qa';
 
 export const dynamic = 'force-dynamic';
 
 
 type PageProps = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string }>;
 };
 
 /**
@@ -145,7 +147,7 @@ type PageProps = {
  * rows and header are derived from the whole mission read (gates, deliveries,
  * release and visual state), and have no smaller source to render from.
  */
-export default async function MissionDetailPage(props: PageProps) {
+async function MissionDetailPage(props: PageProps) {
   const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
   async function loadRegion() {
     'use server';
@@ -160,10 +162,10 @@ async function MissionDetailBody({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string; qaHistory?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, visualReview: visualReviewParam, qaHistory: qaHistoryParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -794,10 +796,10 @@ async function MissionDetailBody({
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
     : null;
-  const feedNotes = feedNoteRows.map(n => ({
+  const feedNotes = (qaHistoryNotes(qaHistoryParam, process.env.NODE_ENV) ?? feedNoteRows.map(n => ({
     id: n.id, type: n.type as string, authorType: n.authorType as string, title: n.title ?? null,
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
-  }));
+  })));
 
   // Highlights are Activity's episodes over this mission's own tasks (the rows
   // already carry the kernel delivery overlay), not a second fold of the board.
@@ -910,7 +912,13 @@ async function MissionDetailBody({
     criteriaState: goalCriteriaStateFull,
     integrationPr: missionIntegrationPr,
     release: releaseStatus,
-    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+    evidence: {
+      ...(visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : {}),
+      // The Checks release row is the one place release state shows on the board.
+      ...(mission.workspaceId && releaseStatus !== 'not_configured'
+        ? { release: [{ label: 'Open release', href: carryingReleaseId ? `/app/releases/${carryingReleaseId}` : `/app/releases?workspace=${encodeURIComponent(mission.workspaceId)}` }] }
+        : {}),
+    },
   };
   // The Plan page's schedule over the build tasks only (P-2): Overview and Plan give the same numbers.
   const newestEstimate = new Map<string, { p50Minutes: number; p80Minutes: number }>();
@@ -1337,7 +1345,7 @@ async function MissionDetailBody({
   const footerRows = (
     <>
       {/* F6: this mission's own release status, linking to the release. */}
-      {mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
+      {layout !== 'board' && mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
         <div className="border-t border-border-default">
           <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
@@ -1439,3 +1447,4 @@ async function MissionDetailBody({
   );
 }
 
+export default withPageBudget('missionPage', MissionDetailPage);

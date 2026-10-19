@@ -20,6 +20,7 @@ const WEB_SRC = join(import.meta.dir, '..');
 
 const OPERATOR_SENDER_CALLS: Record<string, { calls: number; why: string }> = {
   'app/api/cron/mission-invariants/route.ts': { calls: 1, why: 'cross-tenant invariant scan digest' },
+  'app/api/cron/page-budget-health/route.ts': { calls: 1, why: 'platform page speed budget; page and loader names only' },
   'app/api/cron/queue-stall/route.ts': { calls: 1, why: 'cross-tenant queue health watchdog; ids and gate only' },
   'app/api/cron/schedules/maintenance/overdue-heartbeats.ts': { calls: 1, why: 'scheduler health: the cron itself stalled; ids only' },
   'app/api/github/webhook/route.ts': { calls: 2, why: 'installation sync health (release failures go to the owning team)' },

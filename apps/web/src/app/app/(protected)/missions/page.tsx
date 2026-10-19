@@ -10,10 +10,11 @@ import { loadMissionList } from '@/lib/mission-list-load';
 import { decodeCompletedCursor } from '@/lib/missions-query';
 import { MissionGrid } from './MissionGrid';
 import NewMissionSheet from './NewMissionSheet';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
-export default async function MissionsPage({
+async function MissionsPage({
   searchParams,
 }: {
   searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string; new?: string }>;
@@ -111,3 +112,5 @@ export default async function MissionsPage({
     </div>
   );
 }
+
+export default withPageBudget('missionsList', MissionsPage);

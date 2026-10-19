@@ -83,6 +83,7 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { missionCardHref, type MissionCardRow } from '@/lib/mission-card-view';
 import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
 import { HOME_JUST_LANDED_WINDOW_MS, isRecentlyDelivered } from '@/lib/recently-delivered';
+import { withPageBudget } from '@/lib/page-budget-watch';
 
 export const dynamic = 'force-dynamic';
 
@@ -161,7 +162,7 @@ const EMPTY_VIEW: HomeView = {
  * 300px). side: nothing is moving, so Agents and Landed share the row. single:
  * one column. Below 900px every layout reads Agents, Moving, Landed.
  */
-export default async function HomePage({
+async function HomePage({
   searchParams,
 }: {
   searchParams?: Promise<{ workspace?: string; initiative?: string; pr?: string; t?: string }>;
@@ -1662,3 +1663,5 @@ async function gateInbox(
     return inbox.items;
   }
 }
+
+export default withPageBudget('home', HomePage);

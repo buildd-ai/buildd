@@ -154,6 +154,10 @@ committing step MUST NOT run against a preview.
   `isMutatingMethod`, `layoutViolations`.
 - `scripts/qa/plans/run-activity.json`: the run-detail regression plan over
   `/app/dev/fixtures?state=run-activity&scenario=…`, one `layout` state per scenario.
+- `scripts/qa/plans/mission-history.json`: the mission History tab, opened directly with
+  `/app/missions/:id?layout=feed` (a route may carry a query after `:id`). Clicking the tab
+  leaves a client-side "Loading History…" until `router.refresh()` lands, which a short
+  capture wait misses.
 - `scripts/qa/capture.ts`: `QA_PLAN` mode, the write guard, `stepFailed`.
 - `scripts/demo/run-storyboard.ts`: selector resolution and clicks through the engine.
 - `apps/web/src/lib/visual-audit-evidence.ts`: `parseQaMeta` reads `state`;
