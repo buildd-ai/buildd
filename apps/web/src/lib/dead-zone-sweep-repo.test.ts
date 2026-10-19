@@ -228,7 +228,7 @@ describe('sweepDeadZonePrs repo resolution', () => {
       expect.objectContaining({ repoFullName: 'owner/repo' }),
     );
     // A dirty PR is a conflict fact on the fact cache, for this worker.
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'conflict' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
   });
 
   it('sweeps a worker whose workspace has no repo, using its prUrl', async () => {
@@ -348,7 +348,7 @@ describe('sweepDeadZonePrs PR facts', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w1' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'cafe01', currentHeadSha: 'cafe01' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(recordedFacts.some((r) => (r.fact as { kind: string }).kind === 'conflict')).toBe(false);
   });

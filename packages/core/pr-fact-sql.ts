@@ -10,22 +10,30 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { PrFact, PrFactBookkeeping } from './pr-facts';
 
 export type TerminalPrFactKind = 'merged' | 'closed';
+export type NonTerminalPrFactKind = 'open' | 'ci' | 'conflict' | 'unresolvable';
 
 /** Brand of a scope. Referenced only here and in the kernel (the S4a write-site guard). */
 export const PR_FACT_SCOPE: unique symbol = Symbol.for('buildd.pr-fact-scope');
 
 /**
- * Which rows a terminal fact may reach. `where(kind)` is an extra predicate on
- * the funnel's `w` (workers) alias, or null for none. Mint one only in the
+ * Which rows a fact may reach. Every fact carries one. Mint one only in the
  * kernel (`pr-fact-scope.ts`); `unscopedPrFactScope` is for an operator script
  * that cannot import it, and is listed by the guard.
+ *
+ *  - `where(kind)`: for a terminal fact, an extra predicate on the funnel's `w`
+ *    (workers) alias, or null for none. A row outside it is not touched.
+ *  - `defers(kind)`: for a non-terminal fact, the rows whose column is the
+ *    kernel transition's projection (kernel.ts `w_live`), or null for none. A
+ *    deferred row is reported back (`deferred: true`), so a caller's side
+ *    effects still see a fact that is new for it, and is never written.
  */
 export interface PrFactScope {
   readonly [PR_FACT_SCOPE]: string;
   where(kind: TerminalPrFactKind): SQL | null;
+  defers?(kind: NonTerminalPrFactKind): SQL | null;
 }
 
-/** A scope with no predicate: every targeted row, as before S4a. The reason names who needs it. */
+/** A scope with no predicate and nothing deferred: every targeted row, as before S4a. The reason names who needs it. */
 export function unscopedPrFactScope(reason: string): PrFactScope {
   return { [PR_FACT_SCOPE]: `unscoped:${reason}`, where: () => null };
 }
@@ -101,3 +109,32 @@ WHERE ${at.where} AND ${guardSql(f)}
 RETURNING w.id`;
 }
 
+
+/** Delivery states whose worker rows T17 / T18 own (or nobody moves again): the live projection leaves them alone. */
+const NOT_LIVE = ['MERGED', 'CLOSED_UNMERGED', 'SUPERSEDED', 'ABANDONED', 'FAILED'] as const;
+
+/**
+ * AC-1, the non-terminal half: every other kernel transition projects the PR's
+ * live status onto its worker rows, in the transition's own statement, from
+ * the delivery's own readings at its current head. Dirty mergeability is a
+ * conflict, then a red or green CI verdict, else the PR is open (no verdict on
+ * this head yet, or a red a re-run withdrew). `conflict_detected_at` stays
+ * first-seen. `from` / `where` name the delivery CTE (aliased `d`, carrying
+ * `state`, `ci`, `ci_head_sha`, `mergeable`, `mergeable_head_sha`,
+ * `current_head_sha`) and how a row belongs to it. A merged row is never moved,
+ * and a row already saying it is not rewritten.
+ */
+export function prLiveProjectionSql(at: { from: SQL; where: SQL }): SQL {
+  const status = sql`(CASE
+    WHEN d.mergeable = 'dirty' AND d.mergeable_head_sha = d.current_head_sha THEN 'conflict'
+    WHEN d.ci = 'red' AND d.ci_head_sha = d.current_head_sha THEN 'ci_failed'
+    WHEN d.ci = 'green' AND d.ci_head_sha = d.current_head_sha THEN 'ci_green'
+    ELSE 'pr_open' END)`;
+  return sql`UPDATE workers w SET updated_at = now(), pr_lifecycle_status = ${status},
+  conflict_detected_at = CASE WHEN ${status} = 'conflict' THEN COALESCE(w.conflict_detected_at, now()) ELSE w.conflict_detected_at END
+FROM ${at.from}
+WHERE ${at.where} AND d.state NOT IN (${inList(NOT_LIVE)})
+  AND w.merged_at IS NULL AND w.pr_lifecycle_status IS DISTINCT FROM 'merged'
+  AND w.pr_lifecycle_status IS DISTINCT FROM ${status}
+RETURNING w.id`;
+}

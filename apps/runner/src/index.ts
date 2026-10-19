@@ -38,7 +38,7 @@ import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, createSocketWatchdog, decideStart, enqueueEvent, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, socketHealthCheck, SOCKET_WATCHDOG_INTERVAL_MS, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
-import { withMissionStages } from './mission-stages';
+import { openMissionIds, readTaskListWithStages } from './mission-stages';
 import { rateLimitedRetryAfterSec } from './read-backoff';
 import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
 import { claimEntryWords } from './claim-words';
@@ -2004,7 +2004,9 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/tasks' && req.method === 'GET') {
       try {
         // mission.stage comes from the missions module's own endpoint (R-18), best effort.
-        const tasks = await withMissionStages(await buildd!.listTasks(), ids => buildd!.listMissionStages(ids));
+        // One server read where the server knows include=missionStages; an
+        // older server answers without it and the stages are asked separately.
+        const tasks = await readTaskListWithStages(buildd!);
         return Response.json({ tasks }, { headers: corsHeaders });
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup
@@ -2064,6 +2066,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     if (path === '/api/missions/recent' && req.method === 'GET') {
       try {
         const missions = await buildd!.listRecentMissions();
+        // Top rereads these when one of them moves (mission-loop events), not on a timer.
+        workerManager?.watchMissions(openMissionIds(missions));
         return Response.json({ missions }, { headers: corsHeaders });
       } catch (err: any) {
         const wait = rateLimitedRetryAfterSec(err);
