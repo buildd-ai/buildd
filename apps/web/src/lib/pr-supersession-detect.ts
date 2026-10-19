@@ -105,12 +105,12 @@ type Interruption = 'timeout' | 'budget';
  * still in flight (the other side of a parallel read) is aborted with it. `close()` aborts whatever
  * is left when the run returns, so nothing reads GitHub after the run is over.
  */
-class GhReader {
+export class GhReader {
   interrupted: Interruption | null = null;
   private readonly run = new AbortController();
   constructor(private readonly limits: DetectLimits = {}) {}
 
-  private interrupt(why: Interruption) {
+  interrupt(why: Interruption) {
     this.interrupted ??= why;
     this.run.abort();
   }
