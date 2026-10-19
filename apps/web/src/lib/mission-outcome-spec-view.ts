@@ -46,6 +46,8 @@ export interface OutcomeSpecView {
   /** Passing criteria on the integrated head, grouped by deciding signal. */
   tested: string[];
   judged: string[];
+  /** Criteria where a test result outranked review verdicts, kept as a note beside the result. */
+  outranked: { criterionId: string; count: number; note: string }[];
   passed: number;
   total: number;
   open: { standing: OpenStanding; label: string; criterionIds: string[] }[];
@@ -109,7 +111,8 @@ export function outcomeSpecView(
     coverage,
     short: total === 0 ? 'not checked' : `${passed} of ${total} pass`,
     tested: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source === 'test').map(s => s.criterionId),
-    judged: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source !== 'test').map(s => s.criterionId),
+    judged: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && !!s.source && s.source !== 'test').map(s => s.criterionId),
+    outranked: standings.filter(s => (s.overriddenReviews ?? 0) > 0 && !waivedIds.has(s.criterionId)).map(s => outrankedNote(s.criterionId, s.overriddenReviews!)),
     passed,
     total,
     open,
@@ -119,4 +122,9 @@ export function outcomeSpecView(
     next,
     verdict,
   };
+}
+
+/** The note shown beside a test result that outranked review verdicts (R-85). */
+export function outrankedNote(criterionId: string, count: number): { criterionId: string; count: number; note: string } {
+  return { criterionId, count, note: `${count === 1 ? 'A review verdict was' : `${count} review verdicts were`} outranked by the test result.` };
 }

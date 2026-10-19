@@ -76,3 +76,9 @@ describe('DELIVERABLE_ROLE_CONTEXT_KEYS', () => {
     }
   });
 });
+
+describe('acceptance tests (spec 1dc6cc39 R-76)', () => {
+  it('the acceptance-tests task is verification, not build', () => {
+    expect(deliverableRole({ title: '[acceptance tests] X', context: { acceptanceTests: { missionId: 'm', specId: 's' } } })).toBe('verification');
+  });
+});

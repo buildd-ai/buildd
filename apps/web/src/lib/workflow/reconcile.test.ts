@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { floorCandidatesSql, floorCheckedSql, strandedMechanicalRepair, treadmillCycleCandidatesSql } from './reconcile';
-import type { AttemptSnapshot, DeliverySnapshot, KernelView } from './types';
+import { endedReviewerSql, floorCandidatesSql, floorCheckedSql, roundWaitingOnReviewer, strandedMechanicalRepair, treadmillCycleCandidatesSql } from './reconcile';
+import type { AttemptSnapshot, DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
 describe('floorCandidatesSql', () => {
   const dialect = new PgDialect();
@@ -73,5 +73,37 @@ describe('strandedMechanicalRepair', () => {
     expect(strandedMechanicalRepair(view({}, { status: 'ended' }))).toBeNull();
     expect(strandedMechanicalRepair(view({ state: 'APPROVED' }))).toBeNull();
     expect(strandedMechanicalRepair(view({ boundAttemptId: null }))).toBeNull();
+  });
+});
+
+// 7105282e (#5211): a round left waiting on a reviewer task that ended with nothing recorded.
+describe('roundWaitingOnReviewer', () => {
+  const round = (r: Partial<RoundSnapshot> = {}): RoundSnapshot => ({ id: 'r3', round: 3, headSha: 'H', kind: 'full', status: 'queued', verdict: null, effectiveVerdict: null, failureCount: 0, reviewerTaskId: 'rev3', ...r });
+  const view = (d: Partial<DeliverySnapshot>, rounds: RoundSnapshot[]): KernelView => ({
+    delivery: { state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H', ...d } as DeliverySnapshot, rounds, attempts: [],
+  });
+  test('the current open round with a bound reviewer', () => {
+    expect(roundWaitingOnReviewer(view({}, [round({ id: 'r2', round: 2, status: 'decided' }), round()]))).toEqual({ roundId: 'r3', reviewerTaskId: 'rev3' });
+    expect(roundWaitingOnReviewer(view({}, [round({ status: 'reviewing' })]))).toEqual({ roundId: 'r3', reviewerTaskId: 'rev3' });
+  });
+  test('none before a reviewer is bound, once the round is decided, or outside AWAITING_REVIEW', () => {
+    expect(roundWaitingOnReviewer(view({}, [round({ reviewerTaskId: null })]))).toBeNull();
+    expect(roundWaitingOnReviewer(view({}, [round({ status: 'decided', verdict: 'approve' })]))).toBeNull();
+    expect(roundWaitingOnReviewer(view({ state: 'REPAIRING' }, [round()]))).toBeNull();
+    expect(roundWaitingOnReviewer(view({ currentRound: 4 }, [round()]))).toBeNull();
+  });
+});
+
+describe('endedReviewerSql', () => {
+  const dialect = new PgDialect();
+  test('the bound reviewer task ended, both it and the round quiet past the grace, and no verdict or end of it parked', () => {
+    const q = dialect.sqlToQuery(endedReviewerSql({ roundId: 'r3', reviewerTaskId: 'rev3', graceMs: 900_000 }));
+    expect(q.sql).toMatch(/JOIN workflow_review_rounds r ON r\.id = \$1::uuid AND r\.reviewer_task_id = t\.id/);
+    expect(q.sql).toContain('t.status IN ($3::text, $4::text, $5::text)');
+    expect(q.sql).toContain('t.updated_at <= now() - make_interval');
+    expect(q.sql).toContain('r.updated_at <= now() - make_interval');
+    expect(q.sql).toContain("o.status = 'pending' AND o.op IN ('record_review_verdict', 'attempt_ended')");
+    expect(q.sql).toContain("o.command_input->'reviewerTask'->>'id' = t.id::text OR o.command_input->'task'->>'id' = t.id::text");
+    expect(q.params).toEqual(['r3', 'rev3', 'completed', 'failed', 'cancelled', 900_000, 900_000]);
   });
 });

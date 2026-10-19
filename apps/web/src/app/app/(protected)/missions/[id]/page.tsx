@@ -64,7 +64,7 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
-import { buildActivityEpisodes } from '@/lib/activity-delivery';
+import { buildActivityEpisodes, kernelOwnedBy } from '@/lib/activity-delivery';
 import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
@@ -116,6 +116,8 @@ import {
   shouldRenderMissionPrBlock,
 } from '@/lib/mission-integration-pr';
 import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
+import MissionAcceptanceTests from './MissionAcceptanceTests';
+import { testsFromContext } from '@/lib/specs/acceptance-gate-apply';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';
@@ -928,6 +930,8 @@ async function MissionDetailBody({
     // records it is the current delivery; a shipped one is named beside it.
     ? <MissionPrLine pr={missionIntegrationPr} />
     : null;
+  const acceptanceTests = testsFromContext(decisionTasks.find(t => Array.isArray((t.context as Record<string, unknown> | null)?.acceptanceTests))?.context as Record<string, unknown> | null);
+  const acceptanceBlock = acceptanceTests.length > 0 ? <MissionAcceptanceTests tests={acceptanceTests} /> : null;
   const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 
   const reviewSummary = displayState === 'review' ? (
@@ -1214,6 +1218,7 @@ async function MissionDetailBody({
     tasks: allTasks as unknown as MissionDeliveryTaskRow[],
     digestOf,
     rules: missionHelpers,
+    kernelOf: (taskId) => kernelOwnedBy(deliveryViews, taskId),
   });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.
@@ -1227,7 +1232,7 @@ async function MissionDetailBody({
   // Overview only (spec f7f67f1a R-37): History is the timeline, not a second copy.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
+  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !acceptanceBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1248,6 +1253,7 @@ async function MissionDetailBody({
       {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
       {scopeUpdatesBlock}
+      {acceptanceBlock}
       {reviewSummary}
     </MissionNoticeSlot>
   );
