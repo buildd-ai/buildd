@@ -616,3 +616,38 @@ describe('mine follows the same principal as occupancy (task owner for runner wo
     expect(liveMine({ ownerId: 'me' })).toBe(true);
   });
 });
+
+describe('slot `mine` follows the task owner, not the claimer', () => {
+  const hb: FleetHeartbeatRow = { id: 'h', accountId: 'acct', localUiUrl: 'http://atlas.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, over: Partial<FleetWorkerRow>): FleetWorkerRow => ({
+    id, accountId: 'acct', runner: 'http://atlas.local:1', status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: id }, ...over,
+  });
+  const build = (rows: FleetWorkerRow[], viewerId: string) => buildFleetSnapshot([hb], rows, { now: NOW, viewerId });
+
+  it('live slot: task owner A claimed by B is mine for A and not for B', () => {
+    const rows = [w('x', { ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'A').runners[0].slots[0].worker?.mine).toBe(true);
+    expect(build(rows, 'B').runners[0].slots[0].worker?.mine).toBe(false);
+  });
+
+  it('finished slot: the last run carries the same attribution', () => {
+    const rows = [w('x', { status: 'completed', completedAt: min(5), ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'A').runners[0].slots[0].last?.mine).toBe(true);
+    expect(build(rows, 'B').runners[0].slots[0].last?.mine).toBe(false);
+  });
+
+  it('a service-owned task is unattributed (null), even for its claimer', () => {
+    const rows = [w('x', { ownerId: 'B', taskOwnerId: null })];
+    expect(build(rows, 'B').runners[0].slots[0].worker?.mine).toBeNull();
+  });
+
+  it('an interactive session stays its claimer\'s', () => {
+    const rows = [w('s', { runner: 'mcp', localUiUrl: null, ownerId: 'B', taskOwnerId: 'A' })];
+    expect(build(rows, 'B').sessions!.slots[0].worker?.mine).toBe(true);
+  });
+
+  it('without a task owner on the row the claimer decides', () => {
+    expect(build([w('x', { ownerId: 'B' })], 'B').runners[0].slots[0].worker?.mine).toBe(true);
+  });
+});

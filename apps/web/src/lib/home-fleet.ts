@@ -369,7 +369,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
   const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
-    id: r.id, accountId: r.accountId, ownerId: r.ownerId, taskOwnerId: r.taskOwnerId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    id: r.id, accountId: r.accountId, ownerId: r.ownerId, taskOwnerId: r.taskId ? r.taskOwnerId : undefined, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,

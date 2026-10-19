@@ -39,7 +39,9 @@ import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import {
   BACKEND_REGISTRY,
   DISPATCHABLE_BACKENDS,
+  describeBackendRouting,
   isBackendEnabled,
+  isBackendPinned,
   isDispatchableBackend,
   resolveEffectiveBackend,
   type AgentBackend,
@@ -175,15 +177,19 @@ export async function getBackendStrandSummary(opts: {
     for (const [effective, stored] of strandedStored) {
       const wsIds = [...(strandedWorkspaces.get(effective) ?? [])];
       const sampleRows = (await db
-        .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name, backend: tasks.backend })
+        .select({ id: tasks.id, title: tasks.title, workspaceName: workspaces.name, backend: tasks.backend, context: tasks.context })
         .from(tasks)
         .leftJoin(workspaces, eq(tasks.workspaceId, workspaces.id))
         .where(strandedPendingWhere(wsIds, [...stored]))
         .orderBy(asc(tasks.createdAt))
-        .limit(sampleLimit)) as unknown as Array<StrandedTaskSample & { backend: string | null }>;
+        .limit(sampleLimit)) as unknown as Array<StrandedTaskSample & { backend: string | null; context?: unknown }>;
+      // What the task actually ran/runs on: a recorded failover beats the stored
+      // preference (a pinned task is never failed over, so any stamp on it is stale).
+      const executed = (r: { context?: unknown }): AgentBackend =>
+        !isBackendPinned(r.context) && describeBackendRouting(r.context)?.backend || effective;
       const blockers = await loadClaimBlockers(
         sampleRows.map(r => r.id),
-        new Map(sampleRows.map(r => [r.id, effective])),
+        new Map(sampleRows.map(r => [r.id, executed(r)])),
       );
       const stat = byBackend.get(effective);
       if (stat) {
@@ -192,7 +198,7 @@ export async function getBackendStrandSummary(opts: {
           title: r.title,
           workspaceName: r.workspaceName,
           claim: blockers.get(r.id),
-          route: { requested: r.backend ?? 'claude', effective },
+          route: { requested: r.backend ?? 'claude', effective: executed(r) },
         }));
       }
     }
