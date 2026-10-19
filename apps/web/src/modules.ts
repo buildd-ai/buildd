@@ -21,8 +21,6 @@ import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
-import { noteScheduleRefusal } from '@/lib/schedule-move';
-import { scheduleMoveNeedsYouRead } from '@/lib/schedule-move-needs-you';
 import { homeMissionSummaries } from '@/lib/mission-summary-home';
 import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
 import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
@@ -307,7 +305,8 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
 export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
 
 /** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
-export const SCHEDULE_MOVE_NEEDS_YOU = scheduleMoveNeedsYouRead;
+export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>
+  (await import('@/lib/schedule-move-needs-you')).scheduleMoveNeedsYouRead(workspaceIds);
 
 /**
  * The missions module's slot for Home (lib/mission-summary-home.ts): live
@@ -438,4 +437,5 @@ export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hook
 };
 
 /** Task filing reach refusal: optional schedules module observes repeated refusals. */
-export const TASK_REACH_REFUSAL = noteScheduleRefusal;
+export const TASK_REACH_REFUSAL = async (...args: Parameters<typeof import('@/lib/schedule-move').noteScheduleRefusal>) =>
+  (await import('@/lib/schedule-move')).noteScheduleRefusal(...args);
