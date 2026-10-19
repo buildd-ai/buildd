@@ -11,6 +11,7 @@ export function viewCriteria(criteria: ReadonlyArray<OutcomeView['criteria'][num
   return criteria.map((c) => ({
     criterionId: c.criterionId, text: c.text, verdict: c.verdict, stale: c.stale,
     notes: c.notes.map((n) => ({ verdict: n.verdict, source: n.source })),
+    overriddenReviews: c.overriddenReviews,
   }));
 }
 

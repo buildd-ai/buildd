@@ -24,6 +24,8 @@ export interface SpecCriterionStanding {
   stale: boolean;
   /** Model results a test result outranked on the same commit: shown beside the test, never replacing it. */
   notes?: Array<{ verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported'; source: 'test' | 'review' }>;
+  /** Review verdicts the deciding test result outranks. */
+  overriddenReviews?: number;
 }
 
 /** The Living Spec a task is pinned to, read server-side for the task page. */
@@ -115,6 +117,11 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
                         Note: reviewer says {n.verdict}
                       </span>
                     ))}
+                    {!c.notes?.length && (c.overriddenReviews ?? 0) > 0 && (
+                      <span className="shrink-0 text-text-muted" data-testid="task-spec-outranked">
+                        · {c.overriddenReviews === 1 ? '1 review outranked' : `${c.overriddenReviews} reviews outranked`}
+                      </span>
+                    )}
                   </li>
                 );
               })}

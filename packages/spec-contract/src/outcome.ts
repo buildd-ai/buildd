@@ -104,6 +104,8 @@ export interface CriterionStanding {
    * shown beside the deciding test, never replacing it. Empty unless a test decides.
    */
   notes: CriterionNote[];
+  /** Review verdicts a deciding test result outranks (R-85); 0 unless a test decided. */
+  overriddenReviews: number;
 }
 
 export interface CriterionNote {
@@ -139,10 +141,15 @@ export function foldGovernedOutcome(
     byCriterion.set(v.criterionId, [...(byCriterion.get(v.criterionId) ?? []), v]);
   }
   const newest = new Map<string, CriterionVerdict>();
-  for (const [id, rows] of byCriterion) newest.set(id, determiningVerdict(rows)!);
+  const overridden = new Map<string, number>();
+  for (const [id, rows] of byCriterion) {
+    const d = determiningVerdict(rows)!;
+    newest.set(id, d);
+    overridden.set(id, d.source === 'test' ? rows.filter((r) => (r.source ?? 'review') === 'review').length : 0);
+  }
   const standings: CriterionStanding[] = criteria.map((id) => {
     const v = newest.get(id);
-    if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false, notes: [] };
+    if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false, notes: [], overriddenReviews: 0 };
     const onHead = sameHead(v.headSha, currentHeadSha);
     const notes: CriterionNote[] = v.source === 'test'
       ? (byCriterion.get(id) ?? [])
@@ -150,7 +157,7 @@ export function foldGovernedOutcome(
         .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
         .map((x) => ({ verdict: x.verdict, source: x.source ?? 'review', headSha: x.headSha, at: x.at }))
       : [];
-    return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead, notes };
+    return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead, notes, overriddenReviews: overridden.get(id) ?? 0 };
   });
   const failed = standings.filter((s) => s.verdict === 'fail').map((s) => s.criterionId);
   if (failed.length > 0) return { outcome: 'fail', currentHeadSha, criteria: standings, reason: `${failed.join(', ')} failed` };
