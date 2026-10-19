@@ -4719,6 +4719,14 @@ async function patchWorker(
         await resolveCompletedTask(taskId, worker.workspaceId);
       });
 
+      // The acceptance-tests task finished: record its tests against their checks
+      // in the spec's verified_by (spec 1dc6cc39 R-77, AC-123).
+      await runStep('acceptance-verified-by', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        const { recordAcceptanceVerifiedBy } = await import('@/lib/specs/acceptance-verified-by');
+        await recordAcceptanceVerifiedBy(taskId);
+      });
+
       // A recoverable-blocker repair landed: resume the tasks parked on it
       // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
       await runStep('recoverable-blocker-reconcile', async () => {
