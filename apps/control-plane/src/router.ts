@@ -39,7 +39,7 @@ export const SERVED_BY = 'x-buildd-served-by';
  * pass through to the web app. index.test.ts reads the web app's directory
  * and fails when one is missing here.
  */
-const WORKER_ID_SIBLINGS = new Set(['active', 'claim', 'heartbeat', 'local-sessions', 'mine', 'queue']);
+const WORKER_ID_SIBLINGS = new Set(['active', 'claim', 'heartbeat', 'local-sessions', 'mine', 'queue', 'status']);
 
 /** The route a request addresses, with its path params; null when it is not an execution route. */
 export function matchRoute(method: string, pathname: string): { route: Route; params: Record<string, string> } | null {
