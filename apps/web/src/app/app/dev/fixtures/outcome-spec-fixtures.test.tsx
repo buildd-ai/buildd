@@ -24,6 +24,18 @@ function specOf(variant: MissionTaskStripVariant) {
 }
 
 describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-*)', () => {
+  it('AC-128 names the judged criteria apart from the tested ones', () => {
+    const { criterion, entry } = specOf('outcome-spec-passing');
+    const e = JSON.parse(JSON.stringify(entry));
+    e.spec.standings.forEach((s: any, i: number) => { s.source = i === 0 ? 'review' : 'test'; });
+    const judgedId = e.spec.standings[0].criterionId;
+    const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={e} readonly />);
+    expect(html).toContain('data-testid="outcome-spec-judged"');
+    expect(html).toMatch(new RegExp(`Judged by a reviewer[^<]*<[^>]*>[^<]*${judgedId}`));
+    const none = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} readonly />);
+    expect(none).not.toContain('outcome-spec-judged');
+  });
+
   it('every variant is linked, parses and renders as an Overview fixture', () => {
     const hrefs = missionTaskStripLinks().map(l => l.href);
     for (const v of OUTCOME_SPEC_VARIANTS) {

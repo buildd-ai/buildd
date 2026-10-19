@@ -109,7 +109,7 @@ export function outcomeSpecView(
     coverage,
     short: total === 0 ? 'not checked' : `${passed} of ${total} pass`,
     tested: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source === 'test').map(s => s.criterionId),
-    judged: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source !== 'test').map(s => s.criterionId),
+    judged: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && !!s.source && s.source !== 'test').map(s => s.criterionId),
     passed,
     total,
     open,

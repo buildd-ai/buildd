@@ -14,6 +14,17 @@ const entry = (standings: Array<[string, LivingSpecCriterionStanding['standing']
 });
 
 describe('outcomeSpecView', () => {
+  it('AC-128 lists a pass a reviewer gave apart from the ones a test proved', () => {
+    const e = entry([['R-1', 'pass'], ['R-2', 'pass'], ['R-3', 'pass']]);
+    const st = e.spec!.standings;
+    st[0].source = 'test';
+    st[1].source = 'test';
+    st[2].source = 'review';
+    const v = outcomeSpecView(crit(), e);
+    expect(v.tested).toEqual(['R-1', 'R-2']);
+    expect(v.judged).toEqual(['R-3']);
+  });
+
   it('says coverage in words on the integrated commit', () => {
     const v = outcomeSpecView(crit(), entry([['R-1', 'pass'], ['R-2', 'pass'], ['R-3', 'missing']]));
     expect(v.coverage).toBe('Two of three pass on abc1234.');
