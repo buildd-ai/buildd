@@ -1823,6 +1823,50 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'AC-79: a merge of the base while a review fix runs is a foreign push: never credited to the fix, the fix cannot complete on it, and a delta round scoped to the refresh is queued',
+    async run(host) {
+      const s = await new Delivery(host, 61).open();
+      await s.ownerPushed('H1');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'one finding');
+      const fix = await s.startFix();
+      // The base is merged into the PR (GitHub's update-branch, a person's merge): the new head descends
+      // from the fix's bound head, so ancestry alone would credit it to the fix.
+      applied(await s.push('H2', { attribution: { descendsFromBound: true }, baseOnly: 'compare', changedPaths: ['src/a.ts'] }), 'FIXING', 'the base merge is recorded');
+      const mid = await s.view();
+      eq(mid.attempts.find((a) => a.id === fix)!.reportedShas, [], 'the base merge is not the fix\'s push');
+      eq(mid.delivery!.currentHeadSha, 'H2', 'the head is recorded');
+      eq(await s.findingStates(), { 'src/a.ts': 'open' }, 'a base merge addresses nothing, even where the base touched the finding\'s file');
+      // The fix ends claiming success with nothing of its own on the head: what the seam reads as
+      // proof for a push the runner cannot see (the head moved off the bound one) is not its work.
+      applied(await s.fixEnded(fix, { outcome: 'success', localHeadSha: null, commitCount: 0, live: s.live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true }), 'AWAITING_REVIEW', 'the fix does not complete on the base merge');
+      const v = await s.view();
+      eq(pick(v.attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'the attempt ends with no change of its own and is not delivered');
+      eq(pick(v.rounds.at(-1)!, ['round', 'headSha', 'kind', 'status', 'trigger', 'scope']), {
+        round: 2, headSha: 'H2', kind: 'delta', status: 'queued', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } },
+      }, 'a delta round scoped to the refresh');
+      eq(await s.findingStates(), { 'src/a.ts': 'open' }, 'the finding is still open');
+      eq(v.delivery!.approvedHeads, [], 'nothing approved');
+    },
+  },
+  {
+    name: 'AC-79: a fix push followed by a merge of the base: the fix is credited with its own push only, and completes on the head that contains it',
+    async run(host) {
+      const s = await new Delivery(host, 62).open();
+      await s.ownerPushed('H1');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'one finding');
+      const fix = await s.startFix();
+      applied(await s.push('H2', { attribution: { descendsFromBound: true }, changedPaths: ['src/a.ts'] }), 'FIXING', 'the fix pushes');
+      applied(await s.push('H3', { attribution: { descendsFromBound: true }, baseOnly: 'own_refresh' }), 'FIXING', 'then the base is merged in');
+      eq((await s.view()).attempts.find((a) => a.id === fix)!.reportedShas, ['H2'], 'only the fix\'s own push is credited');
+      eq(await s.findingStates(), { 'src/a.ts': 'addressed' }, 'the fix push addressed the finding');
+      // The head contains the fix's own work, so the fix completes on it.
+      applied(await s.fixEnded(fix, { outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: s.live('H3'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'the fix completes');
+      const v = await s.view();
+      eq(pick(v.attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'delivered' }, 'delivered at the head that contains it');
+      eq(pick(v.rounds.at(-1)!, ['headSha', 'kind', 'trigger']), { headSha: 'H3', kind: 'delta', trigger: 'changes_requested_fix' }, 'the re-review is the fix\'s');
+    },
+  },
+  {
     name: '§5: findings keep their id across rounds; a restated one is open again; an unscoped approval with no per-finding report verifies every open one',
     async run(host) {
       const s = await new Delivery(host, 61).open();

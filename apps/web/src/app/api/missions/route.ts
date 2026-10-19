@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
       const page = rows.slice(0, limit);
       const hasMore = rows.length > limit;
       const [summaries, total] = await Promise.all([
-        readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : [])),
+        readMissionSummaries(page.map(r => r.id), page.flatMap(r => r.workspaceId ? [r.workspaceId] : []), { includeWorkspaceless: page.some(r => !r.workspaceId) }),
         hasMore ? db.$count(missions, where) : page.length,
       ]);
       return NextResponse.json({

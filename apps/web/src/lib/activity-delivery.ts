@@ -136,6 +136,8 @@ export interface Episode {
   missionTitle: string | null;
   kind: DeliveryKind;
   repairRounds: number;
+  /** The PR the delivery is about (the owner worker's), when it has one. */
+  prNumber: number | null;
   /** Epoch ms of the newest step: the episode's place in the list. */
   at: number;
   /** Chronological, in the order they happened. Never re-sorted by kind. */
@@ -636,11 +638,16 @@ function stepsFor(d: Delivery, delivery: TaskDelivery): EpisodeStep[] {
   return raw.sort((a, b) => a.at - b.at || a.seq - b.seq).map(({ seq: _seq, ...s }) => s);
 }
 
-export function buildActivityHistory(input: {
+/**
+ * Every delivery as an episode, in flight or finished: Mission History's
+ * Highlights read this, so the story of a delivery is the one Activity tells.
+ * `buildActivityHistory` is the finished-only view of the same fold.
+ */
+export function buildActivityEpisodes(input: {
   tasks: readonly ActivityTaskInput[];
   missions: readonly ActivityMission[];
   rules: MissionTaskRules;
-}): Episode[] {
+}, opts: { finishedOnly?: boolean } = {}): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));
   return foldDeliveries(input.tasks, input.rules)
     .flatMap(d => {
@@ -649,7 +656,7 @@ export function buildActivityHistory(input: {
       if (!delivery) return [];
       const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
       // History is finished work only; in-flight deliveries are Now's.
-      if (!FINISHED.has(kind)) return [];
+      if (opts.finishedOnly && !FINISHED.has(kind)) return [];
       const steps = stepsFor(d, delivery);
       return [{
         id: d.root.id,
@@ -659,11 +666,20 @@ export function buildActivityHistory(input: {
         missionTitle: mission?.title ?? d.root.missionTitle ?? null,
         kind,
         repairRounds: delivery.repairRounds,
+        prNumber: prOf(d).owner?.prNumber ?? null,
         at: steps[steps.length - 1]?.at ?? 0,
         steps,
       }];
     })
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
+}
+
+export function buildActivityHistory(input: {
+  tasks: readonly ActivityTaskInput[];
+  missions: readonly ActivityMission[];
+  rules: MissionTaskRules;
+}): Episode[] {
+  return buildActivityEpisodes(input, { finishedOnly: true });
 }
 
 export interface LatestTask { id: string; title: string; href: string; at: number }
