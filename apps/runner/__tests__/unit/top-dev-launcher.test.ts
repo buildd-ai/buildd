@@ -105,9 +105,28 @@ describe('the runner entrypoint (index.ts)', () => {
     expect(r.out).toContain('dev checkout only runs buildd top');
   });
 
+  test('top-dev without opt-in refuses in one line and creates nothing', () => {
+    const devDir = join(home, 'dev-checkout');
+    for (const args of [['top-dev'], ['top', '--dev']]) {
+      const r = run(args, { BUILDD_DEV_DIR: devDir });
+      expect(r.code).not.toBe(0);
+      expect(r.out.trim()).toBe('buildd top --dev runs unreleased code from dev, for buildd contributors. Turn it on with: buildd config set devChannel on');
+      expect(nodeFs.existsSync(devDir)).toBe(false);
+    }
+  });
+
+  test('config set devChannel on|off writes the temp home config, and only that', () => {
+    const r = run(['config', 'set', 'devChannel', 'on']);
+    expect(r.code).toBe(0);
+    const cfg = join(home, '.buildd', 'config.json');
+    expect(JSON.parse(nodeFs.readFileSync(cfg, 'utf-8'))).toEqual({ devChannel: true });
+    expect(run(['config', 'set', 'devChannel', 'off']).code).toBe(0);
+    expect(JSON.parse(nodeFs.readFileSync(cfg, 'utf-8'))).toEqual({ devChannel: false });
+  });
+
   test('top-dev on a first run with no network says so, and creates nothing', () => {
     const devDir = join(home, 'dev-checkout');
-    const r = run(['top-dev'], { BUILDD_DEV_DIR: devDir });
+    const r = run(['top-dev'], { BUILDD_DEV_DIR: devDir, BUILDD_DEV_CHANNEL: '1' });
     expect(r.code).toBe(1);
     expect(r.out).toContain('Could not download the dev build');
     expect(r.out).toContain('needs the network');

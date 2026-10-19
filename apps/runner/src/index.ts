@@ -77,7 +77,16 @@ if (CLI.kind === 'unknown') {
 if (CLI.kind === 'top-dev') {
   const { runTopDev, defaultDevDir } = await import('./top-dev');
   // This checkout (the production install) is only read: see top-dev.ts.
-  process.exit(await runTopDev({ prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), topArgs: CLI.args }));
+  process.exit(await runTopDev({ prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), topArgs: CLI.args, configFile: CONFIG_FILE }));
+}
+// `buildd config set devChannel on|off`: the per-machine opt-in for top --dev (top-dev.ts).
+if (CLI.kind === 'config-dev-channel') {
+  const { setDevChannel, defaultDevDir } = await import('./top-dev');
+  const { terminalConfirm } = await import('./runner-hold');
+  const r = await setDevChannel(CLI.on, { configFile: CONFIG_FILE, prodDir: join(import.meta.dir, '..', '..', '..'), devDir: defaultDevDir(), confirm: terminalConfirm() });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
 }
 
 // `buildd name [<name>|--clear]`: read or set the display name, then exit. It

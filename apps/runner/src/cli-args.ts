@@ -22,9 +22,6 @@ export const RUNNER_USAGE = [
   '                             (--mission <id> opens on one mission, --workspace <name or id>',
   '                             on one workspace, --team <name> on one team; t switches team,',
   '                             w switches workspace, ? shows the keys)',
-  '  buildd top --dev           The same top from the newest dev commit (also: buildd top-dev).',
-  '                             Each run updates its own copy in ~/.buildd-dev (BUILDD_DEV_DIR);',
-  '                             the runner and ~/.buildd stay on the production release',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd login --workspaces  Choose which workspaces this runner serves; the key stays the same',
   '  buildd logout              Remove the saved API key',
@@ -128,6 +125,8 @@ export type CliDecision =
   | { kind: 'top'; missionId: string | null; workspace: string | null; team: string | null; frame?: { view: 'missions' | 'queue'; cols: number; rows: number } }
   /** `buildd top --dev` / `buildd top-dev`: top from the dev checkout (top-dev.ts); `args` are top's, minus --dev. */
   | { kind: 'top-dev'; args: string[] }
+  /** `buildd config set devChannel on|off` (top-dev.ts setDevChannel): the opt-in for top --dev. Not in the help. */
+  | { kind: 'config-dev-channel'; on: boolean }
   /** `--dev` on anything but top: only top has a dev build. */
   | { kind: 'dev-refused'; message: string }
   | { kind: 'unknown'; arg: string };
@@ -199,6 +198,14 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   }
   if (args.includes('--dev')) return { kind: 'dev-refused', message: DEV_ONLY_TOP };
   if (args[0] === 'top') return classifyTop(args.slice(1));
+  if (args[0] === 'config') {
+    // Only `config set devChannel on|off`; every other shape names its bad word.
+    if (args[1] !== 'set') return { kind: 'unknown', arg: args[1] ?? 'config' };
+    if (args[2] !== 'devChannel' || args[3] === undefined) return { kind: 'unknown', arg: args[2] ?? 'set' };
+    if (args[3] !== 'on' && args[3] !== 'off') return { kind: 'unknown', arg: args[3] };
+    if (args.length > 4) return { kind: 'unknown', arg: args[4] };
+    return { kind: 'config-dev-channel', on: args[3] === 'on' };
+  }
 
   if (args[0] === 'name') {
     const rest = args.slice(1);
