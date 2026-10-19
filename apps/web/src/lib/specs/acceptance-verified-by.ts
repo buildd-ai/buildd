@@ -59,8 +59,9 @@ const MAX_TEST_FILES = 40;
  */
 export async function recordAcceptanceVerifiedBy(taskId: string): Promise<{ recorded: string[] } | { skipped: string }> {
   const [task] = await db.select({ workspaceId: tasks.workspaceId, status: tasks.status, context: tasks.context }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
-  const marker = (task?.context as { acceptanceTests?: { specId?: string; specRevisionId?: string } } | null)?.acceptanceTests;
-  if (!task || !marker?.specId) return { skipped: 'not an acceptance-tests task' };
+  const raw = (task?.context as { acceptanceTests?: unknown } | null)?.acceptanceTests;
+  const marker = raw && typeof raw === 'object' ? (raw as { specId?: unknown }) : null;
+  if (!task || typeof marker?.specId !== 'string' || !marker.specId) return { skipped: 'not an acceptance-tests task' };
   if (task.status !== 'completed') return { skipped: 'the task has not completed' };
   const pr = await taskPrOf(taskId);
   if (!pr?.prNumber) return { skipped: 'the task has no PR' };
