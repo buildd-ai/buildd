@@ -25,7 +25,7 @@ import {
 } from '../agent-endpoint';
 import { openRouterModelId } from '../openrouter-id';
 import { jevGatewayBaseURL } from '../cloudflare-ai-gateway';
-import { CLOUDFLARE_AI_GATEWAY_ROOT as KIT_GATEWAY_ROOT } from '@builddai/ai-kit/models/routes';
+import { CLOUDFLARE_AI_GATEWAY_ROOT as KIT_GATEWAY_ROOT } from '@buildd/ai-kit/models/routes';
 
 describe('agent endpoint blob', () => {
   it('purpose is agent_endpoint', () => {

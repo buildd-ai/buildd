@@ -90,7 +90,7 @@ anonymously pullable.
 | git, ripgrep, ca-certificates, curl, tini | Debian packages |
 | `gh` | `GH_VERSION` build arg, release tarball checked against a pinned SHA-256 |
 | Claude Code | the native binary inside `@anthropic-ai/claude-agent-sdk-linux-x64`, pinned by `bun.lock` through the SDK version. This is the binary the runner spawns (`sdk-binary-path.ts`). No separate `@anthropic-ai/claude-code` install: a second copy would not be the one that runs. It is also linked as `/usr/local/bin/claude`. |
-| Runner + `@buildd/core`, `@buildd/shared`, `@builddai/ai-kit` | baked in at build time, `bun install --frozen-lockfile --production --filter @buildd/runner` |
+| Runner + `@buildd/core`, `@buildd/shared`, `@buildd/ai-kit` | baked in at build time, `bun install --frozen-lockfile --production --filter @buildd/runner` |
 
 The image leaves out tests, migrations, the web app and Playwright browsers.
 Tasks that need `browser` will not find them.

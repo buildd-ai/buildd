@@ -36,7 +36,7 @@ import { db } from '@buildd/core/db';
 import { accounts, qualityScoutFindings, qualityScoutProbes, qualityScoutRuns, workerHeartbeats, workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, or, sql } from 'drizzle-orm';
 import { checkPublicHost, localDevHostsAllowed, type LookupAll } from '@buildd/core/net/public-address';
-import type { DecisionReceipt } from '@builddai/ai-kit/decide';
+import type { DecisionReceipt } from '@buildd/ai-kit/decide';
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import { discoverScoutCapabilities } from '@buildd/core/scout-capabilities';
 import type { ScoutSignals } from '@buildd/core/quality-scout/candidates';

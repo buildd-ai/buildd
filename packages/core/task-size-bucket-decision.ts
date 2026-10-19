@@ -13,7 +13,7 @@
  * Pure: no DB, no env. The I/O half is in `./manifest-prediction-source.ts`,
  * the only call site.
  */
-import { choice } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 import type { ExpectedTaskSize } from './db/schema';
 

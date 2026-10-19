@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { choice } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind } from '../decision-kinds';
 import { decisionReadoutRecordsWhere, readDecisionKindReadout, DEFAULT_MIN_LABELLED } from '../decision-readout-source';
 import type { ReadoutRows } from '../decision-readout';

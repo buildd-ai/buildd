@@ -32,7 +32,7 @@ import {
   type HandoffData,
   type ObjectRef,
   type StepData,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 import { ApprovalCard, ApprovalRowsCard, HandoffCard, ThinkingPanel } from './cards';
 import { THINKING_TAIL_ID, approvalRowGroup, composeTurn, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary, type TurnPhase } from './model';
 import { ToolCallGroup } from './ToolCalls';

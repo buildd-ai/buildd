@@ -1,17 +1,17 @@
 'use client';
 
 /**
- * `@builddai/ai-kit/chat/react`: chat UI over `/chat/contract`
+ * `@buildd/ai-kit/chat/react`: chat UI over `/chat/contract`
  * (peers `react@^19`, `react-dom@^19`, `@ai-sdk/react@^4`, `ai@^7`).
  *
  * Components style themselves only through the `--kit-*` custom properties
- * (`@builddai/ai-kit/chat/theme.css`) and the `kit-*` classes in
- * `@builddai/ai-kit/chat/styles.css`, plus `className` and `data-*` hooks.
+ * (`@buildd/ai-kit/chat/theme.css`) and the `kit-*` classes in
+ * `@buildd/ai-kit/chat/styles.css`, plus `className` and `data-*` hooks.
  * No Tailwind. Import both stylesheets once:
  *
  * ```ts
- * import '@builddai/ai-kit/chat/theme.css';
- * import '@builddai/ai-kit/chat/styles.css';
+ * import '@buildd/ai-kit/chat/theme.css';
+ * import '@buildd/ai-kit/chat/styles.css';
  * ```
  */
 
@@ -66,7 +66,7 @@ export {
 } from './approval-draft';
 
 // 0.6.0: per-app tier policy (also in /chat/contract, for the server).
-export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@builddai/ai-kit/chat/contract';
+export { defineTierPolicy, type TierPolicy, type TierPolicyOptions, type ChatTier } from '@buildd/ai-kit/chat/contract';
 
 // 0.11.0: rich tool rows (lifted from buildd's chat).
 export {

@@ -1,5 +1,5 @@
 /**
- * `@builddai/ai-kit/chat/server`: the chat turn runner and tool-permission
+ * `@buildd/ai-kit/chat/server`: the chat turn runner and tool-permission
  * enforcement (peer `ai@^7`, loaded lazily on the first turn).
  *
  * - `defineToolGroups`, `canSkipCard` / `skipCardVerdict`: the permission

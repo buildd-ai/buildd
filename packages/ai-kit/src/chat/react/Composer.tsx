@@ -13,7 +13,7 @@ import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, ty
 import {
   FILE_MEDIA_TYPES, MAX_FILE_BYTES, attachmentChars, fileMediaType, fileSizeLabel, isFileDraft, isImageMediaType, pasteTitle,
   type DraftAttachment, type FileDraft,
-} from '@builddai/ai-kit/chat/contract';
+} from '@buildd/ai-kit/chat/contract';
 import { AttachmentCard, FileCard } from './AttachmentCard';
 
 export interface ChatComposerHandle {

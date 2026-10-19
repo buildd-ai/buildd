@@ -32,7 +32,7 @@
  * resolver, so the parse helpers load in a plain bun process.
  */
 
-import { CLOUDFLARE_AI_GATEWAY_ROOT, cloudflareGatewayURL, cloudflareWorkersAiURL } from '@builddai/ai-kit/models/routes';
+import { CLOUDFLARE_AI_GATEWAY_ROOT, cloudflareGatewayURL, cloudflareWorkersAiURL } from '@buildd/ai-kit/models/routes';
 import { sqlOrderBy, sqlWhere } from './db/relational-sql';
 
 export const CLOUDFLARE_TOKEN_PURPOSE = 'cloudflare_token' as const;

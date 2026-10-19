@@ -50,7 +50,7 @@ import {
   type EvalPrediction,
   type EvalSummary,
   type Rate,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { CLAIM_HOLD_DECISION } from './orchestration-claim-decision';
 import {
   labelClaimHoldDecisions,

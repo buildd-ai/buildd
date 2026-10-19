@@ -8,7 +8,7 @@
  */
 
 import type { UIMessage } from 'ai';
-import { titleConversation } from '@builddai/ai-kit/chat/server';
+import { titleConversation } from '@buildd/ai-kit/chat/server';
 import { resolveChatModel } from './models';
 import { pingConversation, setConversationTitle, type ConversationRow } from './store';
 

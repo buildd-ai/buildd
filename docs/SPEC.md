@@ -495,7 +495,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   `applyModelEnv`).
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
-  with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
+  with confidence from token logprobs (`@buildd/ai-kit/decide` chat endpoint).
   Thresholds were measured on Jev, so a call site that auto-applies (task
   category) records another model's pick without applying it.
   A platform operator control, not a team setting (see "Platform operator"): only an operator

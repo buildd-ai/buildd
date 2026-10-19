@@ -15,7 +15,7 @@
  * A fallback, never a detour: a call site uses the provider's own key when one
  * resolves, then OpenRouter (chat), then the gateway. Through the gateway a
  * plan's model is sent as `provider/model` (LiteLLM's convention), via
- * `gatewayModel` from `@builddai/ai-kit/models`. Decision calls use it when the
+ * `gatewayModel` from `@buildd/ai-kit/models`. Decision calls use it when the
  * team's decision model says `via: 'litellm'` (`decision-model.ts`).
  *
  * The team's key policy binds it like any shared key: under `own` nothing

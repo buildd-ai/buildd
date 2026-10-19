@@ -1,4 +1,4 @@
-import { providerKeyCapability } from '@builddai/ai-kit/models/provider-keys';
+import { providerKeyCapability } from '@buildd/ai-kit/models/provider-keys';
 import { CHAT_PROVIDER_INFO, type ChatKeySummary, type ChatProvider, type ProviderCard } from '@/lib/provider-keys-client';
 
 const label = (id: string) => providerKeyCapability(id)?.label ?? id;

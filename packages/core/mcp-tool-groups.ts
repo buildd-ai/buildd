@@ -518,8 +518,8 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   update_task: '{taskId, title?, description?, priority?, status?, cancelReason?, supersededBy?, abort?, startAt?, startIn?, tier?, model?, pause?, …}',
   // Token, cost and diff counters are runner telemetry; help lists them.
   update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
-  resolve_capability: '{capability?, …}',
-  request_capability: '{capability, …}',
+  resolve_capability: '{capability?, provider?, access?, …}',
+  request_capability: '{provider, access, …}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
@@ -715,7 +715,9 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
-    param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
+    param('capability', str, [{ text: 'Category search filter as domain:verb, e.g. observability:query (request_capability: only model.inference)', actions: ['resolve_capability', 'request_capability'] }]),
+    param('provider', str, [{ text: 'Catalog slug, e.g. axiom; "buildd" for its own tasks:create / analytics:read on a workspace', actions: ['resolve_capability', 'request_capability'] }]),
+    param('access', { type: 'string', enum: ['read', 'write'] }, [{ text: 'read or write (resolve_capability default read)', actions: ['resolve_capability', 'request_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
     param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],

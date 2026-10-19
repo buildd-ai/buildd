@@ -6,7 +6,7 @@
  */
 
 import type { LanguageModel } from 'ai';
-import type { ChatUnavailableReason } from '@builddai/ai-kit/chat/contract';
+import type { ChatUnavailableReason } from '@buildd/ai-kit/chat/contract';
 import {
   isPlanDeniedError,
   toCallConfig,
@@ -17,7 +17,7 @@ import {
   type PlanRequest,
   type ResolvedPlan,
   type UsageReceipt,
-} from '@builddai/ai-kit/models';
+} from '@buildd/ai-kit/models';
 
 /** The plan fields a turn keeps: enough for the receipt and the cost estimate. */
 export type TurnPlan = Pick<ResolvedPlan, 'planId' | 'planSource' | 'provider' | 'model' | 'tier'> & Partial<Pick<ResolvedPlan, 'price' | 'requestedTier'>>;

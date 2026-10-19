@@ -2,7 +2,7 @@
  * buildd's decision kinds: the contract a call site targets instead of a model.
  *
  * The kind itself (features, rule, questions, threshold, escalation policy,
- * fallback) is `@builddai/ai-kit/decide`'s `defineDecisionKind`. buildd adds a
+ * fallback) is `@buildd/ai-kit/decide`'s `defineDecisionKind`. buildd adds a
  * *binding*: which inference capability gates the spend, whether the kind runs
  * live or shadow once allowed, which richer model (if any) fills the
  * escalation slot, and which models beyond Jev its thresholds were measured on.
@@ -22,7 +22,7 @@ import {
   type DecisionKind,
   type DecisionKindConfig,
   type DecisionQuestions,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, type InferenceCapability } from './inference-policy';
 import { isJevModel, normalizeDecisionModel, type DecisionModelConfig } from './decision-model';
 import type { DecisionReadoutAdapter } from './decision-readout';
@@ -42,7 +42,7 @@ export type {
   DecisionSubjectRef,
   DecisionVerdict,
   ModelVerdict,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 
 export interface BuilddDecisionKindBinding {
   /** The inference-policy capability checked before any spend. */

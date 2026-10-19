@@ -47,7 +47,7 @@ import {
   type DecisionRequest,
   type DecisionResponse,
   runDecisionKind,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import {
   runBuilddDecision,
   toDecisionLedgerInput,

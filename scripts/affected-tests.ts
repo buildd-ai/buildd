@@ -112,7 +112,7 @@ function loaderFor(path: string): 'ts' | 'tsx' | 'js' | 'jsx' {
 
 /** Specifiers that name a file in this repo (as opposed to a dependency or builtin). */
 function isLocalSpecifier(spec: string): boolean {
-  return spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('@/') || spec.startsWith('@buildd/') || spec.startsWith('@builddai/');
+  return spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('@/') || spec.startsWith('@buildd/');
 }
 
 /** `import(x)` / `require(x)` with anything but a plain string literal. */

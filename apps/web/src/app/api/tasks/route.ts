@@ -743,7 +743,7 @@ export async function POST(req: NextRequest) {
       const { TASK_REACH_REFUSAL } = await import('@/modules');
       await TASK_REACH_REFUSAL(apiAccount, workspaceId, 'tasks:create');
       return NextResponse.json({
-        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
+        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { provider: 'buildd', access: 'write', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
         code: 'delegation_required',
       }, { status: 403 });
     }

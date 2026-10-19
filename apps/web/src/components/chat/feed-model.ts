@@ -7,11 +7,11 @@ import {
   chatToolIsRead, chatToolNeedsApproval, eventObjects, isEventPart, isTextPart, isToolPart, messageMeta, objectsOf, refKey, toolNameOf,
   type BuilddObjectRef, type ChatEventData, type ChatMessage, type ChatPart, type ChatToolPart,
 } from './chat-contract';
-import type { ChatPart as KitPart } from '@builddai/ai-kit/chat/contract';
+import type { ChatPart as KitPart } from '@buildd/ai-kit/chat/contract';
 import {
   composeTurn, keyArgs as kitKeyArgs, toolCallState, toolCallView, toolGroupSummary as kitToolGroupSummary,
   type KeyArgsOptions, type ToolCallOptions, type ToolCallState, type ToolCallView, type ToolGroupSummary,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 
 // ── Tool classes ─────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ export function isReadTool(part: ChatToolPart): boolean {
 
 // ── One row per call ─────────────────────────────────────────────────────────
 // The row itself is the kit's (`ToolCallRow` / `ToolCallGroup`,
-// @builddai/ai-kit/chat/react); buildd supplies which args are key, which
+// @buildd/ai-kit/chat/react); buildd supplies which args are key, which
 // calls are reads, and the result line (`BUILDD_TOOL_CALLS`).
 
 export type ToolRowState = ToolCallState;

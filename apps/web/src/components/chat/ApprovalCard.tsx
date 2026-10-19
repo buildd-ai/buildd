@@ -7,7 +7,7 @@
  * Once decided the card folds to its tool row, and the filed object renders
  * live right under it.
  *
- * Every card is the kit's (`ApprovalCard` from @builddai/ai-kit/chat/react),
+ * Every card is the kit's (`ApprovalCard` from @buildd/ai-kit/chat/react),
  * themed in globals.css ("Chat on the kit"): a change to an existing object
  * (the server's before → after preview, an admin write's typed confirmation),
  * any other write, and a new mission, whose draft (goal, done-when criteria,
@@ -20,8 +20,8 @@
  * Newsreader. Plain buttons. No keycaps: nothing here has a key.
  */
 import { useState, type ReactNode } from 'react';
-import { ApprovalCard as KitApprovalCard, ApprovalRowsCard, approvalRowGroup, ToolCallRow, type ApprovalRowGroup } from '@builddai/ai-kit/chat/react';
-import { isSystemDenied, parseApprovalPreview } from '@builddai/ai-kit/chat/contract';
+import { ApprovalCard as KitApprovalCard, ApprovalRowsCard, approvalRowGroup, ToolCallRow, type ApprovalRowGroup } from '@buildd/ai-kit/chat/react';
+import { isSystemDenied, parseApprovalPreview } from '@buildd/ai-kit/chat/contract';
 import type { ChatToolPart } from './chat-contract';
 import { useChatActions } from './ChatActions';
 import { approvalDraft, approvalLabel, type ApprovalDraft, type MissionDraft } from './approval-draft';

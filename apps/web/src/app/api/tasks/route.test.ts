@@ -877,7 +877,7 @@ describe('POST /api/tasks', () => {
       const body = await response.json();
       expect(body.error).toMatch(/only in its own workspace, or one its delegation grants tasks:create on/);
       // It names the way to ask, so the agent asks instead of parking on a question.
-      expect(body.error).toContain("request_capability { capability: 'tasks:create'");
+      expect(body.error).toContain("request_capability { provider: 'buildd', access: 'write'");
       expect(body.code).toBe('delegation_required');
       expect(mockTaskReachRefusal).toHaveBeenCalledWith(scoped, 'ws-2', 'tasks:create');
       expect(mockTasksInsert).not.toHaveBeenCalled();
