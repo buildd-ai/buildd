@@ -170,21 +170,23 @@ function header(state: TopState, cols: number, now: number, p: Palette): string 
     { host: true, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
     { host: false, slots: slotsInUse(busy, state.runner.maxConcurrent, 'short'), version: '' },
   ];
+  // `buildd top --dev`: which build this is, never dropped for width.
+  const build = state.build ? ` dev ${state.build.sha}${state.build.stale ? ' (stale)' : ''}` : '';
   for (const v of variants) {
     const leftParts = [v.host ? host : null, served || null].filter(Boolean).join(' · ');
-    const left = ` buildd${leftParts ? ' · ' + leftParts : ''}`;
+    const left = ` buildd${build}${leftParts ? ' · ' + leftParts : ''}`;
     const right = `${v.slots} · ${online}${v.version} `;
     const gap = cols - textWidth(left) - textWidth(right);
     if (gap < 1) continue;
     return (
-      ' ' + p.fg('accent', 'buildd') + p.fg('muted', leftParts ? ` · ${leftParts}` : '') +
+      ' ' + p.fg('accent', 'buildd') + (build ? p.fg('warning', build) : '') + p.fg('muted', leftParts ? ` · ${leftParts}` : '') +
       ' '.repeat(gap) +
       p.fg('muted', `${v.slots} · `) +
       p.fg(state.runner.online ? 'accent' : 'muted', online) +
       p.fg('muted', `${v.version} `)
     );
   }
-  return fit(` buildd · ${host}`, cols);
+  return fit(` buildd${build} · ${host}`, cols);
 }
 
 function rule(cols: number, p: Palette): string {

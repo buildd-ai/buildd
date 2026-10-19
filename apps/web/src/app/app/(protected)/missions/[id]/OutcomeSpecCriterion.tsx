@@ -6,6 +6,9 @@
  * integrated result in words, what is still open by standing, what a person
  * waived, the final verification and who acts next.
  *
+ * The count, commit and unmet ids live in the Checks row, and the closing
+ * "who acts next" sentence too; this block holds only the actions and the
+ * facts the row does not carry.
  * Words come from `outcomeSpecView`, the same view the Overview's Verify row
  * reads. Waiving and removing are a person's decisions with a reason; the
  * server refuses them to anything else, and a read-only viewer sees neither.
@@ -17,15 +20,6 @@ import { outcomeSpecView } from '@/lib/mission-outcome-spec-view';
 const ACTION = 'min-h-11 md:min-h-0 inline-flex items-center text-meta text-text-muted hover:text-text-primary underline underline-offset-2 touch-manipulation disabled:opacity-40';
 
 type Pending = { kind: 'waive'; criterionId: string } | { kind: 'remove' } | null;
-
-export function OutcomeSpecSummary({ criterion, entry }: { criterion: LivingSpecGoalCriterion; entry: GoalCriteriaState['criteria'][number] | null | undefined }) {
-  const v = outcomeSpecView(criterion, entry);
-  return (
-    <p className="text-meta text-text-muted mt-0.5 leading-snug" data-testid="outcome-spec-summary">
-      {v.revisionLine}. {v.coverage ?? 'Not checked on the integrated result.'}
-    </p>
-  );
-}
 
 export default function OutcomeSpecCriterion({ missionId, criterion, entry, readonly, onChanged }: {
   missionId: string;
@@ -74,42 +68,46 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           Only {v.narrowed.criterionIds.join(', ')}: {v.narrowed.reason}
         </p>
       )}
-      {v.open.length > 0 && (
-        <ul className="space-y-1" data-testid="outcome-spec-open">
-          {v.open.map(o => (
-            <li key={o.standing} data-standing={o.standing} className="text-meta leading-snug">
-              <span className={o.standing === 'fail' ? 'text-status-error' : 'text-text-secondary'}>{o.label}</span>
-              <span className="text-text-muted">: </span>
-              {o.criterionIds.map((id, i) => (
-                <span key={id} className="font-mono text-text-muted">
-                  {i > 0 && ', '}
-                  {id}
-                  {!readonly && (
-                    <button
-                      type="button"
-                      className={`${ACTION} ml-1`}
-                      disabled={saving}
-                      data-testid={`waive-${id}`}
-                      onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
-                    >
-                      Waive
-                    </button>
-                  )}
-                </span>
-              ))}
+      {v.outranked.length > 0 && (
+        <ul className="space-y-1" data-testid="outcome-spec-outranked">
+          {v.outranked.map(o => (
+            <li key={o.criterionId} className="text-meta text-text-muted leading-snug">
+              <span className="font-mono">{o.criterionId}</span>: {o.note}
             </li>
           ))}
         </ul>
       )}
+      {!readonly && v.open.length > 0 && (
+        <ul className="flex flex-wrap gap-x-4" data-testid="outcome-spec-open">
+          {v.open.flatMap(o => o.criterionIds).map(id => (
+            <li key={id}>
+              <button
+                type="button"
+                className={`${ACTION} whitespace-nowrap`}
+                disabled={saving}
+                data-testid={`waive-${id}`}
+                onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
+              >
+                Waive {id}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {v.judged.length > 0 && (
+        <p className="text-meta text-text-muted leading-snug" data-testid="outcome-spec-judged">
+          Passed by reviewer: <span className="font-mono">{v.judged.join(', ')}</span>
+        </p>
+      )}
       {v.waived.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-waived">
           {v.waived.map(w => (
-            <li key={w.criterionId} className="text-meta text-text-muted leading-snug">
-              <span className="font-mono">{w.criterionId}</span> waived: {w.reason}
+            <li key={w.criterionId} className="text-meta text-text-muted leading-snug flex flex-wrap items-baseline gap-x-2">
+              <span className="min-w-0 break-words"><span className="font-mono">{w.criterionId}</span> waived: {w.reason}</span>
               {!readonly && (
                 <button
                   type="button"
-                  className={`${ACTION} ml-1`}
+                  className={ACTION}
                   disabled={saving}
                   data-testid={`unwaive-${w.criterionId}`}
                   onClick={() => send({ specId: criterion.specId, unwaive: [w.criterionId] })}
@@ -121,7 +119,6 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           ))}
         </ul>
       )}
-      <p className="text-meta text-text-secondary leading-snug" data-testid="outcome-spec-next">{v.next}</p>
       {v.verificationTaskId && (
         <a href={`/app/tasks/${v.verificationTaskId}`} className={ACTION}>
           Final verification {v.verificationTaskId.slice(0, 8)}

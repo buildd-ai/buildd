@@ -1,3 +1,4 @@
+import { acceptanceTestRecord, acceptanceTestVerdict, parseAcceptanceTestRun } from './acceptance-test-result';
 import { db } from '@buildd/core/db';
 import { artifactReads, githubRepos, missions, specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray } from 'drizzle-orm';
@@ -8,7 +9,7 @@ import { VERIFICATION_VERDICTS, boundEvidenceRefs, verdictSourceOfEvidence, type
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
-import { isAncestor } from '@/lib/integration-refresh';
+import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { integrationTarget } from './mission-integration-target';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { requestingPerson } from '@/lib/request-person';
@@ -54,19 +55,19 @@ async function loadMission(missionId: string): Promise<MissionRow | null> {
 
 export { livingSpecCriteriaOf, selectedScope };
 
-async function missionRepo(mission: MissionRow): Promise<{ installationId: number; fullName: string } | { error: string }> {
+async function missionRepo(mission: MissionRow): Promise<{ installationId: number; fullName: string; trunk: string } | { error: string }> {
   const resolved = await resolveMissionRepoWorkspaceId({ missionId: mission.id, missionWorkspaceId: mission.workspaceId });
   if (!resolved.workspaceId) return { error: resolved.detail ?? 'the mission has no workspace' };
-  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, resolved.workspaceId)), columns: { githubRepoId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, resolved.workspaceId)), columns: { githubRepoId: true, gitConfig: true } });
   if (!ws?.githubRepoId) return { error: 'the workspace is not linked to a GitHub repo' };
   const repo = await db.query.githubRepos.findFirst({
     where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
-    columns: { fullName: true },
+    columns: { fullName: true, defaultBranch: true },
     with: { installation: { columns: { installationId: true } } },
   });
   const installationId = (repo as { installation?: { installationId?: number } } | undefined)?.installation?.installationId;
   if (!repo?.fullName || !installationId) return { error: 'the GitHub repo row was not found' };
-  return { installationId, fullName: repo.fullName };
+  return { installationId, fullName: repo.fullName, trunk: ws.gitConfig?.targetBranch || ws.gitConfig?.defaultBranch || repo.defaultBranch || 'main' };
 }
 
 /**
@@ -154,6 +155,8 @@ export function missionVerdictAuthority(input: {
  */
 export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: unknown, input: {
   specId?: unknown; criterionId: unknown; verdict: unknown; headSha: unknown; evidenceRefs?: unknown; readIds?: unknown; observed?: unknown; reaffirms?: unknown;
+  /** An acceptance test's run on the merged result: its exit code, not `verdict`, decides the verdict. */
+  acceptanceTest?: unknown;
 }, api: Api = githubApi): Promise<{ ok: true; verdictId: string; standing: MissionSpecStanding } | SpecError> {
   if (typeof missionId !== 'string' || !isUuid(missionId)) return fail(404, 'Mission not found');
   const mission = await loadMission(missionId);
@@ -179,7 +182,10 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
   }
   const scope = await selectedScope(c);
   if (!scope.ok) return fail(409, `The selected spec revision is unavailable: ${scope.reason}`);
-  const { criterionId, verdict, headSha } = input;
+  const { criterionId, headSha } = input;
+  const run = input.acceptanceTest === undefined ? null : parseAcceptanceTestRun(input.acceptanceTest);
+  if (input.acceptanceTest !== undefined && !run) return fail(400, 'acceptanceTest must be { exitCode, started?, testName?, stdout?, stderr? }');
+  const verdict = run && typeof criterionId === 'string' ? acceptanceTestVerdict(run) : input.verdict;
   const ids = scope.criteria.map((r) => r.id);
   if (typeof criterionId !== 'string' || !ids.includes(criterionId)) {
     return fail(400, `criterionId must be an in-scope criterion of selected revision ${c.revision}: ${ids.length ? ids.join(', ') : 'it has none'}`);
@@ -213,7 +219,9 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
   // so explicitly, citing the earlier verdict it re-affirms: nothing carries silently.
   const reaffirms = typeof input.reaffirms === 'string' && isUuid(input.reaffirms) ? input.reaffirms : undefined;
   const observed = typeof input.observed === 'string' && input.observed.trim() ? input.observed.trim().slice(0, 500) : undefined;
-  const recordedBy = who.recordedBy === 'final-verification' ? `final-verification:${taskScope!.taskId}` : who.recordedBy;
+  const accepted = run && typeof criterionId === 'string' ? acceptanceTestRecord(criterionId, run) : null;
+  const recordedBy = accepted ? accepted.recordedBy
+    : who.recordedBy === 'final-verification' ? `final-verification:${taskScope!.taskId}` : who.recordedBy;
   const [row] = await db.insert(specOutcomeVerdicts).values({
     workspaceId: mission.workspaceId,
     missionId: mission.id,
@@ -222,7 +230,7 @@ export async function recordMissionSpecVerdict(caller: SpecCaller, missionId: un
     criterionTextHash: (await revisionCriterionHashes(c.specId, c.revision)).get(criterionId) ?? null,
     verdict: verdict as VerificationVerdict,
     headSha: headSha.toLowerCase(),
-    evidence: { refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
+    evidence: { ...(accepted?.evidence ?? {}), refs, readIds, ...(observed ? { observed } : {}), ...(reaffirms ? { reaffirms } : {}), recordedBy },
   }).returning({ id: specOutcomeVerdicts.id });
   await settleVerdictSource(row.id);
   return { ok: true, verdictId: row.id, standing: await readMissionSpecStanding(mission, c, api) };
@@ -270,3 +278,20 @@ export async function readMissionSpecOutcomes(caller: SpecCaller | null, mission
   return { ok: true, outcomes };
 }
 
+/** Resolve a concrete commit for mechanical final checks, validating direct-mission ancestry. */
+export async function resolveMissionCheckTarget(missionId: string, api: Api = githubApi): Promise<{ headSha: string; branch: string } | null> {
+  const mission = await loadMission(missionId);
+  if (!mission) return null;
+  const target = await resolveMissionTarget(mission, [], api);
+  if (target.kind === 'integration') return { headSha: target.headSha, branch: target.branch };
+  if (target.kind === 'unknown') return null;
+  const repo = await missionRepo(mission);
+  if ('error' in repo) return null;
+  try {
+    const ref = await api(repo.installationId, `/repos/${repo.fullName}/git/ref/heads/${encodeRef(repo.trunk)}`);
+    const sha = ref?.object?.sha;
+    if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/i.test(sha)) return null;
+    const current = await resolveMissionTarget(mission, [sha], api);
+    return verdictIsCurrent(current, sha) ? { headSha: sha.toLowerCase(), branch: repo.trunk } : null;
+  } catch { return null; }
+}

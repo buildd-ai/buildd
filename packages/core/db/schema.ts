@@ -2104,6 +2104,10 @@ export const workers = pgTable('workers', {
   // usage at list price) | mixed | unknown. Reported by whoever picked the
   // credential (packages/core/cost-basis.ts). NULL = no usage recorded.
   costBasis: text('cost_basis').$type<import('../cost-basis').CostBasis | null>(),
+  // The model route the claim set this run up with (a label, never a credential):
+  // team API key, team endpoint, plan login, runner provider or cloud egress.
+  // NULL = not recorded (older run, codex, tenant seat).
+  modelRoute: text('model_route').$type<'oauth_seat' | 'agent_endpoint' | 'anthropic_api_key' | 'runner_provider' | 'cloud_egress' | null>(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
   outputTokens: integer('output_tokens').default(0).notNull(),
@@ -2862,7 +2866,8 @@ export interface SpecMetadataBlock {
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
-  verified_by?: string[];
+  /** Repo paths of the tests that check it, flat or keyed by check id (R-77). */
+  verified_by?: string[] | Record<string, string[]>;
   assertions?: Array<Record<string, string | number | boolean>>;
   /**
    * An area's own: the `domain:` values it covers (e.g. `[tasks, missions]`).

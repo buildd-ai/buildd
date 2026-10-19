@@ -14,7 +14,7 @@ import {
   type PlainError,
 } from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
-import OutcomeSpecCriterion, { OutcomeSpecSummary } from './OutcomeSpecCriterion';
+import OutcomeSpecCriterion from './OutcomeSpecCriterion';
 import { Select } from '@/components/ui/Select';
 
 interface Props {
@@ -505,7 +505,6 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
           )}
           {c.type === 'living_spec' && (
             <>
-              <OutcomeSpecSummary criterion={c} entry={cs} />
               {isExpanded && (
                 <OutcomeSpecCriterion
                   missionId={missionId}

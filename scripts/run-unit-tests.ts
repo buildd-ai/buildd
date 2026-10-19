@@ -33,6 +33,7 @@ const UNIT_TEST_ROOTS = [
   'apps/web/tests/integration/verdict-acceptance.test.ts', // pure fold; the rest of that dir needs a live server
   'apps/web/tests/integration/verdict-integration.test.ts', // pure integrated verdict contract
   'apps/web/tests/integration/verdict-baseline.test.ts', // pure fold; same reason
+  'apps/web/tests/integration/start-commit-gate.test.ts', // pure decision; same reason
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {
@@ -642,6 +643,7 @@ function sampleHostBusy(): string {
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
+  testNamePattern?: string,
 ): Promise<TestResult> {
   // Every test file gets its own throwaway BUILDD_HOME. Seven runner modules
   // resolve that env var when they are first imported (worker-store,
@@ -670,7 +672,7 @@ export async function runTestFile(
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
     const timeoutMs = getTestTimeoutMs(process.env.BUILDD_TEST_TIMEOUT_MS);
-    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
+    const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), ...(testNamePattern ? ['--test-name-pattern', testNamePattern] : []), file], {
       stdout: 'pipe',
       stderr: 'pipe',
       // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home

@@ -214,8 +214,13 @@ workspace and MAY carry a schedule.
   email triage, annual-cycle planning). For these missions:
   - `workingBranch` and `primaryPrUrl` are always null — expected, not broken.
   - Health shows "no tasks" when all activity is coordination-only — expected.
+  - The mission's own planning and heartbeat tasks run in the team's
+    auto-created `__coordination` workspace (no repo, hidden from pickers).
   - Each task the mission creates MUST carry an explicit `workspaceId`; there
-    is no automatic inference from the mission to its tasks.
+    is no automatic inference from the mission to its tasks. Targeting a
+    workspace other than `__coordination` needs a delegation or a key that
+    reaches it, and a schedule with a null workspace cannot carry a delegation
+    (known gap; see `docs/specs/mission-completion.md` → Workspace-less Missions).
 
 **Code surface**:
 - UI: `apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx`

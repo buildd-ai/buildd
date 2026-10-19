@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
-import { countWord, outcomeSpecView } from './mission-outcome-spec-view';
+import { countWord, outcomeSpecView, outrankedNote } from './mission-outcome-spec-view';
 
 const SPEC = '00000000-0000-4000-8000-000000000001';
 const crit = (extra: Partial<LivingSpecGoalCriterion> = {}): LivingSpecGoalCriterion => ({
@@ -14,6 +14,17 @@ const entry = (standings: Array<[string, LivingSpecCriterionStanding['standing']
 });
 
 describe('outcomeSpecView', () => {
+  it('AC-128 lists a pass a reviewer gave apart from the ones a test proved', () => {
+    const e = entry([['R-1', 'pass'], ['R-2', 'pass'], ['R-3', 'pass']]);
+    const st = e.spec!.standings;
+    st[0].source = 'test';
+    st[1].source = 'test';
+    st[2].source = 'review';
+    const v = outcomeSpecView(crit(), e);
+    expect(v.tested).toEqual(['R-1', 'R-2']);
+    expect(v.judged).toEqual(['R-3']);
+  });
+
   it('says coverage in words on the integrated commit', () => {
     const v = outcomeSpecView(crit(), entry([['R-1', 'pass'], ['R-2', 'pass'], ['R-3', 'missing']]));
     expect(v.coverage).toBe('Two of three pass on abc1234.');
@@ -79,5 +90,12 @@ describe('outcomeSpecView', () => {
     expect(countWord(0)).toBe('zero');
     expect(countWord(12)).toBe('twelve');
     expect(countWord(13)).toBe('13');
+  });
+});
+
+describe('outranked review note (R-85, AC-129)', () => {
+  it('words the count of reviews a test result outranked', () => {
+    expect(outrankedNote('R-1', 1).note).toBe('A review verdict was outranked by the test result.');
+    expect(outrankedNote('R-1', 3).note).toBe('3 review verdicts were outranked by the test result.');
   });
 });

@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
-import OutcomeSpecCriterion, { OutcomeSpecSummary } from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
+import OutcomeSpecCriterion from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { MissionSituation } from '@/lib/mission-state-view';
@@ -116,7 +116,6 @@ function OutcomeSpecGoalRow({ fixture }: { fixture: Fixture }) {
   return (
     <section aria-label="Goal criteria" data-testid="outcome-spec-fixture-row" className="mt-6 border-t border-border-default py-3">
       <p className="text-body font-medium">{criterion.label ?? 'Outcome spec'}</p>
-      <OutcomeSpecSummary criterion={criterion} entry={entry} />
       <OutcomeSpecCriterion missionId={MISSION_ID} criterion={criterion} entry={entry} />
     </section>
   );

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
+import { missions, specs, specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
@@ -7,6 +7,9 @@ import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { livingSpecCriteriaOf } from './selected-scope';
+import { isRepoPath } from '@buildd/spec-contract/repo-copy';
+import { specCriteria } from '@buildd/spec-contract/requirements';
 import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
@@ -36,8 +39,13 @@ const MAX_EXCERPT = 2000;
 const SHA40 = /^[0-9a-f]{40}$/;
 const TITLE_PREFIX = 'Check spec criterion';
 
-type Wake = (task: { id: string; title: string; workspaceId: string }) => Promise<void>;
+type Wake = (task: { id: string; title: string; workspaceId: string; missionId?: string }) => Promise<void>;
 export interface CheckDeps { wake?: Wake }
+
+type MissionVerdictRecorder = (missionId: string, input: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; error: string }>;
+let recordMissionVerdict: MissionVerdictRecorder | null = null;
+/** The missions module registers how a final-verification check's verdict is recorded; core does not import it. */
+export function registerMissionVerdictRecorder(fn: MissionVerdictRecorder): void { recordMissionVerdict = fn; }
 
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -57,29 +65,58 @@ export function isCriterionCheckTask(context: unknown): boolean {
   return markerOf(context) !== null;
 }
 
-async function defaultWake(task: { id: string; title: string; workspaceId: string }): Promise<void> {
+async function defaultWake(task: { id: string; title: string; workspaceId: string; missionId?: string }): Promise<void> {
   const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
   const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
   if (!workspace) return;
-  await announceTaskCreated({ ...task, description: null, mode: 'execution', priority: 2, missionId: null }, workspace as never)
+  await announceTaskCreated({ ...task, description: null, mode: 'execution', priority: 2, missionId: task.missionId ?? null }, workspace as never)
     .catch((e) => console.error(`[spec-checks] dispatch failed for task ${task.id}:`, e));
   await wakeTask(task.id, 'task.created');
 }
 
-/** The checks a task's pinned revision names, or why there are none. */
+/**
+ * PR checks come from the task pin. A platform final verification instead uses
+ * the mission selection, plus R-77's criterion-keyed verified_by test paths.
+ * Re-read the selection and registrations when accepting results as well, so
+ * a withdrawn test or revision cannot still grade the mission.
+ */
 async function pinnedChecks(taskId: string): Promise<
-  { ok: true; workspaceId: string; specRevisionId: string; checks: CriterionCheck[] } | { ok: false; reason: string }
+  { ok: true; workspaceId: string; specRevisionId: string; checks: CriterionCheck[]; missionId?: string } | { ok: false; reason: string }
 > {
   if (!isUuid(taskId)) return { ok: false, reason: 'not a task id' };
-  const [task] = await db.select({ workspaceId: tasks.workspaceId, context: tasks.context }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
+  const [task] = await db.select({ workspaceId: tasks.workspaceId, context: tasks.context, missionId: tasks.missionId, creationSource: tasks.creationSource }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
   if (!task) return { ok: false, reason: 'task not found' };
-  const pin = asRecord(asRecord(task.context)?.specSource);
+  const final = asRecord(asRecord(task.context)?.finalVerification);
+  let pin = asRecord(asRecord(task.context)?.specSource);
+  let missionId: string | undefined;
+  if (final) {
+    if (task.creationSource !== 'orchestrator' || final.missionId !== task.missionId || !task.missionId) return { ok: false, reason: 'not a platform final verification' };
+    const mission = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)) });
+    const selected = livingSpecCriteriaOf(mission?.goalCriteria).find((c) => c.specRevisionId === final.specRevisionId);
+    if (!selected || mission?.workspaceId !== task.workspaceId) return { ok: false, reason: 'the mission no longer selects this revision' };
+    pin = { ...selected };
+    missionId = task.missionId;
+  }
   if (!pin || typeof pin.specRevisionId !== 'string') return { ok: false, reason: 'the task is not pinned to a Living Spec revision' };
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return { ok: false, reason: read.reason };
   const scope = scopeOf(pin);
-  const checks = criterionChecks(read.body).filter((c) => !scope || scope.includes(c.criterionId));
-  return { ok: true, workspaceId: task.workspaceId, specRevisionId: pin.specRevisionId, checks };
+  let registered = criterionChecks(read.body);
+  if (missionId && typeof pin.specId === 'string') {
+    const spec = await db.query.specs.findFirst({ where: sqlWhere(eq(specs.id, pin.specId)), columns: { metadata: true } });
+    const byCriterion = asRecord(asRecord(spec?.metadata)?.verified_by);
+    const known = new Set(specCriteria(read.body).map((c) => c.id));
+    for (const [criterionId, paths] of Object.entries(byCriterion ?? {})) {
+      if (!known.has(criterionId) || !Array.isArray(paths) || !paths.length || !paths.every((p) => typeof p === 'string' && isRepoPath(p))) continue;
+      const quote = (v: string) => "'" + v.replace(/'/g, "'\"'\"'") + "'";
+      const command = `bun run scripts/run-acceptance-tests.ts ${[criterionId, ...new Set(paths)].map(quote).join(' ')}`;
+      registered = registered.filter((c) => c.criterionId !== criterionId);
+      registered.push({ criterionId, command });
+    }
+  }
+  const waived = Array.isArray(pin.waived) ? pin.waived as Array<{ criterionId: string }> : [];
+  const checks = registered.filter((c) => (!scope || scope.includes(c.criterionId)) && !waived.some((w) => w.criterionId === c.criterionId));
+  return { ok: true, workspaceId: task.workspaceId, specRevisionId: pin.specRevisionId, checks, ...(missionId ? { missionId } : {}) };
 }
 
 const sameRun = (m: Omit<CriterionCheckMarker, 'command'>) =>
@@ -134,8 +171,8 @@ export async function dispatchCriterionChecks(
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('spec_criterion_check'), hashtext(${lockKey}))`),
       // Bookkeeping: a check run is not a deliverable of anything.
       db.execute(sql`
-        INSERT INTO ${tasks} (workspace_id, title, description, priority, status, mode, task_class, creation_source, output_requirement, tier, loop_config, context)
-        SELECT ${p.workspaceId}::uuid, ${title}, ${description}, 2, 'pending', 'execution', 'bookkeeping', 'orchestrator', 'none', 'budget',
+        INSERT INTO ${tasks} (workspace_id, mission_id, title, description, priority, status, mode, task_class, creation_source, output_requirement, tier, loop_config, context)
+        SELECT ${p.workspaceId}::uuid, ${p.missionId ?? null}::uuid, ${title}, ${description}, 2, 'pending', 'execution', 'bookkeeping', 'orchestrator', 'none', 'budget',
           ${JSON.stringify(loopConfig)}::jsonb, ${JSON.stringify(context)}::jsonb
         WHERE NOT EXISTS (
           SELECT 1 FROM ${tasks} t_run
@@ -147,7 +184,7 @@ export async function dispatchCriterionChecks(
     ]);
     const row = (inserted as { rows?: Array<Record<string, unknown>> })?.rows?.[0] as { id: string } | undefined;
     if (!row) continue;
-    await wake({ id: row.id, title, workspaceId: p.workspaceId });
+    await wake({ id: row.id, title, workspaceId: p.workspaceId, ...(p.missionId ? { missionId: p.missionId } : {}) });
     dispatched++;
   }
   return { dispatched };
@@ -199,10 +236,10 @@ export async function handleCriterionCheckOutcome(
   if (!verdict) return { recorded: false, reason: 'the evidence has no outcome' };
 
   const [done] = await db.select({ id: specOutcomeVerdicts.id }).from(specOutcomeVerdicts)
-    .where(and(eq(specOutcomeVerdicts.taskId, marker.subjectTaskId), sql`${specOutcomeVerdicts.evidence}->>'verificationTaskId' = ${task.id}`)).limit(1);
+    .where(and(p.missionId ? eq(specOutcomeVerdicts.missionId, p.missionId) : eq(specOutcomeVerdicts.taskId, marker.subjectTaskId), sql`${specOutcomeVerdicts.evidence}->>'verificationTaskId' = ${task.id}`)).limit(1);
   if (done) return { recorded: false, reason: 'already recorded' };
 
-  const r = await recordCheckVerdict(marker.subjectTaskId, {
+  const input = {
     specRevisionId: marker.specRevisionId,
     criterionId: marker.criterionId,
     verdict,
@@ -210,6 +247,7 @@ export async function handleCriterionCheckOutcome(
     verificationTaskId: task.id,
     evidence: {
       kind: 'check',
+      verificationTaskId: task.id,
       command: check.command,
       outcome: ev.outcome,
       ...(typeof ev.exitCode === 'number' ? { exitCode: ev.exitCode } : {}),
@@ -217,7 +255,11 @@ export async function handleCriterionCheckOutcome(
       ...(excerpt(ev.stdout) ? { stdout: excerpt(ev.stdout) } : {}),
       ...(excerpt(ev.stderr) ? { stderr: excerpt(ev.stderr) } : {}),
     },
-  });
+  };
+  if (p.missionId && !recordMissionVerdict) return { recorded: false, reason: 'no mission verdict recorder is registered' };
+  const r = p.missionId
+    ? await recordMissionVerdict!(p.missionId, { ...input, recordedBy: `check:${task.id}` })
+    : await recordCheckVerdict(marker.subjectTaskId, input);
   if (!r.ok) return { recorded: false, reason: r.error };
   return { recorded: true, verdict };
 }

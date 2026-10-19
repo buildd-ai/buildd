@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
-import OutcomeSpecCriterion, { OutcomeSpecSummary } from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
+import OutcomeSpecCriterion from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
 import { criteriaChecks } from '@/lib/mission-checks';
 import { outcomeSpecView } from '@/lib/mission-outcome-spec-view';
 import {
@@ -24,6 +24,18 @@ function specOf(variant: MissionTaskStripVariant) {
 }
 
 describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-*)', () => {
+  it('AC-128 names the judged criteria apart from the tested ones', () => {
+    const { criterion, entry } = specOf('outcome-spec-passing');
+    const e = JSON.parse(JSON.stringify(entry));
+    e.spec.standings.forEach((s: any, i: number) => { s.source = i === 0 ? 'review' : 'test'; });
+    const judgedId = e.spec.standings[0].criterionId;
+    const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={e} readonly />);
+    expect(html).toContain('data-testid="outcome-spec-judged"');
+    expect(html).toMatch(new RegExp(`Passed by reviewer:[^<]*<[^>]*>[^<]*${judgedId}`));
+    const none = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} readonly />);
+    expect(none).not.toContain('outcome-spec-judged');
+  });
+
   it('every variant is linked, parses and renders as an Overview fixture', () => {
     const hrefs = missionTaskStripLinks().map(l => l.href);
     for (const v of OUTCOME_SPEC_VARIANTS) {
@@ -63,7 +75,8 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
       expect(row.detail ?? '').not.toContain('once the build');
       const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} />);
       expect(html).not.toContain('once the build');
-      expect(html).toContain('The build is done.');
+      expect(html).not.toContain('The build is done.');
+      expect(row.detail ?? '').toContain('The build is done.');
     }
   });
 
@@ -80,7 +93,6 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
   it('each variant renders through the real criterion row', () => {
     for (const v of OUTCOME_SPEC_VARIANTS) {
       const { criterion, entry } = specOf(v);
-      expect(renderToStaticMarkup(<OutcomeSpecSummary criterion={criterion} entry={entry} />)).toContain('Revision 4');
       expect(renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} />)).toContain('data-testid="outcome-spec-detail"');
     }
   });

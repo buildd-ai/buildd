@@ -8,7 +8,7 @@
  * completeness check at the bottom fails when a new one is added untested.
  */
 import { describe, it, expect } from 'bun:test';
-import { handleBuilddAction, buildParamsDescription, allActions, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, unknownWorkspaceMessage, buildParamsDescription, allActions, type ApiFn, type ActionContext } from '../mcp-tools';
 
 const CONTEXT_WS = '00000000-0000-0000-0000-00000000000c';
 const VISIBLE_WS = '00000000-0000-0000-0000-00000000000a';
@@ -135,6 +135,16 @@ describe('explicit unknown workspaceId fails loudly', () => {
       expect(calls.some((c) => c.includes(CONTEXT_WS))).toBe(false);
     });
   }
+
+  it('names the legitimate ways forward and never suggests filing elsewhere', async () => {
+    for (const visible of [[{ name: 'a' }], []]) {
+      const msg = unknownWorkspaceMessage('x', visible);
+      expect(msg).toContain('request_capability tasks:create');
+      expect(msg).toContain('person');
+      expect(msg).not.toMatch(/file the follow-up/i);
+      expect(msg).not.toMatch(/in a visible workspace/i);
+    }
+  });
 
   it('a known name still resolves (control)', async () => {
     const { api, calls } = makeApi();
