@@ -10,9 +10,10 @@
  * This file builds what to run (pure, unit-tested) and runs it. The key
  * handling lives in keys.ts and the terminal hand-over in run.ts.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { dirname, join } from 'path';
+import { resolveBuilddHome } from '../buildd-home';
 import { NO_MISSION, isLooseKey, missionRows, taskRows, type TopState } from './state';
 
 export const NOT_LOGGED_IN = "Claude isn't logged in on this machine: run claude login";
@@ -94,6 +95,9 @@ export type TalkLaunch =
       /** Where the session shows up: top steps aside (`suspend`) or a pane opens beside it. */
       mode: 'suspend' | 'tmux';
       cwd: string;
+      /** The claude session: new (`--session-id`) or the target's earlier one (`--resume`). */
+      sessionId: string;
+      resumed: boolean;
       /** `claude` and its arguments; the MCP config is a file path, never the key itself. */
       argv: string[];
       mcpConfig: { mcpServers: Record<string, unknown> };
@@ -109,22 +113,33 @@ export function buildTalkLaunch(input: {
   cwd: string | null;
   server: string;
   apiKey: string | null;
+  /** The target's workspace: binds the buildd MCP to it, since one key can reach several. */
+  workspaceId?: string | null;
+  /** The target's earlier session, still on disk: resume it instead of starting over. */
+  resumeSessionId?: string | null;
+  /** The id a new session gets, so a later `s` can come back to it. */
+  newSessionId: string;
   mcpConfigPath: string;
   env: TalkEnv;
 }): TalkLaunch {
   if (!input.loggedIn) return { ok: false, message: NOT_LOGGED_IN };
   if (!input.cwd) return { ok: false, message: `This machine has no checkout of ${input.context.target.title}'s repository to open Claude in.` };
   if (!input.apiKey) return { ok: false, message: 'The runner has no buildd key to connect Claude with.' };
-  const entry = { type: 'http', url: `${input.server.replace(/\/+$/, '')}/api/mcp`, headers: { Authorization: `Bearer ${input.apiKey}` } };
+  const query = input.workspaceId ? `?workspace=${encodeURIComponent(input.workspaceId)}` : '';
+  const entry = { type: 'http', url: `${input.server.replace(/\/+$/, '')}/api/mcp${query}`, headers: { Authorization: `Bearer ${input.apiKey}` } };
+  const resume = input.resumeSessionId || null;
   return {
     ok: true,
     mode: input.env.TMUX ? 'tmux' : 'suspend',
     cwd: input.cwd,
+    sessionId: resume ?? input.newSessionId,
+    resumed: !!resume,
     argv: [
       'claude',
       '--mcp-config', input.mcpConfigPath,
       '--append-system-prompt', systemPromptAddendum(input.context.target.kind),
-      starterPrompt(input.context),
+      // A resumed session already has its conversation; it opens where it left off.
+      ...(resume ? ['--resume', resume] : ['--session-id', input.newSessionId, starterPrompt(input.context)]),
     ],
     mcpConfig: { mcpServers: { buildd: entry } },
   };
@@ -147,7 +162,7 @@ const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
  * the terminal (inherit, after top has left the alt screen) or in a tmux split,
  * wait for it to end, and remove the config. Returns claude's exit code.
  */
-export async function runTalk(launch: Extract<TalkLaunch, { ok: true }>, io: { configDir?: string } = {}): Promise<number> {
+export async function runTalk(launch: Extract<TalkLaunch, { ok: true }>, io: { configDir?: string; onPane?: (paneId: string) => void } = {}): Promise<number> {
   const dir = mkdtempSync(join(io.configDir ?? tmpdir(), 'buildd-talk-'));
   const cfg = join(dir, 'mcp.json');
   try {
@@ -157,12 +172,13 @@ export async function runTalk(launch: Extract<TalkLaunch, { ok: true }>, io: { c
     const i = argv.indexOf('--mcp-config');
     if (i >= 0) argv[i + 1] = cfg;
     if (launch.mode === 'tmux') {
-      // -P blocks until the pane's command ends (tmux wait-for would need a channel); -d keeps top focused.
-      const channel = `buildd-talk-${process.pid}`;
+      // The pane signals the channel when claude ends; -P prints the pane's id so a later `s` can focus it.
+      const channel = `buildd-talk-${process.pid}-${launch.sessionId}`;
       const inner = `${argv.map(shq).join(' ')}; tmux wait-for -S ${channel}`;
-      const split = Bun.spawn(['tmux', 'split-window', '-h', '-c', launch.cwd, inner], { stdout: 'ignore', stderr: 'ignore' });
-      const code = await split.exited;
+      const split = Bun.spawn(['tmux', 'split-window', '-h', '-P', '-F', '#{pane_id}', '-c', launch.cwd, inner], { stdout: 'pipe', stderr: 'ignore' });
+      const [code, out] = await Promise.all([split.exited, new Response(split.stdout).text()]);
       if (code !== 0) return code;
+      if (out.trim()) io.onPane?.(out.trim());
       return await Bun.spawn(['tmux', 'wait-for', channel], { stdout: 'ignore', stderr: 'ignore' }).exited;
     }
     const p = Bun.spawn(argv, { cwd: launch.cwd, stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' });
@@ -177,6 +193,8 @@ export interface TalkPayload {
   cwd: string | null;
   server: string | null;
   apiKey: string | null;
+  /** The workspace whose checkout `cwd` is (absent from runners older than this field). */
+  workspaceId?: string | null;
   explain?: any;
   mission?: any;
 }
@@ -223,5 +241,62 @@ export function talkContext(state: TopState, target: TalkTarget, payload: Pick<T
     questions: onMission.filter(r => r.kind === 'asking' && r.question).map(r => ({ taskId: r.taskId, taskTitle: r.title, prompt: r.question! })),
     taskStatus: row?.kind ?? task?.status ?? null,
     taskWaiting: row?.question ?? row?.reason ?? row?.action ?? null,
+  };
+}
+
+// ── Coming back to a session ──────────────────────────────────────────────
+// `s` on a target that already had a session resumes it (claude --resume), and
+// in tmux a pane still showing it is focused instead of opening a second copy.
+// top remembers one session per mission or task in BUILDD_HOME.
+
+export interface TalkSessionRecord {
+  sessionId: string;
+  cwd: string;
+  /** The tmux pane showing it, while it is open there. */
+  paneId?: string | null;
+}
+
+export interface TalkSessions {
+  get(key: string): TalkSessionRecord | null;
+  set(key: string, rec: TalkSessionRecord): void;
+  /** claude still has the conversation (its transcript is on disk). */
+  exists(sessionId: string): boolean;
+  /** Focus a pane if it is still open; false when it is gone. */
+  focusPane(paneId: string): Promise<boolean>;
+  newId(): string;
+}
+
+export const talkSessionKey = (t: Pick<TalkTarget, 'kind' | 'id'>) => `${t.kind}:${t.id}`;
+
+/** claude keeps each conversation as `<config>/projects/<project>/<session id>.jsonl`. */
+export function claudeTranscriptExists(sessionId: string, env: TalkEnv = process.env): boolean {
+  const projects = join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  try {
+    return readdirSync(projects).some(d => existsSync(join(projects, d, `${sessionId}.jsonl`)));
+  } catch {
+    return false;
+  }
+}
+
+export function fileTalkSessions(path = join(resolveBuilddHome(), 'talk-sessions.json')): TalkSessions {
+  const read = (): Record<string, TalkSessionRecord> => {
+    try { return JSON.parse(readFileSync(path, 'utf8')) ?? {}; } catch { return {}; }
+  };
+  return {
+    get: key => read()[key] ?? null,
+    set(key, rec) {
+      const all = read();
+      all[key] = rec;
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(all), { mode: 0o600 });
+      renameSync(tmp, path);
+    },
+    exists: id => claudeTranscriptExists(id),
+    async focusPane(paneId) {
+      const p = Bun.spawn(['tmux', 'select-pane', '-t', paneId], { stdout: 'ignore', stderr: 'ignore' });
+      return (await p.exited) === 0;
+    },
+    newId: () => crypto.randomUUID(),
   };
 }

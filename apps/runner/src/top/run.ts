@@ -27,7 +27,7 @@ import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
 import { actionResultText, createKeyDecoder, handleKey, type Effect, type Key } from './keys';
 import { renderFrame } from './render';
-import { NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, runTalk, talkContext, talkWorkspaceId, type TalkLaunch, type TalkPayload } from './talk';
+import { NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, fileTalkSessions, runTalk, talkContext, talkSessionKey, talkWorkspaceId, type TalkLaunch, type TalkPayload, type TalkSessions } from './talk';
 import { eventChangesQueue, initialState, reduce, type TopDevBuild, type TopEvent, type TopState } from './state';
 
 export const EXIT_NO_RUNNER = 1;
@@ -113,7 +113,9 @@ export interface RunTopOptions {
   /** Seams for the talk session (tests): the login probe and the session itself. */
   talk?: {
     loggedIn?: () => Promise<boolean>;
-    run?: (launch: Extract<TalkLaunch, { ok: true }>) => Promise<number>;
+    run?: (launch: Extract<TalkLaunch, { ok: true }>, io?: { onPane?: (paneId: string) => void }) => Promise<number>;
+    /** Which session each mission or task had, so `s` comes back to it. */
+    sessions?: TalkSessions;
   };
   /** Register process-level exit hooks (off in tests). */
   processHooks?: boolean;
@@ -177,6 +179,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // While a talk session owns the terminal, nothing is drawn or read here.
   let suspended = false;
   let talking = false;
+  let talkSessions: TalkSessions | null = null;
 
   const draw = () => {
     renderTimer = null;
@@ -414,12 +417,21 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // not stop it. With $TMUX set it opens beside top; otherwise top steps aside.
   const talk = async (effect: Extract<Effect, { type: 'talk' }>) => {
     const say = (text: string, tone: 'ok' | 'error' | 'info' = 'error') => dispatch({ type: 'status', status: { text, tone } });
+    const target = { kind: effect.kind, id: effect.id, title: effect.title };
+    const sessions = opts.talk?.sessions ?? (talkSessions ??= fileTalkSessions());
+    const key = talkSessionKey(target);
+    const earlier = sessions.get(key);
+    // Still open in a tmux pane (this top or an earlier one): go to it rather than open a second copy.
+    if ((opts.env ?? process.env).TMUX && earlier?.paneId && await sessions.focusPane(earlier.paneId)) {
+      say('Claude is already open for this one: switched to its pane.', 'info');
+      return;
+    }
     if (talking) { say('A Claude session is already open.'); return; }
     talking = true;
     try {
       if (!(await (opts.talk?.loggedIn ?? claudeLoggedIn)())) { say(NOT_LOGGED_IN); return; }
-      const target = { kind: effect.kind, id: effect.id, title: effect.title };
-      const r = await client.post('/api/talk-context', { kind: effect.kind, id: effect.id, workspaceId: talkWorkspaceId(state, target, Date.now()) });
+      const workspaceId = talkWorkspaceId(state, target, Date.now());
+      const r = await client.post('/api/talk-context', { kind: effect.kind, id: effect.id, workspaceId });
       const payload = r.body as (TalkPayload & { error?: string }) | null;
       if (r.status !== 200 || !payload) { say(`Could not open Claude: ${payload?.error ?? 'the runner did not answer'}`); return; }
       const launch = buildTalkLaunch({
@@ -428,14 +440,24 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         cwd: payload.cwd,
         server: payload.server || state.runner.builddServer || 'https://buildd.dev',
         apiKey: payload.apiKey,
+        workspaceId: payload.workspaceId ?? workspaceId ?? payload.mission?.workspaceId ?? null,
+        // claude keeps a conversation per folder, so only one from the same checkout can be resumed.
+        resumeSessionId: earlier && earlier.cwd === payload.cwd && sessions.exists(earlier.sessionId) ? earlier.sessionId : null,
+        newSessionId: sessions.newId(),
         mcpConfigPath: '',
         env: opts.env ?? process.env,
       });
       if (!launch.ok) { say(launch.message); return; }
       const run = opts.talk?.run ?? runTalk;
+      const record = { sessionId: launch.sessionId, cwd: launch.cwd };
+      sessions.set(key, record);
       if (launch.mode === 'tmux') {
-        say('Claude is open in a split pane.', 'info');
-        await run(launch);
+        say(launch.resumed ? 'Your earlier Claude session is open in a split pane.' : 'Claude is open in a split pane.', 'info');
+        try {
+          await run(launch, { onPane: paneId => sessions.set(key, { ...record, paneId }) });
+        } finally {
+          sessions.set(key, record);
+        }
         say('Claude closed.', 'info');
         return;
       }

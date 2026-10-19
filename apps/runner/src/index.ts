@@ -2074,7 +2074,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         ]);
         const ws = workspaces.find((w: any) => w.id === (body.workspaceId ?? mission?.workspaceId));
         const cwd = ws ? await resolver.resolveAsync?.({ id: ws.id, name: ws.name, repo: ws.repo, defaultBranch: ws.gitConfig?.defaultBranch ?? null }, null, { maxAgeMs: 60_000 }) ?? null : null;
-        return Response.json({ cwd, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
+        return Response.json({ cwd, workspaceId: ws?.id ?? null, server: config.builddServer, apiKey: config.apiKey ?? null, explain, mission }, { headers: corsHeaders });
       } catch (err: any) {
         return Response.json({ error: err.message || 'Failed to read the context' }, { status: 502, headers: corsHeaders });
       }

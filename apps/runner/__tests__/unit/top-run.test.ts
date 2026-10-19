@@ -207,6 +207,66 @@ describe('runTop', () => {
     expect(await done).toBe(0);
   });
 
+  test('s again on the same mission resumes its earlier session; a different checkout starts over', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const store = new Map<string, any>();
+    const sessions = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, r: any) => { store.set(k, r); },
+      exists: (id: string) => id === 'first',
+      focusPane: async () => false,
+      newId: () => (store.size ? 'second' : 'first'),
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => ran.length === 1);
+    expect(ran[0]).toMatchObject({ sessionId: 'first', resumed: false });
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('s');
+    await until(() => ran.length === 2);
+    expect(ran[1]).toMatchObject({ sessionId: 'first', resumed: true });
+    expect(ran[1].argv).toContain('--resume');
+    // The checkout moved: claude keeps conversations per folder, so that one cannot be resumed here.
+    for (const [k, r] of store) store.set(k, { ...r, cwd: '/elsewhere' });
+    await until(() => t.screen().includes('Back from Claude'));
+    t.type('s');
+    await until(() => ran.length === 3);
+    expect(ran[2]).toMatchObject({ sessionId: 'second', resumed: false });
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('in tmux, s on a mission whose session is still open in a pane focuses that pane', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    let ran = 0;
+    const focused: string[] = [];
+    const sessions = {
+      get: () => ({ sessionId: 'open', cwd: '/work/repo', paneId: '%7' }),
+      set: () => {},
+      exists: () => true,
+      focusPane: async (p: string) => { focused.push(p); return true; },
+      newId: () => 'unused',
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: { TMUX: '/tmp/tmux-1/default,1,0' },
+      talk: { loggedIn: async () => true, run: async () => { ran++; return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('s');
+    await until(() => t.screen().includes('switched to its pane'));
+    expect(focused).toEqual(['%7']);
+    expect(ran).toBe(0);
+    t.type('q');
+    await done;
+  });
+
   test('s without a claude login says so in one line and opens nothing', async () => {
     serveFakeRunner();
     const t = fakeTerminal();
