@@ -2,7 +2,7 @@
 title: Claim Ordering (Batch Planner)
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 summary: The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 domain: tasks
 surfaces: [packages/core/claim-planner.ts, apps/web/src/app/api/workers/claim/claim-plan-input.ts, apps/web/src/app/api/workers/claim/claim-plan-store.ts, apps/web/src/app/api/workers/claim/route.ts]
@@ -70,13 +70,13 @@ smaller-first ordering.
 **Invariants**:
 - `planClaimBatch` is pure: the same input in any row order returns the same plan.
 - The plan never picks more than the capacity it is given.
-- No two picks share a hard edge (concrete path overlap, lease overlap, open-PR pinned files, a shared serialized surface, an unresolved dependency, or the no-scope mission mutex), and no pick has a hard edge to in-flight work.
+- No two picks share a hard edge (concrete path overlap, lease overlap, open-PR pinned files, a shared serialized surface, or an unresolved dependency), and no pick has a hard edge to in-flight work. A node with no usable scope has no hard edge for that alone (`claim-overlap-scheduling` I-47).
 - Soft edges only delay a task; they never become hard.
 - With null thresholds, predicted scope is ignored entirely.
 - `CLAIM_PLANNER_CALIBRATION.thresholds` is non-null only together with a `readoutRef`, a `measuredOn` identity and verdict `eligible_for_gated`.
 - An explicit `taskId` claim (including every force claim) never goes through the planner.
 - A task another account has reserved (`context.reservedBy`, live) is excluded by the claim query before any planner input is built, so it is never a candidate; see `local-agent-presence` → Reserving a waiting task.
-- A gated START (live since task 7eb191b9) is one more gate on each pick: it can only relax an advisory deferral the pick reaches, so `apply` keeps its order.
+- The model's START/HOLD is recorded, not applied, at each pick (`claim-overlap-scheduling` I-30), so `apply` keeps its order.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a workspace with no `claimPlanner` WHEN the claim route runs THEN the planner input is never built and no `claim_plan` row is written.
@@ -88,7 +88,7 @@ smaller-first ordering.
 
 **Code surface**:
 - `packages/core/claim-planner.ts` — `planClaimBatch`, `PlannerThresholds`, `CLAIM_PLANNER_CALIBRATION`.
-- `apps/web/src/app/api/workers/claim/claim-plan-input.ts` — `resolveClaimPlannerConfig`, `buildClaimPlanInput`, `plannerScopedTaskIds`.
+- `apps/web/src/app/api/workers/claim/claim-plan-input.ts` — `resolveClaimPlannerConfig`, `buildClaimPlanInput`.
 - `apps/web/src/app/api/workers/claim/claim-plan-store.ts` — `loadPlannerSignals`, `fireClaimPlanRecord`, `fireOrderedBehind`.
 - `apps/web/src/app/api/workers/claim/route.ts` — mode resolution, record/apply branches.
 - `packages/core/db/schema.ts` — `claimPlanner` and `claimPlannerThresholds` on the workspace git config.

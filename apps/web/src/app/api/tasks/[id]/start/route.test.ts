@@ -1546,7 +1546,6 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     activeClaims: null,
     mission: null,
     missionActiveCount: 0,
-    missionAdvisoryInFlight: null,
     orderedBehind: null,
     liveTaskIds: new Set(),
     now: new Date(),
@@ -1650,23 +1649,18 @@ describe('POST /api/tasks/[id]/start — coordination holds', () => {
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
-  it('a human Force start lifts one scope-undeclared task per mission (human force only)', async () => {
+  it('a scope-undeclared task starts with no Force start: undeclared scope is not a wait', async () => {
     const task = { ...overlapTask, missionId: 'm-1', pathManifest: ['**'] };
     mockTasksFindFirst.mockResolvedValue(task);
     probeWith(snapshot({
       openPrTasks: [],
       mission: { status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null },
-      missionAdvisoryInFlight: new Set(['task-peer']),
+      missionActiveCount: 1,
     }));
-    const refused = await (await callHandler(createMockRequest(), 'task-123')).json();
-    expect(refused.waitingReasons[0].kind).toBe('scope_undeclared_mutex');
-    expect(refused.canForce).toBe(true);
-    const res = await callHandler(createMockRequest({
-      body: { force: { kinds: ['scope_undeclared_mutex'], reasonsDigest: refused.reasonsDigest } },
-    }), 'task-123');
+    const res = await callHandler(createMockRequest(), 'task-123');
     expect(res.status).toBe(200);
-    const ctx = (mockDbUpdate.set.mock.calls.at(-1) as any)[0].context;
-    expect(ctx.forceStart.loopKeys).toEqual(['advisory_manifest']);
+    const body = await res.json();
+    expect(body.waitingReasons ?? []).toEqual([]);
   });
 
   it('a non-forceable reason (declared dependency) offers no Force start and refuses one', async () => {
