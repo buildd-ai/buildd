@@ -380,3 +380,50 @@ export function titleWithAttempt(title: string | null | undefined): string {
   const d = displayTitle(title);
   return d.attempt ? `${d.title} · ${d.attempt}` : d.title;
 }
+
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'] as const;
+/** A count in words, up to ten ("two"); a figure above that. Copy rule: counts are words. */
+export const countWord = (n: number): string => COUNT_WORDS[n] ?? String(n);
+
+/**
+ * The review-escalation decision's labels, one wording on the task page, get_pr and the
+ * PR activity comment (spec r7 §7, AC-43).
+ */
+export const DECISION_LABELS = Object.freeze({
+  open: 'Still open',
+  awaitingVerification: 'Fixed, waiting for a review',
+  choicesOnTaskPage: 'Open on the task page',
+});
+
+/**
+ * GitHub's formal review states on a PR, in GitHub's own words, printed beside buildd's
+ * verdict and never in its place (spec r7 §7, AC-24). One basis for all three: each
+ * reviewer counts once, by their latest Approved or Changes requested review, else
+ * Commented when every review they left is a comment.
+ */
+export function githubReviewStatesLine(r: { approved?: number; changesRequested?: number; commented?: number } | null | undefined): string | null {
+  if (!r) return null;
+  const parts = ([[r.approved ?? 0, 'Approved'], [r.changesRequested ?? 0, 'Changes requested'], [r.commented ?? 0, 'Commented']] as const)
+    .filter(([n]) => n > 0)
+    .map(([n, state], i) => (i === 0 ? `${countWord(n)} ${n === 1 ? 'review' : 'reviews'} ${state}` : `${countWord(n)} ${state}`));
+  return parts.length > 0 ? `On GitHub: ${parts.join(', ')}` : null;
+}
+
+/** GitHub reviews counted on githubReviewStatesLine's basis: one per reviewer. */
+export function githubReviewCounts(reviews: ReadonlyArray<{ user?: { login?: string } | null; state?: string }>): { approved: number; changesRequested: number; pending: number; commented: number } {
+  const latest = new Map<string, string>();
+  const commenters = new Set<string>();
+  for (const r of reviews) {
+    const who = r.user?.login;
+    if (!who || !r.state) continue;
+    if (r.state === 'COMMENTED') commenters.add(who);
+    else if (r.state === 'APPROVED' || r.state === 'CHANGES_REQUESTED' || r.state === 'DISMISSED' || r.state === 'PENDING') latest.set(who, r.state);
+  }
+  const states = [...latest.values()];
+  return {
+    approved: states.filter((s) => s === 'APPROVED').length,
+    changesRequested: states.filter((s) => s === 'CHANGES_REQUESTED').length,
+    pending: states.filter((s) => s === 'PENDING').length,
+    commented: [...commenters].filter((who) => !latest.has(who)).length,
+  };
+}
