@@ -17,6 +17,19 @@ describe('OccupancyPlot', () => {
     expect(html).not.toContain('<svg');
   });
 
+  it('an idle history still states the current capacity and busy count, in every window', () => {
+    for (const w of ['24h', '7d', '30d'] as const) {
+      const html = render([], w, 4, 0);
+      expect(html).toContain('occupancy-empty');
+      expect(html).toContain('occupancy-metrics');
+      expect(html).toMatch(/>4<\/span><span[^>]*>Slots online</);
+      expect(html).toMatch(/>0<\/span><span[^>]*>In use now</);
+      expect(html).toContain('>Peak<');
+      expect(html).toContain('>Average<');
+      expect(html).not.toContain('<svg');
+    }
+  });
+
   it('a peak of one on a ten-slot fleet is scaled to the data: the top gridline is 1, and capacity is not drawn', () => {
     const html = render([run('http://r', NOW - 5 * 24 * H, NOW - 5 * 24 * H + H)]);
     expect(html).toContain('>1</text>');
