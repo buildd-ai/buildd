@@ -903,3 +903,27 @@ describe('HealthClient — budget forecast labels', () => {
     expect(html).not.toContain('Codex budget');
   });
 });
+
+describe('HealthClient — stranded backend headline (spec R-10)', () => {
+  const row = (claim?: any) => ({
+    backend: 'codex', label: 'Codex', strandedPending: 2, enabledForTeam: true,
+    sampleTasks: [{ id: 't1', title: 'Task one', workspaceName: null, claim, route: { requested: 'codex', effective: 'codex' } }],
+  });
+  const unknown = { state: 'unknown', kind: null, reason: null, phrase: null, evaluatedAt: null };
+  const refused = { state: 'blocked', kind: 'credential_unavailable', reason: 'provider_unavailable', phrase: 'no usable credential', evaluatedAt: new Date(NOW).toISOString() };
+
+  it('does not say unclaimable / no runner can claim it when the scheduler decision is unknown', () => {
+    const html = render({ strandedBackends: [row(unknown)] });
+    expect(html).toContain('data-confirmed="false"');
+    expect(html).not.toContain('unclaimable');
+    expect(html).not.toContain('no runner can claim');
+    expect(html).toContain('not confirmed');
+  });
+
+  it('says it when the scheduler recently refused for a credential', () => {
+    const html = render({ strandedBackends: [row(refused)] });
+    expect(html).toContain('data-confirmed="true"');
+    expect(html).toContain('Codex has no credential');
+    expect(html).toContain('2 tasks unclaimable');
+  });
+});
