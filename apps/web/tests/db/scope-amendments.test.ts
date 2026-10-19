@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { q, seedMission, seedTask, seedWorkspace } from './harness';
 
-const { decideTaskScope } = await import('../../src/lib/workflow/scope-amendments');
+const { decideTaskScope, resolveTaskScope } = await import('../../src/lib/workflow/scope-amendments');
 const { postgresStore } = await import('../../src/lib/workflow/postgres-store');
 type Decide = NonNullable<NonNullable<Parameters<typeof decideTaskScope>[1]>['decide']>;
 
@@ -124,5 +124,147 @@ describe('scenario 7: an amendment that would weaken a safety criterion', () => 
     await q(sql`UPDATE tasks SET creation_source = 'orchestrator' WHERE id = ${taskId}::uuid`);
     expect(await decideTaskScope({ taskId, actor: 'test' }, { store, decide: answering('ask') })).toEqual({ decided: false, reason: 'organizer_decomposition' });
     expect(calls).toBe(0);
+  });
+});
+
+async function heldTask(title: string, context: Record<string, unknown> = {}) {
+  const taskId = await addTask(title, context);
+  const r = await decideTaskScope({ taskId, actor: 'test' }, { store, decide: answering('ask') });
+  expect(r).toMatchObject({ status: 'held' });
+  return taskId;
+}
+async function taskState(taskId: string) {
+  return (await q<{ status: string; held: Record<string, unknown> | null }>(
+    sql`SELECT status, context->'heldBy' AS held FROM tasks WHERE id = ${taskId}::uuid`))[0]!;
+}
+async function amendment(taskId: string) {
+  return (await q<{ status: string; resolution: string | null; resolved_by: string | null; scope_version_after: number | null }>(
+    sql`SELECT status, resolution, resolved_by, scope_version_after FROM workflow_scope_amendments WHERE source_task_id = ${taskId}::uuid`))[0]!;
+}
+async function noteStatus(taskId: string) {
+  return (await q<{ status: string }>(sql`SELECT status FROM mission_notes WHERE task_id = ${taskId}::uuid`)).map((n) => n.status);
+}
+
+describe('a task linked to a mission gets the same decision', () => {
+  test('work the organizer planned for another mission, moved here, is decided, not exempt', async () => {
+    const taskId = await addTask('Add Apple Pay');
+    await q(sql`UPDATE tasks SET creation_source = 'orchestrator' WHERE id = ${taskId}::uuid`);
+    expect(await decideTaskScope({ taskId, actor: 'test' }, { store, decide: answering('amend_scope') })).toMatchObject({ reason: 'organizer_decomposition' });
+    const r = await decideTaskScope({ taskId, actor: 'system:task_linked', origin: 'linked' }, { store, decide: answering('amend_scope') });
+    expect(r).toMatchObject({ decided: true, decision: 'amend_scope', status: 'applied', scopeVersion: 2 });
+    expect((await mission()).scope_version).toBe(2);
+  });
+
+  test('a link and a filing at once: the compare-and-set gives each its own version', async () => {
+    const linked = await addTask('Add Apple Pay');
+    const filed = await addTask('Add Google Pay');
+    await Promise.all([
+      decideTaskScope({ taskId: linked, actor: 'system:task_linked', origin: 'linked' }, { store, decide: answering('amend_scope') }),
+      decideTaskScope({ taskId: filed, actor: 'system:task_filed' }, { store, decide: answering('amend_scope') }),
+    ]);
+    const m = await mission();
+    expect(m.scope_version).toBe(3);
+    expect(m.description).toContain('Add Apple Pay');
+    expect(m.description).toContain('Add Google Pay');
+  });
+
+  test('a held link names its mission on the hold', async () => {
+    const taskId = await addTask('Rebuild the cart');
+    await decideTaskScope({ taskId, actor: 'system:task_linked', origin: 'linked' }, { store, decide: answering('ask') });
+    expect((await taskState(taskId)).held).toMatchObject({ reason: 'mission_scope_decision', missionId });
+  });
+});
+
+describe("a person's answer to a held decision", () => {
+  test('it fits: recorded once, the hold released, the question answered, the contract unchanged', async () => {
+    const taskId = await heldTask('Rebuild the cart');
+    expect(await noteStatus(taskId)).toEqual(['open']);
+    const r = await resolveTaskScope({ missionId, taskId, answer: 'in_scope', actor: 'human:u-1' });
+    expect(r).toEqual({ resolved: true, replayed: false, resolution: 'in_scope', scopeVersion: 1, cancelled: false });
+    expect(await taskState(taskId)).toEqual({ status: 'pending', held: null });
+    expect(await amendment(taskId)).toMatchObject({ status: 'resolved', resolution: 'in_scope', resolved_by: 'human:u-1' });
+    expect(await noteStatus(taskId)).toEqual(['answered']);
+    expect(await mission()).toMatchObject({ description: 'Ship the checkout redesign.', scope_version: 1 });
+    // Answered once: a second answer reads the first back and changes nothing.
+    expect(await resolveTaskScope({ missionId, taskId, answer: 'amend_scope', actor: 'human:u-2' })).toMatchObject({ replayed: true, resolution: 'in_scope' });
+    expect((await mission()).scope_version).toBe(1);
+  });
+
+  test('it changes the mission: a weakening amendment the person accepted applies, on the version read now', async () => {
+    await q(sql`INSERT INTO workflow_mission_epochs (mission_id, epoch, branch, state, origin) VALUES (${missionId}::uuid, 1, 'mission/x', 'open', 'adopted')`);
+    const taskId = await addTask('Drop the slow test gate', { missionScope: { goalCriteria: [{ type: 'all_prs_merged' }], reason: 'tests are slow' } });
+    expect(await decideTaskScope({ taskId, actor: 'test' }, { store, decide: answering('amend_scope') })).toMatchObject({ status: 'held' });
+    // Another amendment lands while this one waits.
+    const other = await addTask('Add Apple Pay');
+    await decideTaskScope({ taskId: other, actor: 'test' }, { store, decide: answering('amend_scope') });
+    expect((await mission()).scope_version).toBe(2);
+
+    const r = await resolveTaskScope({ missionId, taskId, answer: 'amend_scope', actor: 'human:u-1' });
+    expect(r).toMatchObject({ resolved: true, resolution: 'amend_scope', scopeVersion: 3 });
+    const m = await mission();
+    expect(m).toMatchObject({ scope_version: 3, goal_criteria: [{ type: 'all_prs_merged' }] });
+    expect(m.description).toContain('Add Apple Pay');
+    expect(await amendment(taskId)).toMatchObject({ status: 'resolved', resolution: 'amend_scope', scope_version_after: 3 });
+    expect((await taskState(taskId)).held).toBeNull();
+    const [open] = await q<{ scope_version: number }>(sql`SELECT scope_version FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid AND state = 'open'`);
+    expect(open!.scope_version).toBe(3);
+  });
+
+  test('two people accept two held amendments at once: both apply, one version each', async () => {
+    const t1 = await heldTask('Add Apple Pay');
+    const t2 = await heldTask('Add Google Pay');
+    await Promise.all([
+      resolveTaskScope({ missionId, taskId: t1, answer: 'amend_scope', actor: 'human:u-1' }),
+      resolveTaskScope({ missionId, taskId: t2, answer: 'amend_scope', actor: 'human:u-2' }),
+    ]);
+    const m = await mission();
+    expect(m.scope_version).toBe(3);
+    expect(m.description).toContain('Add Apple Pay');
+    expect(m.description).toContain('Add Google Pay');
+  });
+
+  test('it belongs elsewhere: the task is cancelled and the question answered', async () => {
+    const taskId = await heldTask('Rewrite the warehouse app');
+    const r = await resolveTaskScope({ missionId, taskId, answer: 'out_of_scope', actor: 'human:u-1' });
+    expect(r).toMatchObject({ resolved: true, resolution: 'out_of_scope', cancelled: true });
+    expect(await taskState(taskId)).toEqual({ status: 'cancelled', held: null });
+    expect(await noteStatus(taskId)).toEqual(['answered']);
+  });
+
+  test("a person's own hold is never released by a scope answer", async () => {
+    const taskId = await heldTask('Rebuild the cart');
+    await q(sql`UPDATE tasks SET context = context || '{"heldBy":{"reason":"waiting on design","userId":null}}'::jsonb WHERE id = ${taskId}::uuid`);
+    await resolveTaskScope({ missionId, taskId, answer: 'in_scope', actor: 'human:u-1' });
+    expect((await taskState(taskId)).held).toMatchObject({ reason: 'waiting on design' });
+    expect((await amendment(taskId)).status).toBe('resolved');
+  });
+
+  test('a task with no held decision, or out of the mission, is refused', async () => {
+    const fits = await addTask('Fix rounding');
+    await decideTaskScope({ taskId: fits, actor: 'test' }, { store, decide: answering('in_scope') });
+    expect(await resolveTaskScope({ missionId, taskId: fits, answer: 'in_scope', actor: 'human:u-1' })).toEqual({ resolved: false, reason: 'no_decision' });
+    const taskId = await heldTask('Rebuild the cart');
+    await q(sql`UPDATE tasks SET mission_id = NULL WHERE id = ${taskId}::uuid`);
+    expect(await resolveTaskScope({ missionId, taskId, answer: 'in_scope', actor: 'human:u-1' })).toEqual({ resolved: false, reason: 'not_in_mission' });
+  });
+});
+
+describe('a held task that left the mission', () => {
+  test("withdrawn: this mission's hold is released; a hold another mission's decision placed is not", async () => {
+    const taskId = await heldTask('Rebuild the cart');
+    const ws = await seedWorkspace();
+    const otherMission = await seedMission(ws.teamId, workspaceId);
+    // Moved to another mission, whose own decision holds it before this one is withdrawn.
+    await q(sql`UPDATE tasks SET mission_id = ${otherMission}::uuid WHERE id = ${taskId}::uuid`);
+    const otherDecision = await decideTaskScope({ taskId, actor: 'system:task_linked', origin: 'linked' }, { store, decide: answering('ask') });
+    expect(otherDecision).toMatchObject({ status: 'held' });
+    const r = await resolveTaskScope({ missionId, taskId, answer: 'withdrawn', actor: 'system:task_left_mission' });
+    expect(r).toMatchObject({ resolved: true, resolution: 'withdrawn' });
+    expect((await taskState(taskId)).held).toMatchObject({ reason: 'mission_scope_decision', missionId: otherMission });
+
+    // Unlinked from the other mission too: its hold goes as well.
+    await q(sql`UPDATE tasks SET mission_id = NULL WHERE id = ${taskId}::uuid`);
+    await resolveTaskScope({ missionId: otherMission, taskId, answer: 'withdrawn', actor: 'system:task_left_mission' });
+    expect((await taskState(taskId)).held).toBeNull();
   });
 });

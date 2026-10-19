@@ -858,6 +858,19 @@ function ownerView(m: ReadonlyMap<string, DeliveryView>, taskId: string): Delive
 }
 
 /**
+ * The delivery whose PR this task's worker points at: its own, or, for a
+ * review-fix or repair attempt that pushed to its delivery's PR, that one.
+ * The PR's state is then the delivery's, never the attempt's worker columns
+ * (task fa37ed4b: a completed fix on an ESCALATED PR read as ready to merge).
+ */
+function prDeliveryView(m: ReadonlyMap<string, DeliveryView>, taskId: string, prNumber: number | null | undefined): DeliveryView | null {
+  const own = ownerView(m, taskId);
+  if (own) return own;
+  const v = m.get(taskId);
+  return v && prNumber != null && v.prNumber === prNumber ? v : null;
+}
+
+/**
  * §17.5: the owner task's unmerged PR, read from its kernel-owned delivery.
  * Merged, superseded and abandoned deliveries are settled; a closed one with no
  * edge is closed-unsuperseded (the remedy is a supersession, not a merge).
@@ -936,8 +949,8 @@ async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   /** Every DeliveryView the chain's tasks belong to, keyed by task id. */
   deliveries: Map<string, DeliveryView>;
-  /** The delivery this task OWNS, when the kernel owns it. */
-  ownDelivery: DeliveryView | null;
+  /** The kernel delivery this task's PR belongs to: the one it owns, or the one its fix attempt pushed to. */
+  prDelivery: DeliveryView | null;
   task: LoadedTask;
   family: LoadedTask[];
   /** The whole fix-attempt chain this task sits in, for `history` only — state is still derived from `family`. */
@@ -1005,17 +1018,17 @@ async function viewForTask(taskId: string): Promise<{
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
-  // One DeliveryView load for the whole chain (§17.5). A task that OWNS a
-  // kernel-owned delivery takes its PR reading from the delivery; the worker
-  // columns below are the legacy path only.
+  // One DeliveryView load for the whole chain (§17.5). A task that owns a
+  // kernel-owned delivery, or an attempt that pushed to its PR, takes its PR
+  // reading from the delivery; the worker columns below are the legacy path only.
   const deliveries = await getDeliveryViewsForTasks(historyTasks.map(t => t.id));
-  const ownDelivery = ownerView(deliveries, taskId);
+  const prDelivery = prDeliveryView(deliveries, taskId, worker?.prNumber);
   // A PR recorded as superseded (task fcaf83d5) shipped anyway, under a
   // different, merged PR — verified against GitHub at write time, so it reads
   // as shipped here without a second check. Never awaiting-merge.
   // An abandoned PR (closed, with a person's reason) is settled, not awaiting.
-  const unmergedPr: NonNullable<StateBecauseExtras['unmergedPrs']> = ownDelivery
-    ? kernelUnmergedPr(task, worker, ownDelivery)
+  const unmergedPr: NonNullable<StateBecauseExtras['unmergedPrs']> = prDelivery
+    ? kernelUnmergedPr(task, worker, prDelivery)
     : task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
       && !(worker.prLifecycleStatus === 'closed' && worker.abandonedAt)
       ? [{
@@ -1048,14 +1061,14 @@ async function viewForTask(taskId: string): Promise<{
 
   // Why the unmerged PR cannot land, from stored landing facts (§13.11 rule 3).
   const openPr = unmergedPr.find(p => !p.closedUnsuperseded) ?? null;
-  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, ownDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
+  const landingBlocked = openPr ? await loadLandingBlocker(task, openPr, prDelivery, worker?.prLifecycleStatus ?? null, historyTasks) : [];
 
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
     status: task.status === 'cancelled'
       || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
-      || (!!ownDelivery && deliverySettled(ownDelivery) && ownDelivery.state !== 'FAILED' && !openAttempt)
+      || (!!prDelivery && deliverySettled(prDelivery) && prDelivery.state !== 'FAILED' && !openAttempt)
       ? 'completed'
       : 'active',
     openAttempt,
@@ -1074,7 +1087,7 @@ async function viewForTask(taskId: string): Promise<{
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
     landingBlocked,
     ciRed: deriveCiRedChains(
-      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (ownDelivery ? { ...p, ciRed: ownDelivery.prState === 'ci_failed' } : p)),
+      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (prDelivery ? { ...p, ciRed: prDelivery.prState === 'ci_failed' } : p)),
       family,
     ),
     completion: unmergedPr.length > 0 && !openAttempt
@@ -1094,7 +1107,7 @@ async function viewForTask(taskId: string): Promise<{
   return {
     view: deriveMissionStateView(input),
     deliveries,
-    ownDelivery,
+    prDelivery,
     task: task as LoadedTask,
     family,
     lineage: historyTasks,
@@ -1302,7 +1315,7 @@ export async function explainPr(worker: {
   const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId, ownDelivery } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries, prDelivery } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -1359,7 +1372,8 @@ export async function explainPr(worker: {
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(taskId);
   const evidenceObjects = await loadInlineEvidence(worker.workspaceId, taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [withDelivery(withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task), ownDelivery ?? null)] };
+  const answer = withBackendRouting(answerFrom(view, subject, buildHistory(lineage, deliveries), because, gateHistory, evidenceObjects), task);
+  return { scope: 'pr', subjects: [withDelivery(answer, prDelivery)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

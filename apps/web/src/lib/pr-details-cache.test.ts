@@ -62,7 +62,7 @@ describe('fetchPrDetails', () => {
         { name: 'lint', conclusion: null, status: 'in_progress', detailsUrl: null },
       ],
     });
-    expect(d.reviews).toEqual({ approved: 1, changesRequested: 1, pending: 0 });
+    expect(d.reviews).toEqual({ approved: 1, changesRequested: 1, pending: 0, commented: 0 });
     expect(d.mergeable).toBe(true);
     expect(d.mergeableState).toBe('clean');
     expect(d.headSha).toBe('abc');
@@ -99,7 +99,7 @@ describe('fetchPrDetails', () => {
       { user: { login: 'a' }, state: 'COMMENTED' },
     ]);
     githubResponses.set('/pulls/7', { head: { sha: 'abc' } });
-    expect((await fetchPrDetails('ws-1', 7, []))!.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0 });
+    expect((await fetchPrDetails('ws-1', 7, []))!.reviews).toEqual({ approved: 1, changesRequested: 0, pending: 0, commented: 0 });
   });
 
   it('is null with no installation or no repo, and throws when GitHub does (the refresh catches it)', async () => {
