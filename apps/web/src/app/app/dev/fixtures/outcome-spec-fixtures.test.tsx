@@ -31,7 +31,7 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
     const judgedId = e.spec.standings[0].criterionId;
     const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={e} readonly />);
     expect(html).toContain('data-testid="outcome-spec-judged"');
-    expect(html).toMatch(new RegExp(`Judged by a reviewer[^<]*<[^>]*>[^<]*${judgedId}`));
+    expect(html).toMatch(new RegExp(`Passed by reviewer:[^<]*<[^>]*>[^<]*${judgedId}`));
     const none = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} readonly />);
     expect(none).not.toContain('outcome-spec-judged');
   });

@@ -103,7 +103,7 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
       )}
       {v.judged.length > 0 && (
         <p className="text-meta text-text-muted leading-snug" data-testid="outcome-spec-judged">
-          Judged by a reviewer, not proved by a test: <span className="font-mono">{v.judged.join(', ')}</span>
+          Passed by reviewer: <span className="font-mono">{v.judged.join(', ')}</span>
         </p>
       )}
       {v.waived.length > 0 && (
