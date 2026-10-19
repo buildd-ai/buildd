@@ -21,6 +21,7 @@ import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { startDecisionReplayStore } from '@/lib/decision-replay-store';
 import { accessNeedsYouRead } from '@/lib/capability-grants-needs-you';
+import { scheduleMoveNeedsYouRead } from '@/lib/schedule-move-needs-you';
 import { homeMissionSummaries } from '@/lib/mission-summary-home';
 import { loadMissionStagesFromSummaries } from '@/lib/mission-stage-read';
 import { MAX_STAGE_MISSION_IDS } from '@/lib/mission-stage';
@@ -303,6 +304,9 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  * statement for Home's batch. A fixed rule; no model call, no write.
  */
 export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
+
+/** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
+export const SCHEDULE_MOVE_NEEDS_YOU = scheduleMoveNeedsYouRead;
 
 /**
  * The missions module's slot for Home (lib/mission-summary-home.ts): live

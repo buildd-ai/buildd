@@ -20,6 +20,7 @@ import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/server
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { noteScheduleRefusal } from '@/lib/schedule-move';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { emit } from '@/lib/core-emit';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
@@ -738,6 +739,8 @@ export async function POST(req: NextRequest) {
     // schedule's or the task's own) grants tasks:create on
     // (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
+      // A schedule-spawned run refused on a workspace of its team counts toward proposing the move (I-29).
+      await noteScheduleRefusal(apiAccount, workspaceId, 'tasks:create');
       return NextResponse.json({
         error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
         code: 'delegation_required',
