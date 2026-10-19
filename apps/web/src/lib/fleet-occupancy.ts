@@ -207,9 +207,9 @@ function level(edges: Edge[], from: number, now: number, bucketMs: number, count
   return { buckets, summary: { avg: now > from ? total / (now - from) : 0, peak: Math.max(0, ...peak) } };
 }
 
-/** The one principal a worker's time is attributed to: mine/others and the member rows both read it. */
-function principalOf(w: OccupancyWorkerRow, executor: 'runner' | 'interactive'): string | null | undefined {
-  return executor === 'runner' && w.taskOwnerId !== undefined ? w.taskOwnerId : w.ownerId;
+/** Whose work it is: the task owner for runner work (when the row carries it), else the claimer. */
+function principalOf(w: OccupancyWorkerRow, executor: 'runner' | 'interactive'): string | null {
+  return (executor === 'runner' && w.taskOwnerId !== undefined ? w.taskOwnerId : w.ownerId) ?? null;
 }
 
 function ownerOf(w: OccupancyWorkerRow, viewerId: string | null | undefined, executor: 'runner' | 'interactive'): OccupancyOwner {
@@ -251,8 +251,8 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   if (end <= start || end <= from) continue;
   const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId, executor)];
   into.push({ t: start, d: 1 }, { t: end, d: -1 });
-  const principal = principalOf(w, executor);
-  if (executor !== 'interactive' && principal) {
+  const principal = executor === 'interactive' ? null : principalOf(w, executor);
+  if (principal) {
       const e = memberEdges.get(principal) ?? [];
       e.push({ t: start, d: 1 }, { t: end, d: -1 });
       memberEdges.set(principal, e);
