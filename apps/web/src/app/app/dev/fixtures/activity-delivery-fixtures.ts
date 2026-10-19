@@ -72,7 +72,42 @@ function portfolio(): ActivityTaskInput[] {
     row('fx-sa', 'chore: bump Playwright to the current minor', null, { status: 'in_progress', updatedAt: at('11:06'), workers: [live('runner-d', '11:02')] }),
     row('fx-sb', 'research: compare CI cache hit rates', null, { status: 'in_progress', updatedAt: at('11:01'), workers: [{ ...live('runner-e', '10:40'), status: 'waiting_input' }], waitingPrompt: 'Compare against last month or last quarter?' }),
     row('fx-sc', 'docs: runner install notes', null, { status: 'completed', updatedAt: at('07:20'), workers: [done({ startedAt: at('07:00'), completedAt: at('07:15'), prUrl: `${PR}90`, prNumber: 90, mergedAt: at('07:20') })] }),
+    ...kernelOwned(),
   ];
+}
+
+/**
+ * A kernel-owned delivery whose latest round is still queued at its head, beside reviewer rows that
+ * all approved and CI fixes whose heads were left: the card reads the kernel, one round number,
+ * older rounds on one line, the fixes replaced (7105282e).
+ */
+function kernelOwned(): ActivityTaskInput[] {
+  const head = 'c0ffee11aa22bb33';
+  const sha = (n: number) => `${n}${'e'.repeat(15)}`;
+  const round = (n: number, verdict: 'approve' | 'request_changes' | null) => ({
+    id: `fx-k-r${n}`, round: n, headSha: verdict ? sha(n) : head, kind: 'full' as const, status: verdict ? 'decided' as const : 'queued' as const,
+    verdict, effectiveVerdict: verdict, failureCount: 0, reviewerTaskId: `fx-k-rv${n}`,
+  });
+  const fix = (n: number) => ({
+    id: `fx-k-a${n}`, family: 'ci' as const, attemptNo: n, mode: 'agent' as const, boundHeadSha: sha(n), triggerReason: 'ci_failed', taskId: `fx-k-f${n}`,
+    status: 'cancelled' as const, outcome: null, maxAttempts: 3, reportedShas: [],
+  });
+  const kernel = {
+    state: 'AWAITING_REVIEW' as const, stateReason: null, prNumber: 52, headSha: head, prState: 'ci_passed' as const,
+    rounds: [round(1, 'request_changes'), round(2, 'approve'), round(3, 'request_changes'), round(4, 'approve'), round(5, null)],
+    ledger: [fix(1), fix(2)], approvedCurrentHead: false, approvalBasis: null,
+  };
+  const owner = row('fx-k', 'perf: a live update re-renders only the region it changes', null, {
+    status: 'completed', updatedAt: at('11:04'), kernel,
+    workers: [done({ completedAt: at('09:40'), updatedAt: at('11:04'), prUrl: `${PR}52`, prNumber: 52, prLifecycleStatus: 'ci_green', lastCommitSha: head })],
+  });
+  const reviewer = (n: number, h: string) => row(`fx-k-rv${n}`, '[reviewer] perf: a live update re-renders only its region', null, {
+    taskClass: 'attempt', parentTaskId: 'fx-k', status: 'completed', createdAt: at(`10:${10 + n}`), updatedAt: at(`10:${11 + n}`), review: { verdict: 'approve', headSha: h }, workers: [done({ startedAt: at(`10:${10 + n}`) })],
+  });
+  const ciFix = (n: number) => row(`fx-k-f${n}`, `[builder · after CI #${n}] perf: a live update re-renders only its region`, null, {
+    taskClass: 'attempt', parentTaskId: 'fx-k', status: 'in_progress', createdAt: at(`10:0${n}`), updatedAt: at(`10:0${n}`), workers: [done({ startedAt: at(`10:0${n}`), lastCommitSha: sha(n + 1) })],
+  });
+  return [owner, reviewer(2, sha(2)), reviewer(4, sha(4)), reviewer(5, head), reviewer(6, head), ciFix(1), ciFix(2)];
 }
 
 const deps: Record<string, string[]> = { 'fx-t35': ['fx-t34'] };

@@ -833,6 +833,78 @@ describe('session-end classification', () => {
     expect(wf?.repairTaskId).toBe('repair-1');
   });
 
+  // Regression: a CI fix task found the fix already shipped and called
+  // complete_task twice; both died on ECONNRESET. The session was classified
+  // genuinely_blocked, the gate recovered it onto a repair task, and the task
+  // sat in waiting_input with an Answer form nobody needed.
+  function completeTaskReset(params: Record<string, unknown>) {
+    return toolCall('mcp__buildd__buildd_work', { action: 'complete_task', params }, 'Error: read ECONNRESET', true);
+  }
+  const SHIPPED = { summary: 'Already fixed on dev by #5215; the failing test passes there.', alreadyShippedIn: 5215 };
+
+  test('complete_task lost to ECONNRESET before the server persisted it: the runner replays it, no park, no gate', async () => {
+    scriptQueue = [[
+      initMsg('sess-1'),
+      ...completeTaskReset(SHIPPED),
+      ...completeTaskReset(SHIPPED),
+      assistantText("I couldn't close the task: `complete_task` failed twice with `ECONNRESET`. What should happen now?"),
+      successResult('sess-1'),
+    ]];
+    mockUpdateWorker.mockImplementation(async (id: string, payload: any) => {
+      updateCalls.push({ id, payload });
+      if (payload?.viaCompleteTask && payload.status === 'completed' && !remoteStatus) {
+        remoteStatus = 'completed';
+        return { status: 'completed' };
+      }
+      return remoteStatus ? { error: 'Worker already completed', abort: true } : {};
+    });
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-reset-before', { outputRequirement: 'pr_required' });
+
+    const replays = updateCalls.filter(c => c.payload?.viaCompleteTask);
+    expect(replays).toHaveLength(1);
+    expect(replays[0].payload).toMatchObject({ status: 'completed', summarySource: 'agent', summary: SHIPPED.summary, alreadyShippedIn: 5215 });
+    expect(mockCheckQuestion.mock.calls.length).toBe(0);
+    expect(createBackendCalls.length).toBe(1);
+    expect(failedCall()).toBeUndefined();
+    expect(updateCalls.some(c => c.payload?.status === 'waiting_input')).toBe(false);
+    const worker = manager.getWorker('w-reset-before');
+    expect(worker?.status).not.toBe('waiting');
+    expect(worker?.waitingFor).toBeUndefined();
+  });
+
+  test('complete_task lost to ECONNRESET after the server persisted it: nothing replayed, no park, no gate', async () => {
+    scriptQueue = [[
+      initMsg('sess-1'),
+      ...completeTaskReset(SHIPPED),
+      assistantText('complete_task failed with ECONNRESET.'),
+      successResult('sess-1'),
+    ]];
+    remoteStatus = 'completed';
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-reset-after', { outputRequirement: 'pr_required' });
+
+    expect(updateCalls.filter(c => c.payload?.viaCompleteTask)).toHaveLength(0);
+    expect(mockCheckQuestion.mock.calls.length).toBe(0);
+    expect(updateCalls.some(c => c.payload?.status === 'waiting_input')).toBe(false);
+    expect(failedCall()).toBeUndefined();
+    expect(manager.getWorker('w-reset-after')?.waitingFor).toBeUndefined();
+  });
+
+  test('a recovered park reads as waiting on the repair, not as needing a person', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('The deploy API returned HTTP 503 again.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => ({
+      verdict: 'decide', outcome: 'recovered', disposition: 'decide', repairTaskId: 'repair-1',
+      reason: 'Not sent to a person: repair task filed.', version: null, latencyMs: 5,
+    }));
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-recovered-action', { outputRequirement: 'pr_required' });
+
+    expect(manager.getWorker('w-recovered-action')?.currentAction).toBe('Waiting on a platform repair');
+  });
+
   test('genuinely_blocked + Jev holds: parks tagged hold, not a push', async () => {
     scriptQueue = [
       [initMsg('sess-1'), assistantText('I am stuck.'), successResult('sess-1')],

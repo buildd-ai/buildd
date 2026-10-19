@@ -18,7 +18,7 @@ import { accounts, initiatives, missionSummaries, missions, workers, workspaces 
 import { and, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import { MISSION_SUMMARY_VERSION, type MissionSummaryList } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
-import type { MissionDeliveryHead } from './delivery-projection';
+import { deliveryAtRead, type MissionDeliveryRow } from './delivery-projection';
 import type { PortfolioDelivery, PortfolioRow } from './mission-portfolio';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { COMPLETED_MISSIONS_PAGE_SIZE, paginateCompletedMissions, type CompletedMissionCursor } from './missions-query';
@@ -51,7 +51,7 @@ interface ListRow {
 }
 
 /** A row's delivery without what the row's own columns carry (id, title, link). */
-type LeanDelivery = Omit<PortfolioDelivery, 'id' | 'title' | 'href'>;
+type LeanDelivery = Omit<PortfolioDelivery, 'id' | 'title' | 'href'> & { quietSince?: number | null };
 
 /**
  * The stored delivery row cut to what the grid renders. An open mission's row
@@ -61,15 +61,15 @@ type LeanDelivery = Omit<PortfolioDelivery, 'id' | 'title' | 'href'>;
 const leanDeliverySql = (d: SQL) => sql`case when ${d} is null then null when (${d}->>'open')::boolean then jsonb_build_object(
     'kind', ${d}->'kind', 'startState', ${d}->'startState', 'open', true, 'landed', ${d}->'landed', 'total', ${d}->'total',
     'next', ${d}->'next', 'evidence', case when ${d}->>'kind' = 'needs' then ${d}->'evidence' else '""'::jsonb end,
-    'remaining', ${d}->'remaining', 'reconciling', ${d}->'reconciling', 'repairRounds', ${d}->'repairRounds')
+    'remaining', ${d}->'remaining', 'reconciling', ${d}->'reconciling', 'repairRounds', ${d}->'repairRounds', 'quietSince', ${d}->'quietSince')
   else jsonb_build_object('kind', ${d}->'kind', 'open', false, 'landed', ${d}->'landed', 'total', ${d}->'total', 'next', '', 'evidence', '', 'startState', null, 'repairRounds', 0) end`;
 
 /** A finished mission's row draws no strip and no next run: only when it last moved. */
 const leanListSql = (summary: SQL) => sql`case when ${summary}->'list' is null then null when (${summary}->'home'->'delivery'->>'open')::boolean then ${summary}->'list'
   else jsonb_build_object('strip', '[]'::jsonb, 'nextRunAt', null, 'lastAdvancedAt', ${summary}->'list'->'lastAdvancedAt') end`;
 
-const leanOf = (d: MissionDeliveryHead): LeanDelivery => d.open
-  ? { kind: d.kind, startState: d.startState, open: true, landed: d.landed, total: d.total, next: d.next, evidence: d.kind === 'needs' ? d.evidence : '', remaining: d.remaining, reconciling: d.reconciling, repairRounds: d.repairRounds }
+const leanOf = (d: MissionDeliveryRow): LeanDelivery => d.open
+  ? { kind: d.kind, startState: d.startState, open: true, landed: d.landed, total: d.total, next: d.next, evidence: d.kind === 'needs' ? d.evidence : '', remaining: d.remaining, reconciling: d.reconciling, repairRounds: d.repairRounds, quietSince: d.quietSince ?? null }
   : { kind: d.kind, open: false, landed: d.landed, total: d.total, next: '', evidence: '', startState: null, repairRounds: 0 };
 
 function listRowsQuery(where: SQL | undefined) {
@@ -150,8 +150,9 @@ export async function loadMissionList(opts: {
   for (const r of all) {
     // Past the live cap with no stored summary: left out of this load, listed once its summary is written.
     if (!r.delivery || !r.list) continue;
+    const { quietSince: _anchor, ...lean } = deliveryAtRead(r.delivery, now);
     rows.push({
-      delivery: { id: r.id, title: r.title, href: `/app/missions/${r.id}`, ...r.delivery },
+      delivery: { id: r.id, title: r.title, href: `/app/missions/${r.id}`, ...lean },
       status: r.status,
       workspaceId: r.workspaceId ?? null,
       workspaceName: r.workspaceName ?? null,

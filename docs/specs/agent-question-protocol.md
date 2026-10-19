@@ -2,12 +2,12 @@
 title: Agent Question Protocol
 status: active
 owner: max
-last_verified: 2026-10-17
+last_verified: 2026-10-19
 summary: An agent question MUST include an actionable brief, pass the question gate and park only when human input is required.
 domain: tasks
 surfaces: [apps/web/src/lib/question-gate-check.ts, packages/core/needs-you.ts, apps/web/src/lib/sessionless-worker-settle.ts]
 related: [human-answer-delivery, worker-reclamation]
-verified_by: [apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
+verified_by: [apps/web/src/lib/recoverable-blocker-reconcile.test.ts, apps/runner/__tests__/unit/completion-replay.test.ts, apps/web/src/lib/sessionless-worker-settle.test.ts, apps/runner/__tests__/unit/worker-remote-404.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, packages/core/__tests__/needs-you.test.ts]
 assertions:
   - id: "question-gate-check"
     type: "route"
@@ -174,6 +174,17 @@ assertions:
      or finish blocked on it. Verdict `decide`, outcome `recovered`, recorded
      `reason: 'recovered:<kind>'`. No model call, so it runs for sensitive
      workspaces too. A filing failure falls through to the stages below.
+     A session that already ended cannot take that answer, so the runner
+     parks it `recovered` instead. That park is a wait on the repair, not a question:
+     the task page shows the repair, not an Answer form, and explain() reports
+     a `self_resolving_wait`, not `awaiting_decision`. When the repair task
+     completes, every worker still parked on it (`waitingFor.repairTaskId`) is
+     closed `superseded_by_recovery` and its task requeued
+     (`apps/web/src/lib/recoverable-blocker-reconcile.ts`, the same
+     close-and-requeue pair a failure incident's recovery uses). The retry is
+     told what the repair found, so work the repair confirmed shipped
+     completes with `alreadyShippedIn`, not a second PR. A park that arrives
+     after its repair already completed is resumed by the park's own PATCH.
   1. **Brief check.** A confident `needs_context` from the decision model
      (default threshold 0.7, unmeasured, `DEFAULT_QUESTION_GATE_MIN_CONFIDENCE`)
      is NOT parked or notified: the pushback text is the AskUserQuestion tool
@@ -323,6 +334,24 @@ assertions:
 - AC-54: GIVEN the runner's reconcile reads a parked worker whose row carries
   `error: 'needs_input: …'` THEN `getWorkerRemote` returns the row, not `null`,
   and the local worker stays parked.
+- AC-55: GIVEN a worker parked `recovered` on repair task R WHEN R
+  completes THEN the worker is failed `superseded_by_recovery` (its question
+  kept as history), its task is requeued with `context.failureContext` naming R
+  and what R reported, and a repeat completion moves nothing; GIVEN the park
+  lands after R completed THEN that PATCH resumes it the same way. While parked,
+  explain() reports `self_resolving_wait` naming R (never `awaiting_decision`
+  or `human_decision`), and the task page shows R with no Answer form.
+- AC-56: GIVEN the agent's `complete_task` returned a transport error
+  (ECONNRESET, a 5xx) WHEN its session ends THEN the runner does not classify
+  it as a session that delivered nothing: it reads the worker back and, if the
+  server already holds it `completed` (the call landed before the reset),
+  sends nothing; otherwise it replays the same completion (`viaCompleteTask`,
+  `summarySource: 'agent'`, `alreadyShippedIn` kept) at most three times,
+  confirming each by read-back (`apps/runner/src/completion-replay.ts`). A
+  landed completion takes the ordinary completed path: no question gate, no
+  `waiting_input`, no repair task. A 4xx is the server's decision and is not
+  retried; an unreachable server falls through to the existing session-end
+  handling. A `complete_task` carrying `error` is never replayed.
 - AC-45: GIVEN an agent or outside caller posts a `question` note
   (`post_note`) WHEN the notes route stores it
   (`apps/web/src/lib/note-question-disposition.ts`) THEN it carries
@@ -355,7 +384,12 @@ assertions:
   `exitCause: 'needs_input'`)
 - `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — terminal
   outcome wins over a retained question)
-- `apps/web/src/lib/open-ask.ts` (`isOpenAsk`, `isOpenQuestionNote`)
+- `apps/web/src/lib/open-ask.ts` (`isOpenAsk`, `isOpenQuestionNote`,
+  `recoveredRepairTaskId`)
+- `apps/web/src/lib/recoverable-blocker-reconcile.ts` (AC-55, called from the
+  worker PATCH on a repair task's completion and on a late park)
+- `apps/runner/src/completion-replay.ts` (AC-56, called from
+  `apps/runner/src/workers.ts` before the session-end branches)
 - `apps/web/src/app/api/tasks/waiting-input/route.ts`
 - `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx`
   (`worker-needs-input-banner`), fixtures at

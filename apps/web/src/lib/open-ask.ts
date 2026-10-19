@@ -20,6 +20,18 @@ export interface MissionOpenQuestion {
   title: string | null;
   /** The question as asked, or null when the worker parked without one. */
   prompt: string | null;
+  /**
+   * Set when the park is `recovered`: the question gate filed this repair
+   * task instead of asking, and the task resumes when it completes. Not a
+   * question for a person (`admitsToNeedsYou` never admits it).
+   */
+  repairTaskId: string | null;
+}
+
+/** The repair a parked question waits on, when its disposition is `recovered`. */
+export function recoveredRepairTaskId(waitingFor: unknown): string | null {
+  const wf = waitingFor as { disposition?: unknown; repairTaskId?: unknown } | null | undefined;
+  return wf?.disposition === 'recovered' && typeof wf.repairTaskId === 'string' && wf.repairTaskId ? wf.repairTaskId : null;
 }
 
 /**
@@ -42,7 +54,7 @@ export function missionOpenQuestions(
     if (!w) continue;
     const wf = w.waitingFor as { prompt?: unknown } | null | undefined;
     const prompt = typeof wf?.prompt === 'string' && wf.prompt.trim() ? wf.prompt.trim() : null;
-    out.push({ taskId: t.id, title: t.title ?? null, prompt });
+    out.push({ taskId: t.id, title: t.title ?? null, prompt, repairTaskId: recoveredRepairTaskId(w.waitingFor) });
   }
   return out;
 }

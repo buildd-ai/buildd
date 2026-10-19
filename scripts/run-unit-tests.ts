@@ -30,6 +30,9 @@ const UNIT_TEST_ROOTS = [
   'packages/shared/',
   'packages/workflow-kernel/',
   'scripts/',
+  'apps/web/tests/integration/verdict-acceptance.test.ts', // pure fold; the rest of that dir needs a live server
+  'apps/web/tests/integration/verdict-integration.test.ts', // pure integrated verdict contract
+  'apps/web/tests/integration/verdict-baseline.test.ts', // pure fold; same reason
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {

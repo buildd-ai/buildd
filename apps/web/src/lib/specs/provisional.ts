@@ -1,4 +1,6 @@
 import { db } from '@buildd/core/db';
+import { determiningVerdict, verdictSourceOfEvidence } from '@buildd/spec-contract/outcome';
+import { settleVerdictSource } from './verdict-source';
 import { missionNotes, specOutcomeVerdicts, specRevisions, specs, tasks, workers } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
@@ -177,18 +179,23 @@ async function regradeOne(task: { id: string; missionId: string | null; context:
     const rows = await db.select().from(specOutcomeVerdicts)
       .where(and(eq(specOutcomeVerdicts.taskId, task.id), eq(specOutcomeVerdicts.specRevisionId, src.specRevisionId)))
       .orderBy(asc(specOutcomeVerdicts.createdAt));
+    // The verdict that decides each criterion (a test result outranks a review), not merely the newest.
     const newest = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) newest.set(r.criterionId, r);
+    for (const id of new Set(rows.map((r) => r.criterionId))) {
+      const d = determiningVerdict(rows.filter((r) => r.criterionId === id).map((r) => ({ ...r, at: r.createdAt, source: verdictSourceOfEvidence(r.evidence) })));
+      if (d) newest.set(id, d);
+    }
     for (const id of inM) {
       const v = newest.get(id);
       if (!v) continue;
       const evidence = asRecord(v.evidence) ?? {};
       const byCheck = typeof evidence.recordedBy === 'string' && evidence.recordedBy.startsWith('check:');
       if (textsN.get(id) !== m.textsM.get(id) || (byCheck && m.checkedM.has(id))) { notCarried.push(id); continue; }
-      await db.insert(specOutcomeVerdicts).values({
+      const [carriedRow] = await db.insert(specOutcomeVerdicts).values({
         workspaceId: v.workspaceId, taskId: task.id, specRevisionId: m.revM.id, criterionId: id, criterionTextHash: m.hashesM.get(id) ?? null, verdict: v.verdict, headSha: v.headSha,
         evidence: { ...evidence, carriedFrom: { verdictId: v.id, specRevisionId: src.specRevisionId, revision: from } },
-      });
+      }).returning({ id: specOutcomeVerdicts.id });
+      await settleVerdictSource(carriedRow.id);
       carried.push(id);
     }
   }
