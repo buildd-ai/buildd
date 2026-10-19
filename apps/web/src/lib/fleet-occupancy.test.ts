@@ -361,6 +361,22 @@ describe('per-member runner usage', () => {
   });
 });
 
+describe('By member uses the same principal as Mine', () => {
+  const managed = (over: Partial<OccupancyWorkerRow>) => row({ ownerId: 'key-creator', taskOwnerId: 'task-owner', startedAt: NOW - 3 * H, completedAt: NOW - H, ...over });
+  for (const win of ['24h', '7d', '30d'] as const) {
+    it(`credits the task owner, not the claimer (${win})`, () => {
+      const s = buildOccupancySeries({ window: win, now: NOW, viewerId: 'task-owner', workers: [managed({})] });
+      expect(s.summary.runnerBy.mine.peak).toBe(1);
+      expect(s.members!.map(m => [m.id, m.isMe])).toEqual([['task-owner', true]]);
+    });
+    it(`leaves service-owned work unattributed in both views (${win})`, () => {
+      const s = buildOccupancySeries({ window: win, now: NOW, viewerId: 'key-creator', workers: [managed({ taskOwnerId: null })] });
+      expect(s.summary.runnerBy.unattributed.peak).toBe(1);
+      expect(s.members).toEqual([]);
+    });
+  }
+});
+
 describe('scopeMembers', () => {
   const NOW = Date.UTC(2026, 9, 18, 12);
   const w = (ownerId: string) => ({ runner: 'runner-a', ownerId, taskOwnerId: ownerId, startedAt: NOW - 3_600_000, completedAt: NOW - 1_800_000, status: 'completed' });

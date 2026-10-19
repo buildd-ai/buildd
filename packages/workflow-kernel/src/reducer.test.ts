@@ -696,6 +696,40 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(unsafe.toState).toBe('AWAITING_PUSH');
     expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
   });
+  test('AC-79: a merge of the base while the fix runs is a foreign push, never credited, and addresses nothing', () => {
+    const findings = [{ id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 't', required: true, status: 'open' as const, lastRound: 1 }];
+    const v = { ...fixing(), findings } as never;
+    for (const baseOnly of ['own_refresh', 'compare'] as const) {
+      const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true }, baseOnly, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('FIXING');
+      expect(dec.patch.currentHeadSha).toBe('H2');
+      expect(dec.attempts).toEqual([]);
+      expect(dec.evidence).toMatchObject({ foreignPush: true, baseOnly });
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // Without the fact the same push is the fix's (§6.9 ancestry), as before.
+    const own = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(own.attempts[0]).toMatchObject({ attemptId: 'a1', set: { appendReportedSha: 'H2' } });
+    // A head the fix itself reported stays its own, whatever the compare says.
+    const reported = applied(run({ ...fixing({ reportedShas: ['H2'] }), findings } as never, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), baseOnly: 'compare' }));
+    expect(reported.evidence.foreignPush).toBeUndefined();
+  });
+  test('AC-79: a fix that ends on a head moved only by a base merge does not complete; a delta round scoped to the refresh is queued', () => {
+    const merged = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running' })]);
+    for (const outcome of ['success', 'failed'] as const) {
+      const dec = applied(end(merged, { attemptId: 'a1', outcome, localHeadSha: null, commitCount: 0, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.evidence.proof).toBeUndefined();
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'noop' } });
+      expect(dec.attempts[0]).not.toMatchObject({ set: { pushedHeadSha: 'H2' } });
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } } }));
+      expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // A head that did not move is not this rule: the no-change end stands.
+    expect(applied(end(fixing(), { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1'), baseOnly: true })).toState).toBe('AWAITING_PUSH');
+  });
   const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {

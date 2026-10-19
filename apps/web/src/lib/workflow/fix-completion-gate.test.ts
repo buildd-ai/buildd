@@ -75,13 +75,18 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
   const gate = (o: {
     head: string; changed?: string[] | null; findings?: unknown[]; noop?: { findingIds: string[]; evidence: string } | null;
     elsewhere?: { findingIds: string[]; files: string[]; reason: string } | null; context?: Record<string, unknown>;
+    /** AC-79: the (from, to) pairs whose PR diff against the base is the same. */
+    equivalent?: Array<[string, string]>;
   }) =>
     fixCompletionGate(
       { task: { id: 't9', workspaceId: 'w1', deliveryId: 'd1', deliveryRole: 'fix', context: { workflowAttemptId: 'a1', ...(o.context ?? {}) } }, localHeadSha: o.head, noopEvidence: o.noop ?? null, fixedElsewhere: o.elsewhere ?? null },
       {
         exec: execWith(o.findings ?? [finding()]),
         repoFor: async () => ({ installationId: 1, repoFullName: 'acme/widgets', gitConfig: null }),
-        reader: () => ({ readPr: async () => ({ state: 'open', merged: false, headSha: o.head }), changedPaths: async () => o.changed ?? null }) as never,
+        reader: () => ({
+          readPr: async () => ({ state: 'open', merged: false, headSha: o.head, baseRef: 'dev' }), changedPaths: async () => o.changed ?? null,
+          contentEquivalent: async (_repo: string, _base: string, from: string, to: string) => (o.equivalent ?? []).some(([f, t]) => f === from && t === to),
+        }) as never,
       },
     );
 
@@ -109,6 +114,16 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
     expect(await gate({ head: 'H2', changed: ['lib/z.ts'], elsewhere: { findingIds: ['r1:0'], files: ['lib/z.ts'], reason: 'the flag is read there' } })).toBeNull();
     expect((await gate({ head: 'H2', changed: ['lib/z.ts'], elsewhere: { findingIds: ['someone-else:0'], files: ['lib/z.ts'], reason: 'x' } }))?.code).toBe('repair_unrelated_diff');
     expect((await gate({ head: 'H2', changed: ['lib/z.ts'], noop: { findingIds: ['r1:0'], evidence: 'absent' } }))?.code).toBe('repair_unrelated_diff');
+  });
+  test('AC-79: a head moved only by a merge of the base is refused, even when the base touched the finding\'s file', async () => {
+    const r = await gate({ head: 'H2', changed: ['src/a.ts'], equivalent: [['H1', 'H2']] });
+    expect(r).toMatchObject({ code: 'repair_base_only', boundHeadSha: 'H1', liveHeadSha: 'H2' });
+    expect(r?.hint).toContain('push your own commits');
+    // A fixed-elsewhere claim does not excuse it: nothing on the head is the fix's.
+    expect((await gate({ head: 'H2', changed: ['lib/z.ts'], equivalent: [['H1', 'H2']], elsewhere: { findingIds: ['r1:0'], files: ['lib/z.ts'], reason: 'x' } }))?.code).toBe('repair_base_only');
+    // A person's applied fix is theirs to judge; a diff that changed (the fix pushed too) completes.
+    expect(await gate({ head: 'H2', changed: ['src/a.ts'], equivalent: [['H1', 'H2']], context: { trigger: 'human' } })).toBeNull();
+    expect(await gate({ head: 'H3', changed: ['src/a.ts'], equivalent: [['H2', 'H3']] })).toBeNull();
   });
   test('an unread diff is not evidence either way: it completes, and the re-review decides', async () => {
     expect(await gate({ head: 'H2', changed: null })).toBeNull();
