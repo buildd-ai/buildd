@@ -43,6 +43,9 @@ export interface OutcomeSpecView {
   coverage: string | null;
   /** e.g. "9 of 12 pass". The short form, for a row's right edge. */
   short: string;
+  /** Passing criteria on the integrated head, grouped by deciding signal. */
+  tested: string[];
+  judged: string[];
   passed: number;
   total: number;
   open: { standing: OpenStanding; label: string; criterionIds: string[] }[];
@@ -105,6 +108,8 @@ export function outcomeSpecView(
     revisionLine: `Revision ${c.revision}${c.provisional ? ', proposed' : ''}`,
     coverage,
     short: total === 0 ? 'not checked' : `${passed} of ${total} pass`,
+    tested: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source === 'test').map(s => s.criterionId),
+    judged: standings.filter(s => s.standing === 'pass' && !waivedIds.has(s.criterionId) && s.source !== 'test').map(s => s.criterionId),
     passed,
     total,
     open,
