@@ -1,5 +1,10 @@
-import type { ReactNode } from 'react';
+'use client';
+
+import { useState, type ReactNode } from 'react';
 import Chip from '@/components/ui/Chip';
+import Spinner from '@/components/Spinner';
+import { CriterionHistoryEntries } from '@/components/SpecCriterionHistory';
+import type { CriterionHistory } from '@/lib/specs/criteria';
 import { criterionWords, type CriterionMark } from '@/lib/specs/delivery-words';
 import { requirementIds, tableRowId } from '@buildd/spec-contract/requirements';
 
@@ -136,28 +141,71 @@ export function specCriterionMarkdown(this: Processor) {
   };
 }
 
-/** One anchored L1 criterion row, shared by plain and table definitions. */
-export default function SpecCriteriaBody({ id, children, criterionVerdicts, historyBase }: {
+const UNREAD = 'Could not read its history. Try again.';
+type Read = { state: 'reading' } | { state: 'read'; history: CriterionHistory } | { state: 'error'; text: string };
+
+/**
+ * One anchored L1 criterion row, shared by plain and table definitions. With
+ * a spec, its id and History open the criterion's history in place, under its
+ * words ("Reviewing a spec revision" R-12): read on the first press, kept for
+ * the next. The row keeps its id, so `#AC-1` still lands on it.
+ */
+export default function SpecCriteriaBody({ id, children, criterionVerdicts, specId }: {
   id: string;
   children: ReactNode;
   criterionVerdicts: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
-  /** The spec page's address, for the criterion's History link ("Reviewing a spec revision" R-12). */
-  historyBase?: string;
+  /** The spec this criterion is in, to read its history. */
+  specId?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [read, setRead] = useState<Read | null>(null);
+  const panel = `${id}-history`;
+  const toggle = () => {
+    setOpen(!open);
+    if (open || !specId || (read && read.state !== 'error')) return;
+    setRead({ state: 'reading' });
+    fetch(`/api/specs/${encodeURIComponent(specId)}/criteria/${encodeURIComponent(id)}`)
+      .then(async (res) => {
+        const b = (await res.json().catch(() => ({}))) as { history?: CriterionHistory; error?: string };
+        setRead(res.ok && b.history ? { state: 'read', history: b.history } : { state: 'error', text: b.error ?? UNREAD });
+      })
+      .catch(() => setRead({ state: 'error', text: UNREAD }));
+  };
   return (
     <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
       <div className="flex max-w-32 shrink-0 flex-col items-start gap-1">
-        <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
-          <Chip tone="muted" dot={false}>{id}</Chip>
-        </a>
+        {specId ? (
+          <button type="button" onClick={toggle} aria-expanded={open} aria-controls={panel} aria-label={`History of ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0" data-testid="spec-criterion-id">
+            <Chip tone="muted" dot={false}>{id}</Chip>
+          </button>
+        ) : (
+          <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
+            <Chip tone="muted" dot={false}>{id}</Chip>
+          </a>
+        )}
         {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
           <a key={`${v.href}:${v.mark}`} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
         ))}
-        {historyBase ? (
-          <a href={`${historyBase}?history=${id}#criterion-history`} data-testid="spec-criterion-history-link" className="inline-flex min-h-11 items-center text-meta text-text-muted underline hover:text-text-primary md:min-h-0">History</a>
+        {specId ? (
+          <button type="button" onClick={toggle} aria-expanded={open} aria-controls={panel} data-testid="spec-criterion-history-link" className="inline-flex min-h-11 items-center text-meta text-text-muted underline hover:text-text-primary md:min-h-0">
+            {open ? 'Hide history' : 'History'}
+          </button>
         ) : null}
       </div>
-      <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
+      <div className="min-w-0 flex-1 text-body text-text-primary [overflow-wrap:anywhere]">
+        {children}
+        {open ? (
+          <div id={panel} className="mt-2 border-l-2 border-[var(--line-soft)] pl-3" data-testid="spec-criterion-inline-history" aria-busy={read?.state === 'reading'}>
+            {read?.state === 'read' ? (
+              <CriterionHistoryEntries specId={specId!} criterionId={id} history={read.history} />
+            ) : read?.state === 'error' ? (
+              <p className="text-meta text-status-warning">{read.text}</p>
+            ) : (
+              <p className="flex items-center gap-2 text-meta text-text-muted"><Spinner size="sm" aria-label="Reading its history" /> Reading its history…</p>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

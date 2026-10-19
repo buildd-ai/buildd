@@ -43,7 +43,8 @@ export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'> & { canA
   const other = v.waiting && v.waiting !== n ? v.waiting : null;
   const waits = other ? `Revision ${other} waits for ${v.canApprove ? 'your ' : ''}approval.` : '';
   if (v.reading.approved) return waits || null;
-  if (approved == null) return `Nothing is approved yet.${waits ? ` ${waits}` : ''}`;
+  // "draft, never approved" is right above; saying it again adds nothing.
+  if (approved == null) return waits || null;
   return `You're reading revision ${n}. Revision ${approved} is approved.${waits ? ` ${waits}` : ''}`;
 }
 
@@ -257,8 +258,9 @@ const REVIEW_UNREAD = 'The changes could not be read. Reload to try again.';
  *
  * A change to an approved revision leads with the change summary and the
  * per-criterion change list; the line diff is behind "Show line diff", never
- * the default. A first revision has nothing to compare with, so it shows the
- * spec itself, rendered: a diff against nothing is every line added.
+ * the default. With nothing approved, approving puts the whole spec in force,
+ * so it shows the spec itself, rendered (a diff against nothing is every line
+ * added), led by what this revision changed from the one before, if any.
  */
 function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec']; waiting: number; initial: SpecPanes | null; repoChecks: boolean }) {
   const [panes, setPanes] = useState<ReviewPanes | null>(initial);
@@ -286,7 +288,7 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
   return (
     <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading" aria-busy={!panes && !error}>
       <h2 id="spec-review-heading" ref={heading} tabIndex={-1} className="text-title font-semibold text-text-primary focus:outline-none">
-        {replaces ? `Revision ${revision} replaces revision ${replaces}` : `Revision ${revision} (nothing approved yet)`}
+        {replaces ? `Revision ${revision} replaces revision ${replaces}` : `Review revision ${revision}`}
       </h2>
       {error ? (
         <Notice tone="warn" data-testid="spec-page-review-error">{error}</Notice>
@@ -305,11 +307,17 @@ function ReviewPanel({ spec, waiting, initial, repoChecks }: { spec: Ok['spec'];
             </>
           ) : (
             <>
-              {summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
-              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">The whole spec, as approving would put it in force.</p>
+              <p className="text-body text-text-secondary" data-testid="spec-page-review-first">First approval. Approving puts the whole spec in force.</p>
+              {panes.since ? (
+                <section className="flex flex-col gap-2" aria-labelledby="spec-review-since-heading" data-testid="spec-page-review-since">
+                  <h3 id="spec-review-since-heading" className="text-body font-semibold text-text-primary">Changed since revision {panes.since.revision}</h3>
+                  <SpecReviewChanges {...panes.since.changes} />
+                </section>
+              ) : summary ? <p className="whitespace-pre-line text-lede text-text-primary [overflow-wrap:anywhere]" data-testid="spec-review-summary">{summary}</p> : null}
               {repoChecks ? <SpecRepoChecksFetch specId={spec.id} /> : null}
+              {panes.since ? <h3 className="text-body font-semibold text-text-primary">The whole spec</h3> : null}
               <Card as="article" className="md:p-8" data-testid="spec-page-review-body" aria-label={`Revision ${panes.revision} of the spec`}>
-                <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} />
+                <MarkdownContent content={withoutRepeatedTitle(panes.body, spec.title)} images="link" surface="spec" attachments={panes.attachmentSources ?? {}} criterionSpecId={spec.id} />
               </Card>
             </>
           )}
@@ -356,7 +364,7 @@ export default function SpecPage({ view }: { view: Ok }) {
   // Related renders only when something sits under it: no empty heading.
   const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
   const importing = view.importConfirmation ?? null;
-  // An unconfirmed import has its own panel; "Nothing is approved yet" would only repeat it.
+  // An unconfirmed import has its own panel; the reading line would only repeat it.
   const line = importing ? null : readingLine(view);
   // Review is the address (?review=1), but pressing it is not a navigation: the
   // URL changes in place (no server render, R-7) and the panel fetches itself.
@@ -393,7 +401,7 @@ export default function SpecPage({ view }: { view: Ok }) {
         ) : null}
         <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
           <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
-            criterionVerdicts={criterionMarks(view)} criterionHistoryBase={base} />
+            criterionVerdicts={criterionMarks(view)} criterionSpecId={spec.id} />
         </Card>
       </>
     )
