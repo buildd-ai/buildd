@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, questionSessionEnded, activeRunnerHold, executorDisplayName, isRecordedModelRoute, type RecordedModelRoute, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -18,6 +18,7 @@ import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { runEndReason } from './fleet-view-end-reason';
+import { accountablePrincipal } from './fleet-occupancy';
 
 type DateLike = Date | string | null | undefined;
 
@@ -46,11 +47,7 @@ export interface FleetWorkerRow {
   accountId?: string | null;
   /** The user who claimed the run (`workers.claimedByUserId`); null when unknown. */
   ownerId?: string | null;
-  /**
-   * `tasks.createdByUserId`: the task's owner. For runner work it decides
-   * `mine` (a task on a managed runner is its owner's, not whichever key
-   * claimed it); null is service-owned. Absent: the claimer decides.
-   */
+  /** `tasks.createdByUserId`: decides `mine` on runner work (null: service-owned). Absent: the claimer decides. */
   taskOwnerId?: string | null;
   runner: string;
   localUiUrl?: string | null;
@@ -64,6 +61,8 @@ export interface FleetWorkerRow {
   error?: string | null;
   /** This run's own PR merged. */
   mergedAt?: DateLike;
+  /** The model route the claim recorded for this run (`workers.modelRoute`). */
+  modelRoute?: string | null;
   /** A merged PR of the same task, from this run or a later one. */
   taskMergedPr?: number | null;
   /** Latest phase supported by lifecycle evidence. */
@@ -213,7 +212,7 @@ export function buildFleetSnapshot(
   /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
   const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }, isSession = false) => {
     const t = w.task ?? null;
-    const principal = !isSession && w.taskOwnerId !== undefined ? w.taskOwnerId : w.ownerId;
+    const principal = accountablePrincipal(isSession ? 'interactive' : 'runner', w.ownerId, w.taskOwnerId);
     const mine = opts.viewerId ? (principal ? principal === opts.viewerId : null) : undefined;
     const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
     // The task's own short label ("reconcile exports spec") names the run;
@@ -307,7 +306,10 @@ export function buildFleetSnapshot(
     }
     // A person's hold (`buildd hold`): shown as on hold, not idle, while in force.
     const hold = g.hb ? activeRunnerHold(g.hb.environment, now) : null;
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(hold ? { hold } : {}) });
+    const routeCounts = new Map<RecordedModelRoute, number>();
+    for (const w of g.workers) if (isRecordedModelRoute(w.modelRoute)) routeCounts.set(w.modelRoute, (routeCounts.get(w.modelRoute) ?? 0) + 1);
+    const routes = [...routeCounts].map(([route, count]) => ({ route, count })).sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: advertised, online, slots, ...(routes.length ? { routes } : {}), ...(hold ? { hold } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));

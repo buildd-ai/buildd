@@ -207,13 +207,20 @@ function level(edges: Edge[], from: number, now: number, bucketMs: number, count
   return { buckets, summary: { avg: now > from ? total / (now - from) : 0, peak: Math.max(0, ...peak) } };
 }
 
-/** The accountable principal: a runner task's owner (claimer only when the caller omits it), a session's claimer. */
-function principalOf(w: OccupancyWorkerRow, executor: 'runner' | 'interactive'): string | null {
-  return (executor === 'runner' && w.taskOwnerId !== undefined ? w.taskOwnerId : w.ownerId) || null;
+/**
+ * The one authenticated person a run's usage is charged to, or null (unattributed).
+ * Runner work belongs to its task's owner when the caller supplies it (null
+ * there is service-owned: a claimer does not make it a person's); interactive
+ * sessions, and callers that cannot see the task, use the claimer. Mine, Others,
+ * member rows and the live board all resolve through here.
+ */
+export function accountablePrincipal(executor: 'runner' | 'interactive', claimerId: string | null | undefined, taskOwnerId?: string | null): string | null {
+  const owner = executor === 'runner' && taskOwnerId !== undefined ? taskOwnerId : claimerId;
+  return owner || null;
 }
 
 function ownerOf(w: OccupancyWorkerRow, viewerId: string | null | undefined, executor: 'runner' | 'interactive'): OccupancyOwner {
-  const owner = principalOf(w, executor);
+  const owner = accountablePrincipal(executor, w.ownerId, w.taskOwnerId);
   if (!owner) return 'unattributed';
   return viewerId && owner === viewerId ? 'mine' : 'others';
 }
@@ -251,7 +258,7 @@ export function buildOccupancySeries(input: { window: OccupancyWindow; now: numb
   if (end <= start || end <= from) continue;
   const into = (executor === 'interactive' ? sessionEdges : runnerEdges)[ownerOf(w, input.viewerId, executor)];
   into.push({ t: start, d: 1 }, { t: end, d: -1 });
-  const principal = executor === 'runner' ? principalOf(w, executor) : null;
+  const principal = executor === 'interactive' ? null : accountablePrincipal(executor, w.ownerId, w.taskOwnerId);
   if (principal) {
       const e = memberEdges.get(principal) ?? [];
       e.push({ t: start, d: 1 }, { t: end, d: -1 });
