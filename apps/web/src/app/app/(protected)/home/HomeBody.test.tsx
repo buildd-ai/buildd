@@ -218,7 +218,7 @@ describe('one decisions list at every width', () => {
 describe('Home page composes one list', () => {
   it('page.tsx renders HomeBody once and none of the old desktop decision or diagnostic surfaces', async () => {
     const page = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
-    expect(page.match(/<HomeBody\b/g)).toHaveLength(1);
+    expect(page.match(/<HomeLive\b/g)).toHaveLength(1);
     for (const gone of ['<NeedsYouStack', '<ActionQueueCard', '<ActivityTicker', '<ReleaseWidget', 'waiting-in-flight', 'homeHeadlineSentence(', '<MobileHome']) {
       expect(page).not.toContain(gone);
     }

@@ -448,11 +448,12 @@ describe('derivePrReviewStatus with a delivery', () => {
     expect(derive(delivery({ rounds: [round({ status: 'failed', verdict: null })] })).state).toBe('review_failed');
   });
 
-  it('reads a decided approve, with the round, max rounds and head from the delivery', () => {
+  it('reads a decided approve, with the fix budget used, max and head from the delivery', () => {
     const s = derive(delivery({ rounds: [round({ round: 2 })] }));
     expect(s.state).toBe('approved');
     expect(s.verdict).toBe('approve');
-    expect(s.iteration).toBe(2);
+    // Rounds count pushes (CI fixes, base merges); the budget counts review fixes.
+    expect(s.iteration).toBe(1);
     expect(s.maxIterations).toBe(3);
     expect(s.reviewHeadSha).toBe('sha1');
   });

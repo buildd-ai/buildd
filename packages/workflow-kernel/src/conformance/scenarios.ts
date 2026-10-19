@@ -688,6 +688,47 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.github.merges, [], 'no merge call');
     },
   },
+  {
+    name: 'AC-31: a finding arrives before merge_call runs: a rail\'s finding, a person\'s forced review or a request for changes stops the queued merge, and nothing merges',
+    async run(host) {
+      const skippedOnly = async (s: Delivery, label: string) => {
+        const outs = await outcomesOf(host, s, 'merge_call');
+        ok(outs.length > 0 && outs.every((o) => String(o).startsWith('skipped:')), `${label}: merge_call skipped (${outs})`);
+      };
+      // A rail's pre-merge finding on the landing head.
+      const a = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await a.land('H1'), 'LANDING', 'a: merge queued');
+      applied(await a.submit({ type: 'PolicyEvidenceRecorded', actor: 'rail:migration', evidence: { headSha: 'H1', outcome: 'human', reason: 'drops a column', destructive: true } }), 'ESCALATED', 'a: the finding stops the landing');
+      const fa = fakePorts(host);
+      fa.github.setPr(a.repo, a.prNumber, a.live('H1'));
+      await drainKernel(host, a, fa.ports);
+      eq(fa.github.merges, [], 'a: no merge call');
+      await skippedOnly(a, 'a');
+      eq((await a.d()).stateReason, 'policy_human', 'a: a person decides');
+
+      // A person forces a second look, and that review asks for changes.
+      const b = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await b.land('H1'), 'LANDING', 'b: merge queued');
+      applied(await b.submit({ type: 'ReviewRequested', actor: 'human:owner', headSha: 'H1', live: b.live('H1'), forced: true }), 'AWAITING_REVIEW', 'b: the forced review stops the landing');
+      applied(await b.verdict('request_changes'), 'CHANGES_REQUESTED', 'b: changes requested');
+      const fb = fakePorts(host);
+      fb.github.setPr(b.repo, b.prNumber, b.live('H1'));
+      await drainKernel(host, b, fb.ports);
+      eq(fb.github.merges, [], 'b: no merge call');
+      await skippedOnly(b, 'b');
+
+      // A person's override landed while a round was in flight; its verdict asks for changes first.
+      const c = await new Delivery(host).open();
+      applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'c: under review');
+      applied(await c.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H1', live: c.live('H1'), override: { reason: 'owner call' } }), 'LANDING', 'c: merge queued past the review');
+      applied(await c.verdict('request_changes'), 'CHANGES_REQUESTED', 'c: the verdict stops the landing');
+      const fc = fakePorts(host);
+      fc.github.setPr(c.repo, c.prNumber, c.live('H1'));
+      await drainKernel(host, c, fc.ports);
+      eq(fc.github.merges, [], 'c: no merge call');
+      await skippedOnly(c, 'c');
+    },
+  },
   // ── S3b: one landing authority (workflow-kernel-library.md §4) ─────────────
   {
     name: 'AC-14: approved at A, B pushed before the merge effect runs: the effect re-reads, records B and does not merge',

@@ -148,6 +148,8 @@ function readDelivery(d: DeliveryReviewInput): {
   state: PrReviewState;
   verdict: PrReviewVerdict | null;
   round: number | null;
+  /** Review-fix attempts used so far: the budget's own counter, which a new head's review never moves. */
+  fixesUsed: number | null;
   maxRounds: number | null;
   headSha: string | null;
   reviewerTaskId: string | null;
@@ -155,7 +157,7 @@ function readDelivery(d: DeliveryReviewInput): {
   const live = d.rounds.filter((r) => r.status !== 'superseded');
   const round = live[live.length - 1] ?? null;
   const maxRounds = d.attempts.review_fix?.m ?? null;
-  const base = { round: round?.round ?? null, maxRounds, headSha: round?.headSha ?? d.headSha, reviewerTaskId: round?.reviewerTaskId ?? null };
+  const base = { round: round?.round ?? null, fixesUsed: d.attempts.review_fix?.n ?? null, maxRounds, headSha: round?.headSha ?? d.headSha, reviewerTaskId: round?.reviewerTaskId ?? null };
   const decided = round?.status === 'decided'
     ? DELIVERY_VERDICT[round.effectiveVerdict ?? round.verdict ?? ''] ?? null
     : null;
@@ -251,6 +253,8 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     state = 'reviewing';
   }
 
+  const awaitingVerdict = !!fromDelivery && (state === 'queued' || state === 'reviewing');
+
   const failureReason = state === 'review_failed'
     ? stringOrNull(reviewerWorker?.error)
       ?? (reviewerWorker?.exitCause ? EXIT_CAUSE_LABEL[reviewerWorker.exitCause] ?? null : null)
@@ -276,16 +280,25 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     reviewTaskId: reviewTask?.id ?? fromDelivery?.reviewerTaskId ?? null,
     adoptedTaskId: worker?.taskId ?? stringOrNull(ctx.originalTaskId),
     verdict,
-    confidence: numberOrNull(output.confidence),
-    summary: stringOrNull(output.summary),
-    feedback: stringOrNull(output.feedback),
-    escalationReason:
-      stringOrNull(result.effectiveVerdictReason) ?? stringOrNull(output.escalationReason),
-    recommendation: stringOrNull(output.recommendation),
-    blockers: parseReviewBlockers(output.blockers),
+    // A round in flight has no verdict yet. The reviewer task read here is an
+    // older round's, so its words ("the prior approval stands") describe a
+    // head that is no longer the PR's: they are not a statement about this one.
+    confidence: awaitingVerdict ? null : numberOrNull(output.confidence),
+    summary: awaitingVerdict ? null : stringOrNull(output.summary),
+    feedback: awaitingVerdict ? null : stringOrNull(output.feedback),
+    escalationReason: awaitingVerdict
+      ? null
+      : stringOrNull(result.effectiveVerdictReason) ?? stringOrNull(output.escalationReason),
+    recommendation: awaitingVerdict ? null : stringOrNull(output.recommendation),
+    blockers: awaitingVerdict ? [] : parseReviewBlockers(output.blockers),
     failureReason,
     openFindings: delivery ? delivery.openFindings ?? 0 : null,
-    iteration: fromDelivery ? fromDelivery.round : numberOrNull(ctx.iteration),
+    // The budget is review-fix attempts, not rounds: every new head (a CI fix,
+    // a base merge) opens a round, so "round 11 of 3" was a count of pushes.
+    // The round is the budget's position only while changes are being asked for.
+    iteration: fromDelivery
+      ? verdict === 'request-changes' || verdict === 'escalate' ? fromDelivery.round : fromDelivery.fixesUsed
+      : numberOrNull(ctx.iteration),
     maxIterations: fromDelivery ? fromDelivery.maxRounds : numberOrNull(ctx.maxIterations),
     reviewHeadSha: fromDelivery ? fromDelivery.headSha : stringOrNull(ctx.headSha),
     reviewEquivalentHeadShas: Array.isArray(ctx.equivalentHeadShas)

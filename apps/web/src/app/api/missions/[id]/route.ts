@@ -120,7 +120,7 @@ export async function GET(
     if (!details) {
       const row = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, id)), columns: MISSION_SUMMARY_COLUMNS });
       if (!row || !(await hasMissionAccess(row, teamIds, apiAccount?.id))) return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
-      const summaries = await readMissionSummaries([id], row.workspaceId ? [row.workspaceId] : []);
+      const summaries = await readMissionSummaries([id], row.workspaceId ? [row.workspaceId] : [], { includeWorkspaceless: !row.workspaceId });
       return NextResponse.json(missionSummaryResponse(row, summaries.get(id)?.summary ?? null));
     }
 
