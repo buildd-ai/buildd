@@ -1,6 +1,4 @@
 import type { Verdict } from '@buildd/spec-contract/outcome';
-import { recordMissionVerdictServer } from './mission-outcome';
-import type { SpecError } from './store';
 
 /**
  * An acceptance test's result on the merged mission result (Living Specs R-81,
@@ -14,40 +12,49 @@ export interface AcceptanceTestRun {
   exitCode: number | null;
   /** False when the test could not be launched at all. */
   started?: boolean;
+  testName?: string;
+  stdout?: string;
+  stderr?: string;
 }
 
-export function acceptanceTestVerdict(run: AcceptanceTestRun): Verdict {
+export function acceptanceTestVerdict(run: Pick<AcceptanceTestRun, 'exitCode' | 'started'>): Verdict {
   if (run.started === false || typeof run.exitCode !== 'number') return 'inconclusive';
   return run.exitCode === 0 ? 'pass' : 'fail';
+}
+
+/** Read an untrusted request body into a run; null when it is not one. */
+export function parseAcceptanceTestRun(raw: unknown): AcceptanceTestRun | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const exitCode = typeof r.exitCode === 'number' && Number.isInteger(r.exitCode) ? r.exitCode : null;
+  return {
+    exitCode,
+    ...(r.started === false ? { started: false } : {}),
+    ...(typeof r.testName === 'string' ? { testName: r.testName.slice(0, 300) } : {}),
+    ...(typeof r.stdout === 'string' ? { stdout: r.stdout } : {}),
+    ...(typeof r.stderr === 'string' ? { stderr: r.stderr } : {}),
+  };
 }
 
 const MAX_EXCERPT = 2000;
 const tail = (v: string | undefined) => (v ? v.slice(-MAX_EXCERPT) : undefined);
 
-export async function recordAcceptanceTestResult(missionId: string, input: AcceptanceTestRun & {
-  specRevisionId: string;
-  criterionId: string;
-  /** The merged result the test ran on: a full commit SHA. */
-  headSha: string;
-  testName: string;
-  stdout?: string;
-  stderr?: string;
-}): Promise<{ ok: true; verdictId: string; verdict: Verdict } | SpecError> {
-  const verdict = acceptanceTestVerdict(input);
-  const r = await recordMissionVerdictServer(missionId, {
-    specRevisionId: input.specRevisionId,
-    criterionId: input.criterionId,
-    verdict,
-    headSha: input.headSha,
-    recordedBy: `check:acceptance:${input.criterionId}`,
+/**
+ * What a verdict row records for one acceptance test run. The verdict comes
+ * from the exit code alone, never from what the caller claims; the author is
+ * `check:acceptance:<criterion>`, which reads as a test, not a review.
+ */
+export function acceptanceTestRecord(criterionId: string, run: AcceptanceTestRun): { verdict: Verdict; recordedBy: string; evidence: Record<string, unknown> } {
+  return {
+    verdict: acceptanceTestVerdict(run),
+    recordedBy: `check:acceptance:${criterionId}`,
     evidence: {
       kind: 'acceptance-test',
-      testName: input.testName,
-      ...(typeof input.exitCode === 'number' ? { exitCode: input.exitCode } : {}),
-      ...(input.started === false ? { started: false } : {}),
-      ...(tail(input.stdout) ? { stdout: tail(input.stdout) } : {}),
-      ...(tail(input.stderr) ? { stderr: tail(input.stderr) } : {}),
+      ...(run.testName ? { testName: run.testName } : {}),
+      ...(typeof run.exitCode === 'number' ? { exitCode: run.exitCode } : {}),
+      ...(run.started === false ? { started: false } : {}),
+      ...(tail(run.stdout) ? { stdout: tail(run.stdout) } : {}),
+      ...(tail(run.stderr) ? { stderr: tail(run.stderr) } : {}),
     },
-  });
-  return r.ok ? { ok: true, verdictId: r.verdictId, verdict } : r;
+  };
 }

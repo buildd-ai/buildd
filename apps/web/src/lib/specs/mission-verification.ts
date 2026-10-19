@@ -125,6 +125,7 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
     ``,
     `For each in-scope criterion, read the code, run its \`check:\` line where it has one, and record one verdict at the target:`,
     `\`manage_specs action=verdict { missionId: "${missionId}", criterionId, verdict: pass|fail|inconclusive|unsupported, headSha: <target>, evidenceRefs, observed }\`.`,
+    `For a criterion whose acceptance test you ran at the target, pass the run instead of a verdict: \`acceptanceTest: { exitCode, testName, stdout, stderr }\`. The exit code decides the result (0 pass, any other code fail, a run that never started inconclusive) and the row is recorded as a test, which outranks any reviewer on the same commit.`,
     `A criterion that passed on an earlier target and that the new commits did not touch is re-affirmed explicitly: record a new verdict at the target with \`reaffirms: <earlier verdict id>\` and say which diff you read. Nothing carries over on its own.`,
     `On a fail, file one \`[spec repair] <criterion>: <what is wrong>\` task in this mission with \`context.specRepair: { missionId, criterionId }\`. Do not fix it yourself: this task only verifies.`,
     `Finish with a report artifact mapping each criterion to its verdict and evidence. PR reviews and visual evidence may inform a verdict; they never replace it.`,

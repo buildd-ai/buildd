@@ -1,52 +1,49 @@
-import { describe, it, expect, mock } from 'bun:test';
-
-const recorded: Array<[string, Record<string, unknown>]> = [];
-mock.module('@buildd/core/db', () => ({ db: {} }));
-mock.module('./mission-outcome', () => ({
-  recordMissionVerdictServer: async (missionId: string, input: Record<string, unknown>) => {
-    recorded.push([missionId, input]);
-    return { ok: true, verdictId: 'v1' };
-  },
-}));
-
-const { acceptanceTestVerdict, recordAcceptanceTestResult } = await import('./acceptance-test-result');
-const { verdictSourceOfEvidence } = await import('@buildd/spec-contract/outcome');
+import { describe, it, expect } from 'bun:test';
+import { determiningVerdict, verdictSourceOfEvidence } from '@buildd/spec-contract/outcome';
+import { acceptanceTestRecord, acceptanceTestVerdict, parseAcceptanceTestRun } from './acceptance-test-result';
+import { foldMissionSpec, type MissionTarget } from './mission-outcome-fold';
 
 const SHA = 'a'.repeat(40);
-const base = { specRevisionId: 'rev', criterionId: 'AC-3', headSha: SHA, testName: 'AC-3: refuses a stale version' };
+const target: MissionTarget = { kind: 'integration', headSha: SHA, branch: 'mission/x' };
+
+/** The row `recordMissionSpecVerdict` writes for a run: the same record builder, folded by the real selection logic. */
+const rowFor = (criterionId: string, body: unknown, at: string) => {
+  const run = parseAcceptanceTestRun(body)!;
+  const rec = acceptanceTestRecord(criterionId, run);
+  return { id: `${criterionId}-${at}`, criterionId, verdict: rec.verdict, headSha: SHA, at, evidence: { ...rec.evidence, recordedBy: rec.recordedBy } };
+};
 
 describe('an acceptance test exit code is its check result (AC-127)', () => {
   it('maps 0 to pass, any other code to fail, a run that could not start to inconclusive', () => {
     expect(acceptanceTestVerdict({ exitCode: 0 })).toBe('pass');
     expect(acceptanceTestVerdict({ exitCode: 1 })).toBe('fail');
-    expect(acceptanceTestVerdict({ exitCode: 2 })).toBe('fail');
     expect(acceptanceTestVerdict({ exitCode: 127 })).toBe('fail');
     expect(acceptanceTestVerdict({ exitCode: null, started: false })).toBe('inconclusive');
     expect(acceptanceTestVerdict({ exitCode: 1, started: false })).toBe('inconclusive');
     expect(acceptanceTestVerdict({ exitCode: null })).toBe('inconclusive');
   });
 
-  it('records pass on the merged result, authored as a test', async () => {
-    recorded.length = 0;
-    const r = await recordAcceptanceTestResult('m1', { ...base, exitCode: 0 });
-    expect(r).toEqual({ ok: true, verdictId: 'v1', verdict: 'pass' });
-    const [mission, input] = recorded[0]!;
-    expect(mission).toBe('m1');
-    expect(input).toMatchObject({ criterionId: 'AC-3', verdict: 'pass', headSha: SHA });
-    expect(verdictSourceOfEvidence({ recordedBy: input.recordedBy })).toBe('test');
-    expect(input.evidence).toMatchObject({ kind: 'acceptance-test', exitCode: 0, testName: base.testName });
+  it('rejects a body that is not a run, and ignores a claimed verdict', () => {
+    expect(parseAcceptanceTestRun('x')).toBeNull();
+    expect(parseAcceptanceTestRun({ exitCode: 'zero' })?.exitCode).toBeNull();
+    expect(acceptanceTestRecord('AC-3', parseAcceptanceTestRun({ exitCode: 1, verdict: 'pass' })!).verdict).toBe('fail');
   });
 
-  it('records fail for a non-zero exit', async () => {
-    recorded.length = 0;
-    const r = await recordAcceptanceTestResult('m1', { ...base, exitCode: 1, stderr: 'boom' });
-    expect(r).toMatchObject({ ok: true, verdict: 'fail' });
-    expect(recorded[0]![1].evidence).toMatchObject({ exitCode: 1, stderr: 'boom' });
+  it('authors the record as a test with the exit code and a bounded output tail', () => {
+    const rec = acceptanceTestRecord('AC-3', parseAcceptanceTestRun({ exitCode: 1, testName: 't', stdout: 'x'.repeat(5000) })!);
+    expect(rec.recordedBy).toBe('check:acceptance:AC-3');
+    expect(verdictSourceOfEvidence({ recordedBy: rec.recordedBy })).toBe('test');
+    expect(rec.evidence).toMatchObject({ kind: 'acceptance-test', exitCode: 1, testName: 't' });
+    expect((rec.evidence.stdout as string).length).toBe(2000);
   });
 
-  it('records inconclusive when the run could not start', async () => {
-    recorded.length = 0;
-    const r = await recordAcceptanceTestResult('m1', { ...base, exitCode: null, started: false });
-    expect(r).toMatchObject({ ok: true, verdict: 'inconclusive' });
+  it('a failing exit code leaves the check at fail even after a later reviewer pass, through the real selection and fold', () => {
+    const fail = rowFor('AC-3', { exitCode: 1 }, '2026-10-19T10:00:00Z');
+    const review = { id: 'r', criterionId: 'AC-3', verdict: 'pass' as const, headSha: SHA, at: '2026-10-19T11:00:00Z', evidence: { recordedBy: 'user:someone' } };
+    const picked = determiningVerdict([fail, review].map((r) => ({ ...r, source: verdictSourceOfEvidence(r.evidence) })));
+    expect(picked?.verdict).toBe('fail');
+    const folded = foldMissionSpec({ scope: ['AC-3'], waived: [], rows: [fail, review].map((r) => ({ ...r, source: verdictSourceOfEvidence(r.evidence) })), target });
+    expect(folded.verdict).toBe('fail');
+    expect(foldMissionSpec({ scope: ['AC-3'], waived: [], rows: [rowFor('AC-3', { exitCode: 0 }, '2026-10-19T10:00:00Z')].map((r) => ({ ...r, source: verdictSourceOfEvidence(r.evidence) })), target }).verdict).toBe('pass');
   });
 });
