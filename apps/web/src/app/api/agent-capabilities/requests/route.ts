@@ -3,8 +3,9 @@
  *
  * POST — a running agent asks for a capability semantically:
  *   Authorization: Bearer <per-task token (bldt_…) or runner API key>
- *   Body: { workerId, capability: 'observability:query' | 'model.inference', provider?, tool?,
- *           resource?, environment?, risk?, ttlSeconds?, reason?, (model.inference: models, operations?, budget) }
+ *   Body: { workerId, provider, access: 'read' | 'write', tool?, resource?, environment?, risk?, ttlSeconds?,
+ *           reason? } — provider `buildd` + resource (a workspace UUID): write = tasks:create, read = analytics:read.
+ *           model.inference: { capability: 'model.inference', provider, models, operations?, budget }
  * Answers with a resolution — existing | auto_granted | pending_approval | denied | forbidden |
  * need_connection | need_reauth | unhealthy | unavailable — plus next steps and alternatives,
  * and the grant row when one exists. Asking again returns the same row (deduped).

@@ -62,7 +62,7 @@ function req(body: Record<string, unknown>): CapabilityRequest {
 
 function ctx(over: Partial<ResolveContext> = {}): ResolveContext {
   return {
-    request: req({ capability: 'observability:query' }),
+    request: req({ provider: 'axiom', access: 'read' }),
     principal: PRINCIPAL,
     discovery: discovery([cand()]),
     rules: [],
@@ -77,7 +77,7 @@ function ctx(over: Partial<ResolveContext> = {}): ResolveContext {
 function grant(over: Partial<GrantRecord> = {}): GrantRecord {
   return {
     id: 'g1', teamId: TEAM, workspaceId: WS, taskId: TASK, workerId: WORKER, roleSlug: 'builder',
-    capability: 'observability:query', provider: 'axiom', connectorId: AXIOM_CONN, risk: 'query',
+    capability: 'axiom:read', provider: 'axiom', connectorId: AXIOM_CONN, risk: 'query',
     tool: null, resource: null, environment: null, scope: null,
     status: 'granted', decidedBy: 'policy', ttlSeconds: 3600,
     expiresAt: new Date(NOW.getTime() + 3600_000), revokedAt: null, dedupeKey: `k:axiom:${AXIOM_CONN}`,
@@ -88,7 +88,7 @@ function grant(over: Partial<GrantRecord> = {}): GrantRecord {
 function useCtx(over: Partial<UseContext> = {}): UseContext {
   return { principal: PRINCIPAL, taskStatus: 'in_progress', workerStatus: 'running', rules: [], candidate: cand(), now: NOW, ...over };
 }
-const USE = { capability: 'observability:query', provider: 'axiom', connectorId: AXIOM_CONN, tool: 'queryApl', resource: null, environment: null };
+const USE = { capability: 'axiom:read', provider: 'axiom', connectorId: AXIOM_CONN, tool: 'queryApl', resource: null, environment: null };
 
 function rule(over: Partial<PolicyRule>): PolicyRule {
   return { provider: 'axiom', risk: 'query', workspaceId: null, roleSlug: null, environment: null, resource: null, effect: 'ask_human', maxTtlSeconds: null, ...over };
@@ -99,26 +99,31 @@ function rule(over: Partial<PolicyRule>): PolicyRule {
 describe('parseCapabilityRequest', () => {
   it('asks semantically: a connector id, credential or endpoint is refused', () => {
     for (const k of ['connectorId', 'credentialRef', 'apiKey', 'baseURL']) {
-      const r = parseCapabilityRequest({ capability: 'observability:query', [k]: 'x' });
+      const r = parseCapabilityRequest({ provider: 'axiom', access: 'read', [k]: 'x' });
       expect(r.ok).toBe(false);
     }
   });
 
   it('never lets a tool or declared risk lower the risk', () => {
-    expect(req({ capability: 'observability:read', tool: 'deleteDataset' }).risk).toBe('admin');
-    expect(req({ capability: 'deployment:read', tool: 'createDeployment' }).risk).toBe('write');
-    expect(req({ capability: 'deployment:write', risk: 'read' }).risk).toBe('write');
-    expect(req({ capability: 'observability:query', risk: 'admin' }).risk).toBe('admin');
-    expect(req({ capability: 'observability:query', tool: 'mcp__axiom__queryApl' }).risk).toBe('query');
+    expect(req({ provider: 'axiom', access: 'read', tool: 'deleteDataset' }).risk).toBe('admin');
+    expect(req({ provider: 'vercel', access: 'read', tool: 'createDeployment' }).risk).toBe('write');
+    expect(req({ provider: 'vercel', access: 'write', risk: 'read' }).risk).toBe('write');
+    expect(req({ provider: 'axiom', access: 'read', risk: 'admin' }).risk).toBe('admin');
+    expect(req({ provider: 'axiom', access: 'read', tool: 'mcp__axiom__queryApl' }).risk).toBe('read');
   });
 
   it('rejects wildcards and malformed scope', () => {
-    expect(parseCapabilityRequest({ capability: 'observability:query', resource: '*' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'observability:query', environment: 'prod*' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'observability:query', ttlSeconds: 10 }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'observability:query', ttlSeconds: MAX_GRANT_TTL_SECONDS + 1 }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', resource: '*' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', environment: 'prod*' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', ttlSeconds: 10 }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', ttlSeconds: MAX_GRANT_TTL_SECONDS + 1 }).ok).toBe(false);
     expect(parseCapabilityRequest({ capability: 'telepathy:read' }).ok).toBe(false);
-    expect(parseCapabilityRequest({ capability: 'observability:query', surprise: 1 }).ok).toBe(false);
+    // The category vocabulary is a search filter, not something to request.
+    expect(parseCapabilityRequest({ capability: 'observability:query', provider: 'axiom' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ access: 'read' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'query' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ provider: 'axiom', access: 'read', surprise: 1 }).ok).toBe(false);
   });
 
   it('model.inference needs a provider, exact models and a sane budget', () => {
@@ -177,6 +182,12 @@ describe('team policy', () => {
     expect(effectivePolicy([], { ...scope, risk: 'write' }, true).effect).toBe('ask_human');
   });
 
+  it('a rule written at the retired query risk still governs a read ask', () => {
+    const rules = [rule({ risk: 'query', effect: 'forbidden' })];
+    expect(matchPolicy(rules, { provider: 'axiom', risk: 'read', workspaceId: WS, roleSlug: null, environment: null, resource: null })?.effect).toBe('forbidden');
+    expect(matchPolicy(rules, { provider: 'axiom', risk: 'write', workspaceId: WS, roleSlug: null, environment: null, resource: null })).toBeNull();
+  });
+
   it('scope key distinguishes unset from set dimensions', () => {
     expect(policyScopeKey(rule({}))).not.toBe(policyScopeKey(rule({ environment: 'production' })));
   });
@@ -199,7 +210,7 @@ describe('resolveCapabilityRequest', () => {
 
   it('provider write guard: a write asks a person even when the role mounts it', () => {
     const r = resolveCapabilityRequest(ctx({
-      request: req({ capability: 'deployment:write', provider: 'vercel' }),
+      request: req({ provider: 'vercel', access: 'write' }),
       discovery: discovery([cand({ slug: 'vercel', access: 'permitted', roles: { evaluated: { slug: 'builder', mounts: true }, withAccess: ['builder'] } })]),
       rules: [rule({ provider: 'vercel', risk: 'write', effect: 'auto_grant' })],
     }));
@@ -232,17 +243,18 @@ describe('resolveCapabilityRequest', () => {
     expect(resolveCapabilityRequest(ctx({ discovery: discovery([cand({ connectorId: null, access: 'ask_admin', health: 'not_installed' })]) })).kind).toBe('need_connection');
   });
 
-  it('prefers a usable candidate and lists the rest as alternatives', () => {
+  it('answers for the provider asked, not another one', () => {
     const r = resolveCapabilityRequest(ctx({ discovery: discovery([
       cand({ slug: 'sentry', connectorId: null, access: 'ask_admin', nextSteps: ['add sentry'] }),
       cand(),
     ]) }));
     expect(r.kind).toBe('auto_granted');
-    expect(r.alternatives).toEqual([{ provider: 'sentry', connector: null, outcome: 'need_connection', nextSteps: ['add sentry'] }]);
+    // The ask names a provider: another provider is not an alternative to it.
+    expect(r.alternatives).toEqual([]);
   });
 
   it('unavailable with alternatives when the named provider serves nothing', () => {
-    const r = resolveCapabilityRequest(ctx({ request: req({ capability: 'observability:query', provider: 'datadog' }) }));
+    const r = resolveCapabilityRequest(ctx({ request: req({ provider: 'datadog', access: 'read' }) }));
     expect(r.kind).toBe('unavailable');
     expect(r.alternatives.map(a => a.provider)).toEqual(['axiom']);
   });
@@ -261,7 +273,7 @@ describe('resolveCapabilityRequest', () => {
   });
 
   it('a grant for a narrower tool does not cover a different tool', () => {
-    const r = resolveCapabilityRequest(ctx({ request: req({ capability: 'observability:query', tool: 'listDatasets' }), openGrants: [grant({ tool: 'queryApl' })] }));
+    const r = resolveCapabilityRequest(ctx({ request: req({ provider: 'axiom', access: 'read', tool: 'listDatasets' }), openGrants: [grant({ tool: 'queryApl' })] }));
     expect(r.grantId).toBeNull();
   });
 
@@ -271,7 +283,7 @@ describe('resolveCapabilityRequest', () => {
   });
 
   it('TTL is narrowed by policy', () => {
-    const r = resolveCapabilityRequest(ctx({ request: req({ capability: 'observability:query', ttlSeconds: 7200 }), rules: [rule({ effect: 'auto_grant', maxTtlSeconds: 600 })] }));
+    const r = resolveCapabilityRequest(ctx({ request: req({ provider: 'axiom', access: 'read', ttlSeconds: 7200 }), rules: [rule({ effect: 'auto_grant', maxTtlSeconds: 600 })] }));
     expect(r.ttlSeconds).toBe(600);
   });
 
@@ -350,7 +362,7 @@ describe('checkGrantUse', () => {
 describe('approvalRefusal / approvalTtl', () => {
   const base = { taskStatus: 'in_progress', workerStatus: 'running', rules: [] as PolicyRule[], candidate: cand(), currentRoleSlug: 'builder' };
   it('a person can approve above the auto-grant line, never past a forbid or block', () => {
-    const write = grant({ status: 'pending', risk: 'write', capability: 'deployment:write' });
+    const write = grant({ status: 'pending', risk: 'write', capability: 'vercel:write' });
     expect(approvalRefusal(write, base)).toBeNull();
     expect(approvalRefusal(write, { ...base, rules: [rule({ risk: 'write', effect: 'forbidden' })] })).toBe('policy_forbidden');
     expect(approvalRefusal(write, { ...base, candidate: cand({ access: 'forbidden' }) })).toBe('catalog_blocked');

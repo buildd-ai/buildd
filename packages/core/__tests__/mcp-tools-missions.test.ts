@@ -230,7 +230,7 @@ describe('manage_missions — workspace resolution', () => {
         { action: 'create', title: 'Test Mission', workspaceId: 'beta' },
         createMockContext(),
       ),
-    ).rejects.toThrow(/You can see: alpha\. .*request_capability tasks:create.*person/);
+    ).rejects.toThrow(/You can see: alpha\. .*request_capability .*buildd.*person/);
   });
 
   it('resolves workspace name to ID on update', async () => {
