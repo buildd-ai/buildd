@@ -2172,7 +2172,10 @@ async function requireAdminLevel(ctx: ActionContext, action: string, params?: Re
   if (isPersonalRoleCall(action, params)) {
     return level === 'worker' ? null : forbiddenResult(`action '${action}' with personal: true requires a worker or admin token`, level, 'worker');
   }
-  return forbiddenResult(`action '${action}' requires admin token level`, level, 'admin');
+  const hint = action === 'send_agent_message'
+    ? '. To message a sibling worker in your workspace at worker level, call the send_worker_message tool (recipientTaskId, type, body); replies arrive via receive_messages'
+    : '';
+  return forbiddenResult(`action '${action}' requires admin token level${hint}`, level, 'admin');
 }
 
 /**
