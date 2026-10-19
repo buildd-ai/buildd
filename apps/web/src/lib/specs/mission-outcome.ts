@@ -19,6 +19,7 @@ import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTa
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 import { settleVerdictSource } from './verdict-source';
 import { revisionCriterionHashes } from './criteria';
+import { excludedForMission } from './acceptance-test-edits-store';
 
 /**
  * Mission-level verdicts on the mission's selected outcome spec (Living Specs
@@ -125,7 +126,7 @@ export async function readMissionSpecStanding(mission: MissionRow, c: LivingSpec
   }
   const rows = await missionRows(mission.id, c.specRevisionId, await revisionCriterionHashes(c.specId, c.revision));
   const target = await resolveMissionTarget(mission, rows.map((r) => r.headSha).filter((h): h is string => !!h), api);
-  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, target });
+  const folded = foldMissionSpec({ scope: scope.criteria.map((r) => r.id), waived: (c.waived ?? []).map((w) => w.criterionId), rows, excluded: await excludedForMission(mission.id), target });
   return { ...folded, target, scope: scope.criteria, title: scope.title };
 }
 

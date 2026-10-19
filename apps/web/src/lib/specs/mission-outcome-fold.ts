@@ -74,11 +74,14 @@ export function foldMissionSpec(input: {
   /** Criteria a person waived: shown as waived, left out of the fold. */
   waived: readonly string[];
   rows: readonly MissionVerdictRow[];
+  /** Criteria whose acceptance test a building PR changed and no person accepted (R-80): their test results are left out. */
+  excluded?: readonly string[];
   target: MissionTarget;
 }): MissionSpecFold {
   const waived = new Set(input.waived);
+  const excluded = new Set(input.excluded ?? []);
   const grouped = new Map<string, MissionVerdictRow[]>();
-  for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
+  for (const r of input.rows) if (!(r.source === 'test' && excluded.has(r.criterionId))) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
   for (const [id, rows] of grouped) newest.set(id, determiningVerdict(rows)!);
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
@@ -106,25 +109,27 @@ export function foldMissionSpec(input: {
   const passing = judged.filter((s) => s.standing === 'pass');
   const open = judged.filter((s) => s.standing !== 'pass');
   const waivedNote = waived.size > 0 ? ` ${count(standings.length - judged.length)} waived by a person.` : '';
+  const held = input.scope.filter((id) => excluded.has(id) && !waived.has(id));
+  const heldNote = held.length > 0 ? ` The test for ${list(held)} was changed by a building PR and does not count until a person accepts the change.` : '';
 
   if (failed.length > 0) {
-    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails)}${waivedNote}`.trim() };
+    return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails)}${waivedNote}${heldNote}`.trim() };
   }
   if (input.target.kind === 'unknown') {
-    return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No integrated target to verify against: ${input.target.reason}.${waivedNote}` };
+    return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No integrated target to verify against: ${input.target.reason}.${waivedNote}${heldNote}` };
   }
   if (judged.length === 0) {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `Nothing left to verify: every criterion is waived. Remove the outcome spec if the mission no longer answers to it.` };
   }
   const where = input.target.kind === 'integration' ? `on ${short(input.target.headSha)}` : 'on a commit holding every merged mission PR';
   if (open.length === 0) {
-    return { verdict: 'pass', targetSha, standings, evidence: `All ${count(judged.length)} criteria pass ${where}.${waivedNote}` };
+    return { verdict: 'pass', targetSha, standings, evidence: `All ${count(judged.length)} criteria pass ${where}.${waivedNote}${heldNote}` };
   }
   return {
     verdict: 'UNVERIFIED',
     targetSha,
     standings,
-    evidence: `${capital(count(passing.length))} of ${count(judged.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}`.trim(),
+    evidence: `${capital(count(passing.length))} of ${count(judged.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}${heldNote}`.trim(),
   };
 }
 

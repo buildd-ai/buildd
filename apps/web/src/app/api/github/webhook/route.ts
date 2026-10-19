@@ -1,4 +1,5 @@
 import { registerLocalPr } from '@/lib/register-local-pr';
+import { flagAcceptanceTestEdits } from '@/lib/specs/acceptance-test-edits-store';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -749,6 +750,13 @@ async function handlePullRequestEvent(event: {
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,
       url: pr.html_url, headSha: pr.head.sha, baseRef: pr.base?.ref ?? null, draft: pr.draft ?? false });
+  }
+
+  // R-80: a building task's PR that edits or deletes an acceptance test is flagged on the PR and the mission page.
+  if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id && repository?.full_name) {
+    await flagAcceptanceTestEdits({
+      installationId: event.installation.id, repoFullName: repository.full_name, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base?.sha ?? null,
+    }).catch((err) => console.error(`[webhook] acceptance test check failed for PR #${pr.number}:`, err));
   }
 
   // ── Keep workers.prBaseRef in step with GitHub's base ref ────────────────

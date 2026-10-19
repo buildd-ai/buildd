@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateTaskScopedCaller, taskScopeAllowsMission } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { readMissionSpecOutcomes, recordMissionSpecVerdict } from '@/lib/specs/mission-outcome';
+import { missionAcceptanceFlags } from '@/lib/specs/acceptance-test-edits-store';
+import { flagText, pendingEdits } from '@/lib/specs/acceptance-test-edits';
 import type { SpecCaller } from '@/lib/specs/store';
 
 type Ctx = { params: Promise<{ missionId: string }> };
@@ -32,7 +34,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const c = await caller(req, missionId);
   if (c instanceof NextResponse) return c;
   const r = await readMissionSpecOutcomes(c, missionId);
-  if (r.ok) return NextResponse.json({ outcomes: r.outcomes });
+  if (r.ok) {
+    // R-80: building PRs that changed an acceptance test, listed for the person to accept.
+    const flagged = (await missionAcceptanceFlags(missionId)).filter((f) => pendingEdits(f.record).length > 0)
+      .map((f) => ({ taskId: f.taskId, title: f.title, prNumber: f.record.prNumber, edits: pendingEdits(f.record), text: flagText(f.record) }));
+    return NextResponse.json({ outcomes: r.outcomes, changedAcceptanceTests: flagged });
+  }
   return NextResponse.json({ error: r.error }, { status: r.status });
 }
 

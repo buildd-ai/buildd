@@ -111,3 +111,26 @@ describe('foldMissionSpec: a test result outranks a reviewer opinion', () => {
     expect(foldMissionSpec({ scope: ['R-1'], waived: [], rows, target: integration() }).verdict).toBe('pass');
   });
 });
+
+// R-80 / AC-126: a test edited by a building PR does not count until a person accepts the change.
+describe('foldMissionSpec with excluded test results', () => {
+  const test = (criterionId: string, verdict: MissionVerdictRow['verdict']): MissionVerdictRow => ({ ...row(criterionId, verdict), source: 'test' });
+  it('does not count a passing test result for an excluded criterion', () => {
+    const r = foldMissionSpec({ scope: ['R-1', 'R-2'], waived: [], rows: [test('R-1', 'pass'), test('R-2', 'pass')], excluded: ['R-2'], target: integration() });
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.standings.find((s) => s.criterionId === 'R-2')?.standing).toBe('missing');
+    expect(r.evidence).toContain('R-2');
+  });
+  it('does not let an excluded failing test fail the mission either', () => {
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [test('R-1', 'fail')], excluded: ['R-1'], target: integration() });
+    expect(r.verdict).toBe('UNVERIFIED');
+  });
+  it('still counts a reviewer verdict on an excluded criterion', () => {
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [test('R-1', 'pass'), row('R-1', 'pass')], excluded: ['R-1'], target: integration() });
+    expect(r.verdict).toBe('pass');
+  });
+  it('is unchanged with nothing excluded', () => {
+    const r = foldMissionSpec({ scope: ['R-1'], waived: [], rows: [test('R-1', 'pass')], target: integration() });
+    expect(r.verdict).toBe('pass');
+  });
+});
