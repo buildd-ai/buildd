@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
-import { specOutcomeVerdicts, specVerdictSources } from '@buildd/core/db/schema';
+import { specCriterionRecords, specOutcomeVerdicts, specVerdictSources, verdictCriteria } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
-import { determiningVerdict, verdictSourceOfEvidence } from '@buildd/spec-contract/outcome';
+import { determiningVerdict, verdictSourceOfEvidence, verifiedByOfEvidence } from '@buildd/spec-contract/outcome';
 
 /**
  * Keep spec_verdict_sources in step with spec_outcome_verdicts: after a verdict
@@ -18,6 +18,7 @@ export async function settleVerdictSource(verdictId: string): Promise<void> {
       specRevisionId: specOutcomeVerdicts.specRevisionId, criterionId: specOutcomeVerdicts.criterionId, textHash: specOutcomeVerdicts.criterionTextHash,
     }).from(specOutcomeVerdicts).where(eq(specOutcomeVerdicts.id, verdictId)).limit(1);
     if (!rec) return;
+    await linkVerdictCriterion(verdictId, rec.specRevisionId, rec.criterionId);
     const input = rec;
     const task = input.taskId ?? null;
     const mission = input.missionId ?? null;
@@ -53,4 +54,19 @@ export async function settleVerdictSource(verdictId: string): Promise<void> {
   } catch (err) {
     console.error('[verdict-source] could not settle the deciding source', err instanceof Error ? err.message : err);
   }
+}
+
+/**
+ * Link a verdict to the spec_criteria row for its criterion id (verdict_criteria),
+ * with what verified it. Idempotent per verdict; a criterion with no derived row
+ * yet is skipped and linked when a later settle finds it.
+ */
+export async function linkVerdictCriterion(verdictId: string, specRevisionId: string, criterionId: string): Promise<void> {
+  const [crit] = await db.select({ id: specCriterionRecords.id }).from(specCriterionRecords)
+    .where(and(eq(specCriterionRecords.specRevisionId, specRevisionId), eq(specCriterionRecords.criterionId, criterionId))).limit(1);
+  if (!crit) return;
+  const [v] = await db.select({ evidence: specOutcomeVerdicts.evidence }).from(specOutcomeVerdicts).where(eq(specOutcomeVerdicts.id, verdictId)).limit(1);
+  await db.insert(verdictCriteria).values({
+    verdictId, specCriterionId: crit.id, specRevisionId, criterionId, verifiedBy: verifiedByOfEvidence(v?.evidence),
+  }).onConflictDoNothing({ target: verdictCriteria.verdictId });
 }
