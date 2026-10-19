@@ -87,12 +87,24 @@ export function dockToneForDelivery(d: DeliveryReadingInput): { label: string; t
   return r ? { label: r.label, ...DOCK_FOR_DELIVERY_TONE[r.tone] } : null;
 }
 
+const REPAIR_TONE: Record<NonNullable<TaskObjectView['repair']>['status'], { label: string; tone: DockTone; stopped: boolean }> = {
+  running: { label: 'Working', tone: 'live', stopped: false },
+  queued: { label: 'Ready', tone: 'idle', stopped: false },
+  pushed: { label: 'Done', tone: 'idle', stopped: false },
+  failed: { label: 'Stopped', tone: 'needs', stopped: true },
+  ended: { label: 'Done', tone: 'idle', stopped: false },
+  // The catalog's word for work another attempt took over (packages/shared/src/terms.ts).
+  superseded: { label: 'Replaced', tone: 'idle', stopped: false },
+};
+
 function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean; kernel?: boolean } {
   const w = view.worker;
   // A worker's own question stays a question (§13.2 dev. 3).
   if (w?.waiting || w?.status === 'waiting_input') return { label: 'Has a question', tone: 'needs', stopped: false };
   const kernel = view.delivery ? dockToneForDelivery(view.delivery) : null;
   if (kernel) return { ...kernel, kernel: true };
+  // A kernel delivery's repair attempt: the ledger's word, not the PR its worker pushed to (7105282e).
+  if (view.repair) return REPAIR_TONE[view.repair.status];
   // Legacy-owned: the one fact-cache mapping. A completed task whose PR is
   // still open is in review, not merged (§17.5: Merged is no longer
   // `mergedAt || status === 'completed'`). A completed task with no PR is Done.

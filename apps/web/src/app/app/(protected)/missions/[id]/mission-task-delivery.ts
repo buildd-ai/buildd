@@ -8,7 +8,7 @@
  * as they do for every other caller of the projection.
  */
 import { projectMissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
-import { buildTaskDeliveryDetails, reviewOf, type ActivityTaskInput, type TaskDeliveryDetail } from '@/lib/activity-delivery';
+import { buildTaskDeliveryDetails, reviewOf, type ActivityTaskInput, type KernelEvidenceInput, type TaskDeliveryDetail } from '@/lib/activity-delivery';
 
 type When = Date | string | number | null | undefined;
 
@@ -52,6 +52,8 @@ export function missionTaskDeliveries(input: {
   /** The page's result/context digest for a task (mission-page-query.ts). */
   digestOf: (taskId: string) => { result: unknown; context: unknown };
   rules: MissionTaskRules;
+  /** The kernel delivery a task owns (its view), when it owns one: its card reads that, not the reviewer rows. */
+  kernelOf?: (taskId: string) => KernelEvidenceInput | null;
 }): Record<string, TaskDeliveryDetail> {
   const { rules, mission: m } = input;
   // Newest worker first: the projection's "which PR is this about" reads that order.
@@ -76,6 +78,7 @@ export function missionTaskDeliveries(input: {
       createdAt: iso(t.createdAt) ?? new Date(0).toISOString(),
       updatedAt: iso(t.updatedAt ?? t.createdAt) ?? new Date(0).toISOString(),
       review: type === 'review' || type === 'review-retry' ? reviewOf(digest.result, digest.context) : null,
+      kernel: input.kernelOf?.(t.id) ?? null,
       workers: workersOf(t).map(w => ({
         status: w.status,
         prUrl: w.prUrl ?? null,
