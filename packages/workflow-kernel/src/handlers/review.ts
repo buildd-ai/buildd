@@ -167,6 +167,34 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     if (!d || !round || (round.status !== 'queued' && round.status !== 'reviewing')) return { outcome: 'skipped:round_closed' };
     if (round.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    // Explicit requests commit using the recorded head. Resolve the live GitHub
+    // facts here, where a slow read cannot hold up the command transition.
+    if (e.payload.revalidate === true || round.scope?.revalidate === true) {
+      const reader = await githubOf(ports, d.workspaceId);
+      if (!reader) throw new Error(NO_INSTALLATION);
+      const live = await reader.readPr(d.repoFullName, d.prNumber);
+      if (!live) throw new Error('live PR read failed before dispatching review');
+      const pinned = { ...reader, readPr: async () => live };
+      const subject = { workspaceId: d.workspaceId, source: 'effect:dispatch_review', repoFullName: d.repoFullName, prNumber: d.prNumber };
+      if (live.merged || live.state === 'closed') {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'pr_closed', ...subject }, pinned);
+        return { outcome: `skipped:pr_${live.merged ? 'merged' : 'closed'}:${r.result}` };
+      }
+      if (live.headSha !== round.headSha) {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
+        return { outcome: `skipped:head_moved:${r.result}` };
+      }
+      if (live.baseRef && d.baseRef && live.baseRef !== d.baseRef) {
+        const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'base_changed', ...subject }, pinned);
+        return { outcome: `skipped:base_moved:${r.result}` };
+      }
+      // Another command may have superseded this round while GitHub was read.
+      const fresh = await ports.store.loadView({ deliveryId: d.id });
+      const current = fresh.rounds.find((r) => r.id === round.id);
+      if (!current || (current.status !== 'queued' && current.status !== 'reviewing')
+        || fresh.delivery?.state !== 'AWAITING_REVIEW' || fresh.delivery.currentHeadSha !== round.headSha) return { outcome: 'skipped:round_closed' };
+      if (current.reviewerTaskId) return { outcome: 'skipped:already_dispatched' };
+    }
     const reviews = need(ports, 'reviews', e.kind);
 
     // §5.9: once per round that is not itself the composition's delta round.
@@ -208,6 +236,7 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `review:${round.id}`,
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
+        ...(round.scope?.reviewCallback ? { reviewCallback: round.scope.reviewCallback } : {}),
         // 58c8961e: why the round started, and whether it is a delta review carrying an approval
         // (the reviewer then checks the delta for weakened tests, on a cheaper tier).
         ...(round.trigger ? { trigger: round.trigger } : {}),

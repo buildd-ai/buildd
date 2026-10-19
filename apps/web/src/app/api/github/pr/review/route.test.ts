@@ -567,6 +567,13 @@ describe('POST /api/github/pr/review — idempotency', () => {
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
+    it('persists callbacks with a queued kernel review before its reviewer exists', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} }, reviewTaskId: null });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', callbackUrl: 'https://example.test/hook', callbackOn: 'merge' }));
+      expect(res.status).toBe(201);
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ reviewCallback: { url: 'https://example.test/hook', on: 'merge' } });
+    });
+
     it('answers from the round\'s reviewer at the live head, never the newest reviewer row (task 1ebce52a)', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'round-reviewer' });
       mockFindReviewTaskForPr.mockClear();

@@ -603,3 +603,24 @@ describe('dispose_finding is for a signed-in person only', () => {
     }
   });
 });
+
+it('stores the command answer before starting deferred effects and protects the drain with waitUntil', async () => {
+  const { deferEffectDrain } = await import('./effect-drain-context');
+  const order: string[] = [];
+  let finish!: () => void;
+  const gate = new Promise<void>(r => { finish = r; });
+  const protectedWork: Promise<unknown>[] = [];
+  const ledger = memoryLedger();
+  const complete = ledger.complete.bind(ledger);
+  ledger.complete = async p => { order.push('stored'); return complete(p); };
+  const d = server({ ledger, waitUntil: p => { protectedWork.push(p); }, run: async () => {
+    deferEffectDrain(DELIVERY, async () => { order.push('effect'); await gate; });
+    return { queued: true } as never;
+  } });
+  const response = await d.call(await signed(body({ op: 'request_review', input: { ...landInput, forced: false } })));
+  expect(response.status).toBe(200);
+  expect(order).toEqual(['stored', 'effect']);
+  expect(protectedWork.length).toBeGreaterThan(1);
+  finish();
+  await Promise.all(protectedWork);
+});

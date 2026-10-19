@@ -134,7 +134,20 @@ export interface StatusLine {
   tone: 'ok' | 'error' | 'info';
 }
 
+/** `buildd top --dev` (top-dev.ts): the dev build of top, shown in the header. Null for the production top. */
+export interface TopDevBuild {
+  channel: 'dev';
+  /** Short commit of the dev checkout. */
+  sha: string;
+  /** The fetch failed: this is the last dev checkout, not the newest. */
+  stale: boolean;
+  /** Said once in the status line when the view opens (why it is stale). */
+  notice: string | null;
+}
+
 export interface TopState {
+  /** Which build of top this is; null = the production one. */
+  build: TopDevBuild | null;
   runner: {
     hostname: string;
     version: string | null;
@@ -239,8 +252,9 @@ export function isLooseKey(key: string | null | undefined): boolean {
 /** The missions pane's row for tasks outside any mission. */
 export const NO_MISSION_TITLE = 'Other tasks';
 
-export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
+export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null; build?: TopDevBuild | null }): TopState {
   return {
+    build: opts.build ?? null,
     runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, connectedOnce: false, hold: null, routes: [], routeProblems: [], loginMode: null },
     workers: {},
     tasks: [],

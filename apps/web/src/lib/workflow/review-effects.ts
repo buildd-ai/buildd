@@ -124,6 +124,7 @@ export const reviewWork: WorkBuilder = async (req) => {
     compositionScope: (detail.compositionScope as { novelDeltaPaths: string[] } | undefined) ?? undefined,
     findingsBrief: (detail.findingsBrief as import('@/lib/reviewer').FindingsBrief | undefined) ?? undefined,
     workflowRound: { deliveryId: req.lineage.deliveryId, roundId, round },
+    reviewCallback: detail.reviewCallback as { url: string; on: 'verdict' | 'merge' } | undefined,
   });
   if (!created) return { skipped: 'dispatch_refused' };
   if (created.deduplicated) {
@@ -134,6 +135,12 @@ export const reviewWork: WorkBuilder = async (req) => {
         context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('workflowRoundId', ${roundId}::text)`,
       })
       .where(and(eq(tasks.id, created.id), sql`${tasks.deliveryId} IS NULL`));
+    // A deduplicated task did not run the insert that carries this round's callback.
+    if (detail.reviewCallback) {
+      await db.update(tasks)
+        .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('reviewCallback', ${JSON.stringify(detail.reviewCallback)}::jsonb)` })
+        .where(eq(tasks.id, created.id));
+    }
     // Nobody has it yet: maybe never woken (the run that filed it died before linking it), so the kernel wakes it.
     const adopted = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, created.id)), columns: { status: true } });
     return { filed: { taskId: created.id, created: false, ...(adopted?.status === 'pending' ? { unclaimed: true } : {}) } };

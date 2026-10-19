@@ -115,6 +115,12 @@ mock.module('@/lib/workflow/open-pr-status', () => ({
     coverage: { context: 'Buildd / Review approval', checked: 0, missing: [], verdict: 'nothing_checked' },
   }),
 }));
+// …and the dead-effect sweep (lib/workflow/dead-effect-sweep.ts).
+const realDeadEffectSweep = await import('@/lib/workflow/dead-effect-sweep');
+mock.module('@/lib/workflow/dead-effect-sweep', () => ({
+  ...realDeadEffectSweep,
+  sweepDeadEffects: async () => ({ closed: 0, live: 0, oldestAgeS: 0, byKind: {} }),
+}));
 
 // When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
 let lastFloorAt: Date | null = null;
