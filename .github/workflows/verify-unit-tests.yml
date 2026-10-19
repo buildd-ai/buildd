@@ -1,0 +1,82 @@
+name: Verify Unit Tests
+run-name: Verify unit tests · ${{ inputs.sha }}
+
+# Dispatch the workflow from dev; the checkout below pins the code under test.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full commit SHA to verify (40 hexadecimal characters)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Verify unit tests (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      VERIFY_SHA: ${{ inputs.sha }}
+      VERIFY_SHARD: ${{ matrix.shard }}
+
+    steps:
+      - name: Validate commit and prepare writable scratch
+        shell: bash
+        run: |
+          if [[ ! "$VERIFY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::sha must be a full lowercase commit SHA, not a branch or tag'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/unit-test-scratch" "$RUNNER_TEMP/unit-test-evidence"
+          echo "TMPDIR=$RUNNER_TEMP/unit-test-scratch" >> "$GITHUB_ENV"
+          echo "BUILDD_TEST_LOG=$RUNNER_TEMP/unit-test-evidence/test-report.log" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record exact checkout
+        shell: bash
+        run: |
+          actual_sha=$(git rev-parse HEAD)
+          test "$actual_sha" = "$VERIFY_SHA"
+          printf '%s\n' "$actual_sha" > "$RUNNER_TEMP/unit-test-evidence/sha.txt"
+          printf 'Commit: %s\n\nShard: %s/3\n' "$actual_sha" "$VERIFY_SHARD" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install pnpm for dependency handover tests
+        run: npm install --global pnpm@12.10.1
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # No affected-file selection: verification covers the entire pinned tree.
+      # Each file gets its own process, TMPDIR and BUILDD_HOME via this runner.
+      - name: Run isolated unit tests
+        timeout-minutes: 20
+        run: bun run scripts/run-unit-tests.ts --shard "${{ matrix.shard }}/3"
+
+      - name: Upload evidence, including partial reports on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-verification-${{ inputs.sha }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/unit-test-evidence/
+          if-no-files-found: warn
+          retention-days: 14
