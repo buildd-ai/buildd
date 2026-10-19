@@ -540,6 +540,8 @@ export function formatHeartbeat(opts: {
   load1: number;
   cpus: number;
   remainingHintMs: number | null;
+  /** Foreign CPU consumers, from `summarizeHostBusy`; only shown while oversubscribed. */
+  hostBusy?: string;
 }): string {
   const parts = [
     `[progress] ${opts.done}/${opts.total} files done (${opts.failed} failed)`,
@@ -548,7 +550,52 @@ export function formatHeartbeat(opts: {
   ];
   if (opts.remainingHintMs !== null) parts.push(`~${Math.round(opts.remainingHintMs / 1000)}s of hinted work left`);
   if (opts.running.length > 0) parts.push(`running: ${opts.running.slice(0, 3).join(', ')}`);
+  if (opts.hostBusy && opts.load1 > opts.cpus * 1.5) parts.push(`host busy: ${opts.hostBusy}`);
   return parts.join(' | ');
+}
+
+/**
+ * Who else is loading the host. `ps -eo pid,ppid,pcpu,args` output in, the top
+ * CPU consumers outside this run's own process tree out, as `name 129%` pairs.
+ * A load average says the box is busy but not whether it is a sibling worker's
+ * `next build`, a CI checkout's `tsc` or this suite; naming them is what turns
+ * "oversubscribed" into something you can act on. Never throws.
+ */
+export function summarizeHostBusy(psOutput: string, ownPid: number, top = 3): string {
+  const rows = psOutput.split('\n').map(line => {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(.+)$/);
+    return m ? { pid: Number(m[1]), ppid: Number(m[2]), cpu: Number(m[3]), args: m[4] } : null;
+  }).filter((r): r is { pid: number; ppid: number; cpu: number; args: string } => r !== null);
+  const parentOf = new Map(rows.map(r => [r.pid, r.ppid]));
+  const isOwn = (pid: number): boolean => {
+    for (let hops = 0; pid > 1 && hops < 64; hops++) {
+      if (pid === ownPid) return true;
+      pid = parentOf.get(pid) ?? 0;
+    }
+    return false;
+  };
+  const label = (args: string): string => {
+    const words = args.split(/\s+/);
+    const exe = (words[0] ?? '').split('/').pop() ?? '';
+    // `node /path/typescript/bin/tsc ...` and `bun run x` are named by their script, not the interpreter.
+    const script = ['node', 'bun'].includes(exe) ? (words.find((w, i) => i > 0 && !w.startsWith('-') && w !== 'run') ?? exe) : exe;
+    return (script.split('/').pop() ?? script).slice(0, 40);
+  };
+  return rows
+    .filter(r => r.cpu >= 10 && !isOwn(r.pid))
+    .sort((a, b) => b.cpu - a.cpu)
+    .slice(0, top)
+    .map(r => `${label(r.args)} ${Math.round(r.cpu)}%`)
+    .join(', ');
+}
+
+function sampleHostBusy(): string {
+  try {
+    const out = Bun.spawnSync(['ps', '-eo', 'pid,ppid,pcpu,args', '--sort=-pcpu'], { stdout: 'pipe', stderr: 'ignore' });
+    return summarizeHostBusy(out.stdout.toString(), process.pid);
+  } catch {
+    return '';
+  }
 }
 
 export async function runTestFile(
@@ -968,6 +1015,7 @@ async function main(): Promise<void> {
           load1: loadavg()[0],
           cpus: cpus().length,
           remainingHintMs: known ? remaining.reduce((s, f) => s + (hints[f] ?? 0), 0) : null,
+          hostBusy: loadavg()[0] > cpus().length * 1.5 ? sampleHostBusy() : undefined,
         }));
       }, HEARTBEAT_INTERVAL_MS);
   heartbeat?.unref?.();
