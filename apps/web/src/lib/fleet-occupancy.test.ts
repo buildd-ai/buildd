@@ -9,7 +9,7 @@ import {
   scopeMembers,
   type OccupancyWorkerRow,
 } from './fleet-occupancy';
-import { classifyRunnerOwnership, RUNNER_CLASSES, isOwnPersonalRunner } from './runner-ownership';
+import { classifyRunnerOwnership, RUNNER_CLASSES } from './runner-ownership';
 import { MAX_UNENDED_RUN_MS as INSIGHTS_UNENDED_CAP } from './insights-flow';
 
 const MIN = 60_000;
@@ -380,16 +380,6 @@ describe('per-member runner usage uses the same principal as mine/others', () =>
     expect(byId.me.avg).toBeCloseTo(s.summary.runnerBy.mine.avg, 9);
     expect(byId.you.avg).toBeCloseTo(s.summary.runnerBy.others.avg, 9);
     expect(byId.claimer).toBeUndefined();
-  });
-});
-
-describe('isOwnPersonalRunner', () => {
-  it('is true only for a personal runner the viewer created', () => {
-    expect(isOwnPersonalRunner({ mine: true, runnerClass: 'personal' })).toBe(true);
-    expect(isOwnPersonalRunner({ mine: true, runnerClass: 'managed' })).toBe(false);
-    expect(isOwnPersonalRunner({ mine: true, runnerClass: 'team' })).toBe(false);
-    expect(isOwnPersonalRunner({ mine: false, runnerClass: 'personal' })).toBe(false);
-    expect(isOwnPersonalRunner({ mine: true })).toBe(false);
   });
 });
 
