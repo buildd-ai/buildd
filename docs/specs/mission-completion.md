@@ -1076,11 +1076,22 @@ Missions with `workspaceId = null` are valid. They are used for:
 - A mission with `workspaceId = null` and zero deliverable tasks MUST return a
   "no tasks" health signal. This is expected — workspace-less missions may have
   no code deliverables by design.
-- Task creation from a workspace-less mission MUST supply an explicit
-  `workspaceId` on each created task. There is no automatic inference from the
-  mission to the task. If the heartbeat or organizer omits `workspaceId` on a
-  task, that task's `workspaceId` is driven by whichever workspace the executing
-  runner claims from.
+- The mission's planning and heartbeat tasks run in the team's `__coordination`
+  workspace, auto-created on first use (`getOrCreateCoordinationWorkspace`).
+  It has no repo, is flagged `system`, and is hidden from workspace pickers.
+- Tasks the organizer creates for the mission MUST supply an explicit
+  `workspaceId`. There is no automatic inference from the mission to the task.
+  A task omitting it lands in the creating caller's workspace, which for the
+  organizer is `__coordination`.
+- Reach: a task token is scoped to its own workspace (`__coordination`), so
+  creating a task in another workspace needs a delegation or an API key that
+  reaches that workspace. A heartbeat schedule on a workspace-less mission has
+  `workspaceId = null`; the schedule PATCH route filters on workspace id and the
+  delegation loader requires schedule and task workspaces to match, so such a
+  schedule cannot carry a delegation. Known gap: until that is closed, cloud
+  organizers of workspace-less missions can only create tasks in
+  `__coordination`; cross-workspace dispatch needs an API key that reaches the
+  target workspaces.
 
 **Acceptance criteria**:
 - AC-14: GIVEN a workspace-less mission with no tasks WHEN health is derived

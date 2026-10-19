@@ -284,14 +284,12 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
   const words = WINDOW_WORDS[series.windowKey];
   const showPeak = series.windowKey !== '24h';
 
-  if (runnerIdle && !hasSessions) {
-    return <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>;
-  }
-
   const b = hover != null ? series.buckets[hover] : null;
   const readout = (kind: 'runner' | 'sessions') => b
     ? `${fmtBucket(b.t, series.windowKey)}: average ${fmtLevel((kind === 'runner' ? shown(b) : b.sessions).avg)}, peak ${(kind === 'runner' ? shown(b) : b.sessions).peak}`
     : '';
+
+  const noHistory = runnerIdle && !hasSessions;
 
   return (
     <div>
@@ -301,6 +299,9 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         <Metric label="In use now" value={String(busyNow)} />
         <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
+      {noHistory ? (
+        <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>
+      ) : (<>
       {!runnerIdle && (
         <div data-testid="occupancy-view-picker" className="mb-3">
           <Segmented label="Runner slots view" items={VIEWS} value={view} onChange={setView} />
@@ -340,6 +341,7 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
           />
         </div>
       )}
+      </>)}
       {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest agents were read.</p>}
     </div>
   );

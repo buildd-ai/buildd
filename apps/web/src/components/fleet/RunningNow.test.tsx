@@ -71,3 +71,20 @@ describe('RunningNow', () => {
     expect(html).not.toContain('data-pattern');
   });
 });
+
+describe('RunningNow session ownership', () => {
+  it('a teammate\'s session is not labelled Your sessions', () => {
+    const mixed = { ...fleet, sessions: { ...fleet.sessions!, slots: [
+      { index: 0, worker: w('mine', { mine: true, rest: 'my own task', title: 'feat(db): my own task' }), last: null, lane: { id: 's0', bars: [] } },
+      { index: 1, worker: w('theirs', { mine: false, rest: 'their task', title: 'feat(db): their task' }), last: null, lane: { id: 's1', bars: [] } },
+    ] } } as unknown as FleetSnapshot;
+    const html = renderToStaticMarkup(<RunningNow fleet={mixed} now={NOW} />);
+    const idx = html.indexOf('Team sessions');
+    expect(idx).toBeGreaterThan(-1);
+    const yours = html.slice(html.indexOf('Your sessions'), idx);
+    expect(yours).toContain('my own task');
+    expect(yours).not.toContain('their task');
+    expect(html.slice(idx)).toContain('their task');
+  });
+});
+
