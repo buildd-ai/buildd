@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, claudeTranscriptExists, fileTalkSessions, starterPrompt, talkContext, talkSessionKey, talkWorkspaceId } from '../../src/top/talk';
+import { CODEX_TOKEN_ENV, NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, claudeTranscriptExists, codexLoggedIn, codexTranscriptExists, fileTalkSessions, findCodexSession, starterPrompt, talkContext, talkSessionKey, talkWorkspaceId } from '../../src/top/talk';
 import { NOW, fixtureState } from './top-fixture';
 
 const mission = { kind: 'mission' as const, id: 'm-tui-0000-0000', title: 'Runner TUI' };
@@ -156,6 +156,67 @@ describe('remembered sessions', () => {
       expect(claudeTranscriptExists('kept', { CLAUDE_CONFIG_DIR: join(dir, 'missing') })).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Codex (S)', () => {
+  test('opens codex in the checkout with the buildd MCP bound to the workspace; the key is only in the environment', () => {
+    const l = buildTalkLaunch({ ...base, agent: 'codex', workspaceId: 'ws-1', context: ctx });
+    if (!l.ok) throw new Error(l.message);
+    expect(l.argv[0]).toBe('codex');
+    expect(l.cwd).toBe('/work/repo');
+    expect(l.argv).toContain('mcp_servers.buildd.url="https://buildd.example/api/mcp?workspace=ws-1"');
+    expect(l.argv).toContain(`mcp_servers.buildd.bearer_token_env_var="${CODEX_TOKEN_ENV}"`);
+    expect(l.argv.find(a => a.startsWith('developer_instructions='))).toContain('Never edit code in this checkout');
+    expect(l.argv[l.argv.length - 1]).toBe(starterPrompt(ctx));
+    expect(l.argv.join(' ')).not.toContain('bld_secret');
+    expect(l.secretEnv).toEqual({ [CODEX_TOKEN_ENV]: 'bld_secret' });
+    expect(l.mcpConfig).toBeUndefined();
+    // codex names its own sessions; top reads the id after.
+    expect(l).toMatchObject({ agent: 'codex', sessionId: null, resumed: false });
+  });
+
+  test('an earlier Codex session resumes with codex resume and no second starter prompt', () => {
+    const l = buildTalkLaunch({ ...base, agent: 'codex', resumeSessionId: 'old', context: ctx });
+    if (!l.ok) throw new Error(l.message);
+    expect(l.argv.slice(0, 3)).toEqual(['codex', 'resume', 'old']);
+    expect(l.argv).not.toContain(starterPrompt(ctx));
+    expect(l).toMatchObject({ sessionId: 'old', resumed: true });
+  });
+
+  test('no codex login says so, naming codex', () => {
+    expect(buildTalkLaunch({ ...base, agent: 'codex', loggedIn: false, context: ctx })).toEqual({ ok: false, message: "Codex isn't logged in on this machine: run codex login" });
+  });
+
+  test('codex login status decides it', async () => {
+    const seen: string[][] = [];
+    expect(await codexLoggedIn(async c => { seen.push(c); return 0; })).toBe(true);
+    expect(await codexLoggedIn(async () => 1)).toBe(false);
+    expect(seen[0]).toEqual(['codex', 'login', 'status']);
+  });
+
+  test('Claude and Codex sessions on one target are remembered apart', () => {
+    expect(talkSessionKey(mission, 'codex')).not.toBe(talkSessionKey(mission, 'claude'));
+    expect(talkSessionKey(mission)).toBe(talkSessionKey(mission, 'claude'));
+  });
+
+  test('the new Codex session is the newest rollout that started in the checkout', () => {
+    const home = mkdtempSync(join(tmpdir(), 'codex-home-'));
+    try {
+      const day = join(home, 'sessions', '2026', '10', '19');
+      mkdirSync(day, { recursive: true });
+      const meta = (id: string, cwd: string) => JSON.stringify({ type: 'session_meta', payload: { id, cwd } }) + '\n{}\n';
+      writeFileSync(join(day, 'rollout-2026-10-19T10-00-00-elsewhere.jsonl'), meta('elsewhere', '/other/repo'));
+      writeFileSync(join(day, 'rollout-2026-10-19T10-00-01-ours.jsonl'), meta('ours', '/work/repo'));
+      const env = { CODEX_HOME: home };
+      expect(findCodexSession('/work/repo', Date.now() - 60_000, env)).toBe('ours');
+      // Started before this session: not ours.
+      expect(findCodexSession('/work/repo', Date.now() + 60_000, env)).toBeNull();
+      expect(codexTranscriptExists('ours', env)).toBe(true);
+      expect(codexTranscriptExists('gone', env)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

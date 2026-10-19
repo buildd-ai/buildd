@@ -221,6 +221,7 @@ describe('runTop', () => {
       get: (k: string) => store.get(k) ?? null,
       set: (k: string, r: any) => { store.set(k, r); },
       exists: (id: string) => id === 'first',
+      findNew: () => null,
       focusPane: async () => false,
       newId: () => (store.size ? 'second' : 'first'),
     };
@@ -256,6 +257,7 @@ describe('runTop', () => {
       get: () => ({ sessionId: 'open', cwd: '/work/repo', paneId: '%7' }),
       set: () => {},
       exists: () => true,
+      findNew: () => null,
       focusPane: async (p: string) => { focused.push(p); return true; },
       newId: () => 'unused',
     };
@@ -280,17 +282,48 @@ describe('runTop', () => {
     const ran: any[] = [];
     const done = runTop({
       socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
-      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions: { get: () => null, set: () => {}, exists: () => false, focusPane: async () => false, newId: () => 'n' } },
+      talk: { loggedIn: async () => true, run: async (l) => { ran.push(l); return 0; }, sessions: { get: () => null, set: () => {}, exists: () => false, findNew: () => null, focusPane: async () => false, newId: () => 'n' } },
     });
     await until(() => t.screen().includes('name override'));
     t.type('s');
     await until(() => t.screen().includes('Opening Claude'));
     t.type('s');
-    await until(() => t.screen().includes('Still opening Claude'));
+    await until(() => t.screen().includes('Still opening the session'));
     expect(t.screen()).not.toContain('already open');
     answer();
     await until(() => ran.length === 1);
     await until(() => t.screen().includes('Back from Claude'));
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('S opens Codex and remembers the session codex named, so S again resumes it', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const ran: any[] = [];
+    const store = new Map<string, any>();
+    const asked: string[] = [];
+    const sessions = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, r: any) => { store.set(k, r); },
+      exists: (id: string, agent: string) => agent === 'codex' && id === 'codex-1',
+      findNew: (agent: string, cwd: string) => (agent === 'codex' && cwd === '/work/repo' ? 'codex-1' : null),
+      focusPane: async () => false,
+      newId: () => 'unused',
+    };
+    const done = runTop({
+      socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false, openUrl: () => {}, env: {},
+      talk: { loggedIn: async (a) => { asked.push(a); return true; }, run: async (l) => { ran.push(l); return 0; }, sessions },
+    });
+    await until(() => t.screen().includes('name override'));
+    t.type('S');
+    await until(() => ran.length === 1);
+    expect(asked).toEqual(['codex']);
+    expect(ran[0]).toMatchObject({ agent: 'codex', resumed: false });
+    await until(() => t.screen().includes('Back from Codex'));
+    t.type('S');
+    await until(() => ran.length === 2);
+    expect(ran[1]).toMatchObject({ agent: 'codex', sessionId: 'codex-1', resumed: true });
     t.type('q');
     expect(await done).toBe(0);
   });
