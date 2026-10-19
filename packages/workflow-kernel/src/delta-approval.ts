@@ -188,3 +188,24 @@ export function deltaApprovalEligibility(
   if (!(lines <= DELTA_MAX_LINES)) return no(`the delta changes ${Number.isFinite(lines) ? lines : 'an unknown number of'} lines, over the cap of ${DELTA_MAX_LINES}`, from, { files, lines });
   return { eligible: true, reason: 'small delta inside the approved PR', fromHeadSha: from, files, lines };
 }
+
+/**
+ * 92a439a6: is `reading` an empty delta that carries the approval with no
+ * round at all? A delta bounded against the base at both ends that lists no
+ * file says the PR's own diff at `head` is the one approved at its source: a
+ * clean merge of the base, nothing the PR owns. That is §8.3's content
+ * equivalence, the evidence T11/T13 carry on, so it is never a reviewer's
+ * turn. Every eligibility condition still holds (a reviewer verdict, no open
+ * finding, read from the approval source), so an empty read the rule would
+ * not accept as a delta does not carry either. Returns the head it carried
+ * from, or null.
+ */
+export function emptyDeltaCarry(
+  view: Pick<KernelView, 'delivery' | 'rounds' | 'findings'>,
+  head: string,
+  reading: DeltaReading | null | undefined,
+): string | null {
+  if (!reading || reading.files.length > 0) return null;
+  const el = deltaApprovalEligibility(view, head, reading);
+  return el.eligible && el.files === 0 ? el.fromHeadSha : null;
+}

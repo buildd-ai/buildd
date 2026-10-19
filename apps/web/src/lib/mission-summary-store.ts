@@ -22,7 +22,7 @@
  */
 import { db } from '@buildd/core/db';
 import { missionSummaries, missions, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { MISSION_SUMMARY_VERSION, type MissionSummary } from '@buildd/shared';
 import { canonicalSummaryJson, computeMissionSummary, summariesEqual, type MissionSummaryInput } from './mission-summary';
 import { trackEvent } from './axiom';
@@ -350,9 +350,14 @@ export function reconcileMissionSummaries(opts?: { limit?: number }) {
 }
 
 /** Stored summaries of the current version, by mission id, scoped to these workspaces. */
-export async function readMissionSummaries(missionIds: readonly string[], workspaceIds: readonly string[]): Promise<Map<string, StoredMissionSummary>> {
+export async function readMissionSummaries(
+  missionIds: readonly string[],
+  workspaceIds: readonly string[],
+  // Set by a caller that has already authorized the missions: a workspace-less mission has no workspace to scope by.
+  opts: { includeWorkspaceless?: boolean } = {},
+): Promise<Map<string, StoredMissionSummary>> {
   const out = new Map<string, StoredMissionSummary>();
-  if (missionIds.length === 0 || workspaceIds.length === 0) return out;
+  if (missionIds.length === 0 || (workspaceIds.length === 0 && !opts.includeWorkspaceless)) return out;
   const rows = await db.select({
     missionId: missionSummaries.missionId, workspaceId: missionSummaries.workspaceId, version: missionSummaries.version,
     summary: missionSummaries.summary, computedAt: missionSummaries.computedAt,
@@ -362,7 +367,10 @@ export async function readMissionSummaries(missionIds: readonly string[], worksp
     .where(and(
       inArray(missionSummaries.missionId, [...missionIds]),
       // The mission's own workspace, never the copy on the summary row: a moved mission reads where it is now.
-      inArray(missions.workspaceId, [...workspaceIds]),
+      or(
+        workspaceIds.length > 0 ? inArray(missions.workspaceId, [...workspaceIds]) : undefined,
+        opts.includeWorkspaceless ? isNull(missions.workspaceId) : undefined,
+      ),
       sql`${missionSummaries.version} = ${MISSION_SUMMARY_VERSION}`,
     ));
   for (const r of rows) out.set(r.missionId, r as StoredMissionSummary);

@@ -40,9 +40,30 @@ describe('deriveLandingBlocker', () => {
 
   it('kernel: a row about another head is stale; the delivery state wins', () => {
     const delivery = { state: 'AWAITING_REVIEW', headSha: 'h2', prState: 'open', headline: '', detail: null, currentAttempt: null, owner: 'reviewer' } as never;
-    expect(deriveLandingBlocker({ ...PR, landing: DIRTY_ROW, delivery })).toBeNull();
+    expect(deriveLandingBlocker({ ...PR, landing: DIRTY_ROW, delivery })).toMatchObject({ cause: 'review_pending', owner: 'platform' });
     const escalated = { state: 'ESCALATED', headSha: 'h2', prState: 'conflict', headline: 'Needs a person', detail: 'Refresh keeps conflicting', currentAttempt: null, owner: 'human' } as never;
     expect(deriveLandingBlocker({ ...PR, delivery: escalated })).toMatchObject({ cause: 'human_decision', owner: 'person' });
+  });
+
+  it('kernel: a delivery still in review, owed a fix or owed a push is never mergeable (PR 5211 shape)', () => {
+    const d = (state: string, over: Record<string, unknown> = {}) => ({ state, headSha: 'h2', prState: 'open', headline: '', detail: null, currentAttempt: null, owner: 'reviewer', ...over }) as never;
+    const review = deriveLandingBlocker({ ...PR, delivery: d('AWAITING_REVIEW') });
+    expect(review).toMatchObject({ cause: 'review_pending', owner: 'platform', derivedFrom: 'workflow_deliveries' });
+    expect(review?.label).toContain('waiting for its review');
+    expect(deriveLandingBlocker({ ...PR, delivery: d('CHANGES_REQUESTED', { owner: 'worker' }) })).toMatchObject({ cause: 'fix_pending', owner: 'platform' });
+    expect(deriveLandingBlocker({ ...PR, delivery: d('FIXING', { owner: 'worker' }) })).toMatchObject({ cause: 'fix_pending', owner: 'platform' });
+    expect(deriveLandingBlocker({ ...PR, delivery: d('AWAITING_PUSH', { owner: 'worker' }) })).toMatchObject({ cause: 'push_pending', owner: 'platform' });
+    // An approved delivery is the one that really is ready.
+    expect(deriveLandingBlocker({ ...PR, delivery: d('APPROVED', { owner: 'landing' }) })).toBeNull();
+  });
+
+  it('kernel: a delivery in review reads waiting, not READY FOR REVIEW / ready to merge', () => {
+    const delivery = { state: 'AWAITING_REVIEW', headSha: 'h2', prState: 'open', headline: 'Review queued', detail: null, currentAttempt: null, owner: 'reviewer' } as never;
+    const blocker = deriveLandingBlocker({ ...PR, delivery })!;
+    const view = deriveMissionStateView({ ...base, unmergedPrs: [PR], landingBlocked: [blocker] });
+    expect(view.kind).toBe('waiting');
+    expect(view.chip.label).not.toBe('READY FOR REVIEW');
+    expect(view.situation.headline).not.toContain('ready to merge');
   });
 
   it('legacy conflict fact alone is a platform-owned conflict', () => {
