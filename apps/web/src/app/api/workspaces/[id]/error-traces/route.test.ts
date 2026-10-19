@@ -149,6 +149,23 @@ describe('GET /api/workspaces/[id]/error-traces — per-task token', () => {
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
+  // Spec workspace-routing-and-reach I-22: an analytics:read grant opens the rollup.
+  const delegated = (capabilities: string[]) => ({
+    ...scoped(OTHER), taskScope: { ...scoped(OTHER).taskScope, delegations: [{ workspaceId: WS, capabilities }] },
+  });
+
+  it('reads the rollup of a workspace its delegation grants analytics:read on', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(delegated(['analytics:read']));
+    expect((await GET(req('', { authorization: 'Bearer bld_x' }), params())).status).toBe(200);
+    expect(mockSelect).toHaveBeenCalled();
+  });
+
+  it('a tasks:create-only delegation does not open the rollup', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(delegated(['tasks:create']));
+    expect((await GET(req('', { authorization: 'Bearer bld_x' }), params())).status).toBe(404);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
   it('leaves an account key unchanged: any workspace it can reach', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
     const res = await GET(req('', { authorization: 'Bearer bld_x' }), params());

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getWorkspaceErrorTraceRollup, parseRollupParams } from '@/lib/workspace-error-traces';
@@ -27,7 +27,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  // A per-task token reads the rollup only of its own task's workspace.
+  // A per-task token reads the rollup only of its own task's workspace, or of
+  // one its delegation grants analytics:read on.
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
@@ -39,7 +40,7 @@ export async function GET(
   }
 
   const allowed = apiAccount && !user
-    ? taskScopeAllowsWorkspace(apiAccount, id) && await verifyAccountWorkspaceAccess(apiAccount, id)
+    ? taskScopeAllowsDelegated(apiAccount, id, 'analytics:read') && await verifyAccountWorkspaceAccess(apiAccount, id)
     : !!(await verifyWorkspaceAccess(user!.id, id));
   if (!allowed) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

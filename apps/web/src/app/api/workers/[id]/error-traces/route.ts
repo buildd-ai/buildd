@@ -3,7 +3,7 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, desc, gt } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
@@ -30,7 +30,8 @@ export async function GET(
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // A per-task token reads traces of its account's workers in its own task's
-  // workspace; any other worker is missing to it.
+  // workspace, or in one its delegation grants analytics:read on; any other
+  // worker is missing to it.
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
@@ -50,7 +51,7 @@ export async function GET(
   // worker's workspace. A per-task token is scoped by workspace above, not by
   // task, so its scope is not re-applied as the owner check's task rule.
   if (apiAccount && !user) {
-    if (!taskScopeAllowsWorkspace(apiAccount, worker.workspaceId)) {
+    if (!taskScopeAllowsDelegated(apiAccount, worker.workspaceId, 'analytics:read')) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
     if (!callerOwnsWorker({ ...apiAccount, taskScope: undefined }, { ...worker, taskId: null })) {

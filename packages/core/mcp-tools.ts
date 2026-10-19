@@ -2466,7 +2466,39 @@ export function builddHelp(params: Record<string, unknown>): ToolResult {
   return text(`Call buildd with action "help" and params {"action": "<name>"} for one action's full docs.\n\n${topics}`);
 }
 
+/**
+ * The analytics reads a reviewer depends on, with the subject each names in a
+ * failed read. A failure answers FORBIDDEN / UNAUTHORIZED / TOOL_UNAVAILABLE
+ * (`formatAnalyticsReadFailure`), never a raw error that could read as "no
+ * rows" (spec workspace-routing-and-reach I-22).
+ */
+const ANALYTICS_READ_SUBJECTS = {
+  explain: 'explain',
+  get_error_traces: 'error traces',
+  get_failure_analytics: 'failure analytics',
+  dispatch_health: 'dispatch health',
+  get_usage_stats: 'usage stats',
+  get_manifest_coverage: 'manifest coverage',
+  get_path_claim_stats: 'path claim stats',
+  get_decision_stats: 'decision stats',
+} as const;
+export const ANALYTICS_READ_ACTIONS = Object.keys(ANALYTICS_READ_SUBJECTS) as Array<keyof typeof ANALYTICS_READ_SUBJECTS>;
+
 export async function handleBuilddAction(
+  api: ApiFn,
+  action: string,
+  params: Record<string, unknown>,
+  ctx: ActionContext,
+): Promise<ToolResult> {
+  if (!Object.hasOwn(ANALYTICS_READ_SUBJECTS, action)) return dispatchBuilddAction(api, action, params, ctx);
+  try {
+    return await dispatchBuilddAction(api, action, params, ctx);
+  } catch (err) {
+    return errorResult(formatAnalyticsReadFailure(err, ANALYTICS_READ_SUBJECTS[action as keyof typeof ANALYTICS_READ_SUBJECTS]));
+  }
+}
+
+async function dispatchBuilddAction(
   api: ApiFn,
   action: string,
   params: Record<string, unknown>,

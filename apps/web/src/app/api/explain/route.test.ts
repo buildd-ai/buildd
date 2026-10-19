@@ -467,6 +467,35 @@ describe('GET /api/explain — per-task token', () => {
     expect((mockResolveWorkerByPrNumberInWorkspaces.mock.calls[0] as any[])[0]).toEqual([WS]);
   });
 
+  // Spec workspace-routing-and-reach I-22: the workspace readout is analytics,
+  // so an analytics:read grant opens it. A task, mission or PR in the granted
+  // workspace stays closed: a delegation carries no task-level detail.
+  const delegated = (capabilities: string[]) => ({
+    ...scoped, taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: WS2, capabilities }] },
+  });
+
+  it('explains a workspace its delegation grants analytics:read on', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => delegated(['analytics:read']));
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS2, teamId: 'team-1' }));
+    const res = await GET(req(`workspaceId=${WS2}`));
+    expect(res.status).toBe(200);
+    expect(mockExplainWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('a delegation does not open a task in the granted workspace', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => delegated(['analytics:read']));
+    mockTasksFindFirst.mockImplementation(async () => ({ id: TASK, workspaceId: WS2 }));
+    expect((await GET(req(`taskId=${TASK}`))).status).toBe(404);
+    expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('a tasks:create-only delegation does not open the workspace readout', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => delegated(['tasks:create']));
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS2, teamId: 'team-1' }));
+    expect((await GET(req(`workspaceId=${WS2}`))).status).toBe(404);
+    expect(mockExplainWorkspace).not.toHaveBeenCalled();
+  });
+
   it('leaves an account key unchanged: every workspace of its team', async () => {
     mockAuthenticateApiKey.mockImplementation(async () => ({ id: 'acct-1', teamId: 'team-1' }));
     mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS2, teamId: 'team-1' }));

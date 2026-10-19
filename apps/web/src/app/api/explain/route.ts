@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { constrainToGranted } from '@/lib/grant-scope';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -229,7 +229,11 @@ export async function GET(req: NextRequest) {
       where: sqlWhere(eq(workspaces.id, workspaceId!)),
       columns: { id: true, teamId: true },
     });
-    if (!ws || !teamIds.includes(ws.teamId) || !(await reaches(ws.id))) {
+    // The workspace readout is analytics, so an analytics:read delegation
+    // opens it; a task, mission or PR there stays closed (`reaches` above).
+    const readsWorkspace = !account
+      || (taskScopeAllowsDelegated(account, ws?.id, 'analytics:read') && (ws ? await verifyAccountWorkspaceAccess(account, ws.id) : false));
+    if (!ws || !teamIds.includes(ws.teamId) || !readsWorkspace) {
       return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
     }
     return NextResponse.json(await explainWorkspace(workspaceId!, actor));

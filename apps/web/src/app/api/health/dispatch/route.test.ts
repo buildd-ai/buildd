@@ -123,4 +123,28 @@ describe('GET /api/health/dispatch — per-task token', () => {
     expect(res.status).toBe(200);
     expect(mockGetDispatchHealth).toHaveBeenCalledWith([WS_1]);
   });
+
+  // Spec workspace-routing-and-reach I-22: an analytics:read grant opens a
+  // named workspace; it never widens the default read.
+  const delegated = (capabilities: string[]) => ({
+    ...scoped, taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: WS_2, capabilities }] },
+  });
+
+  it('reads a workspace its delegation grants analytics:read on, when named; never by default', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => delegated(['analytics:read']));
+    mockFindFirst.mockImplementation(async () => ({ id: WS_2, teamId: TEAM }));
+    const res = await call(`?workspaceId=${WS_2}`);
+    expect(res.status).toBe(200);
+    expect(mockGetDispatchHealth).toHaveBeenCalledWith([WS_2]);
+    mockGetDispatchHealth.mockClear();
+    await call();
+    expect(mockGetDispatchHealth).toHaveBeenCalledWith([WS_1]);
+  });
+
+  it('a tasks:create-only delegation does not open dispatch health', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => delegated(['tasks:create']));
+    mockFindFirst.mockImplementation(async () => ({ id: WS_2, teamId: TEAM }));
+    expect((await call(`?workspaceId=${WS_2}`)).status).toBe(404);
+    expect(mockGetDispatchHealth).not.toHaveBeenCalled();
+  });
 });

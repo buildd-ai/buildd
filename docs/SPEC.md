@@ -99,8 +99,9 @@ M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 A per-task token (`bldt_`) is confined to its own task's workspace. The
 exception is a **delegation** (`packages/core/token-delegation.ts`): an explicit
-grant of `analytics:read` (decision ledger, decision/coordination stats, gate
-ledger, workspace name resolution) and/or `tasks:create` (the normal create
+grant of `analytics:read` (decision ledger, decision/coordination/usage stats,
+gate ledger and failure analytics, dispatch health, the workspace `explain`
+readout, error traces, workspace name resolution) and/or `tasks:create` (the normal create
 path; a mission link and dependencies only within that same workspace, never a
 foreign parent) on named workspaces of the same team. It lives in two places,
 never in task context (caller-written, so forgeable):
@@ -119,7 +120,10 @@ grant names a workspace the claiming account (which mints the token) cannot use
 — before any agent turn, instead of letting the run discover the wall.
 Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
 the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
-evidence of zero rows.
+evidence of zero rows. Every MCP analytics read (`explain`, `get_error_traces`,
+`get_failure_analytics`, `dispatch_health`, `get_usage_stats`,
+`get_manifest_coverage`, `get_path_claim_stats`, `get_decision_stats`) answers a
+failure that way (`formatAnalyticsReadFailure`), not as a raw error.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
 > `secrets` table. Kept for back-compat, slated for removal. The parallel

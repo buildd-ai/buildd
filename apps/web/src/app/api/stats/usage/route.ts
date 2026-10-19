@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import {
@@ -97,9 +97,13 @@ export async function GET(req: NextRequest) {
       })
     : [];
   // A task token's team is narrowed to its task's workspace before anything
-  // reads it: totals, groups and workspace labels never cover the rest.
+  // reads it: totals, groups and workspace labels never cover the rest. A
+  // workspace its delegation grants analytics:read on is readable only when
+  // named (packages/core/token-delegation.ts); the default read stays its own.
   const scopedWorkspaces = apiAccount
-    ? teamWorkspaces.filter(w => taskScopeAllowsWorkspace(apiAccount, w.id))
+    ? teamWorkspaces.filter(w => workspaceParam
+      ? w.id === workspaceParam && taskScopeAllowsDelegated(apiAccount, w.id, 'analytics:read')
+      : taskScopeAllowsWorkspace(apiAccount, w.id))
     : teamWorkspaces;
   const allowedIds = scopedWorkspaces.map(w => w.id);
 

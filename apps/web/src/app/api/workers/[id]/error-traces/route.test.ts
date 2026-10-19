@@ -88,6 +88,25 @@ describe('GET /api/workers/[id]/error-traces', () => {
       const res = await GET(req(), params());
       expect(res.status).toBe(403);
     });
+
+    // Spec workspace-routing-and-reach I-22: an analytics:read grant opens the
+    // workspace; the owner check still applies on top of it.
+    it('reads its account’s worker in a workspace its delegation grants analytics:read on', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...scoped, taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-other', capabilities: ['analytics:read'] }] },
+      });
+      mockWorkerFindFirst.mockResolvedValue({ id: WORKER, accountId: 'acct-1', workspaceId: 'ws-other' });
+      expect((await GET(req(), params())).status).toBe(200);
+    });
+
+    it('a tasks:create-only delegation does not open worker traces', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...scoped, taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-other', capabilities: ['tasks:create'] }] },
+      });
+      mockWorkerFindFirst.mockResolvedValue({ id: WORKER, accountId: 'acct-1', workspaceId: 'ws-other' });
+      expect((await GET(req(), params())).status).toBe(404);
+      expect(mockTracesFindMany).not.toHaveBeenCalled();
+    });
   });
 });
 

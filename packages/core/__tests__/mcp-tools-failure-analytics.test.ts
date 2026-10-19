@@ -203,8 +203,9 @@ describe('get_failure_analytics scoping', () => {
 
   it('errors without fetching when a named workspace cannot be resolved', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
-    await expect(handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { workspaceId: 'not-a-workspace' }, ctx()))
-      .rejects.toThrow(/Could not resolve workspace "not-a-workspace"/);
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { workspaceId: 'not-a-workspace' }, ctx());
+    // A failed analytics read answers with its read status first (I-22).
+    expect(res.content[0].text).toMatch(/^FORBIDDEN: .*\n.*Could not resolve workspace "not-a-workspace"/);
     expect(mockApi).toHaveBeenCalledTimes(1);
   });
 

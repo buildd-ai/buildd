@@ -200,12 +200,16 @@ describe('get_error_traces', () => {
 
   it('errors when a workspaceId cannot be resolved', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
-    await expect(handleBuilddAction(
+    const res = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'get_error_traces',
       { workspaceId: 'no-such-workspace' },
       ctx(),
-    )).rejects.toThrow(/Could not resolve workspace "no-such-workspace"/);
+    );
+    // A failed analytics read answers with its read status first (I-22).
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/^FORBIDDEN:/);
+    expect(res.content[0].text).toMatch(/Could not resolve workspace "no-such-workspace"/);
   });
 
   it('passes an 8-char task prefix through to the task route (the server resolves it)', async () => {
@@ -240,22 +244,30 @@ describe('get_error_traces', () => {
 
   it('does not swallow a non-auth failure when listing workspaces', async () => {
     mockApi.mockRejectedValueOnce(new Error('API error: 500 - {"error":"Internal Server Error"}'));
-    await expect(handleBuilddAction(
+    const res = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'get_error_traces',
       { workspaceId: 'buildd' },
       ctx(),
-    )).rejects.toThrow(/API error: 500/);
+    );
+    // A failed analytics read answers with its read status first (I-22).
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/^TOOL_UNAVAILABLE:/);
+    expect(res.content[0].text).toMatch(/API error: 500/);
   });
 
   it('surfaces the original 401 when there is no bound workspace to fall back to', async () => {
     mockApi.mockRejectedValueOnce(new Error('API error: 401 - {"error":"Unauthorized"}'));
-    await expect(handleBuilddAction(
+    const res = await handleBuilddAction(
       mockApi as unknown as ApiFn,
       'get_error_traces',
       { workspaceId: 'buildd' },
       ctx({ workspaceId: undefined, getWorkspaceId: async () => null }),
-    )).rejects.toThrow(/API error: 401/);
+    );
+    // A failed analytics read answers with its read status first (I-22).
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/^UNAUTHORIZED:/);
+    expect(res.content[0].text).toMatch(/API error: 401/);
   });
 
   it('passes through since and limit query params', async () => {

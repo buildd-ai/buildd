@@ -208,6 +208,25 @@ describe('GET /api/tasks/[id]/error-traces — per-task token', () => {
     expect(JSON.stringify(await res.json())).not.toContain('Elsewhere');
   });
 
+  // Spec workspace-routing-and-reach I-22: error traces are failure analytics,
+  // so an analytics:read grant on ws-other opens them.
+  const delegated = (capabilities: string[]) => ({
+    ...scoped, taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-other', capabilities }] },
+  });
+
+  it('reads traces of a task in a workspace its delegation grants analytics:read on', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(delegated(['analytics:read']));
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: null });
+    expect((await GET(req(FULL), params(FULL))).status).toBe(200);
+  });
+
+  it('a tasks:create-only delegation does not open traces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(delegated(['tasks:create']));
+    mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: null });
+    expect((await GET(req(FULL), params(FULL))).status).toBe(404);
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+
   it('leaves an account key unchanged: any workspace it can reach', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 't' });
     mockTaskFindFirst.mockResolvedValue({ id: FULL, workspaceId: 'ws-other', status: 'failed', result: null });

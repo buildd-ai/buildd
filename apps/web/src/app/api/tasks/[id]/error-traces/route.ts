@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, desc, gt } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveTaskIdForCaller } from '@/lib/resolve-task-id';
@@ -27,7 +27,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  // A per-task token reads traces of any task in its own task's workspace;
+  // A per-task token reads traces of any task in its own task's workspace, or
+  // in one its delegation grants analytics:read on;
   // canAccess confines prefix resolution and the task read alike.
   const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
@@ -37,7 +38,7 @@ export async function GET(
 
   const canAccess = async (workspaceId: string): Promise<boolean> =>
     apiAccount && !user
-      ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && verifyAccountWorkspaceAccess(apiAccount, workspaceId)
+      ? taskScopeAllowsDelegated(apiAccount, workspaceId, 'analytics:read') && verifyAccountWorkspaceAccess(apiAccount, workspaceId)
       : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
 
   const resolved = await resolveTaskIdForCaller(rawId, canAccess);

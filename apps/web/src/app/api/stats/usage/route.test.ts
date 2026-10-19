@@ -453,4 +453,30 @@ describe('GET /api/stats/usage — per-task token', () => {
     const body = await (await GET(makeRequest({}, 'bld_test'))).json();
     expect(body.workspaceIds).toEqual(['ws-1', 'ws-2']);
   });
+
+  // Spec workspace-routing-and-reach I-22 / AC-10: an analytics:read grant on
+  // ws-2 lets the task read ws-2's usage when it names it, never by default.
+  const withDelegation = (capabilities: string[]) => ({
+    ...SCOPED, taskScope: { ...SCOPED.taskScope, delegations: [{ workspaceId: 'ws-2', capabilities }] },
+  });
+
+  it('reads a workspace its delegation grants analytics:read on, when named', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(withDelegation(['analytics:read']));
+    const res = await GET(makeRequest({ workspace: 'ws-2' }, 'bld_test'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workspaceIds).toEqual(['ws-2']);
+  });
+
+  it('a delegation does not widen the default read', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(withDelegation(['analytics:read']));
+    const body = await (await GET(makeRequest({ groupBy: 'workspace' }, 'bld_test'))).json();
+    expect(body.workspaceIds).toEqual(['ws-1']);
+  });
+
+  it('a tasks:create-only delegation does not open usage', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(withDelegation(['tasks:create']));
+    const res = await GET(makeRequest({ workspace: 'ws-2' }, 'bld_test'));
+    expect(res.status).toBe(404);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
 });

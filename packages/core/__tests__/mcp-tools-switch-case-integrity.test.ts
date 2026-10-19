@@ -91,11 +91,13 @@ function objectLiteralKeys(obj: ts.ObjectLiteralExpression): string[] {
   return keys;
 }
 
-const handleBuilddActionFn = findFunctionByName(sourceFile, 'handleBuilddAction');
-if (!handleBuilddActionFn?.body) throw new Error('handleBuilddAction not found in mcp-tools.ts');
+// handleBuilddAction is a thin wrapper (analytics read statuses); the switch
+// lives in dispatchBuilddAction.
+const handleBuilddActionFn = findFunctionByName(sourceFile, 'dispatchBuilddAction');
+if (!handleBuilddActionFn?.body) throw new Error('dispatchBuilddAction not found in mcp-tools.ts');
 
 const actionSwitch = findOutermostSwitch(handleBuilddActionFn.body);
-if (!actionSwitch) throw new Error('switch (action) not found in handleBuilddAction body');
+if (!actionSwitch) throw new Error('switch (action) not found in dispatchBuilddAction body');
 
 const caseLabels = directCaseLabels(actionSwitch);
 

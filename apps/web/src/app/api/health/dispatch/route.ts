@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsDelegated } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { db } from '@buildd/core/db';
@@ -22,7 +22,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *
  * Auth and scope match /api/health/failures: an API key reads its own team;
  * a session reads the user's teams (or the pinned one); a per-task token reads
- * only its own task's workspace. Read-only.
+ * only its own task's workspace, or a named one its delegation grants
+ * analytics:read on. Read-only.
  *
  * Response: DispatchHealthReport (@buildd/core/dispatch-health-report).
  */
@@ -51,7 +52,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: `Invalid workspaceId: expected a UUID, got "${workspaceId}".` }, { status: 400 });
       }
       const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { id: true, teamId: true } });
-      if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsWorkspace(account, ws.id))) {
+      if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsDelegated(account, ws.id, 'analytics:read'))) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
       scoped = [workspaceId];

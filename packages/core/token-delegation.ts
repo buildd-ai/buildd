@@ -10,10 +10,15 @@
  * delegation gives it exactly the listed capabilities on exactly the listed
  * workspaces, and nothing else:
  *
- *  - `analytics:read`: the workspace's read-only analytics (decision ledger,
- *    decision and coordination stats, the gate ledger and failure analytics)
- *    and its name in workspace resolution. No task bodies, secrets, memory,
- *    repo access or config.
+ *  - `analytics:read`: the workspace's read-only analytics and its name in
+ *    workspace resolution. The routes that honour it, each through
+ *    `taskScopeAllowsDelegated(..., 'analytics:read')`: GET /api/decisions,
+ *    /api/stats/coordination, /api/stats/usage, /api/health/failures (the gate
+ *    ledger and failure analytics), /api/health/dispatch, /api/explain (the
+ *    workspace readout only; a task, mission or PR stays closed), the
+ *    error-trace reads (/api/workspaces/[id], /api/tasks/[id] and
+ *    /api/workers/[id] error-traces) and /api/workspaces. No task bodies,
+ *    secrets, memory, repo access or config.
  *  - `tasks:create`: file a task there through the normal create path (its
  *    dedupe, gates and ledger all apply). A mission link and dependencies
  *    only when the mission and every dependency belong to that same
