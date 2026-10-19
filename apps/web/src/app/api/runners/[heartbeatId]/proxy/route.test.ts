@@ -201,25 +201,24 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     expect(res.status).toBe(502);
   });
 
-  it('grants access via workspace link when team does not match', async () => {
-    mockGetUserTeamIds.mockResolvedValue(['team-OTHER']);
-    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
-    // First selectDistinct call (for accountWorkspaces) returns a match
-    let callCount = 0;
-    mockSelectDistinct.mockReturnValue({
-      from: mock(() => ({
-        where: mock(() => {
-          callCount++;
-          return Promise.resolve(callCount === 1 ? [{ accountId: 'acc-1' }] : []);
-        }),
-      })),
+  for (const path of ['doctor', 'history/stats', 'debug/claims']) {
+    it(`refuses ${path} to a member of another team linked to the runner's account`, async () => {
+      mockGetUserTeamIds.mockResolvedValue(['team-OTHER']);
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      // Live workspace link AND past worked rows both match.
+      mockSelectDistinct.mockReturnValue({
+        from: mock(() => ({ where: mock(() => Promise.resolve([{ accountId: 'acc-1' }])) })),
+      });
+      const fetchMock = mock(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ totalSessions: 99, totalCost: 123 }) } as any),
+      );
+      globalThis.fetch = fetchMock as any;
+      const res = await GET(req('11111111-1111-4111-8111-111111111111', path), { params: makeParams('11111111-1111-4111-8111-111111111111') });
+      expect(res.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(await res.json())).not.toContain('totalCost');
     });
-    globalThis.fetch = mock(() =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve(DOCTOR_RESPONSE) } as any),
-    );
-    const res = await GET(req('11111111-1111-4111-8111-111111111111', 'doctor'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
-    expect(res.status).toBe(200);
-  });
+  }
 
   it('accepts debug/claims as an allowed path', async () => {
     globalThis.fetch = mock(() =>

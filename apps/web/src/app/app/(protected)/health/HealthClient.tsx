@@ -434,7 +434,12 @@ export function HealthClient({
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
-      const errMsg = !doctor && !historyStats ? 'Runner unreachable. Check that it is running and accessible.' : undefined;
+      const forbidden = doctorRes.status === 'fulfilled' && doctorRes.value.status === 403;
+      const errMsg = !doctor && !historyStats
+        ? forbidden
+          ? "Runner diagnostics and lifetime history are only visible to the team that owns this runner."
+          : 'Runner unreachable. Check that it is running and accessible.'
+        : undefined;
 
       setRunnerHealth(prev => {
         const next = new Map(prev);

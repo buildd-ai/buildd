@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerHeartbeats, accountWorkspaces, workers } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { workerHeartbeats } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { liveLinkCondition } from '@/lib/granted-links';
 
 const ALLOWED_PATHS = ['doctor', 'history/stats', 'debug/claims'] as const;
 type AllowedPath = typeof ALLOWED_PATHS[number];
@@ -15,40 +14,19 @@ function isAllowedPath(path: string | null): path is AllowedPath {
   return ALLOWED_PATHS.includes(path as AllowedPath);
 }
 
+/**
+ * Every allowed path is unscoped: the runner answers for all of its work
+ * (lifetime sessions, cost, duration, claims), not for one team's. A runner
+ * shared into other teams by a workspace link or past work is therefore NOT
+ * enough; only a member of the runner account's own team may read it.
+ */
 async function canAccessRunner(
   userId: string,
-  heartbeatAccountId: string,
   heartbeatAccountTeamId: string | null,
 ): Promise<boolean> {
+  if (!heartbeatAccountTeamId) return false;
   const teamIds = await getUserTeamIds(userId);
-  if (heartbeatAccountTeamId && teamIds.includes(heartbeatAccountTeamId)) return true;
-
-  const wsIds = await getUserWorkspaceIds(userId);
-  if (wsIds.length === 0) return false;
-
-  const [linked, worked] = await Promise.all([
-    db
-      .selectDistinct({ accountId: accountWorkspaces.accountId })
-      .from(accountWorkspaces)
-      .where(
-        and(
-          eq(accountWorkspaces.accountId, heartbeatAccountId),
-          inArray(accountWorkspaces.workspaceId, wsIds),
-          liveLinkCondition(),
-        ),
-      ),
-    db
-      .selectDistinct({ accountId: workers.accountId })
-      .from(workers)
-      .where(
-        and(
-          eq(workers.accountId, heartbeatAccountId),
-          inArray(workers.workspaceId, wsIds),
-        ),
-      ),
-  ]);
-
-  return linked.length > 0 || worked.length > 0;
+  return teamIds.includes(heartbeatAccountTeamId);
 }
 
 export async function GET(
@@ -77,11 +55,7 @@ export async function GET(
   });
   if (!hb) return NextResponse.json({ error: 'Runner not found' }, { status: 404 });
 
-  const accessible = await canAccessRunner(
-    user.id,
-    hb.accountId,
-    (hb as any).account?.teamId ?? null,
-  );
+  const accessible = await canAccessRunner(user.id, (hb as any).account?.teamId ?? null);
   if (!accessible) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
