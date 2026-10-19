@@ -65,6 +65,9 @@ beforeAll(async () => {
     JOIN missions m ON m.id = t.mission_id AND m.status = 'active'
     JOIN workers w ON w.task_id = t.id AND w.pr_number IS NOT NULL
     WHERE m.team_id = ${team.teamId}::uuid AND t.status = 'completed' AND t.parent_task_id IS NULL
+      -- Only the seed's own workers on it: a worker another file left on the
+      -- shared team would change what this page measures (and its bytes).
+      AND NOT EXISTS (SELECT 1 FROM workers x WHERE x.task_id = t.id AND x.name NOT LIKE 'worker-%')
     ORDER BY (SELECT count(*) FROM tasks x WHERE x.mission_id = m.id) DESC, t.id LIMIT 1`);
   taskId = row.id;
   // Added here and removed in afterAll: the shared seed is reused only while
