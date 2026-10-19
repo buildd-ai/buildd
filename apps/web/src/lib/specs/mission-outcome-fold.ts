@@ -8,15 +8,10 @@ import { determiningVerdict, type VerdictSource } from '@buildd/spec-contract/ou
  * verdicts recorded so far and the integrated target, answer the `living_spec`
  * goal criterion.
  *
- * The rule is `foldGovernedOutcome`'s, applied to the mission's integrated
- * result instead of one task's PR head:
- *  - pass only when every in-scope, unwaived criterion's newest verdict is
- *    `pass` on the current target;
- *  - fail when any such criterion's newest verdict is `fail` on the current
- *    target (a fail on a commit the target has moved past is re-checked);
- *  - otherwise not a pass: a criterion with no verdict, an `inconclusive` or
- *    `unsupported` one, a pass on a commit the target has moved past, or no
- *    known target at all.
+ * Achievement counts only test results on the integrated target (R-83).
+ * Judged results remain in standings beside them, but never decide achievement.
+ * Missing verdicts remain unverified; no tests or no known target is never a
+ * pass. Tests at an older target must run again, including earlier failures.
  * Task-subject verdicts (a PR review's) are never an input, so a union of PR
  * passes cannot stand in for the integrated audit (AC-38).
  */
@@ -80,11 +75,19 @@ export function foldMissionSpec(input: {
   const grouped = new Map<string, MissionVerdictRow[]>();
   for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
-  for (const [id, rows] of grouped) newest.set(id, determiningVerdict(rows)!);
+  const outranked = new Map<string, number>();
+  for (const [id, rows] of grouped) {
+    // A review cannot turn a test that could not settle the check into an
+    // achieved result. Keep those test results open as well as test failures.
+    const tests = rows.filter((r) => r.source === 'test');
+    const d = determiningVerdict(tests.length ? tests : rows)!;
+    newest.set(id, d);
+    if (d.source === 'test') outranked.set(id, rows.filter((r) => (r.source ?? 'review') === 'review').length);
+  }
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
   const staleFails = new Set<string>();
 
-  const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
+  const fold = (criterionId: string): LivingSpecCriterionStanding => {
     const row = newest.get(criterionId);
     if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id, source: row.source ?? 'review' } : {}) };
     if (!row) return { criterionId, standing: 'missing', headSha: null };
@@ -99,13 +102,20 @@ export function foldMissionSpec(input: {
       return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
     return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
+  };
+  const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
+    const s = fold(criterionId);
+    const n = outranked.get(criterionId);
+    return n ? { ...s, overriddenReviews: n } : s;
   });
 
-  const judged = standings.filter((s) => s.standing !== 'waived');
-  const failed = judged.filter((s) => s.standing === 'fail');
-  const passing = judged.filter((s) => s.standing === 'pass');
-  const open = judged.filter((s) => s.standing !== 'pass');
-  const waivedNote = waived.size > 0 ? ` ${count(standings.length - judged.length)} waived by a person.` : '';
+  const active = standings.filter((s) => s.standing !== 'waived');
+  // Missing results remain open rather than silently shrinking the scope.
+  const tested = active.filter((s) => s.source === 'test' || s.standing === 'missing');
+  const failed = tested.filter((s) => s.standing === 'fail');
+  const passing = tested.filter((s) => s.standing === 'pass');
+  const open = tested.filter((s) => s.standing !== 'pass');
+  const waivedNote = waived.size > 0 ? ` ${count(standings.length - active.length)} waived by a person.` : '';
 
   if (failed.length > 0) {
     return { verdict: 'fail', targetSha, standings, evidence: `${failed.map((s) => s.criterionId).join(', ')} failed. ${describeOpen(open.filter((s) => s.standing !== 'fail'), staleFails)}${waivedNote}`.trim() };
@@ -113,18 +123,21 @@ export function foldMissionSpec(input: {
   if (input.target.kind === 'unknown') {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No integrated target to verify against: ${input.target.reason}.${waivedNote}` };
   }
-  if (judged.length === 0) {
+  if (active.length === 0) {
     return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `Nothing left to verify: every criterion is waived. Remove the outcome spec if the mission no longer answers to it.` };
+  }
+  if (!tested.some((s) => s.source === 'test')) {
+    return { verdict: 'UNVERIFIED', targetSha, standings, evidence: `No tested checks on the integrated result. Judged results do not count toward achievement.${waivedNote}` };
   }
   const where = input.target.kind === 'integration' ? `on ${short(input.target.headSha)}` : 'on a commit holding every merged mission PR';
   if (open.length === 0) {
-    return { verdict: 'pass', targetSha, standings, evidence: `All ${count(judged.length)} criteria pass ${where}.${waivedNote}` };
+    return { verdict: 'pass', targetSha, standings, evidence: `${tested.length === 1 ? 'The tested check passes' : `All ${count(tested.length)} tested checks pass`} ${where}.${waivedNote}` };
   }
   return {
     verdict: 'UNVERIFIED',
     targetSha,
     standings,
-    evidence: `${capital(count(passing.length))} of ${count(judged.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}`.trim(),
+    evidence: `${capital(count(passing.length))} of ${count(tested.length)} pass ${where}. ${describeOpen(open, staleFails)}${waivedNote}`.trim(),
   };
 }
 

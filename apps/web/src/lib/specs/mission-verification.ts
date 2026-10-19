@@ -96,7 +96,10 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
   const targetSha = standing.target.kind === 'integration' ? standing.target.headSha : null;
   const key = targetKey(standing.target);
   const decision = decideFinalVerification(await findPrior(missionId, fingerprint), key);
-  if (decision.kind === 'open') return decision;
+  if (decision.kind === 'open') {
+    await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(decision.taskId, missionId);
+    return decision;
+  }
 
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
@@ -123,7 +126,7 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
     ``,
     `Still open: ${open.length ? open.map((s) => `${s.criterionId} (${s.standing})`).join(', ') : 'none'}.`,
     ``,
-    `For each in-scope criterion, read the code, run its \`check:\` line where it has one, and record one verdict at the target:`,
+    `Runner-owned check tasks run the acceptance commands at the integrated commit and record test verdicts from exit codes. For each in-scope criterion, read the code, inspect its \`check:\` line where it has one, and record one verdict at the target:`,
     `\`manage_specs action=verdict { missionId: "${missionId}", criterionId, verdict: pass|fail|inconclusive|unsupported, headSha: <target>, evidenceRefs, observed }\`.`,
     `For a criterion whose acceptance test you ran at the target, pass the run instead of a verdict: \`acceptanceTest: { exitCode, testName, stdout, stderr }\`. The exit code decides the result (0 pass, any other code fail, a run that never started inconclusive) and the row is recorded as a test, which outranks any reviewer on the same commit.`,
     `A criterion that passed on an earlier target and that the new commits did not touch is re-affirmed explicitly: record a new verdict at the target with \`reaffirms: <earlier verdict id>\` and say which diff you read. Nothing carries over on its own.`,
@@ -151,6 +154,7 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
     },
   } as any).returning({ id: tasks.id });
   if (!task) return { kind: 'unavailable', reason: 'the verification task could not be filed' };
+  await (await import('./mission-acceptance-checks')).runFinalAcceptanceChecks(task.id, missionId);
   await announceTaskCreated(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 3, missionId },
     workspace as any,

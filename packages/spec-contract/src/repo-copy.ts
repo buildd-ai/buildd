@@ -1,3 +1,4 @@
+import { flattenVerifiedBy } from './acceptance-tests';
 /**
  * The generated repo copy of a native spec (docs/specs/living-specs.md §18,
  * D-13, R-14, R-15, R-16). Pure: render a copy from an approved revision, and
@@ -45,7 +46,7 @@ export interface SpecMetadata {
   summary?: string;
   last_verified?: string;
   surfaces?: string[];
-  verified_by?: string[];
+  verified_by?: string[] | Record<string, string[]>;
   assertions?: Array<Record<string, AssertionValue>>;
   /**
    * Set on import: criterion ids the body defines that the parser does not
@@ -177,7 +178,7 @@ export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' |
   lines.push(`last_verified: ${one(m.last_verified ?? input.defaultLastVerified, 'last_verified')}`);
   lines.push(`domain: ${one(input.domain, 'domain')}`);
   lines.push(`surfaces: ${list(m.surfaces)}`);
-  lines.push(`verified_by: ${list(m.verified_by)}`);
+  lines.push(`verified_by: ${list(flattenVerifiedBy(m.verified_by))}`);
   if (m.assertions?.length) {
     lines.push('assertions:');
     for (const a of m.assertions) {
