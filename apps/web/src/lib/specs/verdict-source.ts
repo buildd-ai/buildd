@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { specCriterionRecords, specOutcomeVerdicts, specVerdictSources, verdictCriteria } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
+import { trackVerdictEvidence } from './verdict-provenance';
 import { determiningVerdict, verdictSourceOfEvidence, verifiedByOfEvidence } from '@buildd/spec-contract/outcome';
 
 /**
@@ -19,6 +20,7 @@ export async function settleVerdictSource(verdictId: string): Promise<void> {
     }).from(specOutcomeVerdicts).where(eq(specOutcomeVerdicts.id, verdictId)).limit(1);
     if (!rec) return;
     await linkVerdictCriterion(verdictId, rec.specRevisionId, rec.criterionId);
+    await trackVerdictEvidence(verdictId);
     const input = rec;
     const task = input.taskId ?? null;
     const mission = input.missionId ?? null;
