@@ -16,6 +16,8 @@ import { setKernelHost } from '@/lib/workflow/kernel-host';
 import { commandsConfigured } from '@/lib/workflow/command-keys';
 
 installOutboundFetch();
+/** The cron trigger that drains effects as they come due (wrangler.jsonc `triggers.crons`). */
+const EFFECT_TICK_CRON = '* * * * *';
 // This process is the kernel's control-plane host: every transition it applies is tagged so (AC-9).
 setKernelHost('control-plane');
 
@@ -97,9 +99,15 @@ export default {
 
   // The cron trigger (wrangler.jsonc `triggers.crons`): the kernel's effect drain and floor,
   // hosted here in own mode and a no-op in shadow (workflow-kernel-library.md §3, AC-10).
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     installKernelTelemetry(envOf(env), currentWaitUntil);
     await runInRequest(p => ctx.waitUntil(p), async () => {
+      // The per-minute trigger is the effect timer (effect-timer.ts); the hourly one is the floor.
+      if (controller.cron === EFFECT_TICK_CRON) {
+        const { runScheduledEffectTick } = await import('@/lib/workflow/kernel-floor');
+        await runScheduledEffectTick({ env: envOf(env) });
+        return;
+      }
       const { runScheduledKernelFloor } = await import('@/lib/workflow/kernel-floor');
       const r = await runScheduledKernelFloor({ env: envOf(env) });
       if (!r.ran) console.log(`[kernel-floor] skipped: ${r.reason}`);
