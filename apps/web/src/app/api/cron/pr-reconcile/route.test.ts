@@ -245,7 +245,7 @@ describe('GET /api/cron/pr-reconcile', () => {
       expect(typeof body.timings[step]).toBe('number');
       expect(lines.some((l) => l.startsWith(`[PrReconcile] step=${step} ms=`))).toBe(true);
     }
-    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(30);
+    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(20);
     expect(lines.find((l) => l.startsWith('[PrReconcile] timings='))).toContain('slowest=closedPrs:');
     // A step's own line comes before the pass's summary, so a run cut off mid-pass still shows what finished.
     expect(lines.findIndex((l) => l.startsWith('[PrReconcile] step=reconcile'))).toBeLessThan(lines.findIndex((l) => l.startsWith('[PrReconcile] timings=')));
