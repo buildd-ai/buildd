@@ -731,10 +731,11 @@ export async function POST(req: NextRequest) {
       if (typeof r !== 'string') return r;
       routingInput = { explicit: { workspaceId: r, ref: String(explicitRef) } };
     } else if (subjectRef) {
-      // A UUID subject is taken as named: the reach check below answers a
-      // workspace the caller cannot file in with delegation_required naming it,
-      // rather than a lookup that hides it (I-14).
-      const r = isUuid(subjectRef) ? subjectRef : await resolveRef(subjectRef);
+      // A task token's UUID subject is taken as named: the delegation check
+      // below answers a workspace it cannot file in with delegation_required
+      // naming it (I-14). Any other caller has no such path, so the shared
+      // reach rule decides (403 no_access, never the caller's own home).
+      const r = isUuid(subjectRef) && apiAccount?.taskScope ? subjectRef : await resolveRef(subjectRef);
       if (typeof r !== 'string') return r;
       routingInput = { subject: { workspaceId: r, ref: subjectRef } };
     } else {

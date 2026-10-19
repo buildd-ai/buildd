@@ -1163,6 +1163,47 @@ describe('POST /api/tasks', () => {
     expect(mockResolveWorkspace).toHaveBeenCalledWith('some-project', { userId: 'user-123' });
   });
 
+  describe('declared subject, user session', () => {
+    const OTHER = '00000000-0000-4000-8000-0000000000c3';
+    const fileAbout = (subject: string) => POST(createMockRequest({
+      method: 'POST', body: { subject, workspaceId: 'ws-1', workspaceSource: 'caller_default', title: 'About it' },
+    }));
+
+    it('refuses a UUID subject the user cannot reach with 403 and inserts nothing', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockResolveWorkspace.mockResolvedValue(null);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER });
+      const response = await fileAbout(OTHER);
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('records source=subject for a reachable UUID subject', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockResolveWorkspace.mockResolvedValue({ id: OTHER, teamId: 'team-1', accessMode: 'restricted' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: 'team-1' });
+      const values = mock((v: any) => ({ returning: mock(() => [{ id: 'task-s', ...v }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAbout(OTHER);
+      expect(response.status).toBe(200);
+      const row = (values.mock.calls[0] as any[])[0];
+      expect(row.workspaceId).toBe(OTHER);
+      expect(row.context.workspaceRouting).toMatchObject({ workspaceId: OTHER, source: 'subject' });
+    });
+
+    it('resolves a subject given as a name to a reachable workspace', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockResolveWorkspace.mockResolvedValue({ id: OTHER, teamId: 'team-1', accessMode: 'restricted' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: 'team-1' });
+      const values = mock((v: any) => ({ returning: mock(() => [{ id: 'task-n', ...v }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAbout('other-project');
+      expect(response.status).toBe(200);
+      const row = (values.mock.calls[0] as any[])[0];
+      expect(row.context.workspaceRouting).toMatchObject({ workspaceId: OTHER, source: 'subject' });
+    });
+  });
+
   describe('workspace reach (shared rule with listing and mission create)', () => {
     const WS = '20000000-0000-4000-8000-000000000001';
     const account = { id: 'acct-a', name: 'runner', apiKey: 'bld_xxx', teamId: 'team-a' };
