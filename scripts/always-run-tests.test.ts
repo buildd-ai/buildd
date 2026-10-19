@@ -20,6 +20,14 @@ import { isUnitTestFile } from './run-unit-tests';
  * directions — a new `git ls-files` test cannot be added without registering
  * it, and a registered entry cannot rot.
  */
+/**
+ * Each case below spawns the real affected-tests script (a bun process that
+ * builds the import graph): ~3s on an idle host, but an order of magnitude
+ * slower when the host is oversubscribed, which blew the runner's 30s per-test
+ * default. A generous explicit budget keeps a loaded machine from failing a
+ * correct test; a genuine hang is still caught by the per-file wall-clock cap.
+ */
+const SPAWN_TIMEOUT_MS = 120_000;
 const MANIFEST = 'scripts/always-run-tests.txt';
 
 function manifestEntries(): string[] {
@@ -86,7 +94,7 @@ describe('affected-tests honours the manifest', () => {
     const selection = runAffected(['apps/web/src/app/api/cron/some-new-sweep/route.ts']);
     expect(selection).not.toBe('SKIP');
     expect(selection.split(/\s+/)).toContain('scripts/cron-instrumentation.test.ts');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test('a change with no colocated test still runs the invariants instead of SKIP', () => {
     // CLAUDE.md has no colocated test, but skills-listed.test.ts asserts against it.
@@ -95,19 +103,19 @@ describe('affected-tests honours the manifest', () => {
     for (const entry of manifestEntries()) {
       expect(selection.split(/\s+/)).toContain(entry);
     }
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test('a colocated selection keeps its own tests AND gains the invariants', () => {
     const selection = runAffected(['apps/web/src/lib/reviewer.ts']).split(/\s+/);
     expect(selection).toContain('apps/web/src/lib/reviewer.test.ts');
     expect(selection).toContain('scripts/cron-instrumentation.test.ts');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test('ALL still short-circuits — the manifest must not turn a full run into a list', () => {
     expect(runAffected(['bun.lock'])).toBe('ALL');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test('an empty diff is still SKIP — no changes means nothing to guard', () => {
     expect(runAffected([])).toBe('SKIP');
-  });
+  }, SPAWN_TIMEOUT_MS);
 });

@@ -34,7 +34,7 @@ const mockTasksFindMany = mock((args: any) => {
   if (where?.type !== 'inArray') {
     return (where?.c ?? []).some((c: any) => c?.type === 'or') ? fleetPendingTasks : candidateTasks;
   }
-  // inArray(tasks.missionId, ...) → the advisory-manifest peer probe.
+  // Keep peer fixtures available to catch a reintroduced mission-scope probe.
   // inArray(tasks.id, ...)        → the dependency lookup.
   return where.f === 'missionId' ? missionPeerTasks : depTasks;
 });
@@ -480,99 +480,23 @@ describe('queue-stall cron — names the blocking gate', () => {
     expect(body.stalled[0].gate).toBe('no_gate_identified');
   });
 
-  it('names advisory_manifest when a scope-undeclared sibling holds the mission slot', async () => {
-    candidateTasks = [task({ missionId: 'mission-1', pathManifest: ['**'] })];
-    missionPeerTasks = [
-      {
-        id: 'peer-1',
-        title: 'Refactor the planner',
-        missionId: 'mission-1',
-        pathManifest: ['**'],
-        workers: [{ status: 'waiting_input' }],
-      },
-    ];
+  it.each([{ pathManifest: null }, { pathManifest: [] }, { pathManifest: ['**'] }])(
+    'does not invent a scope hold for manifest %j', async ({ pathManifest }) => {
+      candidateTasks = [task({ missionId: 'mission-1', pathManifest })];
+      missionPeerTasks = [
+        { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: null, workers: [{ status: 'waiting_input' }] },
+      ];
 
-    const body = await (await POST(makeRequest())).json();
+      const body = await (await POST(makeRequest())).json();
 
-    expect(body.stalled[0].gate).toBe('advisory_manifest');
-    // Names the blocker, not its id (see #1867).
-    expect(body.stalled[0].detail).toContain('Refactor the planner');
-  });
-
-  it('catches the null-manifest form of the same block', async () => {
-    candidateTasks = [task({ missionId: 'mission-1', pathManifest: null })];
-    missionPeerTasks = [
-      { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: null, workers: [{ status: 'running' }] },
-    ];
-
-    const body = await (await POST(makeRequest())).json();
-
-    expect(body.stalled[0].gate).toBe('advisory_manifest');
-  });
-
-  it('does not report advisory_manifest when the peer declared concrete scope', async () => {
-    candidateTasks = [task({ missionId: 'mission-1', pathManifest: ['**'] })];
-    missionPeerTasks = [
-      { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: ['a.ts'], workers: [{ status: 'running' }] },
-    ];
-
-    const body = await (await POST(makeRequest())).json();
-
-    expect(body.stalled[0].gate).toBe('no_gate_identified');
-  });
-
-  it('does not report advisory_manifest when the peer has no live worker', async () => {
-    candidateTasks = [task({ missionId: 'mission-1', pathManifest: ['**'] })];
-    missionPeerTasks = [
-      { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: ['**'], workers: [{ status: 'completed' }] },
-    ];
-
-    const body = await (await POST(makeRequest())).json();
-
-    expect(body.stalled[0].gate).toBe('no_gate_identified');
-  });
-
-  it('does not report advisory_manifest against itself', async () => {
-    candidateTasks = [task({ missionId: 'mission-1', pathManifest: ['**'] })];
-    missionPeerTasks = [
-      { id: 'task-1', title: 'Fix the thing', missionId: 'mission-1', pathManifest: ['**'], workers: [{ status: 'running' }] },
-    ];
-
-    const body = await (await POST(makeRequest())).json();
-
-    expect(body.stalled[0].gate).toBe('no_gate_identified');
-  });
-
-  it('ranks every permanent gate above advisory_manifest (it is the only self-clearing one)', async () => {
-    candidateTasks = [task({
-      missionId: 'mission-1',
-      pathManifest: ['**'],
-      subjectKind: 'pull_request',
-      subjectPrNumber: 1789,
-      subjectResolution: 'reconciled',
-      subjectAnchor: { source: 'system' },
-    })];
-    missionPeerTasks = [
-      { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: ['**'], workers: [{ status: 'running' }] },
-    ];
-
-    const body = await (await POST(makeRequest())).json();
-
-    expect(body.stalled[0].gate).toBe('subject_dead');
-  });
-
-  it('skips the peer probe entirely when no examined task has an undeclared scope', async () => {
-    // The probe is an extra round trip; a concrete-manifest queue must not pay
-    // for it. (Fixture manifests are concrete by default.)
-    candidateTasks = [task({ missionId: 'mission-1' })];
-
-    await POST(makeRequest());
-
-    const probeCalls = mockTasksFindMany.mock.calls.filter(
-      (c: any) => c[0]?.where?.type === 'inArray' && c[0]?.where?.f === 'missionId',
-    );
-    expect(probeCalls).toHaveLength(0);
-  });
+      expect(body.stalled[0].gate).toBe('no_gate_identified');
+      expect(body.stalled[0].detail).not.toContain('Peer');
+      const probeCalls = mockTasksFindMany.mock.calls.filter(
+        (c: any) => c[0]?.where?.type === 'inArray' && c[0]?.where?.f === 'missionId',
+      );
+      expect(probeCalls).toHaveLength(0);
+    },
+  );
 
   it('reports no_gate_identified rather than a generic "stuck" message', async () => {
     candidateTasks = [task({ roleSlug: 'builder' })];
@@ -773,7 +697,7 @@ describe('queue-stall cron — missing backend credential', () => {
     expect(body.stalled[0].gate).toBe('workspace_cap_reached');
   });
 
-  it('outranks advisory_manifest — permanent beats self-clearing', async () => {
+  it('reports missing credentials for an undeclared-scope mission task', async () => {
     candidateTasks = [task({ backend: 'codex', missionId: 'mission-1', pathManifest: ['**'] })];
     missionPeerTasks = [
       { id: 'peer-1', title: 'Peer', missionId: 'mission-1', pathManifest: ['**'], workers: [{ status: 'running' }] },
