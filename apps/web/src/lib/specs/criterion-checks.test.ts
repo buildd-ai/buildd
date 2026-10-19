@@ -25,8 +25,9 @@ const db = {
 mock.module('@buildd/core/db', () => ({ db }));
 mock.module('./pin', () => ({ readPinnedSpecRevision: async () => ({ ok: true, body }) }));
 mock.module('./outcome', () => ({ recordCheckVerdict: async (...args: unknown[]) => { taskWrites.push(args); return { ok: true }; } }));
-mock.module('./mission-outcome', () => ({ recordMissionVerdictServer: async (...args: unknown[]) => { missionWrites.push(args); return serverOk ? { ok: true } : { ok: false, error: 'stale integrated target' }; } }));
-const { dispatchCriterionChecks, handleCriterionCheckOutcome } = await import('./criterion-checks');
+
+const { dispatchCriterionChecks, handleCriterionCheckOutcome, registerMissionVerdictRecorder } = await import('./criterion-checks');
+registerMissionVerdictRecorder(async (...args: unknown[]) => { missionWrites.push(args); return serverOk ? { ok: true } : { ok: false, error: 'stale integrated target' }; });
 const subject = () => ({ workspaceId: 'ws', missionId: 'mission', creationSource: 'orchestrator', context: { finalVerification: { missionId: 'mission', specRevisionId: 'revision' } } });
 const run = () => ({ id: ID, workspaceId: 'ws', status: 'completed', creationSource: 'orchestrator', context: { specCriterionCheck: { subjectTaskId: SUBJECT, specRevisionId: 'revision', criterionId: 'AC-1', headSha: SHA, command: COMMAND } }, loopConfig: { exitCondition: { type: 'command', command: checkCommandAt(COMMAND, SHA) } } });
 beforeEach(() => {

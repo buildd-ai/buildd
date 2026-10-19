@@ -42,6 +42,11 @@ const TITLE_PREFIX = 'Check spec criterion';
 type Wake = (task: { id: string; title: string; workspaceId: string; missionId?: string }) => Promise<void>;
 export interface CheckDeps { wake?: Wake }
 
+type MissionVerdictRecorder = (missionId: string, input: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; error: string }>;
+let recordMissionVerdict: MissionVerdictRecorder | null = null;
+/** The missions module registers how a final-verification check's verdict is recorded; core does not import it. */
+export function registerMissionVerdictRecorder(fn: MissionVerdictRecorder): void { recordMissionVerdict = fn; }
+
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
@@ -251,8 +256,9 @@ export async function handleCriterionCheckOutcome(
       ...(excerpt(ev.stderr) ? { stderr: excerpt(ev.stderr) } : {}),
     },
   };
+  if (p.missionId && !recordMissionVerdict) return { recorded: false, reason: 'no mission verdict recorder is registered' };
   const r = p.missionId
-    ? await (await import('./mission-outcome')).recordMissionVerdictServer(p.missionId, { ...input, recordedBy: `check:${task.id}` })
+    ? await recordMissionVerdict!(p.missionId, { ...input, recordedBy: `check:${task.id}` })
     : await recordCheckVerdict(marker.subjectTaskId, input);
   if (!r.ok) return { recorded: false, reason: r.error };
   return { recorded: true, verdict };
