@@ -22,6 +22,7 @@ import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
+import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
@@ -336,6 +337,35 @@ async function createTaskFromIssue(
   }
 }
 
+/**
+ * The workspace an issue event belongs to. `workspaces.repo` is free text any team can set, so a
+ * bare repo-name match could file an issue as a task in a team that does not own the installation
+ * that delivered the event. Candidates are limited to teams owning that installation, and when
+ * more than one still matches we refuse rather than pick one arbitrarily.
+ */
+async function resolveIssueWorkspace(installationId: number, repoFullName: string) {
+  const installation = await db.query.githubInstallations.findFirst({
+    where: eq(githubInstallations.installationId, installationId),
+    columns: { id: true },
+  });
+  if (!installation) return null;
+
+  const candidates = await db.query.workspaces.findMany({
+    where: sqlWhere(workspaceRepoMatches(repoFullName)),
+  });
+  if (candidates.length === 0) return null;
+
+  const ownerTeams = new Set(await getInstallationOwnerTeamIds(installation.id));
+  const eligible = candidates.filter((w) => ownerTeams.has(w.teamId));
+  if (eligible.length > 1) {
+    console.warn(
+      `[github-webhook] issues event for ${repoFullName} matches ${eligible.length} workspaces of the installation's teams; ignoring`,
+    );
+    return null;
+  }
+  return eligible[0] ?? null;
+}
+
 async function handleIssuesEvent(event: GitHubIssuesEvent) {
   if (!event.installation) {
     return; // Ignore events without installation context
@@ -343,15 +373,8 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 
   const { action, issue, repository } = event;
 
-  // Find the workspace linked to this repo by full name
-  const workspace = await db.query.workspaces.findFirst({
-    where: sqlWhere(workspaceRepoMatches(repository.full_name)),
-  });
-
-  if (!workspace) {
-    // No workspace linked to this repo
-    return;
-  }
+  const workspace = await resolveIssueWorkspace(event.installation.id, repository.full_name);
+  if (!workspace) return;
 
   // Trigger label(s): the workspace's configured inbound label (github work
   // tracker), else the defaults. Match is case-insensitive.

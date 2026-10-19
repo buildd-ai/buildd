@@ -141,6 +141,11 @@ mock.module('@/lib/repo-scope', () => ({
   GIT_SUFFIX_RE: 'suffix-re',
 }));
 
+const mockGetInstallationOwnerTeamIds = mock(async (_id: string) => ['team-a'] as string[]);
+mock.module('@/lib/github-installation-access', () => ({
+  getInstallationOwnerTeamIds: mockGetInstallationOwnerTeamIds,
+}));
+
 const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
   notifyOperator: mockNotify,
@@ -858,6 +863,8 @@ function resetAll() {
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
   mockWorkspacesFindMany.mockReset();
+  mockGetInstallationOwnerTeamIds.mockReset();
+  mockGetInstallationOwnerTeamIds.mockResolvedValue(['team-a']);
   mockWorkersFindFirst.mockReset();
   mockTasksFindFirst.mockReset();
   mockMissionsFindFirst.mockReset();
@@ -932,7 +939,7 @@ function resetAll() {
   // Defaults
   mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(true));
   mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
-  mockInstallationsFindFirst.mockReturnValue(null);
+  mockInstallationsFindFirst.mockReturnValue(Promise.resolve({ id: 'inst-1' }));
   mockWorkspacesFindFirst.mockReturnValue(null);
   mockWorkspacesFindMany.mockReturnValue([]);
   mockWorkersFindFirst.mockReturnValue(null);
@@ -1144,9 +1151,7 @@ describe('POST /api/github/webhook', () => {
 
   // ── Issues events ───────────────────────────────────────────────────────
   it('handles issues opened with buildd label - creates task', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
 
     const payload = {
       action: 'opened',
@@ -1170,9 +1175,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('handles issues opened without buildd label - no task created', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
 
     const payload = {
       action: 'opened',
@@ -1189,9 +1192,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('handles issues closed - cancels the linked task if non-terminal', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
 
     const payload = {
       action: 'closed',
@@ -1211,9 +1212,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('issues closed with an open linked task runs the shared cancel side effects', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
     // The running task's row is actually changed by the guarded UPDATE.
     updateReturningByStatus.cancelled = [{ id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' }];
 
@@ -1234,9 +1233,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('issues closed when the task is already terminal (buildd post-merge close) is a no-op', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
     updateReturningByStatus.cancelled = []; // guard skipped the terminal row
 
     const res = await POST(createWebhookRequest('issues', {
@@ -1251,9 +1248,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('issues reopened runs the reopen side effects for each resurrected task', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
     updateReturningByStatus.pending = [{ id: 'task-9', workspaceId: 'ws-1', missionId: 'm-1' }];
 
     await POST(createWebhookRequest('issues', {
@@ -1271,9 +1266,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('issues reopened with nothing to resurrect runs no side effects', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
     updateReturningByStatus.pending = [];
 
     await POST(createWebhookRequest('issues', {
@@ -1287,9 +1280,7 @@ describe('POST /api/github/webhook', () => {
   });
 
   it('handles issues reopened - updates task to pending', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
 
     const payload = {
       action: 'reopened',
@@ -1318,13 +1309,11 @@ describe('POST /api/github/webhook', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls.length).toBe(0);
-    expect(mockWorkspacesFindFirst).not.toHaveBeenCalled();
+    expect(mockWorkspacesFindMany).not.toHaveBeenCalled();
   });
 
   it('handles issues opened with ai label - creates task', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(
-      Promise.resolve({ id: 'ws-1', repo: 'test-org/test-repo' })
-    );
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([{ id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' }]));
 
     const payload = {
       action: 'opened',
@@ -1340,8 +1329,54 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls.length).toBe(1);
   });
 
+  const issueOpened = () => createWebhookRequest('issues', {
+    action: 'opened',
+    issue: makeIssue({ labels: [{ name: 'buildd' }] }),
+    repository: { id: 100, full_name: 'test-org/test-repo' },
+    installation: { id: 5000 },
+  });
+
+  it('issues: a same-repo workspace of a team that does not own the installation is skipped', async () => {
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([
+      { id: 'ws-other', teamId: 'team-b', repo: 'test-org/test-repo' },
+      { id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' },
+    ]));
+    const res = await POST(issueOpened());
+    expect(res.status).toBe(200);
+    expect(insertCalls.length).toBe(1);
+    expect(insertCalls[0].values.workspaceId).toBe('ws-1');
+  });
+
+  it('issues: only a foreign team matches - no task', async () => {
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([
+      { id: 'ws-other', teamId: 'team-b', repo: 'test-org/test-repo' },
+    ]));
+    await POST(issueOpened());
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('issues: still ambiguous within the owning teams - refuses rather than picks', async () => {
+    mockGetInstallationOwnerTeamIds.mockResolvedValue(['team-a', 'team-b']);
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([
+      { id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' },
+      { id: 'ws-2', teamId: 'team-b', repo: 'test-org/test-repo' },
+    ]));
+    const res = await POST(issueOpened());
+    expect(res.status).toBe(200);
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('issues: unknown installation row - no task', async () => {
+    mockInstallationsFindFirst.mockReturnValue(Promise.resolve(null));
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([
+      { id: 'ws-1', teamId: 'team-a', repo: 'test-org/test-repo' },
+    ]));
+    await POST(issueOpened());
+    expect(insertCalls.length).toBe(0);
+  });
+
   it('ignores issues when no workspace is linked', async () => {
-    mockWorkspacesFindFirst.mockReturnValue(Promise.resolve(null));
+    mockWorkspacesFindMany.mockReturnValue(Promise.resolve([]));
 
     const payload = {
       action: 'opened',
@@ -1359,7 +1394,7 @@ describe('POST /api/github/webhook', () => {
 
   // ── Error handling ──────────────────────────────────────────────────────
   it('returns 500 when handler throws', async () => {
-    mockWorkspacesFindFirst.mockImplementation(() => {
+    mockWorkspacesFindMany.mockImplementation(() => {
       throw new Error('Database connection failed');
     });
 
@@ -4998,9 +5033,9 @@ describe('inbound issues → tasks', () => {
   }
 
   it('creates a work-tracker-linked task when a github-tracked issue is labeled', async () => {
-    mockWorkspacesFindFirst.mockReturnValue({
-      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
-    });
+    mockWorkspacesFindMany.mockReturnValue([{
+      id: 'ws1', teamId: 'team-a', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    }]);
     const res = await POST(createWebhookRequest('issues', issuePayload('labeled')));
     expect(res.status).toBe(200);
 
@@ -5012,9 +5047,9 @@ describe('inbound issues → tasks', () => {
   });
 
   it('is idempotent — no insert when a task already exists for the issue', async () => {
-    mockWorkspacesFindFirst.mockReturnValue({
-      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
-    });
+    mockWorkspacesFindMany.mockReturnValue([{
+      id: 'ws1', teamId: 'team-a', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    }]);
     mockTasksFindFirst.mockReturnValue({ id: 'existing' });
     const res = await POST(createWebhookRequest('issues', issuePayload('labeled')));
     expect(res.status).toBe(200);
@@ -5022,18 +5057,18 @@ describe('inbound issues → tasks', () => {
   });
 
   it('does not create a task when the trigger label is absent', async () => {
-    mockWorkspacesFindFirst.mockReturnValue({
-      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
-    });
+    mockWorkspacesFindMany.mockReturnValue([{
+      id: 'ws1', teamId: 'team-a', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    }]);
     const res = await POST(createWebhookRequest('issues', issuePayload('labeled', { labels: [{ name: 'bug' }] })));
     expect(res.status).toBe(200);
     expect(insertCalls.find((c) => c.table === schemaMock.tasks)).toBeUndefined();
   });
 
   it('honors a custom inbound label from config', async () => {
-    mockWorkspacesFindFirst.mockReturnValue({
-      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github', inboundLabel: 'agent' },
-    });
+    mockWorkspacesFindMany.mockReturnValue([{
+      id: 'ws1', teamId: 'team-a', repo: 'acme/widgets', workTrackerConfig: { provider: 'github', inboundLabel: 'agent' },
+    }]);
     // default 'buildd' label should NOT trigger when a custom label is configured
     const res = await POST(createWebhookRequest('issues', issuePayload('labeled', { labels: [{ name: 'buildd' }] })));
     expect(res.status).toBe(200);
@@ -5041,9 +5076,9 @@ describe('inbound issues → tasks', () => {
   });
 
   it('cancels a linked task when its issue is closed', async () => {
-    mockWorkspacesFindFirst.mockReturnValue({
-      id: 'ws1', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
-    });
+    mockWorkspacesFindMany.mockReturnValue([{
+      id: 'ws1', teamId: 'team-a', repo: 'acme/widgets', workTrackerConfig: { provider: 'github' },
+    }]);
     const res = await POST(createWebhookRequest('issues', issuePayload('closed')));
     expect(res.status).toBe(200);
     const cancel = updateCalls.find((c) => (c.setValues as any).status === 'cancelled' && c.table === schemaMock.tasks);
