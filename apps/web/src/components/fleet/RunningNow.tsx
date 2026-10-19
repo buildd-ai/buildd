@@ -26,7 +26,7 @@ export const ROWS_SHOWN = 5;
 
 const stateWord = (w: FleetSlotWorker) => (w.status === 'waiting_input' || w.question ? 'Has a question' : 'Working');
 
-function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: number; missions: Readonly<Record<string, LaneMission>>; heading?: string }) {
+function Group({ runner, now, missions, heading, others }: { runner: FleetRunner; now: number; missions: Readonly<Record<string, LaneMission>>; heading?: string; others?: boolean }) {
   const running = runner.slots.flatMap(s => (s.worker ? [s.worker] : []));
   const [all, setAll] = useState(false);
   const shown = all ? running : running.slice(0, ROWS_SHOWN);
@@ -39,7 +39,7 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
       </div>
       {runner.interactive && running.length > 0 && (
         <p data-testid="running-now-sessions-note" className="mt-0.5 text-meta text-text-muted">
-          Your own sessions. Sessions don't use runner slots.
+          {others ? "Teammates' sessions." : 'Your own sessions.'} Sessions don't use runner slots.
         </p>
       )}
       {running.length > 0 && (
@@ -79,11 +79,21 @@ function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: n
 }
 
 export function RunningNow({ fleet, now, missions = {} }: { fleet: FleetSnapshot; now: number; missions?: Readonly<Record<string, LaneMission>> }) {
-  const sessions = fleet.sessions && fleet.sessions.slots.some(s => s.worker) ? fleet.sessions : null;
+  // "Your sessions" holds only claims that are the viewer's (or every claim when
+  // no viewer was resolved); a teammate's or unattributed claim is a team session.
+  const lane = fleet.sessions && fleet.sessions.slots.some(s => s.worker) ? fleet.sessions : null;
+  const part = (keep: (mine: boolean | null | undefined) => boolean): FleetRunner | null => {
+    if (!lane) return null;
+    const slots = lane.slots.filter(s => s.worker && keep(s.worker.mine));
+    return slots.length > 0 ? { ...lane, slots, interactive: lane.interactive && { ...lane.interactive, running: slots.length } } : null;
+  };
+  const sessions = part(m => m === undefined || m === true);
+  const teamSessions = part(m => m === false || m === null);
   return (
     <div data-testid="running-now" className="divide-y divide-border-default">
       {fleet.runners.map(r => <Group key={r.id} runner={r} now={now} missions={missions} />)}
       {sessions && <Group runner={sessions} now={now} missions={missions} heading="Your sessions" />}
+      {teamSessions && <Group runner={teamSessions} now={now} missions={missions} heading="Team sessions" others />}
     </div>
   );
 }

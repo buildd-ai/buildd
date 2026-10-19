@@ -28,6 +28,11 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
+import { registerMissionVerdictRecorder } from '@/lib/specs/criterion-checks';
+import { recordMissionVerdictServer } from '@/lib/specs/mission-outcome';
+
+// A final-verification check's verdict lands on the mission; core reaches it through this hook.
+registerMissionVerdictRecorder((missionId, input) => recordMissionVerdictServer(missionId, input as Parameters<typeof recordMissionVerdictServer>[1]));
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';

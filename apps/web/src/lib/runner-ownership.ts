@@ -26,3 +26,17 @@ export function classifyRunnerOwnership(account: RunnerOwnershipInput | null | u
   if (account.createdByUserId) return 'personal';
   return 'unknown';
 }
+
+/**
+ * Whether the viewer's own personal key. Class is authoritative: a managed or
+ * team-host key never counts as "yours" even when the viewer minted it, and
+ * another member's personal key (same team or cross-team) never does either.
+ */
+export function isViewersPersonalRunner(
+  account: RunnerOwnershipInput | null | undefined,
+  viewerUserId: string | null | undefined,
+): boolean {
+  return viewerUserId != null
+    && classifyRunnerOwnership(account) === 'personal'
+    && account?.createdByUserId === viewerUserId;
+}

@@ -334,7 +334,7 @@ export function classifyAnalyticsReadFailure(error: unknown): Exclude<AnalyticsR
 }
 
 const STATUS_MEANING: Record<Exclude<AnalyticsReadStatus, 'OK' | 'NO_DATA'>, string> = {
-  FORBIDDEN: 'the caller is authenticated but not allowed to read this workspace (for a scheduled task: the schedule has no delegation granting analytics:read on it)',
+  FORBIDDEN: 'the caller is authenticated but not allowed to read this workspace (for a task token: neither its schedule nor the task itself carries a delegation granting analytics:read on it)',
   UNAUTHORIZED: 'the token was not accepted at all (expired, revoked, or its minting key changed)',
   TOOL_UNAVAILABLE: 'the read failed for a reason unrelated to access (server error, timeout, or the store was unreachable)',
 };

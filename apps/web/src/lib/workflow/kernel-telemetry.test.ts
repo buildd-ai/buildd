@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
-  KERNEL_SPAN, breakerSpanAttributes, callerOfRoute, commandOutcomeOf, commandSpanAttributes, doorSpanAttributes, emitKernelSpan,
+  KERNEL_SPAN, breakerSpanAttributes, callerOfRoute, commandCallerOf, commandOutcomeOf, commandSpanAttributes, doorSpanAttributes, emitKernelSpan,
   floorSpanAttributes, inferDoorCaller, passSpanAttributes, setKernelSpanSink, webCommandSpanAttributes, withKernelRoute, currentKernelRoute,
   type KernelSpanRecord,
 } from './kernel-telemetry';
@@ -97,6 +97,25 @@ describe('attribute contract', () => {
     expect(commandOutcomeOf(409, { code: 'in_progress' })).toBe('in_progress');
     expect(commandOutcomeOf(503, { code: 'ledger_unavailable' })).toBe('unavailable');
     expect(commandOutcomeOf(403, { code: 'forbidden' })).toBe('refused');
+  });
+});
+
+describe('command caller diagnostics', () => {
+  it('logs only fixed user-agent classes, never raw header values', () => {
+    const cases = [
+      ['buildd-kernel-client/1', 'buildd-web'], ['curl/8.1', 'curl'],
+      ['Python-urllib/3.12', 'python'], ['node', 'node'],
+      ['Mozilla/5.0 example', 'browser'], ['private-value', 'other'], ['', 'unknown'],
+    ];
+    for (const [agent, expected] of cases) {
+      expect(commandCallerOf(new Headers({ 'user-agent': agent, authorization: 'secret-value' }))).toBe(expected);
+    }
+  });
+
+  it('adds a caller class and fixed signature refusal reason to the command span', () => {
+    expect(commandSpanAttributes({ op: null, status: 401, outcome: 'refused', code: 'unauthorized', latencyMs: 1, caller: 'curl', authFailure: 'missing' })).toMatchObject({
+      'kernel.caller': 'curl', 'kernel.auth_failure': 'missing',
+    });
   });
 });
 
@@ -307,6 +326,28 @@ describe('control-plane command spans', () => {
     ]);
     expect(commands[2].attributes['kernel.error_code']).toBe('unauthorized');
     expect(commands.every((s) => s.attributes['kernel.host'] === 'control-plane')).toBe(true);
+  });
+
+  it('classifies unauthorized curl callers and signature failures without exporting raw headers', async () => {
+    const { handleCommandRequest } = await import('./command-api');
+    const { signRequest } = await import('@buildd/dispatch-contract');
+    const spans = capture();
+    const url = 'https://control-plane.buildd.dev/v1/commands';
+    const headers = await signRequest({ keyId: 'k1', secret: 'different-test-secret', method: 'POST', path: '/v1/commands', body: '{}' });
+    for (const signature of [{}, headers]) {
+      const res = await handleCommandRequest(new Request(url, {
+        method: 'POST', body: '{}', headers: { ...signature, 'user-agent': 'curl/8.1 private-marker', authorization: 'Bearer private-marker' },
+      }), { env: OWN, host: () => 'control-plane' });
+      expect(res.status).toBe(401);
+    }
+    const commands = spans.filter((s) => s.name === 'kernel.command');
+    expect(commands).toHaveLength(2);
+    expect(commands.map((s) => s.attributes['kernel.auth_failure'])).toEqual(['missing', 'bad_signature']);
+    for (const span of commands) {
+      expect(span.attributes).toMatchObject({ 'kernel.caller': 'curl', 'kernel.error_code': 'unauthorized', 'kernel.status': 401, 'kernel.op': 'unknown' });
+      expect(JSON.stringify(span)).not.toContain('private-marker');
+      expect(JSON.stringify(span)).not.toContain(headers['Dispatch-Signature']);
+    }
   });
 
   it('the web host answering the endpoint (not_host) reports nothing', async () => {

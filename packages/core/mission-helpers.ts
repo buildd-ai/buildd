@@ -892,7 +892,7 @@ export type DeliverableRole = 'build' | 'verification' | 'repair' | 'maintenance
  * __tests__/deliverable-role.test.ts fails otherwise.
  */
 export const DELIVERABLE_ROLE_CONTEXT_KEYS = {
-  objectMarkers: ['finalVerification', 'surfaceFix', 'specRepair'],
+  objectMarkers: ['finalVerification', 'acceptanceTests', 'surfaceFix', 'specRepair'],
   values: ['requireMergeCommit', 'refreshTrunk'],
 } as const;
 
@@ -904,6 +904,8 @@ export function deliverableRole(task: { title?: string | null; roleSlug?: string
   // A mission's final requirement verification (Living Specs Slice 12) checks
   // the integrated result; a spec repair fixes a criterion it found failing.
   if (ctx?.finalVerification != null && typeof ctx.finalVerification === 'object') return 'verification';
+  // The acceptance-tests task writes the checks before any building (R-76).
+  if (ctx?.acceptanceTests != null && typeof ctx.acceptanceTests === 'object') return 'verification';
   if (isSurfaceFixTask(title) || (ctx?.surfaceFix != null && typeof ctx.surfaceFix === 'object')) return 'repair';
   if (ctx?.specRepair != null && typeof ctx.specRepair === 'object') return 'repair';
   if (isTrunkRefreshTask({ title, context: task.context })) return 'maintenance';

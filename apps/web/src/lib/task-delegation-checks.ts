@@ -28,9 +28,11 @@ type DelegatedTaskRow = Parameters<typeof loadRawTaskGrants>[0];
 /**
  * Claim pre-flight: what this task needs across workspaces (its delegation and
  * its declared filing targets) that the token minted from `account` would not
- * carry or could not use. Empty = start the run. Uses the same reach rules as
- * the routes a delegated call lands on: same team, the minting key's workspace
- * list, and the account's own access (`canCreate` for tasks:create).
+ * carry or could not use. Empty = start the run. Checks same team, the
+ * minting key's workspace list, and the account's own access to each target
+ * (`canCreate` for tasks:create). That last check is stricter than the routes
+ * for analytics:read, which honour team plus grant without asking whether the
+ * account reaches the target (docs/specs/workspace-routing-and-reach.md D-3).
  */
 export async function preflightTaskDelegation(
   task: DelegatedTaskRow & { context?: unknown },

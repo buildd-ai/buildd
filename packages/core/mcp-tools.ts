@@ -1876,10 +1876,13 @@ const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
 ]);
 
 /**
- * For OAuth tokens with access to multiple workspaces, refuse ambiguous
- * mutating/aggregating actions unless workspaceId is explicit (either via
- * URL pin at OAuth time or via params). API-key tokens are workspace-scoped
- * at creation and skip this guard.
+ * For any caller that reaches more than one workspace, refuse ambiguous
+ * mutating/aggregating actions unless workspaceId is explicit (via the URL
+ * pin or via params). That includes an unrestricted account key: it reaches
+ * its team's open workspaces, and without this its create_task fell back to
+ * getWorkspaceId()'s guess (spec workspace-routing-and-reach I-16). Restricted
+ * keys and task tokens are always pinned by the MCP route, so they pass on
+ * ctx.workspaceId.
  */
 async function requireExplicitWorkspace(
   api: ApiFn,
@@ -1888,9 +1891,8 @@ async function requireExplicitWorkspace(
   ctx: ActionContext,
 ): Promise<ToolResult | null> {
   if (!AMBIGUOUS_WORKSPACE_ACTIONS.has(action)) return null;
-  if (ctx.workspaceId) return null;          // URL-pinned at OAuth time
+  if (ctx.workspaceId) return null;          // URL-pinned
   if (params.workspaceId) return null;        // explicit per-call
-  if (ctx.authType !== 'oauth') return null;  // API keys are workspace-scoped
 
   let workspaces: Array<{ id: string; name: string; repo?: string | null }> = [];
   try {
@@ -1910,7 +1912,7 @@ async function requireExplicitWorkspace(
   return {
     content: [{
       type: 'text' as const,
-      text: `This OAuth token has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
+      text: `This ${ctx.authType === 'oauth' ? 'OAuth token' : 'key'} has access to ${workspaces.length} workspaces. Action "${action}" requires an explicit workspaceId to avoid misrouting (the 2026-05-25 incident). Pass workspaceId in params — workspace name is accepted:\n${choices}`,
     }],
     isError: true,
   };
@@ -1977,15 +1979,13 @@ async function resolveWorkspaceId(
   }
 
   // Fall back to name match across accessible workspaces. A per-task token
-  // (cloud container / worker session running under a `bldt_` token) has no
-  // auth path into this listing endpoint at all — it always 401s here,
-  // regardless of which name was passed, because listing is inherently
-  // team-wide and the token can only ever reach its own task's workspace.
-  // Such a caller already has that one workspace bound unambiguously
-  // (ctx.getWorkspaceId()), so a name match against it is a convenience
-  // confirmation, not a real lookup: fall back to the bound workspace instead
-  // of surfacing this scope-shaped 401 as a raw API error. Any other failure
-  // (a genuine outage, etc.) still propagates.
+  // (`bldt_`) gets a narrowed list here: its own task's workspace plus the
+  // ones its delegation grants analytics:read or tasks:create on. A 401 can
+  // still come back (a server predating that, or a token the listing rejects);
+  // such a caller has its own workspace bound unambiguously
+  // (ctx.getWorkspaceId()), so fall back to it instead of surfacing the 401
+  // as a raw API error. Any other failure (a genuine outage, etc.) still
+  // propagates.
   let wsData;
   try {
     wsData = await api('/api/workspaces');
@@ -2047,9 +2047,7 @@ export function unknownWorkspaceMessage(value: string, visible: Array<{ name: st
   const seen = names.length === 0
     ? 'This key can see no workspaces.'
     : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
-  const next = names.length === 0
-    ? ''
-    : ' A key cannot file into a workspace outside its scope: file the follow-up in a visible workspace and name the intended destination in its description.';
+  const next = ' A key cannot file into a workspace outside its scope, and a task filed in a different workspace is not a substitute. Either request_capability tasks:create with resource = the intended workspace\'s UUID (a person approves it), or hand the work to a person.';
   return `Could not resolve workspace "${value}": not visible to this key. ${seen}${next}`;
 }
 
