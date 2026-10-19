@@ -104,7 +104,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, reconcileRecoverableBlockerRepair, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -144,7 +144,6 @@ import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
 import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
-import { dbReconcilePort, isRecoverableBlockerRepair, reconcileBlockedOnRepair } from '@/lib/recoverable-blocker-reconcile';
 
 /**
  * Work that does not change the reply runs after it is sent (spec 3ef37387
@@ -1511,7 +1510,7 @@ async function patchWorker(
           });
           if (!repair) return;
           const summary = (repair.result as { summary?: unknown } | null)?.summary;
-          await reconcileBlockedOnRepair(dbReconcilePort(), { id: repair.id, summary: typeof summary === 'string' ? summary : null });
+          await reconcileRecoverableBlockerRepair({ id: repair.id, summary: typeof summary === 'string' ? summary : null });
         });
       }
     }
@@ -4738,8 +4737,8 @@ async function patchWorker(
       // A recoverable-blocker repair landed: resume the tasks parked on it
       // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
       await runStep('recoverable-blocker-reconcile', async () => {
-        if (effectiveOutcome !== 'completed' || shouldAutoRetry || !isRecoverableBlockerRepair(terminalTaskRow[0]?.context)) return;
-        await reconcileBlockedOnRepair(dbReconcilePort(), { id: taskId, summary: typeof body.summary === 'string' ? body.summary : null });
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        await reconcileRecoverableBlockerRepair({ id: taskId, context: terminalTaskRow[0]?.context ?? null, summary: typeof body.summary === 'string' ? body.summary : null });
       });
 
       // Re-arm any schedule that was deferred by its per-schedule concurrent cap

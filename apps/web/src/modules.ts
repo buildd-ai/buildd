@@ -252,6 +252,19 @@ export async function republishPrHeads(
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
 
 /**
+ * The other half of that slot (lib/recoverable-blocker-reconcile.ts): a
+ * completed task, or a park tagged with a completed repair, resumes every task
+ * parked on the repair. A no-op for any other task. Lazy, like republishPrHeads.
+ */
+export async function reconcileRecoverableBlockerRepair(
+  task: { id: string; context?: unknown; summary?: string | null },
+): Promise<void> {
+  const m = await import('@/lib/recoverable-blocker-reconcile');
+  if (task.context !== undefined && !m.isRecoverableBlockerRepair(task.context)) return;
+  await m.reconcileBlockedOnRepair(m.dbReconcilePort(), { id: task.id, summary: task.summary ?? null });
+}
+
+/**
  * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
  * module says whether a mission's shipping PR merged, so a refresh task with
  * nothing left to ship can complete on that evidence.

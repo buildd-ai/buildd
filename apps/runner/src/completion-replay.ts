@@ -19,7 +19,7 @@
  * transport error is not the runner's call.
  */
 
-import { isBuilddActionTool } from '@buildd/shared';
+import { isBuilddActionTool, isTerminalWorkerStatus } from '@buildd/shared';
 import { isServerRefusal } from './server-refusal';
 
 /** Three tries, then the existing session-end handling decides. Bounded so a down server cannot hold the slot. */
@@ -106,8 +106,6 @@ export interface CompletionReplayDeps {
   sleep(ms: number): Promise<void>;
 }
 
-const TERMINAL_NOT_COMPLETED = new Set(['failed', 'error', 'superseded']);
-
 export async function replayCompletion(
   deps: CompletionReplayDeps,
   params: Record<string, unknown>,
@@ -116,7 +114,7 @@ export async function replayCompletion(
   const payload = completionReplayPayload(params);
   let sends = 0;
   const settled = (s: string | null): CompletionReplayOutcome | null =>
-    s === 'completed' ? 'landed' : s && TERMINAL_NOT_COMPLETED.has(s) ? 'refused' : null;
+    s === 'completed' ? 'landed' : s && isTerminalWorkerStatus(s) ? 'refused' : null;
 
   for (const wait of backoffMs) {
     if (wait > 0) await deps.sleep(wait);
