@@ -1,10 +1,11 @@
 import { repairPathManifest, readRepairPrFiles } from '@/lib/repair-manifest';
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { withLoaderLabel } from '@buildd/core/db/query-label';
+import { deferredReplyWork } from '@/lib/deferred-reply-work';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules, reviewFeedback } from '@buildd/core/db/schema';
@@ -144,33 +145,6 @@ import { settleWorkChanges } from '@/lib/settle-work-changes';
 import { clearTeamCache } from '@/lib/team-cache';
 import { readRound } from '@/lib/read-round';
 import { changedFields, livenessWriteDue, markWorkerHeartbeat, markParkedWorkerSeen, INTERACTIVE_SESSION_SEEN_WRITE_MS } from '@/lib/worker-patch-diff';
-
-/**
- * Work that does not change the reply runs after it is sent (spec 3ef37387
- * R-33): `after()` inside a request, inline outside one (tests, scripts), so
- * nothing is lost where no response is being sent. Never throws.
- */
-function deferredReplyWork() {
-  const pending: Array<{ label: string; fn: () => Promise<unknown> }> = [];
-  let scheduled = false;
-  return async (label: string, fn: () => Promise<unknown>): Promise<void> => {
-    const run = async () => {
-      for (const item of pending.splice(0)) {
-        try { await withLoaderLabel(`workers.patch.after.${item.label}`, item.fn); }
-        catch (err) { console.error(`[workers PATCH] ${item.label} failed:`, err); }
-      }
-    };
-    pending.push({ label, fn });
-    if (scheduled) return;
-    try {
-      after(run);
-      scheduled = true;
-    } catch {
-      // Direct invocation (scripts/unit tests) has no request lifetime.
-      await run();
-    }
-  };
-}
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -1302,6 +1276,12 @@ async function patchWorker(
   const telemetryWrite = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
     ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
     : afterReply(label, fn);
+  // A terminal report's follow-up (release, reviewer verdict, the kernel's
+  // attempt end, terminal records) runs before the reply, as it did before
+  // R-33: an outcome must never depend on the request's lifetime.
+  const terminalWork = (label: string, fn: () => Promise<unknown>) => reportIsTerminal
+    ? fn().then(() => {}, err => console.error(`[workers PATCH] ${label} failed:`, err))
+    : afterReply(label, fn);
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
     const existing = (worker.mcpCalls as any[]) || [];
@@ -1881,7 +1861,7 @@ async function patchWorker(
       // The sample plus this sync's paths plus what the task actually holds:
       // the leases are the complete set, the sample may be truncated.
       const observedTaskId = worker.taskId;
-      await afterReply('terminal touched paths', async () => {
+      await terminalWork('terminal touched paths', async () => {
       const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
       const owned = worker.workspaceId ? await terminalOwnedPaths(worker.workspaceId, observedTaskId) : [];
       const finalPaths = [...new Set([...observed, ...reportedTouches, ...owned])];
@@ -4493,7 +4473,7 @@ async function patchWorker(
       };
 
       const completedTaskId = worker.taskId;
-      await afterReply('completion follow-up', async () => {
+      await terminalWork('completion follow-up', async () => {
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
@@ -5090,7 +5070,7 @@ async function patchWorker(
     await clearTeamCache(wsForSensitivity?.teamId, 'questions');
   }
 
-  await afterReply('worker follow-up', async () => {
+  await terminalWork('worker follow-up', async () => {
   // A runner repeats status and PR fields on every sync. Only actual writes
   // invalidate derived summaries; noteWorkChanged coalesces their listeners.
   if (writeSet && ['status', 'waitingFor', 'prUrl', 'prNumber'].some(key => key in writeSet)) {
