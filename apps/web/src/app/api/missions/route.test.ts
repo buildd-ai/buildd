@@ -1138,7 +1138,7 @@ describe('GET /api/missions — summary rows by default (R-19)', () => {
     const res = await GET(new NextRequest('http://localhost/api/missions'));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1']);
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1'], { includeWorkspaceless: true });
     expect(body).toMatchObject({ total: 2, hasMore: false });
     expect(mockMissionsCount).not.toHaveBeenCalled();
     const [m1, m2] = body.missions;
@@ -1155,7 +1155,7 @@ describe('GET /api/missions — summary rows by default (R-19)', () => {
     const body = await (await GET(new NextRequest('http://localhost/api/missions?limit=2'))).json();
     expect(body.missions.map((m: any) => m.id)).toEqual(['m-1', 'm-2']);
     expect(body).toMatchObject({ total: 7, hasMore: true });
-    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1', 'ws-1']);
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith(['m-1', 'm-2'], ['ws-1', 'ws-1'], { includeWorkspaceless: false });
     const [, countWhere] = mockMissionsCount.mock.calls[0] as any[];
     expect(countWhere).toEqual(capturedWhere(mockMissionsFindMany.mock.calls[0][0].where));
   });

@@ -2619,7 +2619,7 @@ describe('GET /api/missions/[id] — lean default (summary row)', () => {
     const args = (mockMissionsFindFirst.mock.calls[0] as any[])[0];
     expect(args.columns).toBeDefined();
     expect(args.with).toBeUndefined();
-    expect(mockReadMissionSummaries).toHaveBeenCalledWith([MISSION], ['ws-1']);
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith([MISSION], ['ws-1'], { includeWorkspaceless: false });
     expect(body.tasks).toBeUndefined();
     expect(body.description).toBeUndefined();
     expect(body.deliveries).toBeUndefined();
@@ -2630,6 +2630,15 @@ describe('GET /api/missions/[id] — lean default (summary row)', () => {
     mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-1', workspaceId: 'ws-1', title: 'New', status: 'active' } as any);
     const body = await (await get()).json();
     expect(body).toMatchObject({ summary: null, totalTasks: 0, completedTasks: 0, progress: 0, activeAgents: 0, lastActivityAt: null });
+  });
+
+  it('a team-authorized workspace-less mission still exposes its stored summary', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION, teamId: 'team-1', workspaceId: null, title: 'Loose', status: 'active' } as any);
+    const summary = { progress: { total: 2, done: 1, percent: 50 }, liveWorkers: 1, lastActivityAt: null };
+    mockReadMissionSummaries.mockResolvedValue(new Map([[MISSION, { missionId: MISSION, summary }]]));
+    const body = await (await get()).json();
+    expect(mockReadMissionSummaries).toHaveBeenCalledWith([MISSION], [], { includeWorkspaceless: true });
+    expect(body).toMatchObject({ summary, totalTasks: 2, completedTasks: 1, progress: 50, activeAgents: 1 });
   });
 
   it('404s a missing mission without reading summaries', async () => {
