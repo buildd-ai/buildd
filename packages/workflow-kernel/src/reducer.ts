@@ -1465,6 +1465,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { supersededByPr: cmd.target.prNumber, supersededByUrl: cmd.target.url, supersededReason: cmd.reason, recordedBy: cmd.actor },
         effects: [
           { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: { target: cmd.target } },
+          { kind: 'carry_findings', dedupeKey: `carry_findings:${dd.id}`, payload: { target: cmd.target } },
           { kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:superseded`, payload: {} },
         ],
         evidence: { target: cmd.target, reason: cmd.reason },
@@ -1562,11 +1563,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         if (!cmd.commitId) return c.rejected('commit_id_required');
         if (cmd.commitId !== dd.currentHeadSha) return c.stale('review_on_older_commit');
         if (cmd.hasMergePermission !== true) return c.rejected('no_merge_permission');
+        // An approval past required findings still open or awaiting verification is an override:
+        // the policy and the person's role have to allow it. The findings stay as they are, named here.
+        const remaining = (view.findings ?? []).filter((f) => f.required && (f.status === 'open' || f.status === 'addressed'));
+        if (remaining.length && cmd.overridePermitted !== true) return c.rejected('override_not_permitted');
         return c.apply(key, 'APPROVED', {
           guardHead: true,
           patch: { approvedHeads: [cmd.commitId], approvalBasis: 'human', stateReason: null },
-          evidence: { commitId: cmd.commitId },
-          bypass,
+          evidence: { commitId: cmd.commitId, ...(remaining.length ? { overriddenFindings: remaining.map((f) => f.id) } : {}) },
+          bypass: remaining.length ? { ...bypass, overriddenFindings: remaining.map((f) => f.id) } : bypass,
         });
       }
       if (cmd.choice === 'dismiss') {

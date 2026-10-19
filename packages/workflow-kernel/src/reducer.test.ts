@@ -1472,11 +1472,11 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     // A superseded PR already shipped: abandoning it is refused, not a silent no-op.
     expectResult(ab(V(D({ state: 'SUPERSEDED', supersededByPr: 9 }))), 'rejected', 'not_closed_unmerged');
   });
-  test('T20 and T21 both project the edge onto the worker rows and wake the mission (Slice D)', () => {
+  test('T20 and T21 both project the edge onto the worker rows and wake the mission; only T20 carries findings (Slice D, §5)', () => {
     const c = V(D({ state: 'CLOSED_UNMERGED' }));
     const t20 = applied(run(c, { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'r', authorised: true }));
     const t21 = applied(run(c, { type: 'Abandon', actor: 'human:u', reason: 'dropped' }));
-    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
+    expect(effectKinds(t20)).toEqual(['project_supersession', 'carry_findings', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(t21.patch).toMatchObject({ stateReason: 'dropped', recordedBy: 'human:u' });
   });
@@ -1514,6 +1514,21 @@ describe('T22–T24', () => {
     expect(ok.guard.headSha).toBe('H2');
     expect(ok.patch).toMatchObject({ approvedHeads: ['H2'], approvalBasis: 'human' });
     expect(ok.evidence).toMatchObject({ commitId: 'H2' });
+  });
+  // Living Spec r7 AC-45/AC-46: an approval past remaining required findings is an override; the policy has to allow it.
+  test('HumanResolve(approve) over open findings needs overridePermitted, and the bypass names the findings', () => {
+    const f = (id: string, status: string, required = true) => ({ id, originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: `${id}.ts`, line: 1, title: id, required, status, lastRound: 1 }) as never;
+    const e: KernelView = { ...V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentHeadSha: 'H2' })), findings: [f('a', 'open'), f('b', 'addressed'), f('c', 'resolved'), f('d', 'open', false)] };
+    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true, ...o });
+    expectResult(hr({}), 'rejected', 'override_not_permitted');
+    expectResult(hr({ overridePermitted: false }), 'rejected', 'override_not_permitted');
+    expectResult(hr({ hasMergePermission: false, overridePermitted: true }), 'rejected', 'no_merge_permission');
+    const ok = applied(hr({ overridePermitted: true, reason: 'accepted' }));
+    expect(ok.toState).toBe('APPROVED');
+    expect(ok.bypass).toMatchObject({ choice: 'approve', actor: 'human:u', reason: 'accepted', overriddenFindings: ['a', 'b'] });
+    // Nothing left to override: a plain approval, as before.
+    const clean: KernelView = { ...e, findings: [f('c', 'resolved')] };
+    expect(applied(run(clean, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true })).toState).toBe('APPROVED');
   });
   test('DeliveryFailed: no PR only', () => {
     expectResult(run(V(D()), { type: 'DeliveryFailed', actor: 'runner', reason: 'x' }), 'rejected', 'pr_bound');

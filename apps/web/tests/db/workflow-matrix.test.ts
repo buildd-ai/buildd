@@ -784,9 +784,9 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
 
     // The late deliveries the webhook and the sweeps would hand the funnel, in a hostile order.
     const target = { prUrl: prUrl(o), prNumber: o.prNumber };
-    expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
-    expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
-    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
+    expect(await recordPrFact(target, { kind: 'open' }, { scope: factFunnelScope })).toEqual([]); // late synchronize / opened
+    expect(await recordPrFact(target, { kind: 'open', reopened: true }, { scope: factFunnelScope })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' }, { scope: factFunnelScope })).toEqual([]); // late check_suite
     expect(await recordPrFact(target, { kind: 'closed' }, { scope: factFunnelScope })).toEqual([]);
     expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope })).toEqual([]); // a merge door's receipt time
     // …and the kernel's own late CI fact files nothing on a merged delivery.
@@ -799,15 +799,22 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     const o = await openAndHandOn();
     await q(sql`UPDATE workers SET pr_url = ${prUrl(o)} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
     await push(o, 'H2', { ancestors: ['H1'] });
-    await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' });
+    // AC-1: the rows are delivery-owned, so the funnel reports the green and writes neither row.
+    const green = await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_green', headSha: 'H2', currentHeadSha: 'H2' }, { scope: factFunnelScope });
+    // The target is the PR's URL and number, not the workspace: on the double run (scripts/run-db-tests.ts)
+    // it also reaches the first run's rows for the same PR, which are delivery-owned too. Pin this run's.
+    expect(green.every((r) => r.deferred)).toBe(true);
+    expect(green.filter((r) => r.workspaceId === workspaceId).map((r) => r.id).sort())
+      .toEqual((await prRows(o)).map((r) => r.id).sort());
     const before = await delivery(o.deliveryId);
     // The old suite's failure arrives late: its SHA is H1, the PR head is H2.
     expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale', reason: 'head_not_current' } });
-    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' })).toEqual([]);
+    expect(await recordPrFact({ prUrl: prUrl(o), prNumber: o.prNumber }, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H2' }, { scope: factFunnelScope })).toEqual([]);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: before.state, ci: before.ci, version: before.version, currentHeadSha: 'H2' });
     expect(await ciAttempts(o.deliveryId)).toEqual([]);
     expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
-    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['ci_green', 'ci_green']);
+    // The rows say what the delivery says (the push's transition projected it): no CI verdict on H2 yet.
+    expect((await prRows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['pr_open', 'pr_open']);
   });
 });
 
@@ -1583,7 +1590,7 @@ describe('S16–S21', () => {
     expect(d.state).toBe('ESCALATED');
     const n = (await transitions(o.deliveryId)).length;
 
-    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true }, { ref: { deliveryId: o.deliveryId } });
+    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true, overridePermitted: true }, { ref: { deliveryId: o.deliveryId } });
     expect(await resolve(d.version - 1)).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'ESCALATED', version: d.version, head: 'H1', round: 1 } });
     expect((await transitions(o.deliveryId)).length).toBe(n);
     expect(await resolve(d.version)).toMatchObject({ result: 'applied' });
@@ -2524,7 +2531,7 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
     const o = await ownerAwaitingPush();
     gh.head = 'L5'; gh.ancestors.L5 = ['H1'];
     // What the synchronize webhook does: the open-state fact to the funnel, the head hint to the kernel.
-    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' });
+    await recordPrFact({ prUrl: prUrlOf(o), prNumber: o.prNumber }, { kind: 'open' }, { scope: factFunnelScope });
     expect(await push(o, 'L5', { ancestors: ['H1'] })).toBe(true);
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'L5', currentRound: 1 });
     expect((await rounds(o.deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'L5', 'queued']]);

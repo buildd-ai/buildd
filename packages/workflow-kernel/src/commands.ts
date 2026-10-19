@@ -572,6 +572,12 @@ export type Command =
       commitId?: string;
       /** approve: the person holds merge permission on the repo (T14's evidence). */
       hasMergePermission?: boolean;
+      /**
+       * approve past remaining required findings (open or awaiting verification) is an override
+       * (Living Spec r7 AC-45): the host says whether this person may take it under the merge
+       * policy and their team role. Absent reads as not permitted (`override_not_permitted`).
+       */
+      overridePermitted?: boolean;
       /** AC-45: the decision this is and the head it was made on. */
       decision?: HumanDecision;
     })
@@ -628,7 +634,7 @@ export const EFFECT_KINDS = [
   'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
-  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
+  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence', 'carry_findings',
   'publish_landing_status', 'dispatch_external_merge_fix',
 ] as const;
 

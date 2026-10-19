@@ -69,6 +69,13 @@
  *    conflict. It also reconciles what a request left unfinished: an
  *    abandoned lease, or a conflict pointer to settle.
  *
+ * Both triggers ask through the kernel's epoch outbox (`refreshMission`): the
+ * refresh is a `workflow_effects` row the mission's writable epoch owes
+ * (lib/workflow/epoch-effects.ts), drained by the asking request and, for
+ * whatever it leaves due, by the kernel floor. A merged epoch owes none, and a
+ * row queued before its epoch merged is skipped when it is claimed. A mission
+ * with no epoch rows yet (it predates them) is refreshed by the direct call.
+ *
  * Every other writer to the branch (task PR landings, the repair's landing,
  * the kernel's own refresh and landing of the mission PR) and how each is
  * fenced is the spec's "Lifecycle and concurrency" section. The lease here
@@ -90,6 +97,7 @@ import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch
 import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import type { EpochEffectHandlers, RefreshTrigger } from '@/lib/workflow/epoch-effects';
 
 /** How long a single-flight claim holds, before another caller may retry it. */
 export const BRANCH_REFRESH_LEASE_MS = 45_000;
@@ -97,6 +105,8 @@ export const BRANCH_REFRESH_LEASE_MS = 45_000;
 export const BRANCH_REFRESH_BACKSTOP_MS = 24 * 60 * 60 * 1000;
 /** The most a starting task's claim waits on its mission's refresh. */
 export const START_REFRESH_BUDGET_MS = 4_000;
+/** An epoch refresh that met another caller's lease waits this long, then runs again (spending no attempt). */
+export const REFRESH_IN_FLIGHT_PARK_MS = 60_000;
 
 function githubErrorStatus(err: unknown): number | null {
   const msg = err instanceof Error ? err.message : String(err);
@@ -114,7 +124,7 @@ function githubErrorMessage(err: unknown): string {
  * unsolicited upkeep, which a paused, held or budget-exhausted mission never
  * gets (docs/specs/mission-branch-refresh.md, "Eligibility").
  */
-export type RefreshTrigger = 'start' | 'backstop';
+export type { RefreshTrigger };
 
 const TERMINAL_MISSION_STATUSES = ['completed', 'archived'] as const satisfies readonly MissionStatusValue[];
 const PAUSED_MISSION_STATUSES = ['paused', 'budget_exhausted'] as const satisfies readonly MissionStatusValue[];
@@ -150,7 +160,9 @@ export type MissionBranchRefreshOutcome =
         | 'in_flight'
         | 'already_current'
         | 'no_repo'
-        | 'empty_repo';
+        | 'empty_repo'
+        /** The writable epoch's branch is not cut yet: the kernel cuts it from the merge commit first. */
+        | 'branch_not_cut';
       detail?: string;
       conflictTaskId?: string;
     }
@@ -682,6 +694,53 @@ async function dispatchBranchRefreshConflictTask(args: {
   return { kind: 'task', taskId: newTask.id, dispatched: true };
 }
 
+// ── The refresh as the writable epoch's outbox effect (workflow-kernel-library.md §6) ──
+
+/** What one drained refresh row records: an outcome, a wait, or (thrown) a failed attempt that backs off. */
+export function refreshEffectAnswer(o: MissionBranchRefreshOutcome): { outcome: string; park?: { delayMs: number }; value: MissionBranchRefreshOutcome } {
+  switch (o.kind) {
+    case 'merged': return { outcome: 'merged', value: o };
+    case 'conflict': return { outcome: o.dispatched ? 'conflict:dispatched' : 'conflict', value: o };
+    case 'error': throw new Error(o.detail);
+    case 'skipped':
+      // Another caller holds the mission's lease: run again once it is through.
+      if (o.reason === 'in_flight') return { outcome: 'parked:in_flight', park: { delayMs: REFRESH_IN_FLIGHT_PARK_MS }, value: o };
+      return { outcome: `skipped:${o.reason}`, value: o };
+  }
+}
+
+/** The missions module's epoch effect handlers (the composition root's `MISSION_EPOCH_HOOKS`). */
+export const missionRefreshEffectHandlers: EpochEffectHandlers = {
+  async refresh_mission_branch(e) {
+    if (!e.epoch) throw new Error(`epoch ${e.epochId} not found`);
+    const trigger: RefreshTrigger = e.payload.trigger === 'start' ? 'start' : 'backstop';
+    return refreshEffectAnswer(await refreshMissionIntegrationBranch(e.epoch.missionId, { trigger }));
+  },
+};
+
+/**
+ * Ask for one mission's refresh. With epoch rows, it is owed on the writable
+ * epoch and the row is drained here, now; a merged epoch owes none, so nothing
+ * is attempted and nothing is filed. A row another drain holds, or that failed
+ * and backs off, is the floor's to finish. A mission with no epoch rows yet
+ * is refreshed by the direct call.
+ */
+export async function refreshMission(missionId: string, opts: { trigger: RefreshTrigger }): Promise<MissionBranchRefreshOutcome> {
+  const { oweMissionRefresh, drainEpochEffects } = await import('@/lib/workflow/epoch-effects');
+  const owed = await oweMissionRefresh(missionId, { trigger: opts.trigger });
+  if (owed.owed === 'legacy') return refreshMissionIntegrationBranch(missionId, { trigger: opts.trigger });
+  if (owed.owed === 'none') {
+    return { kind: 'skipped', reason: owed.reason === 'epoch_merged' ? 'mission_pr_merged' : owed.reason };
+  }
+  const drained = await drainEpochEffects({ handlers: missionRefreshEffectHandlers, effectIds: [owed.effectId], limit: 1 });
+  const ran = drained.ran[0];
+  // Not claimable now: another drain holds it, it already ran this window, or it waits on a backoff.
+  if (!ran) return { kind: 'skipped', reason: 'in_flight' };
+  if (ran.value) return ran.value as MissionBranchRefreshOutcome;
+  if (ran.outcome === 'skipped:superseded') return { kind: 'skipped', reason: 'mission_pr_merged' };
+  return { kind: 'error', detail: ran.outcome };
+}
+
 export interface MissionBranchRefreshSweepResult {
   scanned: number;
   merged: number;
@@ -746,7 +805,7 @@ export async function sweepMissionBranchRefresh(): Promise<MissionBranchRefreshS
         result.skipped++;
         continue;
       }
-      const outcome = await refreshMissionIntegrationBranch(m.id, { trigger: 'backstop' });
+      const outcome = await refreshMission(m.id, { trigger: 'backstop' });
       if (outcome.kind === 'merged') result.merged++;
       else if (outcome.kind === 'conflict') result.conflicts++;
       else if (outcome.kind === 'error') result.errors++;
@@ -781,7 +840,9 @@ export interface StartingTask {
  * subscriber passes `after()`, so the platform keeps the request alive for
  * it). It holds the single-flight lease, so a concurrent start coalesces into
  * it. Nothing depends on that promise surviving: if the request is torn down
- * first, the lease is left set and expires, and the backstop treats an
+ * first, the epoch's effect row stays leased, its lease expires, and the
+ * kernel floor drains it again (`drainDueEpochEffects`); for a mission with no
+ * epoch rows the refresh lease expires instead, and the backstop treats an
  * expired lease as due (`sweepMissionBranchRefresh`).
  * Returns each mission's outcome, or `timed_out`, for the caller's log.
  */
@@ -814,7 +875,7 @@ export async function refreshMissionBranchesBeforeStart(
     const budgetMs = opts.budgetMs ?? START_REFRESH_BUDGET_MS;
     await Promise.all(due.map(async (m) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const refresh = refreshMissionIntegrationBranch(m.id, { trigger: 'start' }).catch((err): MissionBranchRefreshOutcome => ({
+      const refresh = refreshMission(m.id, { trigger: 'start' }).catch((err): MissionBranchRefreshOutcome => ({
         kind: 'error', detail: githubErrorMessage(err),
       }));
       const timeout = new Promise<'timed_out'>((resolve) => { timer = setTimeout(() => resolve('timed_out'), budgetMs); });

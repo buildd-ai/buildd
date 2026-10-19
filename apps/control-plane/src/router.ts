@@ -54,7 +54,11 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
   return null;
 }
 
-export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string }
+export interface Env {
+  EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string;
+  /** Axiom ingest token for the kernel's spans (axiom-export.ts); unset: no spans leave the Worker. */
+  AXIOM_INGEST_TOKEN?: string; AXIOM_TRACES_DATASET?: string; AXIOM_OTLP_URL?: string;
+}
 
 /**
  * The kernel command API (docs/specs/workflow-kernel-library.md §3): served on

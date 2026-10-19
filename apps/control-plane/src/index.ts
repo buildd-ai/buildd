@@ -6,7 +6,9 @@
  * decides whether it answers them; see docs/specs/execution-control-plane.md.
  */
 import { NextRequest } from './next-server-shim';
-import { runInRequest } from './request-context';
+import { currentWaitUntil, runInRequest } from './request-context';
+import { installKernelTelemetry } from './axiom-export';
+import { withKernelRoute } from '@/lib/workflow/kernel-telemetry';
 import { installOutboundFetch } from './outbound-fetch';
 import { anonymousGithubProbe, deepHealthAllowed, executionMode, isCommandRequest, matchRoute, SERVED_BY, type Env, type Handler } from './router';
 import { setKernelHost } from '@/lib/workflow/kernel-host';
@@ -30,6 +32,8 @@ function tag(res: Response, by: string): Response {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    // The kernel's spans to Axiom (axiom-export.ts); nothing without AXIOM_INGEST_TOKEN.
+    installKernelTelemetry(envOf(env), currentWaitUntil);
     // The Worker's own hostname has no origin behind it.
     const ownHost = !!env.CONTROL_PLANE_HOST && url.hostname === env.CONTROL_PLANE_HOST;
     if (url.pathname === '/__control-plane/health') {
@@ -86,13 +90,15 @@ export default {
     }
     const handler = (await hit.route.load())[request.method] as Handler | undefined;
     if (!handler) return new Response('Method Not Allowed', { status: 405 });
-    const res = await runInRequest(p => ctx.waitUntil(p), () => handler(new NextRequest(request), { params: Promise.resolve(hit.params) }));
+    // withKernelRoute: a door names the route that called it (kernel.door's kernel.caller).
+    const res = await runInRequest(p => ctx.waitUntil(p), () => withKernelRoute(url.pathname, () => handler(new NextRequest(request), { params: Promise.resolve(hit.params) })));
     return tag(res, 'control-plane');
   },
 
   // The cron trigger (wrangler.jsonc `triggers.crons`): the kernel's effect drain and floor,
   // hosted here in own mode and a no-op in shadow (workflow-kernel-library.md §3, AC-10).
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    installKernelTelemetry(envOf(env), currentWaitUntil);
     await runInRequest(p => ctx.waitUntil(p), async () => {
       const { runScheduledKernelFloor } = await import('@/lib/workflow/kernel-floor');
       const r = await runScheduledKernelFloor({ env: envOf(env) });

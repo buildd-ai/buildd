@@ -150,8 +150,14 @@ export class Delivery {
   async effectKinds(): Promise<string[]> { return (await this.host.effects(this.deliveryId)).map((e) => e.kind).sort(); }
   async count(kind: EffectKind): Promise<number> { return (await this.host.effects(this.deliveryId)).filter((e) => e.kind === kind).length; }
 
-  async open(o0: { maxRounds?: number } = {}): Promise<this> {
-    ({ workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId } = await this.host.seedOwner());
+  /** `workspaceId`: open in a workspace another delivery already uses (a replacement PR is the same workspace's). */
+  async open(o0: { maxRounds?: number; workspaceId?: string } = {}): Promise<this> {
+    if (o0.workspaceId) {
+      this.workspaceId = o0.workspaceId;
+      this.ownerTaskId = this.host.newTaskId ? await this.host.newTaskId(o0.workspaceId) : this.host.newId();
+    } else {
+      ({ workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId } = await this.host.seedOwner());
+    }
     this.ref = { workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId };
     const o = await applyCommandOn(this.host.store, { type: 'DeliveryOpened', actor: 'runner', workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId, requiresPr: true, ...(o0.maxRounds ? { maxRounds: o0.maxRounds } : {}) }, { newId: () => this.host.newId() });
     applied(o, 'WORKING', 'DeliveryOpened');
@@ -225,7 +231,7 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
     'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
     'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession', 'project_supersession', 'post_review',
     'escalate_exhaustion', 'gate_event', 'dispatch_review', 'dispatch_fix', 'merge_call', 'refresh_branch', 'renumber_migration', 'push_recovery',
-    'publish_landing_status', 'dispatch_external_merge_fix',
+    'publish_landing_status', 'dispatch_external_merge_fix', 'carry_findings',
   ];
   const out: EffectHandlers = {};
   for (const k of kinds) out[k] = async () => { ran.push(k); return { outcome: 'ok' }; };
@@ -289,6 +295,8 @@ export async function drainKernel(host: ConformanceHost, s: Delivery, ports: Ker
 async function outcomesOf(host: ConformanceHost, s: Delivery, kind: EffectKind): Promise<Array<string | null>> {
   return (await host.effects(s.deliveryId)).filter((e) => e.kind === kind).map((e) => e.outcome);
 }
+
+const closedUnmergedOf = (s: Delivery, head: string): LivePr => s.live(head, { state: 'closed', merged: false, updatedAt: '2026-01-01T02:00:00Z' });
 
 const neverAsked: Decide = { id: 'never', decide: async () => { throw new ConformanceFailure('a replay called the decider'); } };
 
@@ -1064,6 +1072,43 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await a.submit({ type: 'Abandon', actor: 'human:u', reason: 'not needed' }), 'ABANDONED', 'abandoned');
       await drainKernel(host, a, fa.ports);
       eq({ project: await outcomesOf(host, a, 'project_supersession'), wake: await outcomesOf(host, a, 'wake_mission') }, { project: ['ok:abandoned_1'], wake: ['skipped:no_mission'] }, 'projected as abandoned; nothing to wake');
+    },
+  },
+  {
+    name: 'handlers/supersession (§5, AC-37): a closed PR\'s open findings move to its replacement with their ids, a closed one stays, and a replay moves nothing',
+    async run(host) {
+      const old = await new Delivery(host, 33).open();
+      await old.ownerPushed('H1');
+      applied(await old.verdictWith('request_changes', { findings: [
+        { path: 'src/a.ts', title: 'guard the null case' },
+        { path: 'src/b.ts', title: 'name the unit' },
+      ] }), 'CHANGES_REQUESTED', 'two findings');
+      const idA = await old.findingId('src/a.ts');
+      const idB = await old.findingId('src/b.ts');
+      applied(await old.submit({ type: 'FindingDisposed', actor: 'human:u', findingId: idB, disposition: 'waived', reason: 'not worth a round' }), 'CHANGES_REQUESTED', 'one waived');
+      applied(await old.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: closedUnmergedOf(old, 'H1'), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+
+      const next = await new Delivery(host, 34).open({ workspaceId: old.workspaceId });
+      eq(await next.findingStates(), {}, 'the replacement starts with none');
+      applied(await old.submit({ type: 'SupersessionRecorded', actor: 'human:u', target: { repoFullName: next.repo, prNumber: next.prNumber, merged: true, url: null }, reason: 'landed in the replacement', authorised: true }), 'SUPERSEDED', 'edge');
+      const f = fakePorts(host);
+      await drainKernel(host, old, f.ports);
+      eq(await outcomesOf(host, old, 'carry_findings'), ['ok:carried_1'], 'one open finding carried');
+      eq(await next.findingStates(), { 'src/a.ts': 'open' }, 'it is open on the replacement');
+      eq(await next.findingId('src/a.ts'), idA, 'under the same id');
+      eq(await old.findingStates(), { 'src/b.ts': 'waived' }, 'the waived one stays where it was decided');
+      await drainKernel(host, old, f.ports);
+      eq(await next.findingStates(), { 'src/a.ts': 'open' }, 'a second drain changes nothing');
+
+      // A replacement the kernel has no delivery for leaves the findings where they were raised.
+      const lone = await new Delivery(host, 35).open();
+      await lone.ownerPushed('H1');
+      applied(await lone.verdictWith('request_changes', { findings: [{ path: 'src/c.ts', title: 'cover it' }] }), 'CHANGES_REQUESTED', 'a finding');
+      applied(await lone.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: closedUnmergedOf(lone, 'H1'), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed lone');
+      applied(await lone.submit({ type: 'SupersessionRecorded', actor: 'human:u', target: { repoFullName: lone.repo, prNumber: 999, merged: true, url: null }, reason: 'landed elsewhere', authorised: true }), 'SUPERSEDED', 'edge lone');
+      await drainKernel(host, lone, f.ports);
+      eq(await outcomesOf(host, lone, 'carry_findings'), ['skipped:no_successor'], 'nowhere to carry them');
+      eq(await lone.findingStates(), { 'src/c.ts': 'open' }, 'still on the closed delivery');
     },
   },
   {
@@ -3006,6 +3051,40 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'approve', expectedVersion: v, commitId: 'H2', hasMergePermission: false, decision: { id: 'approve_override:H2', headSha: 'H2' } }), 'rejected', 'no_merge_permission', 'an override without merge permission');
       eq(pick(await s.d(), ['state', 'stateReason', 'version']), { state: 'ESCALATED', stateReason: 'review_exhausted', version: v }, 'nothing moved');
       eq({ reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { reviewers: 1, fixes: 0 }, 'nothing dispatched');
+    },
+  },
+  {
+    name: 'r7 AC-45/AC-46 approve and override: a person with merge permission, under a policy that allows it, approves the head past its findings once; it lands once and Buildd / Review approval says so',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 134);
+      const v = (await s.d()).version;
+      const approve = () => s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'approve', expectedVersion: v, commitId: 'H1', hasMergePermission: true, overridePermitted: true, reason: 'accepted as is', decision: { id: `approve_override:H1:v${v}`, headSha: 'H1' } });
+      const before = (await host.transitions(s.deliveryId)).length;
+      applied(await approve(), 'APPROVED', 'the override');
+      eq(pick(await s.d(), ['approvedHeads', 'approvalBasis', 'stateReason']), { approvedHeads: ['H1'], approvalBasis: 'human', stateReason: null }, 'a person approved exactly H1');
+      notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'the same decision again');
+      eq((await host.transitions(s.deliveryId)).length - before, 1, 'one transition');
+      eq(await s.findingStates(), { 'src/a.ts': 'open', 'src/b.ts': 'open' }, 'the findings stay listed, not resolved');
+      eq(pick(landingStatusOf(await s.view())!, ['state', 'sha', 'description']), { state: 'success', sha: 'H1', description: 'Ready to merge: H1 approved by a person over 2 open findings' }, 'Buildd / Review approval reflects the override');
+      applied(await s.land('H1'), 'LANDING', 'the landing passes the open findings on the person\'s approval');
+      notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'replayed while landing');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.payload.headSha), ['H1'], 'one merge call, at the approved head');
+    },
+  },
+  {
+    name: 'r7 AC-46 approve and override is refused for a stale head, an agent, a person without merge permission, and a policy that does not allow it; nothing moves',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 135);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a push the person has not seen');
+      const v = (await s.d()).version;
+      const base = { type: 'HumanResolve' as const, actor: 'human:u1', choice: 'approve' as const, expectedVersion: v, commitId: 'H2', hasMergePermission: true, overridePermitted: true, decision: { id: `approve_override:H2:v${v}`, headSha: 'H2' } };
+      notApplied(await s.submit({ ...base, commitId: 'H1', decision: { id: 'approve_override:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'decided on the older head');
+      notApplied(await s.submit({ ...base, actor: 'agent:t9' }), 'rejected', 'human_required', 'an agent approving for a person');
+      notApplied(await s.submit({ ...base, hasMergePermission: false }), 'rejected', 'no_merge_permission', 'no merge permission');
+      notApplied(await s.submit({ ...base, overridePermitted: false }), 'rejected', 'override_not_permitted', 'the policy does not allow it');
+      notApplied(await s.submit({ ...base, overridePermitted: undefined }), 'rejected', 'override_not_permitted', 'absent reads as not allowed');
+      eq(pick(await s.d(), ['state', 'stateReason', 'version', 'approvedHeads']), { state: 'ESCALATED', stateReason: 'review_exhausted', version: v, approvedHeads: [] }, 'nothing moved');
+      eq(await s.count('merge_call'), 0, 'nothing lands');
     },
   },
 ];

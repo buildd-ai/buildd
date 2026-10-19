@@ -66,6 +66,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/missions/[id]/evaluate/route.ts',
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
   'apps/web/src/app/api/missions/[id]/route.ts',
+  // Refuses a task token (.taskScope): approving past open findings is a person's decision.
+  'apps/web/src/app/api/prs/[prNumber]/approve-override/route.ts',
   'apps/web/src/app/api/prs/route.ts',
   // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
   'apps/web/src/app/api/providers/explain/route.ts',
