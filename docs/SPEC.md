@@ -234,9 +234,16 @@ Notable fields:
 - **`workspaceId`** (nullable) — a mission with `workspaceId = null` is valid.
   Used for personal-agent missions (financial tasks, email triage) and
   cross-workspace coordination. `workingBranch` and `primaryPrNumber` are
-  inapplicable for workspace-less missions (always null). Task creation from a
-  workspace-less mission requires the organizer or heartbeat agent to supply an
-  explicit `workspaceId` on each created task — there is no automatic inference.
+  inapplicable for workspace-less missions (always null). The mission's own
+  planning and heartbeat tasks run in the team's auto-created `__coordination`
+  workspace (no repo, hidden from pickers; created on first use by
+  `getOrCreateCoordinationWorkspace`). Tasks the organizer creates for the
+  mission must name a `workspaceId` — there is no inference from the mission —
+  and naming one other than the caller's own workspace needs a delegation or a
+  key that reaches it (a task token minted for `__coordination` reaches only
+  `__coordination`). A heartbeat schedule on a workspace-less mission has a
+  null workspace and so cannot carry a delegation (see
+  `docs/specs/mission-completion.md` → Workspace-less Missions).
   See `docs/specs/mission-task-lifecycle.md` for workspace-less mission invariants.
 
 ### Task
