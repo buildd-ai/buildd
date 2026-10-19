@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
-import OutcomeSpecCriterion, { OutcomeSpecSummary } from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
+import OutcomeSpecCriterion from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
 import { criteriaChecks } from '@/lib/mission-checks';
 import { outcomeSpecView } from '@/lib/mission-outcome-spec-view';
 import {
@@ -93,7 +93,6 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
   it('each variant renders through the real criterion row', () => {
     for (const v of OUTCOME_SPEC_VARIANTS) {
       const { criterion, entry } = specOf(v);
-      expect(renderToStaticMarkup(<OutcomeSpecSummary criterion={criterion} entry={entry} />)).toContain('Revision 4');
       expect(renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} />)).toContain('data-testid="outcome-spec-detail"');
     }
   });
