@@ -30,7 +30,7 @@ import { and, eq, gt, isNull, like, or, sql } from 'drizzle-orm';
 import { connectorHostKey } from './connector-catalog';
 import { loadTeamCatalog } from './connector-catalog-store';
 import { checkConnectorBlocked } from './connector-access-policy';
-import { refreshMcpConnectorCredential } from './mcp-connector-refresh';
+import { refreshMcpConnectorCredential, type McpRefreshResult } from './mcp-connector-refresh';
 import { loadPolicyRules } from './capability-grants-store';
 import { readRoleCeiling, type CredentialState, type GatewayRun } from './connector-gateway';
 import type { AgentPrincipal } from './agent-capabilities/principal';
@@ -154,6 +154,12 @@ export async function providerAuthHeader(g: LoadedGateway, now: Date = new Date(
     const r = await refreshMcpConnectorCredential(g.secret.id);
     if (r !== 'refreshed' && r !== 'locked') return null;
   }
+  return storedAuthHeader(g);
+}
+
+/** The auth header from the credential as stored now, without refreshing. */
+async function storedAuthHeader(g: LoadedGateway): Promise<{ name: string; value: string } | null> {
+  if (!g.secret) return null;
   const raw = await getSecretsProvider().get(g.secret.id);
   if (!raw) return null;
   if (g.connector.authMode === 'header') {
@@ -167,11 +173,36 @@ export async function providerAuthHeader(g: LoadedGateway, now: Date = new Date(
   }
 }
 
-/** After a provider 401: refresh once (oauth). True when a retry may succeed. */
-export async function refreshAfterRejection(g: LoadedGateway): Promise<boolean> {
-  if (!g.secret || g.connector.authMode !== 'oauth') return false;
+export type RejectionOutcome = McpRefreshResult | 'peer_refreshed';
+
+/** How long a 401 inside the lock window waits for a peer's refresh to land. */
+const PEER_REFRESH_POLLS = 3;
+const PEER_REFRESH_POLL_MS = 500;
+
+/**
+ * After a provider 401: refresh once (oauth). `retry` when a retry may succeed.
+ *
+ * 'locked' means another request refreshed within the lock window, or is
+ * refreshing now. If the stored token is no longer the one the provider
+ * rejected, that peer's token is retried: the credential is not dead, this
+ * request just sent the token the peer replaced.
+ */
+export async function refreshAfterRejection(
+  g: LoadedGateway,
+  rejected: { name: string; value: string },
+  deps: { wait?: (ms: number) => Promise<void> } = {},
+): Promise<{ retry: boolean; outcome: RejectionOutcome }> {
+  if (!g.secret || g.connector.authMode !== 'oauth') return { retry: false, outcome: 'skipped' };
   const r = await refreshMcpConnectorCredential(g.secret.id);
-  return r === 'refreshed';
+  if (r === 'refreshed') return { retry: true, outcome: r };
+  if (r !== 'locked') return { retry: false, outcome: r };
+  const wait = deps.wait ?? ((ms: number) => new Promise<void>(res => setTimeout(res, ms)));
+  for (let i = 0; i < PEER_REFRESH_POLLS; i++) {
+    if (i > 0) await wait(PEER_REFRESH_POLL_MS);
+    const current = await storedAuthHeader(g);
+    if (current && current.value !== rejected.value) return { retry: true, outcome: 'peer_refreshed' };
+  }
+  return { retry: false, outcome: 'locked' };
 }
 
 /**

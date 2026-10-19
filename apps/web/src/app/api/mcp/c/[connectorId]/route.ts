@@ -22,6 +22,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import { trace } from '@opentelemetry/api';
+import { serverSpans } from '@/lib/server-span-registry';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { resolveWorkerPrincipal } from '@/lib/agent-capabilities/worker-principal';
 import type { AgentPrincipal } from '@/lib/agent-capabilities/principal';
@@ -59,6 +61,7 @@ import {
   refreshAfterRejection,
   writeToolAudit,
   type LoadedGateway,
+  type RejectionOutcome,
   type ToolAuditRow,
 } from '@/lib/connector-gateway-store';
 
@@ -179,7 +182,9 @@ async function sendUpstream(g: LoadedGateway, method: 'POST' | 'DELETE', reqHead
     if (res.status >= 300 && res.status < 400) return { ok: false, code: 'provider_unreachable' };
     if (res.status === 401) {
       await res.body?.cancel().catch(() => {});
-      if (attempt === 0 && await refreshAfterRejection(g)) continue;
+      const rejection = attempt === 0 ? await refreshAfterRejection(g, auth) : { retry: false, outcome: 'rejected_after_retry' as const };
+      noteProvider401(g, attempt, rejection.outcome, rejection.retry);
+      if (rejection.retry) continue;
       await markCredentialRejected(g).catch(() => {});
       return { ok: false, code: 'reconnect_required' };
     }
@@ -188,6 +193,30 @@ async function sendUpstream(g: LoadedGateway, method: 'POST' | 'DELETE', reqHead
     return { ok: true, res, body: text };
   }
   return { ok: false, code: 'reconnect_required' };
+}
+
+/**
+ * Every provider 401, as one log line and attributes on the request's span, so
+ * a `reconnect_required` is never silent: which connector, what the refresh
+ * answered, and whether the call was retried or the credential marked dead.
+ * Ids and outcome codes only, never a token. Best effort, never thrown.
+ */
+function noteProvider401(g: LoadedGateway, attempt: number, outcome: RejectionOutcome | 'rejected_after_retry', retried: boolean): void {
+  const result = retried ? 'retried' : 'reconnect_required';
+  console.warn(`[connector-gateway] provider 401 connector=${g.connector.id} attempt=${attempt} refresh=${outcome} result=${result}`);
+  try {
+    const attrs = {
+      'buildd.connector.id': g.connector.id,
+      'buildd.connector.provider_401': true,
+      'buildd.connector.refresh_outcome': outcome,
+      'buildd.connector.upstream_result': result,
+    };
+    const active = trace.getActiveSpan();
+    if (active) {
+      active.setAttributes(attrs);
+      serverSpans.serverSpanFor(active.spanContext().traceId)?.setAttributes(attrs);
+    }
+  } catch { /* telemetry is best effort */ }
 }
 
 /** The JSON-RPC messages in a provider answer (JSON or SSE), with a re-serializer. */
