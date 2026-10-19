@@ -46,7 +46,9 @@ export function claimDueEffectsSql(limit: number, leaseMs = EFFECT_LEASE_MS, del
   return sql`-- workflow:claim_effects
 WITH due AS (
   SELECT id FROM workflow_effects
-  WHERE ((status = 'pending' AND not_before <= now())
+  -- A mission epoch's rows (no delivery) are drained by epoch-effects.ts.
+  WHERE delivery_id IS NOT NULL
+    AND ((status = 'pending' AND not_before <= now())
      OR (status = 'delivering' AND lease_until < now()))
     ${deliveryId ? sql`AND delivery_id = ${deliveryId}::uuid` : sql``}
   ORDER BY not_before, id

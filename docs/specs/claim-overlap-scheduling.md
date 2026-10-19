@@ -2,13 +2,13 @@
 title: Claim Overlap Scheduling
 status: draft
 owner: max
-last_verified: 2026-10-17
-summary: Overlapping work MUST start by default; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
+last_verified: 2026-10-18
+summary: Overlapping work MUST start by default, undeclared scope included; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, hard surfaces) and only while its holder is live.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
-keywords: [unmergeable surface, overlap start, soft_overlap_start, path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
-verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+keywords: [unmergeable surface, overlap start, undeclared scope, scope_undeclared_mutex, advisory_manifest, no_scope_mutex, soft_overlap_start, path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
+verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/tests/db/undeclared-scope-starts.test.ts, packages/core/__tests__/claim-planner.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 assertions:
   - id: soft-overlap-evaluation
     skip_until: "2026-12-15"
@@ -32,7 +32,8 @@ settles the overlap (runner pre-merge with mergiraf, mission refresh, the
 conflict resolver). An overlap holds a claim only when the shared paths are an
 **unmergeable surface**, where the merge tooling cannot settle a conflict, and
 only while the holder is live work. A task that has not started is editing
-nothing and holds no one. Every overlap hold says what it is waiting on, every
+nothing and holds no one, and a task that declares no files is not held for
+that: scope makes the policy more precise, it is never a condition to start. Every overlap hold says what it is waiting on, every
 overlap start is recorded with its paths, and the model's HOLD/START answer is
 recorded but does not decide.
 
@@ -225,6 +226,69 @@ share mergeable files with.
 **Code surface.** Helpers: `planClaimBatch`, `buildClaimPlanInput`.
 
 **Out of scope.** Soft (predicted-scope) planner edges.
+
+## Undeclared scope (`POST /api/workers/claim`, `planClaimBatch`)
+
+**Statement.** A task that declares no files (`pathManifest` null, `[]` or
+`['**']`) starts like any other. It runs in its own worktree on its own branch,
+and the merge settles an overlap. No gate holds it for having no scope, in the
+claim loop, the planner or the Start probe.
+
+**Invariants**
+
+- I-46 The claim loop has no scope-undeclared serialization. A scope-undeclared
+  candidate is never deferred because another scope-undeclared task of its
+  mission is in flight or was claimed earlier in the same poll. The
+  `advisory_manifest` deferral (shown as `scope_undeclared_mutex`) is retired:
+  nothing writes it, and its diagnostics counter stays at 0 for older readers.
+- I-47 The planner adds no edge for a node with no usable scope. A
+  scope-undeclared in-flight worker is not a planner node, and no prediction,
+  confident or weak, orders undeclared work behind undeclared work.
+- I-48 What still holds undeclared work is what holds any work: a declared
+  dependency, an explicit hold (held mission, future `startAt`, a person's
+  hold), the mission and workspace caps, runner, auth and budget limits, and
+  one open fix attempt per PR (`sibling_retry_open`, the same-branch rule).
+  Nothing is leased for it up front: it declares no path, so I-4 has nothing
+  to acquire. Paths it is seen editing are leased after its first sync, and a
+  later candidate that declares one of them holds on that lease if it is
+  unmergeable (I-28). Two undeclared tasks can therefore both edit an
+  unmergeable surface, a migration included, where the workspace leases are
+  advisory (the default): the edit is reported, not denied. The merge step
+  (runner pre-merge, the migration layout and commute checks) and CI catch
+  that collision. A workspace that sets `pathClaimEnforcement: 'enforce'`
+  denies the second edit instead (I-29).
+- I-49 The model is not asked about undeclared scope: there is no
+  hold/start note for it and no applied-START lookup. A decision row whose
+  answering model has no stored measurement is recorded as `suggested` with
+  reason `non_jev` and the rule's answer in effect; only an `applied` row
+  counts as applied in `get_decision_stats` (`byAppliedAnswer`).
+
+**Acceptance criteria**
+
+- AC-40: GIVEN two pending scope-undeclared tasks of one mission and a runner
+  with two free slots, WHEN it polls, THEN both are claimed in that poll.
+- AC-41: GIVEN a scope-undeclared task of a mission with a running
+  scope-undeclared sibling, WHEN it is claimed, THEN it starts and no
+  `advisory_manifest` deferral is counted.
+- AC-42: GIVEN a CI repair with no manifest and an unrelated running task with
+  no manifest in its mission, WHEN the repair is claimed, THEN it starts.
+- AC-43: GIVEN a task whose ledger holds earlier `advisory_manifest` deferrals
+  and nothing else holding it, WHEN a runner polls, THEN it is claimed.
+- AC-44: GIVEN a live lease on `packages/core/db/schema.ts`, WHEN a candidate on
+  that file is claimed, THEN it defers as `path_overlap`; and GIVEN a declared
+  dependency on unfinished work, or a mission cap that is full, THEN an
+  undeclared candidate stays pending.
+- AC-45: GIVEN a suggested START with reason `non_jev`, one with
+  `below_threshold` and one applied START, WHEN the ledger is summarized, THEN
+  it reports two suggested and one applied, and only the applied one under
+  `byAppliedAnswer.START`.
+
+**Code surface.** Route: `/api/workers/claim`. Helpers: `planClaimBatch`,
+`buildClaimPlanInput`, `evaluateCoordinationGates`, `ClaimHoldCollector`,
+`summarizeOrchestrationDecisions`.
+
+**Out of scope.** The task-page wording for waits. Scope inference and
+manifest inheritance for repairs (they add precision and stay).
 
 ## Measurement (`get_decision_stats`)
 

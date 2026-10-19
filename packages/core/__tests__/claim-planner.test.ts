@@ -146,7 +146,7 @@ describe('planClaimBatch — hard edges', () => {
     expect(r.orientation[0]).toMatchObject({ taskId: 'down', blockedBy: 'up', reason: 'depends_on', edge: 'depends_on' });
   });
 
-  it('no-scope nodes in one mission keep the mutex; other missions and file-less tasks are free', () => {
+  it('no-scope nodes in one mission are all picked: no scope is no edge', () => {
     const r = planClaimBatch(input({
       capacity: 5,
       candidates: [
@@ -156,17 +156,17 @@ describe('planClaimBatch — hard edges', () => {
         cand('d', { editsFiles: false }),
       ],
     }));
-    expect(picks(r).sort()).toEqual(['a', 'c', 'd']);
-    expect(r.orientation).toEqual([expect.objectContaining({ taskId: 'b', blockedBy: 'a', edge: 'no_scope_mutex' })]);
+    expect(picks(r).sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(r.orientation).toEqual([]);
   });
 
-  it('the no-scope mutex holds against an in-flight no-scope worker in the mission', () => {
+  it('an in-flight no-scope worker in the mission orders nobody behind it', () => {
     const r = planClaimBatch(input({
       candidates: [cand('a')],
       inFlight: [flight('w1', { kind: 'worker' })],
     }));
-    expect(picks(r)).toEqual([]);
-    expect(r.orientation[0]).toMatchObject({ blockedBy: 'w1', edge: 'no_scope_mutex' });
+    expect(picks(r)).toEqual(['a']);
+    expect(r.hardEdges).toEqual([]);
   });
 
   it('the repo-wide sentinel is advisory, never a concrete overlap', () => {
@@ -299,10 +299,10 @@ describe('planClaimBatch — soft edges', () => {
         cand('c', { predictedScope: ['y.ts'], setConfidence: 1 }),
       ],
     }));
-    // b is not ordered behind a (predictions ignored), but b and c both fall back to
-    // "no scope" in m1 and keep today's mutex with each other.
-    expect(picks(r)).toEqual(['a', 'b']);
-    expect(r.orientation).toEqual([expect.objectContaining({ taskId: 'c', blockedBy: 'b', edge: 'no_scope_mutex' })]);
+    // b is not ordered behind a (predictions ignored); b and c fall back to
+    // "no scope", which orders nothing.
+    expect(picks(r)).toEqual(['a', 'b', 'c']);
+    expect(r.orientation).toEqual([]);
   });
 
   it('a prediction under thetaOrder does not count as scope', () => {
@@ -313,8 +313,7 @@ describe('planClaimBatch — soft edges', () => {
         cand('b', { predictedScope: ['y.ts'], setConfidence: 0.2 }),
       ],
     }));
-    expect(picks(r)).toEqual(['a']);
-    expect(r.orientation[0]).toMatchObject({ taskId: 'b', edge: 'no_scope_mutex' });
+    expect(picks(r)).toEqual(['a', 'b']);
   });
 
   it('overlapFraction is the share of the smaller scope matched in the other', () => {
@@ -551,8 +550,8 @@ describe('planClaimBatch — properties', () => {
       });
       // Every path/surface/dependency edge with predictions present also exists without them.
       const key = (e: { a: string; b: string; kind: string }) => `${e.a}|${e.b}|${e.kind}`;
-      const without = new Set(stripped.hardEdges.filter(e => e.kind !== 'no_scope_mutex').map(key));
-      for (const e of out.hardEdges.filter(e => e.kind !== 'no_scope_mutex')) {
+      const without = new Set(stripped.hardEdges.map(key));
+      for (const e of out.hardEdges) {
         expect(without.has(key(e))).toBe(true);
       }
     }
