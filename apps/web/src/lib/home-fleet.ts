@@ -344,7 +344,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     loadFleetHeartbeats({ teamId, wsIds, now }),
     db
       .select({
-        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        id: workers.id, accountId: workers.accountId, ownerId: workers.claimedByUserId, taskOwnerId: tasks.createdByUserId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
         prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
@@ -369,7 +369,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
     .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
   const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
-    id: r.id, accountId: r.accountId, ownerId: r.ownerId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    id: r.id, accountId: r.accountId, ownerId: r.ownerId, taskOwnerId: r.taskId ? r.taskOwnerId : undefined, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
     mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
     taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
