@@ -1465,6 +1465,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { supersededByPr: cmd.target.prNumber, supersededByUrl: cmd.target.url, supersededReason: cmd.reason, recordedBy: cmd.actor },
         effects: [
           { kind: 'project_supersession', dedupeKey: `project_supersession:${dd.id}`, payload: { target: cmd.target } },
+          { kind: 'carry_findings', dedupeKey: `carry_findings:${dd.id}`, payload: { target: cmd.target } },
           { kind: 'wake_mission', dedupeKey: `wake_mission:${dd.id}:superseded`, payload: {} },
         ],
         evidence: { target: cmd.target, reason: cmd.reason },
