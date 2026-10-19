@@ -18,12 +18,14 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { githubApi } from '@/lib/github';
 import { latestRunPerName } from '@/lib/ci-verdict';
 import type { CiCheckRun } from '@/components/task/PrCard';
+import { githubReviewCounts } from '@buildd/shared';
 
 export interface PrDetails {
   /** The head GitHub reported. */
   headSha: string | null;
   ciChecks: { total: number; passed: number; failed: number; pending: number; runs: CiCheckRun[] } | null;
-  reviews: { approved: number; changesRequested: number; pending: number };
+  /** `commented` is absent on an entry cached before it was counted. */
+  reviews: { approved: number; changesRequested: number; pending: number; commented?: number };
   mergeable: boolean | null;
   mergeableState: string | null;
   /** Check runs of earlier attempt heads (a CI retry's failed commit), by ref. */
@@ -93,12 +95,6 @@ export async function fetchPrDetails(workspaceId: string, prNumber: number, othe
   const isPassing = (c: any) => isTerminal(c) && (c.conclusion === 'success' || c.conclusion === 'skipped' || c.conclusion === 'neutral');
   const isFailing = (c: any) => isTerminal(c) && (c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled' || c.conclusion === 'action_required');
   const reviewList: any[] = Array.isArray(reviewsData) ? reviewsData : [];
-  const ACTIONABLE = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED', 'PENDING']);
-  const latestByUser = new Map<string, string>();
-  for (const r of reviewList) {
-    if (r.user?.login && ACTIONABLE.has(r.state)) latestByUser.set(r.user.login, r.state);
-  }
-  const reviewStates = [...latestByUser.values()];
   return {
     headSha,
     ciChecks: checkRuns.length > 0 ? {
@@ -108,11 +104,8 @@ export async function fetchPrDetails(workspaceId: string, prNumber: number, othe
       pending: checkRuns.filter((c: any) => !isTerminal(c)).length,
       runs: checkRuns.map(toRun),
     } : null,
-    reviews: {
-      approved: reviewStates.filter(s => s === 'APPROVED').length,
-      changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
-      pending: reviewStates.filter(s => s === 'PENDING').length,
-    },
+    // One per reviewer, with COMMENTED shown beside buildd's verdict (spec r7 §7, AC-24).
+    reviews: githubReviewCounts(reviewList),
     mergeable: typeof pr?.mergeable === 'boolean' ? pr.mergeable : null,
     mergeableState: typeof pr?.mergeable_state === 'string' ? pr.mergeable_state : null,
     runsByRef,

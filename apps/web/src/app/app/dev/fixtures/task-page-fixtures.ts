@@ -9,14 +9,17 @@ import { deriveDeliveryView, type DeliverySnapshot, type DeliveryView } from '@/
 
 type RoundSnapshot = DeliveryView['rounds'][number];
 type AttemptSnapshot = DeliveryView['ledger'][number];
+type FindingSnapshot = NonNullable<DeliveryView['findings']>[number];
 import { deriveTaskChecks, type TaskChecks } from '@/lib/task-checks';
 import { deriveTaskVerdict, type TaskVerdict, type VerdictInput } from '@/lib/task-verdict';
 import { buildTaskShippedView, type TaskShippedView } from '../../(protected)/tasks/[id]/task-shipped-header';
 import { headerLifecycle } from '../../(protected)/tasks/[id]/task-header';
 import type { StateKey } from '@/components/ui/states';
 import type { ReviewFindings } from '@/lib/task-checks';
+import type { EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
+import { decisionActionHref, decisionCopy, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
-export const TASK_PAGE_CASES = ['review-pending', 'review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human'] as const;
+export const TASK_PAGE_CASES = ['review-pending', 'review-approved', 'branch-refresh', 'repair', 'merged', 'failed', 'needs-human', 'review-stuck'] as const;
 export type TaskPageCase = typeof TASK_PAGE_CASES[number];
 
 export const parseTaskPageCase = (v: string | null): TaskPageCase =>
@@ -60,7 +63,14 @@ export interface TaskPageFixture {
   shipped: TaskShippedView | null;
   findings: Map<string, ReviewFindings>;
   currentTaskId: string;
+  /** review-stuck: the decision card's brief and wording. */
+  escalation?: { brief: EscalationBrief; copy: DecisionCopy } | null;
 }
+
+const FINDING = (n: number, title: string, o: Partial<FindingSnapshot> = {}): FindingSnapshot => ({
+  id: `f${n}`, originRoundId: 'r1', originRound: 1, originHeadSha: HEAD_A, ordinal: n, path: `src/guard-${n}.ts`, line: 10 * n, title,
+  required: true, status: 'open', lastRound: 3, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null, ...o,
+});
 
 const verdictInput = (o: Partial<VerdictInput>): VerdictInput => ({
   taskStatus: 'completed', live: null, openQuestion: false, pr: null, checks: null, openAttempt: null, ...o,
@@ -77,6 +87,8 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
   let verdict: TaskVerdict | null;
   let shipped: TaskShippedView | null = null;
   let currentTaskId = 'deliverable';
+  let kernelFindings: FindingSnapshot[] = [];
+  let stuck = false;
   let subjectLink: string | null = null;
   let title = 'Finish landing the recovery fixes';
   let taskStatus = 'completed';
@@ -146,8 +158,34 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
       rounds = [R({ verdict: 'escalate', effectiveVerdict: 'escalate' })];
       verdict = deriveTaskVerdict(verdictInput({ taskStatus: 'in_progress', openQuestion: true, live: { status: 'waiting_input', waitingForInput: true } }))!;
       break;
+    case 'review-stuck':
+      // Three rounds asked for changes, both automatic fixes ran; two findings are left.
+      delivery = D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3, ci: 'green', ciHeadSha: HEAD_B });
+      rounds = [
+        R({ id: 'r1', round: 1, headSha: 'c0ffee1234', verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'review-0' }),
+        R({ id: 'r2', round: 2, headSha: HEAD_A, verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'review-0' }),
+        R({ id: 'r3', round: 3, headSha: HEAD_B, verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'review-1' }),
+      ];
+      attempts = [1, 2].map(n => A({ id: `f${n}`, family: 'review_fix', attemptNo: n, triggerReason: `r${n}`, taskId: `fix-${n}`, status: 'ended', outcome: 'delivered', maxAttempts: 2 }));
+      kernelFindings = [
+        FINDING(1, 'Mutation testing does not cover the new guard'),
+        FINDING(2, 'Verify the query against a real Postgres, not the mocked db', { status: 'addressed', addressedBySha: HEAD_B }),
+        FINDING(3, 'Rename the flag to say what it gates', { status: 'resolved', closedByRoundId: 'r2' }),
+      ];
+      stuck = true;
+      verdict = null;
+      break;
   }
-  const view = deriveDeliveryView({ view: { delivery, rounds, attempts } })!;
+  const view = deriveDeliveryView({ view: { delivery, rounds, attempts, findings: kernelFindings } })!;
+  let escalation: TaskPageFixture['escalation'] = null;
+  if (stuck && view.escalation) {
+    const copy = decisionCopy(view.escalation, { rounds: view.rounds, ledger: view.ledger });
+    escalation = { brief: view.escalation, copy };
+    verdict = deriveTaskVerdict(verdictInput({
+      pr,
+      escalation: { title: view.escalation.title, question: copy.question, why: copy.why, unresolved: copy.unresolved, primary: { label: copy.primary.label, href: decisionActionHref(copy.primary.id) } },
+    }))!;
+  }
   return {
     title,
     subjectLink,
@@ -159,5 +197,6 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
     shipped,
     findings,
     currentTaskId,
+    escalation,
   };
 }
