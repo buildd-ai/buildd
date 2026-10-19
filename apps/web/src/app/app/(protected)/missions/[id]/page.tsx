@@ -64,7 +64,7 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
-import { buildActivityEpisodes } from '@/lib/activity-delivery';
+import { buildActivityEpisodes, kernelOwnedBy } from '@/lib/activity-delivery';
 import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
@@ -1213,6 +1213,7 @@ async function MissionDetailBody({
     tasks: allTasks as unknown as MissionDeliveryTaskRow[],
     digestOf,
     rules: missionHelpers,
+    kernelOf: (taskId) => kernelOwnedBy(deliveryViews, taskId),
   });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.

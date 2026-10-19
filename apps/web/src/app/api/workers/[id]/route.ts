@@ -84,7 +84,8 @@ import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyR
 import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { submitReviewVerdict } from '@/lib/workflow/review-verdict-door';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -6205,10 +6206,14 @@ async function handleReviewerOutcomeIfNeeded(
   // head or round is kept on its round for audit and does nothing else (no
   // GitHub review, no fix, no merge). The kernel's effects post the review,
   // dispatch the fix and raise escalations; the legacy writes below do not run.
+  // 7105282e: never dropped. Every send carries one key per reviewer and round;
+  // one the control plane did not answer is parked for the floor, a refused or
+  // stale verdict fails its round (T27) in the seam, and a round still waiting
+  // on this reviewer once it has ended a while is failed by the floor.
   let kernelOwnsVerdict = false;
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
-    const kv = await recordReviewVerdict({
+    const sent = await submitReviewVerdict({
       workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
@@ -6217,16 +6222,19 @@ async function handleReviewerOutcomeIfNeeded(
       confidence: output.confidence,
       evidenceSha,
       output,
-    }, { principal }).catch((err) => {
-      console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
-      void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
-      return null;
-    });
-    if (!kv) return;
+    }, { principal });
+    if (sent.status !== 'answered') {
+      const detail = sent.status === 'parked' ? `parked for the floor to re-send (${sent.why})` : `not recorded; the floor fails the round once the reviewer has ended a while (${sent.error})`;
+      console.error(`[reviewer] workflow kernel did not answer the verdict for PR #${prNumber}: ${detail}`);
+      void reportOps({ source: 'workflow-kernel:verdict', severity: sent.status === 'parked' ? 'warning' : 'error', message: `verdict not recorded for PR #${prNumber}`, detail });
+      return;
+    }
+    const kv = sent.answer;
     if (!kv.handled) {
       kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
     } else if (kv.result.result !== 'applied') {
-      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      const settled = kv.settled ? `; round ${kv.settled.result === 'applied' ? 'failed (T27)' : `left (${kv.settled.result}: ${kv.settled.reason})`}` : '';
+      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied${settled}`);
       return;
     }
   }
