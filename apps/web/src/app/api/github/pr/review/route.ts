@@ -270,6 +270,7 @@ export async function POST(req: NextRequest) {
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
+    ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
   }, { principal: kernelPrincipalOf({ person, account }) }).catch((err) => {
     // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
     if (isDoorError(err)) return err;

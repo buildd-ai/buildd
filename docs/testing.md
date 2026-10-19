@@ -266,6 +266,8 @@ When stdout is not a TTY (a log file, an agent shell) the runner prints a `[prog
 
 Before starting, a run that finds the load past 3x the CPUs waits up to 60s (`BUILDD_TEST_ADMISSION_WAIT_MS`, `0` disables) for room, then proceeds with reduced concurrency. Commit hooks cache the no-prod-data base ref per HEAD for 5 minutes and skip the network fetch, so pre-commit and commit-msg share one resolution.
 
+Load-average gating cannot see a build that has only just started, so `bun run test`, `bun run type-check` and `build:only` also take a host-wide slot (`scripts/heavy-slot.ts`; one slot per 4 CPUs, `BUILDD_HEAVY_SLOTS=0` disables, waits at most `BUILDD_HEAVY_SLOT_WAIT_MS`, default 10 min, then runs anyway; skipped under `CI`). Concurrent worktrees queue instead of all starting at once.
+
 `cd apps/web && bun run build:only` has no progress output and stays in "Compiling" for a long time under the same load. Check `uptime` against the CPU count before waiting on it; if the host is oversubscribed, stop it, run the focused test files your change touches, and let CI (`build` job) be the full-build and full-suite evidence rather than adding contention.
 
 Run unit tests through the runner, never `bun test` directly:

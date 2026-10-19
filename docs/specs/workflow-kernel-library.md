@@ -562,7 +562,12 @@ the control plane, authenticated as the caller).
   deployed, or a stopped Worker, can delay the drain, never stop it. An effect is never
   drained inline at the end of a Vercel request in own mode: the seam's inline
   drain becomes a `drain` command to the control plane, best effort, with the
-  floor as the backstop.
+  floor as the backstop. Review requests and recorded review verdicts store
+  their command answer before starting the drain under the Worker's `waitUntil`.
+  Their GitHub work stays in the durable outbox; a caller may receive a queued
+  review with no reviewer task id yet. Review callbacks travel with the round
+  and are installed when the dispatch effect files the reviewer. A floor replay
+  without a request lifetime schedules the effect timer instead.
 - A sweep's time on the control plane is bounded. `/api/cron/pr-reconcile`
   runs each pass (merge-state, landing, red-PR) inside one control-plane
   budget, `withControlPlaneBudget` (kernel-client.ts), of 30 s for all of its
@@ -746,7 +751,7 @@ are under `['attributes.custom']`; numbers are integers, and ms are rounded.
 | `kernel.web_command` | a kernel command the web host ran itself through the command client | `kernel.op`; `kernel.reason` = `no_command_key` \| `shadow` \| `not_host` \| `unconfigured` \| `skew`; `kernel.mode` (`own` for the last three: a regression); `kernel.latency_ms`; `kernel.host` = `web` |
 | `kernel.pass` | a control-plane budget pass (`withControlPlaneBudget`: a sweep, a webhook) that ran out: a door refused unsent or a drain left to the floor. Not emitted for the short doors' own scope | `kernel.pass`; `kernel.budget_ms`; `kernel.pass.submitted`; `kernel.pass.refused`; `kernel.pass.drains_skipped`; `kernel.pass.waited_ms`; `kernel.host` |
 | `kernel.floor` | once per kernel floor run (`runKernelFloor`, either host), after the pass | `kernel.host`; `kernel.outbox.parked` and `kernel.outbox.parked_oldest_age_s` (pending door commands); `kernel.outbox.effects_due` and `kernel.outbox.effects_oldest_age_s` (effects due or past their lease); `kernel.outbox.unread` = true instead when the depth read failed; `kernel.floor.repairs.facts_imported`, `.effects_enqueued`, `.trunk_recovered`, `.treadmill_restarted`, `.parked_answered`, `.parked_dead`, `.total`; `kernel.floor.errors` |
-| `kernel.command` | each request the control plane's command endpoint answers | `kernel.op` (`unknown` before the body parsed); `kernel.outcome` = `applied` \| `replayed` \| `failed` \| `refused` \| `unavailable` \| `in_progress`; `kernel.status`; `kernel.error_code`; `kernel.latency_ms`; `kernel.host` = `control-plane` |
+| `kernel.command` | each request the control plane's command endpoint answers | `kernel.op` (`unknown` before the body parsed); `kernel.outcome` = `applied` \| `replayed` \| `failed` \| `refused` \| `unavailable` \| `in_progress`; `kernel.status`; `kernel.error_code`; `kernel.latency_ms`; `kernel.host` = `control-plane`; `kernel.caller` = `buildd-web` \| `curl` \| `python` \| `node` \| `browser` \| `other` \| `unknown` (allowlisted user-agent class, an untrusted diagnostic hint); `kernel.auth_failure` = `missing` \| `unknown_key` \| `skew` \| `bad_signature` when signature verification fails |
 
 The caller is the door's own `DoorCall.caller` when it names one. Otherwise it
 is taken from the request's route (the control plane names it per request; on

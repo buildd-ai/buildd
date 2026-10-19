@@ -12,6 +12,7 @@
  * No DB access here — callers own the queries and wire these in.
  */
 
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { isAdvisoryManifest } from './path-overlap';
 
 /**
@@ -129,6 +130,16 @@ export function surfaceAuditHeadline(fileCount: number): string {
 /** True when a task title is itself an auto-appended surface-audit task. */
 export function isSurfaceAuditTask(title: string): boolean {
   return title.startsWith(SURFACE_AUDIT_TITLE_PREFIX);
+}
+
+/**
+ * The one identity of a mission's audit task, for every reader: the title
+ * prefix (how it is filed) or the visual-auditor role (how it is routed). A
+ * task carrying either is the audit, so the visual review and the mission
+ * state never disagree about whether one exists.
+ */
+export function isMissionAuditTask(t: { title?: string | null; roleSlug?: string | null }): boolean {
+  return isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
 }
 
 const TRUNK_MERGE_TITLE_RE = /\bmerge\s+`?(?:origin\/)?(?:dev|main|master|trunk)`?\s+into\b/i;
