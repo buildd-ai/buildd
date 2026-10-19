@@ -423,18 +423,23 @@ export function HealthClient({
     try {
       const [doctorRes, historyRes] = await Promise.allSettled([
         fetch(`/api/runners/${heartbeatId}/proxy?path=doctor`),
-        fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`),
+        hb?.mine ? fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`) : Promise.resolve(null),
       ]);
 
       const doctor = doctorRes.status === 'fulfilled' && doctorRes.value.ok
         ? (await doctorRes.value.json()) as RunnerDoctorResult
         : undefined;
 
-      const historyStats = historyRes.status === 'fulfilled' && historyRes.value.ok
+      const historyStats = hb?.mine && historyRes.status === 'fulfilled' && historyRes.value?.ok
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
-      const errMsg = !doctor && !historyStats ? 'Runner unreachable. Check that it is running and accessible.' : undefined;
+      const forbidden = doctorRes.status === 'fulfilled' && doctorRes.value.status === 403;
+      const errMsg = !doctor && !historyStats
+        ? forbidden
+          ? "Runner diagnostics are only visible to the team that owns this runner."
+          : 'Runner unreachable. Check that it is running and accessible.'
+        : undefined;
 
       setRunnerHealth(prev => {
         const next = new Map(prev);
@@ -979,7 +984,7 @@ export function HealthClient({
                             </div>
                           </div>
                         )}
-                        {health.historyStats && (
+                        {hb.mine && health.historyStats && (
                           <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
                             {/* LIFETIME, and runner-local: this comes from the
                                 runner's own SQLite, which has no team or
