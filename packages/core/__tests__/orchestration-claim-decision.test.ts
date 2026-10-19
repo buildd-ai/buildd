@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { choice, defineDecision } from '@builddai/ai-kit/decide';
+import { choice, defineDecision } from '@buildd/ai-kit/decide';
 import {
   CLAIM_HOLD_APPLYING_FRACTION,
   CLAIM_HOLD_DECISION,

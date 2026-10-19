@@ -1,5 +1,5 @@
 import { CHAT_PROVIDERS } from '@buildd/shared';
-import { PERSONAL_KEY_PROVIDERS } from '@builddai/ai-kit/models/provider-keys';
+import { PERSONAL_KEY_PROVIDERS } from '@buildd/ai-kit/models/provider-keys';
 import { describe, expect, it } from 'bun:test';
 import {
   CHAT_PROVIDER_INFO,

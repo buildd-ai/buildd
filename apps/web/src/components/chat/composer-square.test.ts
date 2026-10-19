@@ -45,7 +45,7 @@ describe('chat foreground', () => {
     const off = css.search(/textarea\.kit-composer-input:focus-visible\s*\{[^}]*outline:\s*none/);
     expect(ring).toBeGreaterThanOrEqual(0);
     expect(off).toBeGreaterThan(ring);
-    // The box is the kit's (ChatComposer on @builddai/ai-kit).
+    // The box is the kit's (ChatComposer on @buildd/ai-kit).
     expect(read('components/chat/ChatComposer.tsx')).toContain('className="buildd-composer"');
     // The toolbar's own rule is the quiet 1px one, never a mood colour.
     const toolbar = css.slice(css.indexOf('.buildd-composer .kit-toolbar {'), css.indexOf('}', css.indexOf('.buildd-composer .kit-toolbar {')));

@@ -18,7 +18,7 @@
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from './db/client';
 import { decisionChallengerRuns, decisionOutcomes, decisionRecords } from './db/schema';
-import type { ChallengerRun } from '@builddai/ai-kit/decide';
+import type { ChallengerRun } from '@buildd/ai-kit/decide';
 import { captureDecisionReplay, type DecisionReplayCapture } from './decision-replay';
 
 export interface DecisionLedgerInput {

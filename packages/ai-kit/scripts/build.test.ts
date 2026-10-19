@@ -21,7 +21,7 @@ describe('dist package.json', () => {
     expect(out.publishConfig).toEqual({ access: 'public', provenance: true });
     expect(out).not.toHaveProperty('scripts');
     expect(out).not.toHaveProperty('devDependencies');
-    expect(out.name).toBe('@builddai/ai-kit');
+    expect(out.name).toBe('@buildd/ai-kit');
     expect((out.repository as { url: string }).url).toContain('github.com/buildd-ai/buildd');
   });
   it('is an exact semver version, independent of buildd', () => {
@@ -83,7 +83,7 @@ describe('relative import specifiers', () => {
 
 describe('bare imports reach the consumer', () => {
   const kit = {
-    name: '@builddai/ai-kit',
+    name: '@buildd/ai-kit',
     dependencies: { dep: '1.0.0' },
     peerDependencies: { '@typesafe-ai/sdk': '0.6.0', react: '^19.0.0' },
     peerDependenciesMeta: { '@typesafe-ai/sdk': { optional: true } },
@@ -107,7 +107,7 @@ describe('bare imports reach the consumer', () => {
       'a.js': [
         "import d from 'dep';",
         "import { useState } from 'react';",
-        "export * from '@builddai/ai-kit/chat/contract';",
+        "export * from '@buildd/ai-kit/chat/contract';",
         "import { readFileSync } from 'node:fs';",
         "const sdk = await import('@typesafe-ai/sdk');",
       ].join('\n'),

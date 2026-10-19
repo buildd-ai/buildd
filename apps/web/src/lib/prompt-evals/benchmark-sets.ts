@@ -11,7 +11,7 @@
  */
 import { decisionCall, describeDecisionError, type DecisionQuestions } from '@buildd/core/decision-client';
 import type { LabeledExample, ScoredExample } from '@buildd/core/decision-benchmark';
-import type { DecisionEndpoint } from '@builddai/ai-kit/decide';
+import type { DecisionEndpoint } from '@buildd/ai-kit/decide';
 import { promptedQuestions } from '@buildd/core/prompted-decision';
 import {
   TASK_CATEGORY_PROMPT_ID,

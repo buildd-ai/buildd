@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
+import { choice, defineDecision, JEV_MODEL } from '@buildd/ai-kit/decide';
 import {
   ORCHESTRATION_PROMOTIONS,
   claimHoldIdentity,

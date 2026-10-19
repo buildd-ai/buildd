@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ToolsMenu as KitToolsMenu, ToolRows } from '@builddai/ai-kit/chat/react';
+import { ToolsMenu as KitToolsMenu, ToolRows } from '@buildd/ai-kit/chat/react';
 import ToolsMenu from './ToolsMenu';
 import { TierDetail } from './TierSwitch';
 

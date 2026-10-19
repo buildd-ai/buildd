@@ -77,7 +77,7 @@ WORKDIR /opt/buildd
 # Dependencies first so a source-only change reuses this layer. Every
 # workspace manifest is copied because --frozen-lockfile checks the lockfile
 # against all of them; --filter then installs only the runner's dependency
-# tree (the runner, @buildd/core, @buildd/shared, @builddai/ai-kit,
+# tree (the runner, @buildd/core, @buildd/shared, @buildd/ai-kit,
 # @buildd/dispatch-contract, @buildd/spec-contract), not the
 # web app's.
 COPY package.json bun.lock bunfig.toml ./

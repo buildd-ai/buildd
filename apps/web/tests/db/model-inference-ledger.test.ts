@@ -12,7 +12,7 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import type { DecideParams, DecideResult, DecisionQuestions } from '@builddai/ai-kit/decide';
+import type { DecideParams, DecideResult, DecisionQuestions } from '@buildd/ai-kit/decide';
 import { capabilityGrantSource } from '@/lib/capability-grants-store';
 import { modelInferenceLedger, sweepStaleReservations } from '@/lib/capability-model-inference-ledger';
 import {

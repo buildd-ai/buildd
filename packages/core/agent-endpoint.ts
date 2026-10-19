@@ -184,7 +184,7 @@ export type AgentEndpointBlob =
 
 /**
  * AI Gateway's root. Restated, not imported from the kit: the runner loads
- * this module and does not install `@builddai/ai-kit` (`cloudflare-ai-gateway.ts`
+ * this module and does not install `@buildd/ai-kit` (`cloudflare-ai-gateway.ts`
  * builds the same URLs; a test holds them equal).
  */
 export const CLOUDFLARE_AI_GATEWAY_ROOT = 'https://gateway.ai.cloudflare.com/v1';

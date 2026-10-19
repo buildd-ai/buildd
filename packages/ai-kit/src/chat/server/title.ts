@@ -18,8 +18,8 @@
  */
 
 import type { LanguageModel, UIMessage } from 'ai';
-import type { ChatPart } from '@builddai/ai-kit/chat/contract';
-import type { UsageReceipt } from '@builddai/ai-kit/models';
+import type { ChatPart } from '@buildd/ai-kit/chat/contract';
+import type { UsageReceipt } from '@buildd/ai-kit/models';
 import type { TurnPlan } from './model';
 
 /** Longest title the kit returns. Matches `schema.sql`'s `varchar(80)`. */

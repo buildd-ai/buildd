@@ -1,4 +1,4 @@
-# @builddai/ai-kit changelog
+# @buildd/ai-kit changelog
 
 Independent semver, not buildd's release version. Consumers pin exact versions.
 Breaking changes to `/chat/contract` or to the tool-group declaration are major
@@ -11,6 +11,9 @@ A kit release does not change decision versions (0.10.0); only a
 The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
+
+Published as `@buildd/ai-kit` from 0.28.0. Earlier releases were `@builddai/ai-kit`,
+which is retired; entries below keep the name each was published under.
 
 ## 0.28.0 — 2026-10-11
 

@@ -1,5 +1,5 @@
 /**
- * buildd on the standalone model policy (`@builddai/ai-kit/policy`).
+ * buildd on the standalone model policy (`@buildd/ai-kit/policy`).
  *
  * The policy is the one authority for tier → provider/model/effort. buildd
  * does not keep a second resolver: it feeds the policy and reads its answer.
@@ -30,8 +30,8 @@ import {
   createPolicyClient, pickRoute, remotePolicy, toPolicySurface, resolveModelPolicy, POLICY_MAX_STALE_SECONDS,
   type ModelPolicy, type OutcomeReport, type PolicyClient, type PolicyDecision, type PolicyObservation,
   type PolicyRoute, type PolicySurface, type DecisionExperiment,
-} from '@builddai/ai-kit/policy';
-import { shortHash } from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/policy';
+import { shortHash } from '@buildd/ai-kit/decide';
 import type { Tier, TierEntry, TierProvider, TierSurface } from './model-tier-defaults';
 
 /** The `app` buildd names itself on policy requests. */

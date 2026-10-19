@@ -15,7 +15,7 @@
  * the other.
  */
 
-import { isToolPart, parseApprovalPreview, toolNameOf, type ApprovalPreview, type ChatPart, type ChatToolPart } from '@builddai/ai-kit/chat/contract';
+import { isToolPart, parseApprovalPreview, toolNameOf, type ApprovalPreview, type ChatPart, type ChatToolPart } from '@buildd/ai-kit/chat/contract';
 
 /** Deterministic JSON: object keys sorted at every depth, `undefined` fields dropped. */
 export function canonicalJson(value: unknown): string {

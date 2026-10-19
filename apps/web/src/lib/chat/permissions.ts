@@ -24,7 +24,7 @@
  * (permissions-store.ts).
  *
  * The groups are a kit `defineToolGroups` declaration
- * (`@builddai/ai-kit/chat/server`) built from buildd's registry: one
+ * (`@buildd/ai-kit/chat/server`) built from buildd's registry: one
  * declaration drives the menu rows, the stored preference and the skip rule
  * (the kit's `skipCardVerdict`, with its taint checks), so every app on the kit
  * enforces Allow exactly as buildd does. What stays buildd's are the per-tool
@@ -33,7 +33,7 @@
  */
 
 import type { ChatToolPermissionRow } from '@buildd/shared';
-import { defineToolGroups, type KitToolDecl, type ToolCallClass, type ToolGroupDecl } from '@builddai/ai-kit/chat/server';
+import { defineToolGroups, type KitToolDecl, type ToolCallClass, type ToolGroupDecl } from '@buildd/ai-kit/chat/server';
 import { effectiveClass, startsUnattendedWork } from './tools';
 import { ALL_CHAT_TOOL_SPECS, isExposed, NOT_IN_CHAT, opSpec, opsOf, TOOL_GROUPS, type ChatToolSpec, type ToolGroup } from './registry';
 
@@ -145,7 +145,7 @@ export function toolPermissionRows(allowed: ReadonlySet<ToolGroup>): ChatToolPer
 }
 
 /** Is anything a tool returned in the messages the model is reading? (the kit's taint check) */
-export { contentInContext, toolOutputInHistory } from '@builddai/ai-kit/chat/server';
+export { contentInContext, toolOutputInHistory } from '@buildd/ai-kit/chat/server';
 
 /** May this call run without its card for this person? */
 export function canSkipCard(args: {
