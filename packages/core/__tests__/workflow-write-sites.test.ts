@@ -72,6 +72,9 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'delivery-rounds', 'escalation-copy',
   // The landing gate's pure answer and the `buildd/landing` context (workflow-kernel-library.md §4): read-only, like projections.
   'landing-gate',
+  // §6 scope amendments: the scope hold on a task (a predicate over `context.heldBy`, no I/O), so the
+  // task PATCH can tell a scope hold from a person's own before it records the answer through the kernel.
+  'scope-hold',
   // S4a: the PR fact funnel's scope for terminal facts (a predicate, no command): the way a funnel caller
   // records a merge or close without deciding it for a delivery-owned row.
   'pr-fact-scope',

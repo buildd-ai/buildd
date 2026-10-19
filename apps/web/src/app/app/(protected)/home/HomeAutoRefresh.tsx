@@ -4,7 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { demandCatchUp } from '@/lib/app-freshness';
-import { requestPageRefresh } from '@/lib/page-refresh';
+import { requestPageRefresh, type Refresher } from '@/lib/page-refresh';
 import {
   createThrottle,
   shouldRefreshHomeOnEvent,
@@ -24,7 +24,7 @@ import {
  * The PR merge/close webhook publishes `worker:progress` on the workspace
  * channel, so merges reconciled outside the dashboard land here too.
  *
- * Every refresh is a full server render, and runner heartbeats publish
+ * Every refresh is a server read (Home's own region when `refresher` is given, else a full render), and runner heartbeats publish
  * `worker:progress` every ~10s per active worker, so heartbeats that don't
  * change a worker's status are ignored and the rest are throttled — see
  * shouldRefreshHomeOnEvent. Nothing refreshes while the tab is hidden: a
@@ -41,8 +41,13 @@ const REFRESH_EVENTS = [
   'worker:failed',
 ] as const;
 
-export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string[] }) {
+export default function HomeAutoRefresh({ workspaceIds, refresher }: {
+  workspaceIds: string[];
+  /** What a live event refreshes: Home's own region read. Default: the page. */
+  refresher?: Refresher;
+}) {
   const router = useRouter();
+  const target = refresher ?? router;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableIds = useMemo(() => [...new Set(workspaceIds)], [workspaceIds.join(',')]);
@@ -56,7 +61,7 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
         demandCatchUp('missed');
         return;
       }
-      requestPageRefresh(router);
+      requestPageRefresh(target);
     }, { waitMs: HOME_THROTTLE_MS });
 
     const handlers = REFRESH_EVENTS.map(event => [event, (data: unknown) => {
@@ -85,7 +90,7 @@ export default function HomeAutoRefresh({ workspaceIds }: { workspaceIds: string
       }
       throttle.cancel();
     };
-  }, [stableIds, router]);
+  }, [stableIds, target]);
 
   return null;
 }

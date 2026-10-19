@@ -982,6 +982,21 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
     expect(ex.patch.stateReason).toBe('review_exhausted');
     expect(effectKinds(ex)).toContain('escalate_exhaustion');
   });
+  test('fa37ed4b (#4996): round 2 of 3 asking for changes owes fix 2; round 3 of 3 escalates once, to a person', () => {
+    const rc = (n: number, head: string) => R({ id: `r${n}`, round: n, headSha: head, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    const fix = (n: number, head: string) => A({ id: `a${n}`, attemptNo: n, boundHeadSha: head, triggerReason: `r${n}`, taskId: `ft${n}`, status: 'done', outcome: 'success' });
+
+    const two = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2' }), [rc(1, 'H1'), R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' })], [fix(1, 'H1')]), { roundId: 'r2', headBound: 'H2' }));
+    expect(two.toState).toBe('CHANGES_REQUESTED');
+    expect(two.effects.filter((e) => e.kind === 'dispatch_fix').map((e) => e.dedupeKey)).toEqual(['dispatch_fix:d1:r2:2']);
+    expect(effectKinds(two)).not.toContain('escalate_exhaustion');
+
+    const three = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H3' }), [rc(1, 'H1'), rc(2, 'H2'), R({ id: 'r3', round: 3, headSha: 'H3', kind: 'delta' })], [fix(1, 'H1'), fix(2, 'H2')]), { roundId: 'r3', headBound: 'H3' }));
+    expect({ to: three.toState, why: three.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    expect(effectKinds(three).filter((k) => k === 'escalate_exhaustion')).toHaveLength(1);
+    expect(effectKinds(three)).not.toContain('dispatch_fix');
+    expect(effectKinds(three)).not.toContain('dispatch_review');
+  });
   test('escalate and server-overridden approve → ESCALATED(review_escalated)', () => {
     expect(applied(verdict(v(), { verdict: 'escalate', effectiveVerdict: 'escalate' })).patch.stateReason).toBe('review_escalated');
     const over = applied(verdict(v(), { verdict: 'approve', effectiveVerdict: 'escalate' }));
