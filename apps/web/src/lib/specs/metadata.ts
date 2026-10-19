@@ -116,7 +116,10 @@ export interface MetadataChangeView {
  * Change fields of a spec's metadata block. `changes` names each field to set
  * (null clears it); `reason` says why.
  */
-export async function updateSpecMetadata(caller: SpecCaller, specId: string, input: { changes: unknown; reason: unknown }): Promise<{ ok: true; spec: SpecRow; changed: string[] } | SpecError> {
+/** A write the platform makes itself (e.g. the acceptance-tests task's tests); it is logged as an agent change. */
+export type SystemCaller = { kind: 'system'; label: string };
+
+export async function updateSpecMetadata(caller: SpecCaller | SystemCaller, specId: string, input: { changes: unknown; reason: unknown }): Promise<{ ok: true; spec: SpecRow; changed: string[] } | SpecError> {
   if (!isUuid(specId)) return fail(404, 'Spec not found');
   if (typeof input.reason !== 'string' || input.reason.trim().length < 3 || input.reason.length > 500) return fail(400, 'reason (why the metadata changes, 3-500 characters) is required');
   const raw = input.changes;
@@ -130,7 +133,7 @@ export async function updateSpecMetadata(caller: SpecCaller, specId: string, inp
     parsed[k as Key] = r.value;
   }
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  if (!spec || (caller.kind !== 'system' && !(await reach(caller, spec.workspaceId, true)))) return fail(404, 'Spec not found');
   // R-66: an agent may only make a spec more private. Opening one to the repo
   // past the policy (public), or lifting a private mark, is a person's mark.
   if ('publication' in parsed && caller.kind !== 'user' && parsed.publication !== 'private') {
@@ -156,7 +159,7 @@ export async function updateSpecMetadata(caller: SpecCaller, specId: string, inp
   }
   if (!changes.length) return { ok: true, spec, changed: [] };
 
-  const who = author(caller);
+  const who = caller.kind === 'system' ? { authorKind: 'agent' as const, label: caller.label } : author(caller);
   const reason = input.reason.trim();
   const rowsJson = JSON.stringify(changes.map((c) => ({ field: c.field, previous_value: c.previous, new_value: c.value })));
   // One statement: the block moves only while it is what we read, and the
