@@ -3329,6 +3329,32 @@ export const verdictCriteria = pgTable('verdict_criteria', {
 }));
 
 /**
+ * One piece of evidence behind one verdict, kept both ways: from a criterion
+ * (R-n, AC-n) to the tests, tasks, PRs and commits that back it, and from any of
+ * those back to the criteria it speaks for (regression provenance, spec
+ * conformance audits). `kind` is what `ref` names: `test` (the check command or
+ * test path), `task` (the task that created the test or ran the check), `pr`
+ * (the PR number that delivered it) or `commit` (the head SHA it judged).
+ * Written best-effort after a verdict is recorded
+ * (apps/web/src/lib/specs/evidence-tracking.ts); spec_outcome_verdicts.evidence
+ * stays the blob the folds read.
+ */
+export const verdictEvidence = pgTable('verdict_evidence', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  kind: text('kind').notNull().$type<'test' | 'task' | 'pr' | 'commit'>(),
+  ref: text('ref').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  itemUnique: uniqueIndex('verdict_evidence_item_idx').on(t.verdictId, t.kind, t.ref),
+  criterionIdx: index('verdict_evidence_criterion_idx').on(t.specRevisionId, t.criterionId),
+  refIdx: index('verdict_evidence_ref_idx').on(t.kind, t.ref),
+  kindCheck: check('verdict_evidence_kind', sql`${t.kind} IN ('test', 'task', 'pr', 'commit')`),
+}));
+
+/**
  * A human's decision on one visual-audit screenshot
  * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
  * undo sets `supersededAt` on the active row, then inserts. Kept out of
