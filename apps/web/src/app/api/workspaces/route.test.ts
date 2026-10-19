@@ -185,6 +185,14 @@ describe('GET /api/workspaces', () => {
     expect(query.with.team).toEqual({ columns: { name: true } });
   });
 
+  it('an API key caller is not also looked up as a session', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockWorkspacesFindMany.mockImplementation(() => Promise.resolve([]) as any);
+    await GET(createMockGetRequest({ Authorization: 'Bearer bld_test' }));
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
+  });
+
   it('returns workspaces for API key auth', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockGetCurrentUser.mockResolvedValue(null);

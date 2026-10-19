@@ -1123,6 +1123,11 @@ export class WorkerManager {
     }
   }
 
+  /** Watch these missions' channels for `buildd top` (mission-loop events; pusher-manager.ts). */
+  watchMissions(missionIds: string[]) {
+    this.pusherManager.watchMissions(missionIds);
+  }
+
   // Set whether to accept remote task assignments
   setAcceptRemoteTasks(enabled: boolean) {
     this.acceptRemoteTasks = enabled;
@@ -1626,9 +1631,29 @@ export class WorkerManager {
 
     let cleaned = 0;
 
+    // Every worker's status in one read (GET /api/workers/status). A failed
+    // read leaves them all as they are: unknown is not gone. Null means the
+    // server predates the route, so each is read on its own below.
+    let batch: Awaited<ReturnType<BuilddClient['getWorkerStatuses']>> = null;
+    try {
+      batch = (await this.buildd.getWorkerStatuses?.(nonTerminal.map(w => w.id))) ?? null;
+    } catch (err) {
+      console.warn('[Reconcile] Batched status read failed, leaving workers as they are:', err instanceof Error ? err.message : err);
+      return { checked: nonTerminal.length, cleaned: 0 };
+    }
+    const missing = new Set(batch?.missing ?? []);
+
     for (const worker of nonTerminal) {
       try {
-        const remote = await this.buildd.getWorkerRemote(worker.id);
+        let remote: Awaited<ReturnType<BuilddClient['getWorkerRemote']>>;
+        if (batch) {
+          if (missing.has(worker.id)) remote = null;
+          else if (batch.workers[worker.id]) remote = batch.workers[worker.id];
+          // Neither: a row this key does not own. The single read's 403 path: untouched.
+          else continue;
+        } else {
+          remote = await this.buildd.getWorkerRemote(worker.id);
+        }
 
         if (!remote) {
           // Worker not found remotely (404) — mark as error
