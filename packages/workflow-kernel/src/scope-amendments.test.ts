@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { decideAt } from './decide';
-import { MISSION_SCOPE_POINT, criteriaWeakening, planScope, type ScopeInput } from './scope-amendments';
+import { MISSION_SCOPE_POINT, criteriaWeakening, isOwnScopeHold, planScope, planScopeResolution, scopeHold, type ScopeInput } from './scope-amendments';
 
 const mission = {
   description: 'Ship the checkout redesign.',
@@ -86,5 +86,47 @@ describe('criteriaWeakening', () => {
     expect(criteriaWeakening([{ type: 'description', description: 'a', label: 'x' }], [{ type: 'description', description: 'b', label: 'x' }])).toEqual([]);
     expect(criteriaWeakening(mission.goalCriteria, [...mission.goalCriteria, { type: 'no_open_tasks' }])).toEqual([]);
     expect(criteriaWeakening(null, [])).toEqual([]);
+  });
+});
+
+describe("a person's answer to a held decision", () => {
+  const held = { status: 'held' };
+
+  it('it fits: recorded, the hold released, the contract unchanged', () => {
+    const r = planScopeResolution({ answer: 'in_scope', held, mission, task });
+    expect(r).toEqual({ act: true, resolution: 'in_scope', amend: null, cancelTask: false });
+  });
+
+  it('it changes the mission: the amendment is applied on the version read now, even one that weakens a criterion', () => {
+    const proposal = { goalCriteria: [{ type: 'all_prs_merged' }], reason: 'tests are slow' };
+    expect(planScope({ verdict: 'amend_scope', reason: 'r', mission, task, proposal }).status).toBe('held');
+    const moved = { ...mission, scopeVersion: 3 };
+    const r = planScopeResolution({ answer: 'amend_scope', held, mission: moved, task, proposal });
+    expect(r.act && r.amend).toMatchObject({ scopeVersionBefore: 3, scopeVersionAfter: 4, after: { goalCriteria: [{ type: 'all_prs_merged' }] } });
+    expect(r.act && r.amend?.weakens.map((w) => w.how)).toEqual(['removed']);
+  });
+
+  it('it belongs elsewhere: the task is cancelled; the task left the mission: the hold is withdrawn', () => {
+    expect(planScopeResolution({ answer: 'out_of_scope', held, mission, task })).toMatchObject({ act: true, resolution: 'out_of_scope', cancelTask: true, amend: null });
+    expect(planScopeResolution({ answer: 'withdrawn', held, mission, task })).toMatchObject({ act: true, resolution: 'withdrawn', cancelTask: false, amend: null });
+  });
+
+  it('only a held decision is answered, and only with a known answer', () => {
+    expect(planScopeResolution({ answer: 'in_scope', held: { status: 'resolved' }, mission, task })).toEqual({ act: false, reason: 'not_held' });
+    expect(planScopeResolution({ answer: 'in_scope', held: { status: 'applied' }, mission, task })).toEqual({ act: false, reason: 'not_held' });
+    expect(planScopeResolution({ answer: 'maybe', held, mission, task })).toEqual({ act: false, reason: 'invalid_answer' });
+  });
+});
+
+describe('the scope hold on a task', () => {
+  it('names its mission, so leaving one mission never releases the hold another placed', () => {
+    const h = scopeHold('m-1', '2026-10-18T00:00:00.000Z');
+    expect(isOwnScopeHold(h, 'm-1')).toBe(true);
+    expect(isOwnScopeHold(h, 'm-2')).toBe(false);
+    // A hold from before holds named their mission is taken as the one being answered.
+    expect(isOwnScopeHold({ reason: 'mission_scope_decision' }, 'm-2')).toBe(true);
+    // A person's own hold is never released by a scope answer.
+    expect(isOwnScopeHold({ reason: 'waiting on design' }, 'm-1')).toBe(false);
+    expect(isOwnScopeHold(null, 'm-1')).toBe(false);
   });
 });

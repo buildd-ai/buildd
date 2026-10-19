@@ -2223,10 +2223,21 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
 }
 
 /**
- * §6 scope amendments: the scope decision for a task added to a mission,
- * recorded once (workflow/scope-amendments.ts). `workspaceId` is the task's.
+ * §6 scope amendments: the scope decision for a task added to a mission (filed
+ * into it, or linked to it), recorded once (workflow/scope-amendments.ts).
+ * `workspaceId` is the task's.
  */
-export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string }) {
+export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string; origin?: 'filed' | 'linked' }) {
   const { decideTaskScope } = await import('./scope-amendments');
-  return decideTaskScope({ taskId: p.taskId, actor: p.actor });
+  return decideTaskScope({ taskId: p.taskId, actor: p.actor, origin: p.origin });
+}
+
+/**
+ * §6 scope amendments: the answer to a held scope decision (it fits, it
+ * changes the mission, it belongs elsewhere, or the task left the mission),
+ * recorded once, releasing the hold. `workspaceId` is the task's.
+ */
+export async function missionScopeResolveCommand(p: { workspaceId: string; missionId: string; taskId: string; answer: string; actor: string }) {
+  const { resolveTaskScope } = await import('./scope-amendments');
+  return resolveTaskScope({ missionId: p.missionId, taskId: p.taskId, answer: p.answer, actor: p.actor });
 }

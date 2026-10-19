@@ -1414,8 +1414,11 @@ later work and nothing refreshes or re-ships a branch that already landed.
   merged plus epoch 2 open on that same branch, which is never deleted while the
   open epoch uses it. Until adopted, a mission's readers keep the pre-epoch
   answers. History before adoption is not reconstructed.
-- Scope amendments (S6b): a deliverable task added to a mission (not the
-  organizer decomposing its own brief) gets one scope decision at the Decide
+- Scope amendments (S6b): a deliverable task added to a mission, filed into it
+  or linked to it (`manage_missions link_task`, a task PATCH setting
+  `missionId`; not the organizer decomposing its own brief, which for a linked
+  task means only a child of this mission's own planning task) gets one scope
+  decision at the Decide
   point `mission_scope` (`in_scope | amend_scope | ask`, decision kind
   `buildd.mission_scope`), recorded with `decideAndRecord`, so a replay reads
   it and never asks again. The package's `planScope` turns it into what is
@@ -1433,13 +1436,23 @@ later work and nothing refreshes or re-ships a branch that already landed.
   - `ask`, or any amendment that would remove a criterion, change a command,
     turn a mechanical criterion into prose or clear the list
     (`criteriaWeakening`): held. The task gets the claim gate's single-task
-    hold, and one mission note asks a person; the contract is unchanged.
+    hold, naming the mission (`scopeHold`), and one mission note asks a
+    person; the contract is unchanged.
+  - A held decision is answered once (kernel op `mission_scope_resolve`, the
+    package's `planScopeResolution`, one statement): `in_scope` (it fits),
+    `amend_scope` (the amendment is planned again on the mission as it is now
+    and applied with the same compare-and-set, even one that weakens a
+    criterion, since that is what the person was asked), `out_of_scope` (the
+    task is cancelled) and `withdrawn` (the task left the mission first). Each
+    releases only the hold that mission's decision placed, never a person's
+    own or another mission's, and answers the note. A person answers through
+    `POST /api/tasks/[id]/scope-answer` (person-only), and resuming the held
+    task records `in_scope`; leaving the mission records `withdrawn`.
   - The default (no decider, an error, a timeout, an invalid or low-confidence
     answer) is `in_scope`, or `amend_scope` when the filer proposed one, so
     ordinary filing never waits on a person, and the default is recorded with
-    its reason. NOT IMPLEMENTED: recording the person's resolution of a held
-    decision when the task is resumed (the hold is lifted by the normal Resume),
-    and the decision for a task moved into a mission by `link_task`.
+    its reason. NOT IMPLEMENTED: a held task cancelled outside the scope
+    answer keeps its decision held (the mission page still lists it).
 - Refresh reads "shipped" from delivery state: a refresh acts on the writable
   epoch's branch only, and never runs for a merged epoch
   (`mission-branch-refresh.md`, Eligibility). The refresh is an outbox effect
