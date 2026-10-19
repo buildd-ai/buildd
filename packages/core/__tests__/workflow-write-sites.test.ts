@@ -67,6 +67,9 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'review-round-metrics',
   // Living Spec r7 AC-46: a refused decision in plain words (pure strings from a reason code; no command).
   'decision-refusal',
+  // Living Spec r7 AC-24 / AC-43: the round reading and the escalation decision's wording, pure strings
+  // from the DeliveryView (no command, no reducer), read by the task page, get_pr and the activity comment.
+  'delivery-rounds', 'escalation-copy',
   // The landing gate's pure answer and the `buildd/landing` context (workflow-kernel-library.md §4): read-only, like projections.
   'landing-gate',
   // §6 scope amendments: the scope hold on a task (a predicate over `context.heldBy`, no I/O), so the

@@ -17,6 +17,8 @@
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
 import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
+import { reviewRoundsOf } from './delivery-rounds';
+import { decisionCopy, DECISION_LABELS } from './escalation-copy';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
@@ -260,9 +262,30 @@ export function renderDeliveryActivity(p: {
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
   // §7 / AC-24: the same review line get_pr and the task page print.
   const review = reviewSummaryOf(p.view);
-  const reviewLine = review ? `Review: ${reviewSummaryLine(review)}` : '';
+  const read = reviewRoundsOf(p.view.rounds);
+  const reviewLine = review
+    ? `Review: ${reviewSummaryLine(review)}${read ? `\nRounds: ${read.line}${read.githubNote ? `\n${read.githubNote}` : ''}` : ''}`
+    : '';
   const findings = renderFindingsSummary(p.view);
-  return `${body}\n${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+  const decision = dv?.escalation ? renderEscalationDecision(dv) : '';
+  return `${body}\n${decision ? `\n${decision}\n` : ''}${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+}
+
+/**
+ * Spec r7 §7 (AC-43 / AC-44 / AC-48): a review escalation in the comment reads as
+ * the task page's decision card does (`decisionCopy`): the question, why automation
+ * stopped, each unresolved finding by name, and the actions open on the task page.
+ * Approving past findings is never offered here.
+ */
+function renderEscalationDecision(dv: NonNullable<ReturnType<typeof deriveDeliveryView>>): string {
+  const c = decisionCopy(dv.escalation!, { rounds: dv.rounds, ledger: dv.ledger ?? [] });
+  return [
+    `**${c.question}**`,
+    c.why,
+    c.unresolved.open.length > 0 ? `${DECISION_LABELS.open}: ${c.unresolved.open.map(escapeFindingText).join('; ')}` : '',
+    c.unresolved.awaitingVerification.length > 0 ? `${DECISION_LABELS.awaitingVerification}: ${c.unresolved.awaitingVerification.map(escapeFindingText).join('; ')}` : '',
+    `${DECISION_LABELS.choicesOnTaskPage}: ${c.actions.map((a) => a.label).join(', ')}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 /**
