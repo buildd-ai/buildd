@@ -326,7 +326,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
           <p className="mt-1 text-sm font-semibold text-text-primary">
             Waiting on <a href={`/app/tasks/${repairTaskId}`} className="underline hover:no-underline">repair task {repairTaskId.slice(0, 8)}</a>
           </p>
-          <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes on its own when the repair completes, so there is nothing to answer.</p>
+          <p className="mt-1 text-sm text-text-secondary">A platform problem stopped this task. It resumes when the repair completes.</p>
         </div>
       </div>
     );
