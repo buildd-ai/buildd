@@ -688,6 +688,47 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.github.merges, [], 'no merge call');
     },
   },
+  {
+    name: 'AC-31: a finding arrives before merge_call runs: a rail\'s finding, a person\'s forced review or a request for changes stops the queued merge, and nothing merges',
+    async run(host) {
+      const skippedOnly = async (s: Delivery, label: string) => {
+        const outs = await outcomesOf(host, s, 'merge_call');
+        ok(outs.length > 0 && outs.every((o) => String(o).startsWith('skipped:')), `${label}: merge_call skipped (${outs})`);
+      };
+      // A rail's pre-merge finding on the landing head.
+      const a = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await a.land('H1'), 'LANDING', 'a: merge queued');
+      applied(await a.submit({ type: 'PolicyEvidenceRecorded', actor: 'rail:migration', evidence: { headSha: 'H1', outcome: 'human', reason: 'drops a column', destructive: true } }), 'ESCALATED', 'a: the finding stops the landing');
+      const fa = fakePorts(host);
+      fa.github.setPr(a.repo, a.prNumber, a.live('H1'));
+      await drainKernel(host, a, fa.ports);
+      eq(fa.github.merges, [], 'a: no merge call');
+      await skippedOnly(a, 'a');
+      eq((await a.d()).stateReason, 'policy_human', 'a: a person decides');
+
+      // A person forces a second look, and that review asks for changes.
+      const b = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await b.land('H1'), 'LANDING', 'b: merge queued');
+      applied(await b.submit({ type: 'ReviewRequested', actor: 'human:owner', headSha: 'H1', live: b.live('H1'), forced: true }), 'AWAITING_REVIEW', 'b: the forced review stops the landing');
+      applied(await b.verdict('request_changes'), 'CHANGES_REQUESTED', 'b: changes requested');
+      const fb = fakePorts(host);
+      fb.github.setPr(b.repo, b.prNumber, b.live('H1'));
+      await drainKernel(host, b, fb.ports);
+      eq(fb.github.merges, [], 'b: no merge call');
+      await skippedOnly(b, 'b');
+
+      // A person's override landed while a round was in flight; its verdict asks for changes first.
+      const c = await new Delivery(host).open();
+      applied(await c.ownerPushed('H1'), 'AWAITING_REVIEW', 'c: under review');
+      applied(await c.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H1', live: c.live('H1'), override: { reason: 'owner call' } }), 'LANDING', 'c: merge queued past the review');
+      applied(await c.verdict('request_changes'), 'CHANGES_REQUESTED', 'c: the verdict stops the landing');
+      const fc = fakePorts(host);
+      fc.github.setPr(c.repo, c.prNumber, c.live('H1'));
+      await drainKernel(host, c, fc.ports);
+      eq(fc.github.merges, [], 'c: no merge call');
+      await skippedOnly(c, 'c');
+    },
+  },
   // ── S3b: one landing authority (workflow-kernel-library.md §4) ─────────────
   {
     name: 'AC-14: approved at A, B pushed before the merge effect runs: the effect re-reads, records B and does not merge',
@@ -1820,6 +1861,50 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.verdictWith('approve', { resolvedFindings: [await s.findingId('tests/db/trace.test.ts')] }), 'APPROVED', 'the verification round verifies it');
       eq(await s.findingStates(), { 'src/trace.ts': 'resolved', 'tests/db/trace.test.ts': 'resolved' }, 'both resolved, each by the round that verified it');
       eq((await s.d()).approvedHeads, ['H3'], 'H3 approved');
+    },
+  },
+  {
+    name: 'AC-79: a merge of the base while a review fix runs is a foreign push: never credited to the fix, the fix cannot complete on it, and a delta round scoped to the refresh is queued',
+    async run(host) {
+      const s = await new Delivery(host, 61).open();
+      await s.ownerPushed('H1');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'one finding');
+      const fix = await s.startFix();
+      // The base is merged into the PR (GitHub's update-branch, a person's merge): the new head descends
+      // from the fix's bound head, so ancestry alone would credit it to the fix.
+      applied(await s.push('H2', { attribution: { descendsFromBound: true }, baseOnly: 'compare', changedPaths: ['src/a.ts'] }), 'FIXING', 'the base merge is recorded');
+      const mid = await s.view();
+      eq(mid.attempts.find((a) => a.id === fix)!.reportedShas, [], 'the base merge is not the fix\'s push');
+      eq(mid.delivery!.currentHeadSha, 'H2', 'the head is recorded');
+      eq(await s.findingStates(), { 'src/a.ts': 'open' }, 'a base merge addresses nothing, even where the base touched the finding\'s file');
+      // The fix ends claiming success with nothing of its own on the head: what the seam reads as
+      // proof for a push the runner cannot see (the head moved off the bound one) is not its work.
+      applied(await s.fixEnded(fix, { outcome: 'success', localHeadSha: null, commitCount: 0, live: s.live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true }), 'AWAITING_REVIEW', 'the fix does not complete on the base merge');
+      const v = await s.view();
+      eq(pick(v.attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'the attempt ends with no change of its own and is not delivered');
+      eq(pick(v.rounds.at(-1)!, ['round', 'headSha', 'kind', 'status', 'trigger', 'scope']), {
+        round: 2, headSha: 'H2', kind: 'delta', status: 'queued', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } },
+      }, 'a delta round scoped to the refresh');
+      eq(await s.findingStates(), { 'src/a.ts': 'open' }, 'the finding is still open');
+      eq(v.delivery!.approvedHeads, [], 'nothing approved');
+    },
+  },
+  {
+    name: 'AC-79: a fix push followed by a merge of the base: the fix is credited with its own push only, and completes on the head that contains it',
+    async run(host) {
+      const s = await new Delivery(host, 62).open();
+      await s.ownerPushed('H1');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'one finding');
+      const fix = await s.startFix();
+      applied(await s.push('H2', { attribution: { descendsFromBound: true }, changedPaths: ['src/a.ts'] }), 'FIXING', 'the fix pushes');
+      applied(await s.push('H3', { attribution: { descendsFromBound: true }, baseOnly: 'own_refresh' }), 'FIXING', 'then the base is merged in');
+      eq((await s.view()).attempts.find((a) => a.id === fix)!.reportedShas, ['H2'], 'only the fix\'s own push is credited');
+      eq(await s.findingStates(), { 'src/a.ts': 'addressed' }, 'the fix push addressed the finding');
+      // The head contains the fix's own work, so the fix completes on it.
+      applied(await s.fixEnded(fix, { outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: s.live('H3'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'the fix completes');
+      const v = await s.view();
+      eq(pick(v.attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'delivered' }, 'delivered at the head that contains it');
+      eq(pick(v.rounds.at(-1)!, ['headSha', 'kind', 'trigger']), { headSha: 'H3', kind: 'delta', trigger: 'changes_requested_fix' }, 'the re-review is the fix\'s');
     },
   },
   {

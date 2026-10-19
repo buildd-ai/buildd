@@ -9,7 +9,10 @@
  *  - work needs a writable branch and the newest delivery already merged (a
  *    task filed into the mission, a task PR opening): `ensureMissionWritableBranch`;
  *  - the mission PR for the open delivery opened: `bindMissionDeliveryPr`;
- *  - the hourly backstop: `reconcileMissionDeliveries`.
+ *  - the hourly backstop: `reconcileMissionDeliveries`;
+ *  - a task filed into or linked to the mission: `decideMissionTaskScope`; a
+ *    person's answer to a held one, or the task leaving the mission:
+ *    `answerMissionTaskScope`.
  */
 import { db } from '@buildd/core/db';
 import { missions } from '@buildd/core/db/schema';
@@ -18,6 +21,7 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase, isMissionPrTask } from '@buildd/core/mission-integration';
 import { githubApi } from '@/lib/github';
 import { submitKernelCommand, openKernelDelivery } from '@/lib/workflow/kernel-client';
+import type { KernelPrincipal } from '@/lib/workflow/command-api';
 import { missionEpochsOf, writableEpoch } from '@/lib/workflow/delivery-ship';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 
@@ -171,13 +175,46 @@ export async function recordPrMovedOffDelivery(p: { missionId: string; prNumber:
  * (in scope, an amendment, or a hold for a person). Best effort: a failure
  * leaves the task as filed, which is the decision's own default.
  */
-export async function decideMissionTaskScope(p: { taskId: string; workspaceId: string }): Promise<{ decision: string; status: string } | null> {
+export async function decideMissionTaskScope(p: { taskId: string; workspaceId: string; origin?: 'filed' | 'linked' }): Promise<{ decision: string; status: string } | null> {
   try {
-    const answer = await submitKernelCommand('mission_scope', { workspaceId: p.workspaceId, taskId: p.taskId, actor: 'system:task_filed' }, { principal: SYSTEM, withDelivery: false });
+    const origin = p.origin ?? 'filed';
+    const answer = await submitKernelCommand('mission_scope', {
+      workspaceId: p.workspaceId, taskId: p.taskId, actor: origin === 'linked' ? 'system:task_linked' : 'system:task_filed', origin,
+    }, { principal: SYSTEM, withDelivery: false });
     const r = answer.result;
     return r.decided ? { decision: r.decision, status: r.status } : null;
   } catch (err) {
     console.error(`[mission-scope] scope decision for task ${p.taskId} failed (the task stays as filed):`, err);
     return null;
+  }
+}
+
+export type MissionScopeAnswer = 'in_scope' | 'amend_scope' | 'out_of_scope' | 'withdrawn';
+
+/**
+ * The answer to a held scope decision: a person's (`principal`, the caller the
+ * door authorised) or buildd's when the task left the mission (`withdrawn`,
+ * the system). Records it once and releases the hold that decision placed.
+ * `out_of_scope` cancels the task; the caller runs the cancel's side effects
+ * when `cancelled` says it did.
+ */
+export async function answerMissionTaskScope(p: {
+  taskId: string; workspaceId: string; missionId: string; answer: MissionScopeAnswer; actor: string;
+  principal?: KernelPrincipal | null;
+}) {
+  const principal = p.answer === 'withdrawn' ? SYSTEM : p.principal;
+  if (!principal) throw new Error('a person\'s scope answer needs the caller\'s principal');
+  const answer = await submitKernelCommand('mission_scope_resolve', {
+    workspaceId: p.workspaceId, missionId: p.missionId, taskId: p.taskId, answer: p.answer, actor: p.actor,
+  }, { principal, withDelivery: false });
+  return answer.result;
+}
+
+/** As `answerMissionTaskScope`, best effort: a failure is logged and the decision stays held. */
+export async function answerMissionTaskScopeQuietly(p: Parameters<typeof answerMissionTaskScope>[0]): Promise<void> {
+  try {
+    await answerMissionTaskScope(p);
+  } catch (err) {
+    console.error(`[mission-scope] recording the ${p.answer} answer for task ${p.taskId} failed (the decision stays held):`, err);
   }
 }

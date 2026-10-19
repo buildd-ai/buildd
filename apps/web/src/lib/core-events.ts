@@ -117,6 +117,14 @@ export type CoreEvent =
    */
   | { type: 'task.left_mission'; taskId: string; missionId: string; workspaceId: string | null }
   /**
+   * An existing task joined a mission: PATCH /api/tasks/[id] set its
+   * `missionId` to `missionId` (`manage_missions link_task`, or a move from
+   * another mission, which also emits `task.left_mission` for the old one).
+   * Filing a task into a mission is `task.created`, not this. The missions
+   * module asks its scope decision (§6 scope amendments).
+   */
+  | { type: 'task.joined_mission'; taskId: string; missionId: string; workspaceId: string }
+  /**
    * PATCH /api/tasks/[id] replaced a task's role: `from` was set and `to` is
    * a different role (clearing it is not a change of answer). The decisions
    * module labels it as a person's correction of a role pick that applied

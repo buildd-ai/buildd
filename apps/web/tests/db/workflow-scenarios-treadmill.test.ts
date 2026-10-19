@@ -5,7 +5,7 @@
  * so once the refresh budget is spent the kernel lands it across the gap
  * (the disjoint-delta rule) instead of escalating for a moving base. The
  * counter-cases keep every other door shut: a base that changes the PR's own
- * files or a migration, a real conflict, a base that requires up-to-date
+ * files or a dependency, a real conflict, a base that requires up-to-date
  * branches, and a head no review covers.
  *
  * The real kernel on real Postgres against the stateful fake GitHub, through
@@ -146,6 +146,8 @@ describe('#4283: an approved, green PR on a trunk that moves faster than CI', ()
       sql`SELECT to_state, bypass, command, evidence FROM workflow_transitions WHERE delivery_id = ${pr.deliveryId}::uuid ORDER BY to_version`);
     expect(transitions.map((t) => t.to_state)).not.toContain('ESCALATED');
     expect(transitions.every((t) => t.bypass == null)).toBe(true);
+    // 92a439a6: every refresh carried the approval; none re-armed a review round.
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(2);
     // The landing records the rule it landed under: optimistic, the gap, the spent cycle.
     const landing = transitions.find((t) => t.command === 'LandingRequested')!;
     expect(landing.evidence.freshness).toMatchObject({ optimistic: true, behindBy: 4, baseFiles: 4, rule: 'spent_cycle' });
@@ -169,15 +171,16 @@ describe('#4283: an approved, green PR on a trunk that moves faster than CI', ()
     expect(String(t.evidence.reason)).toContain('src/a.ts');
   });
 
-  test('the base delta carries a migration → no merge across the gap; refresh_unsafe names the migration', async () => {
+  // 92a439a6 (#5179): a migration only the base gap carries held a PR that changes no schema.
+  test('the base delta carries a migration and the PR has none → landed across the gap with no person', async () => {
     w = await world();
     const pr = await approvedTwice('feat/base-migration');
     const migration = 'packages/core/drizzle/0300_other_session.sql';
     const outcomes = await treadmill(pr, { [migration]: 'ALTER TABLE t ADD COLUMN c int;\n' });
-    expect(outcomes.at(-1)).toBe('needs_human');
-    expect(w.mergeCalls(pr)).toEqual([]);
-    const t = await lastTransition(pr);
-    expect(t.evidence).toMatchObject({ treadmill: true, cause: 'refresh_unsafe', files: [migration] });
+    expect(outcomes.at(-1)).toBe('merged');
+    expect(w.mergeCalls(pr).map((c) => c.status)).toEqual([200]);
+    const states = await q<{ to_state: string }>(sql`SELECT to_state FROM workflow_transitions WHERE delivery_id = ${pr.deliveryId}::uuid`);
+    expect(states.map((t) => t.to_state)).not.toContain('ESCALATED');
   });
 
   // dc4436aa: every release bumps the version in each package manifest on dev, and that alone
