@@ -134,6 +134,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   get_decision: 'read',
   label_decision: 'write',
   suggest_schedule_update: 'write',
+  propose_schedule_move: 'write',
 };
 
 /**
