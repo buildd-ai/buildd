@@ -91,6 +91,39 @@ async function resolveDelegationWrite(
   };
 }
 
+/**
+ * Validate moving a schedule's future runs to another workspace
+ * (docs/specs/workspace-routing-and-reach.md I-26, AC-14). The mover needs
+ * `delegate_schedule_access` in the schedule's team, the target must exist in
+ * that same team, and the mover must be able to create tasks there. A target
+ * in another team answers 404, like a missing one, so the route is no oracle
+ * for other teams' workspace ids. Workspaces have no archived state yet; when
+ * they do, an archived target is refused here too.
+ */
+async function resolveMoveTarget(
+  auth: ScheduleAuth,
+  fromWorkspaceId: string,
+  target: unknown,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  if (typeof target !== 'string' || !target) return { ok: false, status: 400, error: 'workspaceId must be a workspace id' };
+  const rows = await db.query.workspaces.findMany({
+    where: sqlWhere(inArray(workspaces.id, [fromWorkspaceId, target])),
+    columns: { id: true, teamId: true },
+  });
+  const own = rows.find(r => r.id === fromWorkspaceId);
+  if (!own?.teamId) return { ok: false, status: 404, error: 'Workspace not found' };
+  if (!(await can(auth, 'delegate_schedule_access', own.teamId))) {
+    return { ok: false, status: 403, error: 'Moving a schedule to another workspace requires team admin or owner' };
+  }
+  const to = rows.find(r => r.id === target);
+  if (!to || to.teamId !== own.teamId) return { ok: false, status: 404, error: `Workspace ${target} not found in this schedule's team` };
+  const canCreate = auth.kind === 'user'
+    ? !!(await verifyWorkspaceAccess(auth.userId, target))
+    : await verifyAccountWorkspaceAccess(auth.account, target, 'canCreate');
+  if (!canCreate) return { ok: false, status: 403, error: `you cannot move this schedule to workspace ${target}: you cannot create tasks there` };
+  return { ok: true };
+}
+
 // GET /api/workspaces/[id]/schedules/[scheduleId] - Get a single schedule
 export async function GET(req: NextRequest, { params }: RouteParams) {
   const { id, scheduleId } = await params;
@@ -143,6 +176,10 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     if (body.maxConcurrentFromSchedule !== undefined) updates.maxConcurrentFromSchedule = body.maxConcurrentFromSchedule;
     if (body.pauseAfterFailures !== undefined) updates.pauseAfterFailures = body.pauseAfterFailures;
     if (body.workspaceId !== undefined) {
+      if (body.workspaceId !== existing.workspaceId) {
+        const move = await resolveMoveTarget(authResult, id, body.workspaceId);
+        if (!move.ok) return NextResponse.json({ error: move.error }, { status: move.status });
+      }
       updates.workspaceId = body.workspaceId;
       // A grant is made for one schedule in one workspace; it never travels.
       if (body.workspaceId !== existing.workspaceId) updates.delegation = null;

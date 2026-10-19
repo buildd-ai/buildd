@@ -247,6 +247,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
   beforeEach(() => {
     (db.query.workspaces.findFirst as any).mockResolvedValue({ teamId: 'team-1' });
     (db.query.workspaces.findMany as any).mockResolvedValue([
+      { id: WORKSPACE_ID, teamId: 'team-1' },
       { id: TARGET, teamId: 'team-1' },
       { id: OTHER_TEAM_WS, teamId: 'team-2' },
     ]);
@@ -322,10 +323,73 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('moving the schedule to another workspace drops its grant', async () => {
     mockSessionUser();
+    teamRole('admin');
     const { set } = mockDbUpdate({ ...mockSchedule });
     const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
     expect(res.status).toBe(200);
+    expect((set.mock.calls[0] as any)[0].workspaceId).toBe(TARGET);
     expect((set.mock.calls[0] as any)[0].delegation).toBeNull();
+  });
+
+  // docs/specs/workspace-routing-and-reach.md I-26, AC-14: a move is validated
+  // and a refused one writes nothing.
+  describe('moving the schedule is validated', () => {
+    const MISSING = '00000000-0000-0000-0000-0000000000cc';
+
+    it('refuses a workspace of another team, even to its admin key', async () => {
+      mockAdminApiKey();
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: OTHER_TEAM_WS }, 'Bearer bld_admin'), { params });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a workspace id that does not exist', async () => {
+      mockSessionUser();
+      teamRole('admin');
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: MISSING }), { params });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a non-string workspace id', async () => {
+      mockSessionUser();
+      teamRole('admin');
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: null }), { params });
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a mover without delegate_schedule_access', async () => {
+      mockSessionUser();
+      teamRole('member');
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a target the mover cannot create tasks in', async () => {
+      mockAdminApiKey();
+      (verifyAccountWorkspaceAccess as any).mockImplementation(async (_a: unknown, ws: string) => ws === WORKSPACE_ID);
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }, 'Bearer bld_admin'), { params });
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('asks for create permission, not just read reach, on the target', async () => {
+      mockAdminApiKey();
+      mockDbUpdate({ ...mockSchedule, workspaceId: TARGET });
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }, 'Bearer bld_admin'), { params });
+      expect(res.status).toBe(200);
+      expect(verifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.anything(), TARGET, 'canCreate');
+    });
+
+    it('re-sending the current workspace is not a move', async () => {
+      mockSessionUser();
+      teamRole('member');
+      mockDbUpdate({ ...mockSchedule });
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: WORKSPACE_ID, enabled: false }), { params });
+      expect(res.status).toBe(200);
+    });
   });
 });
 
