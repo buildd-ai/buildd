@@ -12,7 +12,7 @@
  * Client-safe: imported by a client component, so no DB.
  */
 
-import type { RunnerCodexAuthSource, RunnerModelAuthSource } from '@buildd/shared';
+import { isRecordedModelRoute, type RecordedModelRoute, type RunnerCodexAuthSource, type RunnerModelAuthSource } from '@buildd/shared';
 
 export type RouteState = 'ready' | 'unavailable' | 'unknown';
 
@@ -27,29 +27,28 @@ export interface RunnerRouteRow {
 export interface RunnerRouteInput {
   modelAuthSource?: RunnerModelAuthSource | null;
   codexAuthSource?: RunnerCodexAuthSource | null;
-  /**
-   * How this runner's recent runs were actually charged (`workers.costBasis`,
-   * reported by whoever picked the credential). The recorded route: it is what
-   * happened, whichever of a local login or a task-selected team key was used.
-   */
-  recentCostBasis?: readonly (RecordedBasis | null)[] | null;
+  /** Recorded route of recent runs on this runner (FleetRunner.routes); words outside the known set are dropped. */
+  recentRoutes?: readonly { route: string; count: number }[] | null;
 }
 
-type RecordedBasis = 'real' | 'virtual' | 'mixed' | 'unknown';
+export interface TaskRouteRow {
+  route: RecordedModelRoute;
+  /** Where the run's model access came from, in plain words. */
+  source: string;
+  count: number;
+}
 
-/**
- * What recent runs on this runner were charged to, read from the record and
- * never inferred from the local login (a team key can serve a task on a
- * machine that has a plan login). Hidden when nothing has been recorded.
- */
-export function recordedRouteRow(bases: readonly (RecordedBasis | null)[] | null | undefined): RunnerRouteRow | null {
-  const known = new Set((bases ?? []).filter((b): b is Exclude<RecordedBasis, 'unknown'> => !!b && b !== 'unknown'));
-  if (known.size === 0) return null;
-  const real = known.has('real') || known.has('mixed');
-  const virtual = known.has('virtual') || known.has('mixed');
-  const source = real && virtual ? 'Recent runs: some billed per token, some from a plan allowance'
-    : real ? 'Recent runs: billed per token' : 'Recent runs: drawn from a plan allowance';
-  return { label: 'Charged to', source, state: 'ready' };
+const TASK_ROUTE_TEXT: Record<RecordedModelRoute, string> = {
+  anthropic_api_key: 'A team API key (billed per token)',
+  agent_endpoint: 'A team model endpoint (gateway)',
+  oauth_seat: 'A plan login on the runner (not billed per token)',
+  runner_provider: "This runner's own model provider",
+  cloud_egress: 'Managed cloud model access',
+};
+
+/** The route each recent task run was set up with, as recorded at claim; empty when none was. */
+export function taskRouteRows(routes: RunnerRouteInput['recentRoutes']): TaskRouteRow[] {
+  return (routes ?? []).flatMap(r => isRecordedModelRoute(r.route) && r.count > 0 ? [{ route: r.route, source: TASK_ROUTE_TEXT[r.route], count: r.count }] : []);
 }
 
 export function claudeRouteRow(source: RunnerModelAuthSource | null | undefined): RunnerRouteRow {
@@ -74,14 +73,19 @@ export function codexRouteRow(source: RunnerCodexAuthSource | null | undefined):
 
 export interface RunnerRouteDetail {
   rows: RunnerRouteRow[];
+  /** Recorded per-task routes (recent runs), apart from what the runner itself reports in `rows`. */
+  taskRoutes: TaskRouteRow[];
   /** Why this is only the local half of the picture. */
   note: string;
 }
 
 export function runnerRouteDetail(hb: RunnerRouteInput): RunnerRouteDetail {
-  const recorded = recordedRouteRow(hb.recentCostBasis);
+  const taskRoutes = taskRouteRows(hb.recentRoutes);
   return {
-    rows: [claudeRouteRow(hb.modelAuthSource), codexRouteRow(hb.codexAuthSource), ...(recorded ? [recorded] : [])],
-    note: "Login rows are what the runner reported on its last check-in. A team API key or gateway is chosen per task: \"Charged to\" is what recent runs recorded, not a claim about what the next run will use.",
+    rows: [claudeRouteRow(hb.modelAuthSource), codexRouteRow(hb.codexAuthSource)],
+    taskRoutes,
+    note: taskRoutes.length > 0
+      ? 'Logins are what the runner reported on its last check-in. Recent task routes are what each claim recorded, so a team key or gateway shows there.'
+      : "Reported by the runner on its last check-in. A team API key or gateway is chosen per task; none was recorded for this runner's recent runs.",
   };
 }

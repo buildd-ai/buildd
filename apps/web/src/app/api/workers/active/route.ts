@@ -162,8 +162,6 @@ export async function GET(req: NextRequest) {
     // a run holds exactly its own worker, and those workers are not any host
     // runner's (they used to inflate every host row of the same account).
     const onceLive = new Map<string, number>();
-    // How each account's recent runs were charged (a label, never a credential).
-    const recentBasis = new Map<string, string[]>();
     const onceKey = (accountId: string, url: string) => `${accountId}\n${url}`;
     if (accountIds.length > 0) {
       const activeWorkerRecords = await db.query.workers.findMany({
@@ -185,20 +183,6 @@ export async function GET(req: NextRequest) {
           continue;
         }
         actualWorkerCounts.set(w.accountId, (actualWorkerCounts.get(w.accountId) || 0) + 1);
-      }
-    }
-
-    if (accountIds.length > 0) {
-      const recent = await db.query.workers.findMany({
-        where: sqlWhere(and(inArray(workers.accountId, accountIds), gt(workers.createdAt, new Date(Date.now() - 7 * 86_400_000)))),
-        columns: { accountId: true, costBasis: true },
-        limit: 500,
-      });
-      for (const w of (recent ?? []) as Array<{ accountId: string | null; costBasis?: string | null }>) {
-        if (!w.accountId || !w.costBasis) continue;
-        const list = recentBasis.get(w.accountId) ?? [];
-        list.push(w.costBasis);
-        recentBasis.set(w.accountId, list);
       }
     }
 
@@ -281,7 +265,6 @@ export async function GET(req: NextRequest) {
           modelAuthSource: hb.modelAuthSource ?? null,
           // And its Codex login, same rule (docs/specs/runner-model-login-detect-say-report.md R-12).
           codexAuthSource: hb.codexAuthSource ?? null,
-          recentCostBasis: [...new Set(recentBasis.get(hb.accountId) ?? [])],
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.
           upToDateWithDeployed: hb.trackedBranch === 'main' && hb.diskCommit && deployedSha
