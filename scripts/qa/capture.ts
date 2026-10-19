@@ -186,8 +186,13 @@ function slugify(path: string): string {
 /** Resolve a manifest path's dynamic `:segment`s from env, or mark it to skip. */
 function resolveManifestPath(rawPath: string): { path: string; skipReason?: string } {
   if (!rawPath.includes(':')) return { path: rawPath };
-  const id = DYNAMIC_PARAMS[rawPath];
-  if (id) return { path: rawPath.replace(/:[^/]+/, id) };
+  // A query string rides along (`/app/missions/:id?layout=feed`): the
+  // resolver is keyed by the path alone, and `:id` ends at the `?`.
+  const q = rawPath.search(/[?#]/);
+  const pattern = q === -1 ? rawPath : rawPath.slice(0, q);
+  const rest = q === -1 ? '' : rawPath.slice(q);
+  const id = DYNAMIC_PARAMS[pattern];
+  if (id) return { path: pattern.replace(/:[^/]+/, id) + rest };
   return {
     path: rawPath,
     skipReason: 'dynamic route — no ID provided (set QA_TASK_ID / QA_MISSION_ID or use QA_ROUTES)',
