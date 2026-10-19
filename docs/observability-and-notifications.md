@@ -222,6 +222,16 @@ read by operator tooling through the platform-owner route
 sessions. Before filing a `[friction]` task, `get_failure_analytics` says
 whether the failure is already a known pattern.
 
+## Database egress alert
+
+The owner is paged when Neon sends out more than 1 GB in an hour (Living Spec "Fast at any size", R-28). It is an Axiom monitor on `buildd-traces`, recorded in `packages/core/ops-monitors/neon-egress.ts` (`NEON_EGRESS_MONITOR`: threshold 1 GiB, range 60 min, evaluated every 15 min) and pinned by `packages/core/__tests__/neon-egress-monitor.test.ts`. Create it from that definition and attach the owner's email and Pushover notifiers; notifier ids are per Axiom org and are not in the repo.
+
+**Finding the page and loader (R-42).** Run `NEON_EGRESS_BY_LOADER` from the same module over the hour the alert names. It lists Neon bytes, query count and largest single query by page route and loader. The loader is the `buildd.db.loader` span attribute (`withLoaderLabel` name, else `file:line fn` of the first app frame; see `packages/core/db/query-label.ts`). The page's per-loader budget is `PAGE_BUDGETS` in `apps/web/tests/db/budget-harness.ts`.
+
+The field names for the Neon span (`http.url`, `http.response_content_length_uncompressed`) come from the existing trace runbook, not from a live query. Check them with `getDatasetFields` when creating the monitor.
+
+---
+
 ## Diagnostic plane (dashboard, not phone)
 
 - **Error traces** — `apps/runner/src/error-trace-scanner.ts` pattern-matches agent tool output (`cd: No such file`, `ENOENT`, `Permission denied`, …), buffers on the worker, flushes to `worker_error_traces` (schema:631). Surfaced via `/api/tasks/[id]/error-traces` and `/api/workers/[id]/error-traces`, and the `get_error_traces` MCP action. Throttled per `(workerId, pattern)`. Born from the 2026-05-25 incident where a flailing agent's real error never surfaced past the heartbeat timeout.
