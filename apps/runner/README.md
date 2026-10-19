@@ -62,27 +62,6 @@ BUILDD_SERVER=https://buildd.example.com buildd
 key belongs to the server that issued it, so after switching servers run
 `buildd login --server …` again.
 
-## Trying the dev build of `buildd top`
-
-The runner always runs the latest production release. To look at the newest
-`dev` version of `buildd top` without moving the runner off it:
-
-```bash
-buildd top --dev     # or: buildd top-dev
-```
-
-Each run updates a separate copy in `~/.buildd-dev` (set `BUILDD_DEV_DIR` to
-put it elsewhere) to the newest `dev` commit, runs `bun install` there only
-when the lockfile changed, then opens top from it. The header reads
-`buildd dev <commit>` so you can tell it apart. It uses the same login and
-server as `buildd top` and watches the same runner.
-
-`~/.buildd`, the runner, its background service and its auto-update are never
-touched, and the dev copy only ever runs top: `--dev` on any other command is
-refused. If the update fails (no network, say), top opens from the last dev
-copy and says it is stale; the very first run needs the network. To go back,
-run `buildd top`. To remove the dev copy, delete `~/.buildd-dev`.
-
 ## Running as a service
 
 `buildd` on its own is foreground-only — closing the terminal (or logging
@@ -295,3 +274,41 @@ What remains:
   bwrap mount allowlist (`BUILDD_SANDBOX_MOUNT_ALLOWLIST=1`, Claude sessions)
   binds neither file into the agent's namespace; otherwise use a hosted or
   container runner, where the runner key never enters the agent's machine.
+
+## For buildd contributors
+
+### Trying the dev build of `buildd top`
+
+The runner always runs the latest production release. To look at the newest
+`dev` version of `buildd top` without moving the runner off it, turn the dev
+channel on for this machine once:
+
+```bash
+buildd config set devChannel on     # saved in ~/.buildd/config.json
+buildd top --dev                    # or: buildd top-dev
+```
+
+Or allow a single run without saving anything:
+
+```bash
+BUILDD_DEV_CHANNEL=1 buildd top --dev
+```
+
+It runs unreleased code that may break. Without either opt-in, `buildd top
+--dev` downloads nothing and says how to turn it on.
+
+Each run updates a separate copy in `~/.buildd-dev` (set `BUILDD_DEV_DIR` to
+put it elsewhere) to the newest `dev` commit, runs `bun install` there only
+when the lockfile changed, then opens top from it. The header reads
+`buildd dev <commit>` so you can tell it apart. It uses the same login and
+server as `buildd top` and watches the same runner.
+
+`~/.buildd`, the runner, its background service and its auto-update are never
+touched, and the dev copy only ever runs top: `--dev` on any other command is
+refused. If the update fails (no network, say), top opens from the last dev
+copy and says it is stale; the very first run needs the network. To go back,
+run `buildd top`.
+
+To turn it off, run `buildd config set devChannel off`. If `buildd top --dev`
+made `~/.buildd-dev`, it asks once whether to delete it (`y` deletes; any other
+answer, or no terminal, keeps it). It never deletes a folder it did not make.

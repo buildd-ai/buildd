@@ -17,11 +17,19 @@
  * The production checkout is only ever read: its origin URL, whether it is
  * shallow or sparse, and (for a full clone) its objects through
  * `git clone --reference --dissociate`.
+ *
+ * Opt-in per machine, because it runs unreleased code and is for buildd
+ * contributors: `buildd config set devChannel on` (config.json `devChannel`),
+ * or BUILDD_DEV_CHANNEL=1 for one run. Without either it clones and fetches
+ * nothing and says how to turn it on. `buildd config set devChannel off`
+ * offers to delete the dev copy, but only one this command made.
  */
 import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 import { widenSparseCheckout } from './updater';
+import { writeSecretJsonFile } from './secure-file';
+import { UnreadableConfigError } from './runner-name';
 
 export const DEV_BRANCH = 'dev';
 const DEFAULT_REPO_URL = 'https://github.com/buildd-ai/buildd.git';
@@ -50,7 +58,73 @@ export interface TopDevOptions {
   prodDir: string;
   devDir: string;
   topArgs: string[];
+  /** config.json, for the `devChannel` opt-in. */
+  configFile: string;
+  /** For BUILDD_DEV_CHANNEL; process.env by default. */
+  env?: Record<string, string | undefined>;
   deps?: Partial<TopDevDeps>;
+}
+
+// ── opt-in ─────────────────────────────────────────────────────────────────
+
+export const DEV_CHANNEL_ENV = 'BUILDD_DEV_CHANNEL';
+/** The one line a run without opt-in prints. */
+export const DEV_CHANNEL_OFF = 'buildd top --dev runs unreleased code from dev, for buildd contributors. Turn it on with: buildd config set devChannel on';
+const FIRST_RUN_NOTE = 'buildd: this is unreleased code from dev and it may break; buildd top is the released one.';
+
+function readConfigObject(file: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf-8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** On for this run: BUILDD_DEV_CHANNEL=1 (one run), or `devChannel` on in config.json. */
+export function devChannelEnabled(configFile: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (/^(1|true|on|yes)$/i.test(env[DEV_CHANNEL_ENV]?.trim() ?? '')) return true;
+  const saved = existsSync(configFile) ? readConfigObject(configFile)?.devChannel : undefined;
+  return saved === true || saved === 'on';
+}
+
+/** True only for a checkout this command made (its marker inside .git). */
+function isOwnedDevCheckout(devDir: string): boolean {
+  return existsSync(join(devDir, '.git', OWNED_MARKER));
+}
+
+export interface DevChannelSetOptions {
+  configFile: string;
+  prodDir: string;
+  devDir: string;
+  /** Ask a yes/no question; null when there is no terminal (keeps the dev copy). */
+  confirm: ((question: string) => Promise<boolean>) | null;
+}
+
+/** `buildd config set devChannel on|off`. */
+export async function setDevChannel(on: boolean, opts: DevChannelSetOptions): Promise<CmdResult> {
+  let cfg: Record<string, unknown> = {};
+  if (existsSync(opts.configFile)) {
+    const existing = readConfigObject(opts.configFile);
+    if (!existing) return { code: 1, stdout: '', stderr: `buildd: ${new UnreadableConfigError(opts.configFile).message}` };
+    cfg = existing;
+  }
+  cfg.devChannel = on;
+  writeSecretJsonFile(opts.configFile, cfg);
+  if (on) return { code: 0, stdout: 'buildd top --dev is on for this machine. It runs unreleased code from dev; buildd top stays on the release.', stderr: '' };
+
+  const lines = ['buildd top --dev is off for this machine.'];
+  const own = !isInside(opts.devDir, opts.prodDir) && !isInside(opts.prodDir, opts.devDir) && isOwnedDevCheckout(opts.devDir);
+  if (own) {
+    const yes = opts.confirm ? await opts.confirm(`Delete ${opts.devDir}, the dev copy buildd top --dev made? [y/N] `) : false;
+    if (yes) {
+      rmSync(opts.devDir, { recursive: true, force: true });
+      lines.push(`Deleted ${opts.devDir}.`);
+    } else {
+      lines.push(`Kept ${opts.devDir}; delete it whenever you like.`);
+    }
+  }
+  return { code: 0, stdout: lines.join('\n'), stderr: '' };
 }
 
 export function defaultDevDir(env: Record<string, string | undefined> = process.env): string {
@@ -230,6 +304,11 @@ export async function prepareDevCheckout(prodDir: string, devDir: string, deps: 
 /** Prepare the dev checkout and run top from it. Resolves with the exit code. */
 export async function runTopDev(opts: TopDevOptions): Promise<number> {
   const deps: TopDevDeps = { ...defaultDeps, ...opts.deps };
+  if (!devChannelEnabled(opts.configFile, opts.env ?? process.env)) {
+    deps.log(DEV_CHANNEL_OFF);
+    return 1;
+  }
+  if (!existsSync(join(opts.devDir, '.git'))) deps.log(FIRST_RUN_NOTE);
   const prepared = await prepareDevCheckout(opts.prodDir, opts.devDir, deps);
   if (!prepared.ok) {
     deps.log(`buildd: ${prepared.message}`);
