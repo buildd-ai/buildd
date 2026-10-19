@@ -3503,16 +3503,23 @@ setInterval(async () => {
   if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
   lastSelfHeal = Date.now();
 
+  // The doctor is synchronous (git fetch, `du` and `git status` per worktree,
+  // each an execSync of up to 10s), so on a host with many worktrees it held
+  // the event loop for seconds at a time and the local socket missed /health.
+  // Run it as `--doctor --fix` in a child: same checks and fixes, and the
+  // runner's loop keeps serving. The child finds this runner through its socket.
   try {
-    const { runDiagnostics, autoFix } = await import('./doctor');
-    // This process is the runner: its line is whether its socket answers, not a ps match.
-    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
-    const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
-    if (fixable.length > 0) {
-      console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
-      const fixes = autoFix(report);
-      for (const f of fixes) {
-        console.log(`[self-heal] ${f.success ? '✓' : '✗'} ${f.check}: ${f.message}`);
+    const { execFile } = await import('child_process');
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, [process.argv[1], '--doctor', '--fix'], {
+        encoding: 'utf-8', timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, NO_COLOR: '1' },
+      }, (err, stdout) => (err && !stdout ? reject(err) : resolve(stdout)));
+    });
+    const fixes = out.split('Auto-fixes:')[1];
+    if (fixes) {
+      for (const line of fixes.split('\n').map(l => l.trim()).filter(Boolean)) {
+        console.log(`[self-heal] ${line.replace(/\x1b\[[0-9;]*m/g, '')}`);
       }
     }
   } catch (err: any) {
