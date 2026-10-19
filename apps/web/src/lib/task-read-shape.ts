@@ -50,7 +50,7 @@ export function taskReadShape(params: URLSearchParams): TaskReadShape {
 
 /** Columns for the task row: blobs only when asked for. */
 export function taskReadColumns(shape: TaskReadShape) {
-  if (shape.statusOnly) return { id: true, workspaceId: true, missionId: true, parentTaskId: true, status: true, updatedAt: true } as const;
+  if (shape.statusOnly) return { id: true, workspaceId: true, missionId: true, parentTaskId: true, createdByWorkerId: true, status: true, updatedAt: true } as const;
   if (shape.full) return undefined;
   return {
     ...(!shape.wants('context') ? { context: false as const } : {}),
