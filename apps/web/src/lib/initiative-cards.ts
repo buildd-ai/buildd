@@ -5,6 +5,7 @@ import { getDeliveryViewsForTasks } from './workflow/delivery-view';
 import { buildMissionCardView, failedDeliverableTaskIds, summarizeMissionForCard, type BlockingTask, type MissionCardRow } from './mission-card-view';
 import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
 import { MISSION_BASE_COLUMNS, MISSION_TASK_BASE_COLUMNS, MISSION_TASK_RESULT_SUMMARY_EXTRAS, MISSION_WORKER_BASE_COLUMNS } from './missions-query';
+import { loadRunnerOnlineByWorkspace } from './runner-heartbeats';
 import { buildMissionWithInitiativeUrl } from './initiative-breadcrumb';
 import {
   buildInitiativeCard,
@@ -88,10 +89,12 @@ export async function loadInitiativeCards(opts: {
   // S35: one DeliveryView load, so a replaced failed attempt is not a failure.
   const deliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(missionRows as MissionCardRow[]));
 
+  const runnerOnlineByWorkspace = await loadRunnerOnlineByWorkspace(missionRows.filter(m => (m.tasks ?? []).some((t: any) => t.status === 'pending')).map(m => m.workspaceId).filter((w): w is string => !!w));
+
   const byInitiative = new Map<string, InitiativeMissionInput[]>();
   for (const m of missionRows) {
     const row = m as MissionCardRow;
-    const summary = summarizeMissionForCard(row, { now, deliveryViews });
+    const summary = summarizeMissionForCard(row, { now, deliveryViews, runnerOnlineByWorkspace });
     const view = buildMissionCardView(row, { from: 'missions', now, summary, taskIndex, deliveryViews });
     const list = buildMissionListCard(m as ListMissionRow, view, summary, { now, taskIndex });
     const input: InitiativeMissionInput = {
