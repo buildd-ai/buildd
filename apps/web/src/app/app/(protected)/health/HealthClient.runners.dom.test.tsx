@@ -264,3 +264,34 @@ describe('Health › Runners ownership', () => {
     expect(q('health-runners-team')).toBeNull();
   });
 });
+
+
+describe('Health › Lifetime history privacy (AC-4)', () => {
+  for (const mine of [false, true]) {
+    it(`${mine ? 'owner retains' : 'linked-team viewer cannot request'} lifetime totals when expanding a runner`, async () => {
+      const requested: string[] = [];
+      const fallback = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (!url.includes('/proxy')) return fallback(input, init);
+        requested.push(url);
+        const data = url.includes('history')
+          ? { totalSessions: 73, totalCost: 12, avgDurationMs: 60000, byStatus: {} }
+          : { timestamp: new Date(NOW).toISOString(), checks: [], summary: { ok: 1, warn: 0, error: 0 } };
+        return new Response(JSON.stringify(data), { status: 200 });
+      }) as typeof fetch;
+      await mount(0, [{ ...DEFAULT_RUNNERS[0], mine, runnerClass: 'personal' }]);
+      const row = q('health-runner-row')!;
+      const button = [...row.querySelectorAll('button')].find(b => b.textContent === 'Details')!;
+      await act(async () => { button.click(); });
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+      expect(requested.some(url => url.includes('history'))).toBe(mine);
+      expect(row.textContent!.includes('Session history')).toBe(mine);
+      if (mine) {
+        expect(row.textContent).toContain('73');
+        expect(row.textContent).toContain('Total cost');
+        expect(row.textContent).toContain('Avg duration');
+      }
+    });
+  }
+});

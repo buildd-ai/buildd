@@ -5,7 +5,7 @@ import { FailureGroupsSection, failureProblemLine } from './_components/FailureG
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { deriveSandboxPosture, isRunnerOnline, runnerSection } from '@/lib/runner-heartbeats-shared';
 import { isolationProblem, isolationStrandedProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
@@ -42,6 +42,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import { resolveClaudeRoute } from '@/lib/claude-route-eligibility';
+import { strandHeadline } from '@/lib/strand-headline';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { describeRunnerRoute } from '@/lib/runner-route';
 import { countOf } from '@/lib/plural';
@@ -423,18 +424,23 @@ export function HealthClient({
     try {
       const [doctorRes, historyRes] = await Promise.allSettled([
         fetch(`/api/runners/${heartbeatId}/proxy?path=doctor`),
-        fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`),
+        hb?.mine ? fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`) : Promise.resolve(null),
       ]);
 
       const doctor = doctorRes.status === 'fulfilled' && doctorRes.value.ok
         ? (await doctorRes.value.json()) as RunnerDoctorResult
         : undefined;
 
-      const historyStats = historyRes.status === 'fulfilled' && historyRes.value.ok
+      const historyStats = hb?.mine && historyRes.status === 'fulfilled' && historyRes.value?.ok
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
-      const errMsg = !doctor && !historyStats ? 'Runner unreachable. Check that it is running and accessible.' : undefined;
+      const forbidden = doctorRes.status === 'fulfilled' && doctorRes.value.status === 403;
+      const errMsg = !doctor && !historyStats
+        ? forbidden
+          ? "Runner diagnostics are only visible to the team that owns this runner."
+          : 'Runner unreachable. Check that it is running and accessible.'
+        : undefined;
 
       setRunnerHealth(prev => {
         const next = new Map(prev);
@@ -638,20 +644,22 @@ export function HealthClient({
             {/* Backends stranding pending work — a missing credential, counted in
                 tasks. Deliberately NOT a task-level gate (PR #1864): the same
                 module feeds Settings → Agent backends, which is where the fix is. */}
-            {strandedBackends.map((b) => (
-              <div key={`strand-${b.backend}`} className="px-4 py-3">
+            {strandedBackends.map((b) => {
+              const h = strandHeadline(b);
+              return (
+              <div key={`strand-${b.backend}`} data-testid={`strand-${b.backend}`} data-confirmed={h.confirmed} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium text-text-primary">
-                        {b.label} has no credential
+                        {h.title}
                       </p>
-                      <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium bg-status-error/10 text-status-error">
-                        {b.strandedPending} task{b.strandedPending === 1 ? '' : 's'} unclaimable
+                      <span className={`text-[11px] md:text-[10px] px-1.5 py-0.5 rounded font-medium ${h.confirmed ? 'bg-status-error/10 text-status-error' : 'bg-status-warning/10 text-status-warning'}`}>
+                        {h.tag}
                       </span>
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
-                      Pending work routes to {b.label}, and no runner can claim it
+                      {h.detail}
                       {b.enabledForTeam ? '. Connect it, or disable it team-wide to reroute' : ''}.
                     </p>
                     {b.sampleTasks.length > 0 && (
@@ -678,7 +686,8 @@ export function HealthClient({
                   </a>
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {/* Offline runners */}
             {offlineRunners.map((hb) => (
@@ -845,8 +854,8 @@ export function HealthClient({
           </div>
         )}
         {[
-          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
-          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => runnerSection(r) === 'mine') },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => runnerSection(r) === 'team') },
         ].filter(g => g.list.length > 0).map(g => (
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -979,7 +988,7 @@ export function HealthClient({
                             </div>
                           </div>
                         )}
-                        {health.historyStats && (
+                        {hb.mine && health.historyStats && (
                           <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
                             {/* LIFETIME, and runner-local: this comes from the
                                 runner's own SQLite, which has no team or
@@ -2406,8 +2415,8 @@ function FailureAnalyticsSection({
 export function routeLine(r: { requested: string; effective: string } | undefined): string {
   if (!r) return '';
   return r.requested === r.effective
-    ? `routes to ${r.effective}; `
-    : `asked for ${r.requested}, routes to ${r.effective}; `;
+    ? `preference ${r.requested}, routes to ${r.effective}, queued; `
+    : `preference ${r.requested}, team mask moves it to ${r.effective}, queued; `;
 }
 
 /**
