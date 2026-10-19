@@ -220,7 +220,7 @@ describe('manage_missions — workspace resolution', () => {
     ).rejects.toThrow(/Could not resolve workspace "nonexistent": not visible to this key/);
   });
 
-  it('tells the caller where to file instead when the workspace is out of key scope', async () => {
+  it('names the legitimate routes when the workspace is out of key scope', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [{ id: 'ws-1', name: 'alpha' }] });
 
     await expect(
@@ -230,7 +230,7 @@ describe('manage_missions — workspace resolution', () => {
         { action: 'create', title: 'Test Mission', workspaceId: 'beta' },
         createMockContext(),
       ),
-    ).rejects.toThrow(/You can see: alpha\. .*file the follow-up in a visible workspace/);
+    ).rejects.toThrow(/You can see: alpha\. .*request_capability tasks:create.*person/);
   });
 
   it('resolves workspace name to ID on update', async () => {
