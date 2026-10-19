@@ -1997,11 +1997,19 @@ async function resolveWorkspaceId(
     throw err;
   }
   const workspaces: Array<{ id: string; name: string; repo?: string | null }> = wsData?.workspaces || [];
-  const match = workspaces.find((ws: any) =>
-    ws.name.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase() === raw.toLowerCase() ||
-    ws.repo?.toLowerCase().endsWith('/' + raw.toLowerCase())
-  );
+  // Several reachable workspaces can match one bare name; list order must not
+  // pick. Exact name/repo beats a repo-suffix match, then the connection's own.
+  const needle = raw.toLowerCase();
+  const rank = (ws: { id: string; name: string; repo?: string | null }): number => {
+    const exact = ws.name.toLowerCase() === needle || ws.repo?.toLowerCase() === needle;
+    const suffix = !!ws.repo?.toLowerCase().endsWith('/' + needle);
+    if (!exact && !suffix) return -1;
+    return (exact ? 2 : 0) + (ws.id === ctx.workspaceId ? 1 : 0);
+  };
+  const match = workspaces
+    .map((ws) => ({ ws, r: rank(ws) }))
+    .filter((x) => x.r >= 0)
+    .sort((a, b) => b.r - a.r)[0]?.ws;
   if (match) return match.id;
   if (explicit) throw new Error(unknownWorkspaceMessage(explicit, workspaces));
   return null;
