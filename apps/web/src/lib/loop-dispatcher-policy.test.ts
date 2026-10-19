@@ -30,6 +30,10 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({ tasks: {}, workers: {} }));
+// 92a439a6: the kernel delivery the loop task owns (null = none, legacy decides).
+let ownerDelivery: { state: string; prNumber: number | null; mergedAt: string | null } | null = null;
+mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async () => (ownerDelivery ? 'd1' : null) }));
+mock.module('@/lib/workflow/kernel', () => ({ loadView: async () => ({ delivery: ownerDelivery ? { id: 'd1', ...ownerDelivery } : null, rounds: [], attempts: [] }) }));
 mock.module('drizzle-orm', () => ({ eq: () => ({}), and: () => ({}), desc: () => ({}), isNotNull: () => ({}) }));
 
 import { loopPolicy } from './loop-dispatcher-policy';
@@ -44,6 +48,7 @@ const input = {
 };
 
 beforeEach(() => {
+  ownerDelivery = null;
   taskRow = { ...baseTask, context: {} };
   completingWorker = noPr;
   priorPrWorker = undefined;
@@ -133,5 +138,54 @@ describe("loopPolicy resolves the task's own PR from an earlier worker", () => {
     const v = await loopPolicy(input);
     expect(v?.kind === 'hold' && v.until).toBe('webhook');
     expect(v?.kind === 'hold' && v.retryContext.loopWebhookWait).toMatchObject({ prNumber: 77 });
+  });
+});
+
+// 92a439a6 (#5179): the owner loop spent its attempts while the kernel was reviewing and refreshing its PR.
+describe('loopPolicy on a kernel owner while the kernel owns the PR', () => {
+  const owned = (state: string, o: Partial<NonNullable<typeof ownerDelivery>> = {}) => {
+    ownerDelivery = { state, prNumber: 42, mergedAt: null, ...o };
+    taskRow = { ...baseTask, loopIteration: 2, context: { loopHistory: [], loopWebhookWait: { prNumber: 42 } }, deliveryId: 'd1', deliveryRole: 'owner' } as typeof baseTask;
+  };
+
+  for (const state of ['AWAITING_REVIEW', 'REPAIRING', 'LANDING', 'APPROVED', 'BLOCKED_ON_TRUNK']) {
+    it(`holds for the delivery without spending an iteration, across repeated completions (${state})`, async () => {
+      owned(state);
+      completingWorker = { prLifecycleStatus: 'ci_running', prNumber: 42, mergedAt: null };
+      for (let i = 0; i < 3; i++) {
+        const v = await loopPolicy(input);
+        if (v?.kind !== 'hold') throw new Error(`expected hold, got ${v?.kind}`);
+        expect(v.until).toBe('webhook');
+        expect(v.progress.iteration).toBe(2);
+        expect(v.retryContext.failureContext).toBeUndefined();
+      }
+    });
+  }
+
+  it('holds even when no worker row carries the PR (the delivery does)', async () => {
+    owned('REPAIRING');
+    const v = await loopPolicy(input);
+    expect(v?.kind === 'hold' && v.until).toBe('webhook');
+  });
+
+  it('a MERGED delivery satisfies pr_checks_green and pr_merged', async () => {
+    owned('MERGED', { mergedAt: '2026-10-18T10:00:00Z' });
+    expect((await loopPolicy(input))?.kind).toBe('pass');
+    taskRow = { ...taskRow, loopConfig: { exitCondition: { type: 'pr_merged' }, maxLoops: 3, backoffMinutes: 0 } };
+    expect((await loopPolicy(input))?.kind).toBe('pass');
+  });
+
+  it('a delivery waiting on the owner (WORKING) or a person (ESCALATED) is evaluated as before', async () => {
+    for (const state of ['WORKING', 'ESCALATED']) {
+      owned(state);
+      completingWorker = { prLifecycleStatus: 'ci_failed', prNumber: 42, mergedAt: null };
+      expect((await loopPolicy(input))?.kind).toBe('fail');
+    }
+  });
+
+  it('a structured-predicate loop ignores the delivery', async () => {
+    owned('AWAITING_REVIEW');
+    taskRow = { ...taskRow, loopConfig: { exitCondition: { type: 'structured_predicate', path: '/ok', op: 'eq', value: true }, maxLoops: 3, backoffMinutes: 0 } };
+    expect((await loopPolicy(input))?.kind).toBe('fail');
   });
 });

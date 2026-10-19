@@ -665,6 +665,64 @@ describe('T13 — carry-forward decides from the delivery (task 1ebce52a)', () =
   });
 });
 
+// 92a439a6 (#5164, #5155, #5179): a clean merge of the base into an approved PR is no new review.
+describe('T11 — an agent conflict repair that only merged the base keeps the approval', () => {
+  /** Approved at H1, then a textual conflict: the mechanical refresh refuses and an agent repair is claimed. */
+  async function approvedConflictRepair() {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'dirty';
+    updateBranch({ conflict: true });
+    await conflictDoor(o);
+    const [cf] = await conflictTasks(o.deliveryId);
+    const t = (await taskRow(cf.id)).task;
+    expect(await seam.claimFix(t, deps)).toEqual({ action: 'proceed' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'conflict' });
+    return { ...o, repair: t };
+  }
+  /** The agent merged the base in and pushed H2; its end arrives BEFORE the push webhook. */
+  async function endBeforeWebhook(o: Awaited<ReturnType<typeof approvedConflictRepair>>) {
+    gh.head = 'H2'; gh.ancestors.H2 = ['H1']; gh.mergeable = 'clean';
+    await q(sql`UPDATE tasks SET status = 'completed' WHERE id = ${o.repair.id}::uuid`);
+    const w = await seedWorker(o.repair.id, { status: 'completed', lastCommitSha: 'H2', commitCount: 1 });
+    return seam.attemptEnded({ task: o.repair, workerId: w, status: 'completed', localHeadSha: 'H2', commitCount: 1, source: 'runner' }, deps);
+  }
+  const reviewRounds = async (deliveryId: string) => (await rounds(deliveryId)).length;
+
+  test('content-equivalent at the end: APPROVED at H2, no round, no reviewer; the later push is a duplicate', async () => {
+    const o = await approvedConflictRepair();
+    gh.equivalent = [['H1', 'H2']];
+    await endBeforeWebhook(o);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
+    expect(await reviewRounds(o.deliveryId)).toBe(1);
+    expect(reviewersCreated.length).toBe(1);
+    expect((await transitions(o.deliveryId)).at(-1)).toMatchObject({ command: 'AttemptEnded', to_state: 'APPROVED', evidence: { carryForward: 'content_equivalent' } });
+    // The legacy gate's projection follows the carry, as T13's does.
+    const [r1] = await tasksOf(o.deliveryId, 'review');
+    expect((await taskRow(r1.id)).context.equivalentHeadShas).toEqual(['H2']);
+    const before = (await transitions(o.deliveryId)).length;
+    await push(o, 'H2');
+    expect((await transitions(o.deliveryId)).length).toBe(before);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2' });
+  });
+
+  test('an empty bounded delta carries too, with no reviewer round', async () => {
+    const o = await approvedConflictRepair();
+    gh.deltas = { 'H1->H2': { prFilesAtFrom: ['src/a.ts'], files: [] } };
+    await endBeforeWebhook(o);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'] });
+    expect(reviewersCreated.length).toBe(1);
+  });
+
+  test('a conflict resolution that changed the PR\'s own file is a delta round', async () => {
+    const o = await approvedConflictRepair();
+    gh.deltas = { 'H1->H2': { prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 3, deletions: 2 }] } };
+    await endBeforeWebhook(o);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
+    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta' });
+  });
+});
+
 describe('S4 — late verdict for a superseded head', () => {
   test('an approve is stored on its own round; no state change, no post_review, no approval', async () => {
     const o = await openAndHandOn();

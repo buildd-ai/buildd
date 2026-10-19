@@ -24,7 +24,7 @@ import type {
   LivePr,
   RoundOp,
 } from './commands';
-import { deltaApprovalEligibility, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
+import { deltaApprovalEligibility, emptyDeltaCarry, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
 import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
 import {
   isHumanActor,
@@ -2029,12 +2029,14 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
     });
   };
   const carry = (implied?: 'own_refresh'): Decision | null => {
-    const basis = cmd.carryForward ?? implied;
+    // 92a439a6: an empty bounded delta from the approval is content equivalence too.
+    const from = cmd.carryForward || implied ? null : emptyDeltaCarry(c.view, h, cmd.delta);
+    const basis = cmd.carryForward ?? implied ?? (from ? 'content_equivalent' : null);
     if (!basis) return null;
     const p: DeliveryPatch = d.approvalBasis === 'composition'
       ? { compositionHeads: [...d.compositionHeads, h] }
       : { approvedHeads: [...d.approvedHeads, h] };
-    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: basis } });
+    return c.apply(key, 'APPROVED', { patch: { ...p, currentHeadSha: h, stateReason: null }, evidence: { ...evidence, carryForward: basis, ...(from ? { carriedFrom: from, emptyDelta: true } : {}) } });
   };
 
   switch (d.state) {
@@ -2433,13 +2435,18 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
         attempts: [end('delivered', h)], evidence: { ...evidence, proof, policy: 'no_review' },
       });
     }
-    if (d.state === 'REPAIRING' && cmd.carryForward && headCoverage(d, a.boundHeadSha) !== 'none') {
+    // T11 / §8.3: a repair whose head leaves the PR's diff unchanged (an agent conflict repair that
+    // only merged the base) keeps the approval. The host's compare says so (`carryForward`), or the
+    // delta it read from the approval is empty (92a439a6); either way no reviewer round is started.
+    const emptyFrom = d.state === 'REPAIRING' && !cmd.carryForward ? emptyDeltaCarry(c.view, h, cmd.delta) : null;
+    if (d.state === 'REPAIRING' && ((cmd.carryForward && headCoverage(d, a.boundHeadSha) !== 'none') || emptyFrom)) {
       const p: DeliveryPatch = d.approvalBasis === 'composition'
         ? { compositionHeads: [...d.compositionHeads, h] }
         : { approvedHeads: [...d.approvedHeads, h] };
       return c.apply(key, 'APPROVED', {
         patch: { ...p, currentHeadSha: h, boundAttemptId: null, stateReason: null },
-        attempts: [end('delivered', h)], evidence: { ...evidence, proof, carryForward: cmd.carryForward },
+        attempts: [end('delivered', h)],
+        evidence: { ...evidence, proof, carryForward: cmd.carryForward ?? 'content_equivalent', previousHead: a.boundHeadSha, ...(emptyFrom ? { carriedFrom: emptyFrom, emptyDelta: true } : {}) },
       });
     }
     const r = c.startRound(h, { trigger: attemptTrigger(a), delta: cmd.delta });

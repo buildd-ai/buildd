@@ -727,6 +727,77 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
   });
 });
 
+// 92a439a6: a clean base merge into an approved PR is not a new review (#5164, #5155, #5179).
+describe('T11 / §8.3: an agent conflict repair that only merged the base keeps the approval', () => {
+  const end = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>>): Decision =>
+    run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', attemptId: 'c1', outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: live('H2'), ...o });
+  const approvedRound = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
+  const conflictRepair = (d: Partial<DeliverySnapshot> = {}) => V(
+    D({ state: 'REPAIRING', stateReason: 'conflict', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1, ...d }),
+    [approvedRound],
+    [A({ id: 'c1', family: 'conflict', triggerReason: 'dirty', status: 'running', taskId: 'cx1' })],
+  );
+  const delta = (files: Array<{ path: string; additions?: number; deletions?: number }>) => ({
+    fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts', 'src/b.ts'],
+    files: files.map((f) => ({ status: 'modified', additions: 2, deletions: 1, ...f })),
+  });
+  const noRound = (dec: ApplyDecision) => {
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  };
+
+  test('content-equivalent evidence on the end → APPROVED at H2, no round, no review dispatched', () => {
+    const dec = applied(end(conflictRepair(), { carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2', boundAttemptId: null });
+    expect(dec.evidence.carryForward).toBe('content_equivalent');
+    noRound(dec);
+  });
+
+  test('an empty bounded delta is content equivalence: it carries with no reviewer round', () => {
+    const dec = applied(end(conflictRepair(), { delta: delta([]) }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toMatchObject({ approvedHeads: ['H1', 'H2'], currentHeadSha: 'H2' });
+    expect(dec.evidence).toMatchObject({ carryForward: 'content_equivalent', carriedFrom: 'H1', emptyDelta: true });
+    noRound(dec);
+  });
+
+  test('a conflict-resolved merge that changed a PR file gets a delta round', () => {
+    const dec = applied(end(conflictRepair(), { delta: delta([{ path: 'src/a.ts' }]) }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', scope: { deltaApproval: expect.objectContaining({ eligible: true }) } }));
+  });
+
+  test('an out-of-PR or oversized change, or an unread delta, gets a full round', () => {
+    for (const reading of [delta([{ path: 'src/elsewhere.ts' }]), delta([{ path: 'src/a.ts', additions: 500 }]), null]) {
+      const dec = applied(end(conflictRepair(), { delta: reading }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, kind: 'full' }));
+    }
+  });
+
+  test('an empty delta does not carry what it cannot: open findings, or no reviewer approval', () => {
+    const f = { id: 'f1', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 1, path: 'src/a.ts', line: 1, title: 't', required: true, status: 'open' };
+    const withFinding = { ...conflictRepair(), findings: [f] } as unknown as KernelView;
+    expect(applied(end(withFinding, { delta: delta([]) })).toState).toBe('AWAITING_REVIEW');
+    const human = conflictRepair({ approvalBasis: 'human' });
+    expect(applied(end(human, { delta: delta([]) })).toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('HeadObserved on APPROVED: an empty delta carries too (the push arrived first)', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [approvedRound]);
+    const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), delta: delta([]) }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvedHeads).toEqual(['H1', 'H2']);
+    noRound(dec);
+  });
+
+  test('the push that follows a carried end is a duplicate', () => {
+    const carried = conflictRepair({ state: 'APPROVED', currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'], boundAttemptId: null });
+    expectResult(run(carried, { type: 'HeadObserved', actor: 'webhook', live: live('H2') }), 'duplicate', 'head_unchanged');
+  });
+});
+
 describe('AttemptRequeued (AC-1 slice 6): a retried attempt goes back to the queue without moving the delivery', () => {
   const owner = (o: Partial<Extract<Command, { type: 'AttemptRequeued' }>> = {}): Command => ({ type: 'AttemptRequeued', actor: 'runner', workerId: 'w9', taskId: 't1', reason: 'retry', ...o });
 
@@ -2007,9 +2078,20 @@ describe('S15 disjoint-delta rule (88318f31, #4283): an approved head on a busy 
   });
 
   test('risky paths on either side of the gap are never landed across', () => {
-    for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts', 'bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/no-em-dash-copy.test.ts']) {
+    for (const risky of ['bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/no-em-dash-copy.test.ts']) {
       const dec = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })));
       expect(dec.evidence).toMatchObject({ cause: 'refresh_unsafe', files: [risky] });
+      expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
+    }
+  });
+
+  // 92a439a6 (#5179): a migration only the base carries is not a reason to page a person.
+  test('a migration or schema change is risky on the base side only against the PR\'s own', () => {
+    for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts']) {
+      expectResult(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })), 'rejected', 'behind_tolerated');
+      expect(applied(land(approved(spent), delta({ baseFiles: ['src/x.ts', risky] }))).toState).toBe('LANDING');
+      const both = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky], prFiles: ['src/a.ts', 'packages/core/drizzle/0301_mine.sql'] })));
+      expect(both.evidence).toMatchObject({ cause: 'refresh_unsafe', deltaBasis: 'risky_path' });
       expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
     }
   });
