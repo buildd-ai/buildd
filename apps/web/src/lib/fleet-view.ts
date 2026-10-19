@@ -18,6 +18,7 @@ import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { runEndReason } from './fleet-view-end-reason';
+import { accountablePrincipal } from './fleet-occupancy';
 
 type DateLike = Date | string | null | undefined;
 
@@ -46,6 +47,8 @@ export interface FleetWorkerRow {
   accountId?: string | null;
   /** The user who claimed the run (`workers.claimedByUserId`); null when unknown. */
   ownerId?: string | null;
+  /** `tasks.createdByUserId`: decides `mine` on runner work (null: service-owned). Absent: the claimer decides. */
+  taskOwnerId?: string | null;
   runner: string;
   localUiUrl?: string | null;
   status: string;
@@ -207,7 +210,8 @@ export function buildFleetSnapshot(
   /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
   const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }) => {
     const t = w.task ?? null;
-    const mine = opts.viewerId ? (w.ownerId ? w.ownerId === opts.viewerId : null) : undefined;
+    const principal = accountablePrincipal(slot.lane.id.startsWith('sessions:') ? 'interactive' : 'runner', w.ownerId, w.taskOwnerId);
+    const mine = opts.viewerId ? (principal ? principal === opts.viewerId : null) : undefined;
     const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
     // The task's own short label ("reconcile exports spec") names the run;
     // the one-word pick is only a chip beside it. "untitled" names nothing.
