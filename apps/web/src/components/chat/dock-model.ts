@@ -3,7 +3,7 @@
  * thing it shows, what a task card in it says, and who is at work on a mission.
  * Pure, so the panel and its tests agree.
  */
-import { dockChoice as kitDockChoice, type DockChoice as KitDockChoice, type DockMode as KitDockMode } from '@builddai/ai-kit/chat/react';
+import { dockChoice as kitDockChoice, type DockChoice as KitDockChoice, type DockMode as KitDockMode } from '@buildd/ai-kit/chat/react';
 import type { BuilddObjectRef } from './chat-contract';
 import type { TaskObjectView } from './objects/object-views';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';

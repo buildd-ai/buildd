@@ -1,6 +1,6 @@
 /**
  * One tier authority: the model policy (packages/core/model-policy.ts over
- * @builddai/ai-kit/policy). This scans the tracked source for the ways a call
+ * @buildd/ai-kit/policy). This scans the tracked source for the ways a call
  * site used to pick a tier's concrete model on its own, so a new one fails here
  * instead of quietly becoming a second source of truth.
  *

@@ -95,6 +95,9 @@ export interface OpenPrStatusSummary {
   /** Heads already showing their answer. */
   unchanged: number;
   candidates: number;
+  /** Heads skipped due to repo or permission issues (not counted as errors). */
+  skipped: number;
+  skipReasons: { noStatusesPermission: number; noDelivery: number };
   errors: number;
   coverage: StatusCoverage;
 }
@@ -132,6 +135,26 @@ async function listOpenPullsLive(installationId: number, repoFullName: string): 
   return out;
 }
 
+/** Parses the HTTP status code from a githubApi error message. */
+function parseStatusFromError(err: unknown): number | null {
+  if (err instanceof Error) {
+    const match = err.message.match(/GitHub API error: (\d+)/);
+    if (match) return parseInt(match[1], 10);
+  }
+  return null;
+}
+
+/** Checks if a 403 error is a statuses:write permission denied, not a rate limit or other 403. */
+function isStatusesPermissionDenied(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const status = parseStatusFromError(err);
+  if (status !== 403) return false;
+  const msg = err.message.toLowerCase();
+  return (msg.includes('resource not accessible') ||
+    (msg.includes('statuses') && (msg.includes('permission') || msg.includes('forbidden'))) ||
+    msg.includes('statuses:write'));
+}
+
 async function publishLive(installationId: number, p: { repoFullName: string; sha: string; context: string; state: LandingStatus['state']; description: string }): Promise<void> {
   // The kernel's `GithubWrites.publishStatus` (kernel-ports.ts), with no link: a PR no delivery owns has no task page.
   await githubApi(installationId, `/repos/${p.repoFullName}/statuses/${p.sha}`, {
@@ -149,9 +172,19 @@ interface HeadRun {
   reviews: OpenPrReviews;
   /** False on the web host's webhook path: a kernel write (an effect and its drain) is the control plane's, so only the floor does it. */
   kernelRepublish: boolean;
+  /** True on the floor's sweep: a PR with no live delivery and no review asked for is skipped, not written pending. */
+  skipUnowned?: boolean;
 }
 
-type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean };
+type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean; skippedNoDelivery: boolean };
+
+/** Error thrown when publish fails due to statuses:write permission denied. */
+class StatusesPermissionDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StatusesPermissionDeniedError';
+  }
+}
 
 /** Write `answer` on one open head (the sweep's and the webhooks' shared step): what GitHub shows now is compared first, so a repeat writes nothing. */
 async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha: string): Promise<HeadResult> {
@@ -165,7 +198,7 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
     ((await exec(enqueueEffectSql(id, version, { kind: 'publish_landing_status', dedupeKey: republishKey(id, version), payload: { version } }))).rows ?? []).length > 0);
   const drain = deps.drain ?? (async (id) => (await import('./seam')).drainDelivery(id));
 
-  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false };
+  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false, skippedNoDelivery: false };
   const read = () => Promise.all(LANDING_STATUS_CONTEXTS.map((c) => statusOf(installationId, repoFullName, sha, c).catch(() => null)));
   const matches = (cur: Shown[], want: LandingStatus) => cur.every((x) => x && x.state === want.state && x.description === want.description);
   const ownerOf = async () => {
@@ -189,10 +222,19 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   const workspaceId = candidateLink?.workspaceId ?? link.workspaceId;
   // Only what the answer needs: the kernel's own answer reads no review state.
   const kernelHere = openHeadStatus({ sha, view });
+  const review = kernelHere.by === 'kernel' || candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number });
+  // No live delivery, no review asked for, not a bot's, a draft or a (possible) release candidate: a stale
+  // ordinary PR nobody in buildd is working on. The floor leaves it alone rather than writing pending on it.
+  if (run.skipUnowned && !owner && !candidateLink && review === 'not_requested' && !pr.draft
+    && !pr.user?.login?.toLowerCase().endsWith('[bot]') && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))) {
+    out.skippedNoDelivery = true;
+    out.shown = true;
+    return out;
+  }
   const answer = kernelHere.by === 'kernel' ? kernelHere : openHeadStatus({
     sha, view,
     candidate: candidateLink ? await reviews.candidate({ workspaceId, installationId, repoFullName, prNumber: pr.number, sha }) : null,
-    review: candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number }),
+    review,
   });
   out.by = answer.by;
   const current = await read();
@@ -208,8 +250,17 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
     }
   } else {
     // Under both names, the legacy one first, as the kernel writes them.
-    for (const context of LANDING_STATUS_CONTEXTS) {
-      await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
+    try {
+      for (const context of LANDING_STATUS_CONTEXTS) {
+        await publish(installationId, { repoFullName, sha, context, state: answer.status.state, description: answer.status.description });
+      }
+    } catch (err) {
+      // If the publish fails due to statuses:write permission denied, rethrow as a special error
+      // so the caller can skip the entire repo. Other 403s (rate limits, etc.) are regular errors.
+      if (isStatusesPermissionDenied(err)) {
+        throw new StatusesPermissionDeniedError(`No statuses:write permission for ${repoFullName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      throw err;
     }
     out.wrote = true;
     out.shown = true;
@@ -228,9 +279,12 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
 export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promise<OpenPrStatusSummary> {
   const exec = deps.exec ?? dbExec;
   const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
-  const run: HeadRun = { deps, exec, reviews, kernelRepublish: true };
+  const run: HeadRun = { deps, exec, reviews, kernelRepublish: true, skipUnowned: true };
 
-  const s: Omit<OpenPrStatusSummary, 'coverage'> = { repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, errors: 0 };
+  const s: Omit<OpenPrStatusSummary, 'coverage'> = {
+    repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, skipped: 0,
+    skipReasons: { noStatusesPermission: 0, noDelivery: 0 }, errors: 0,
+  };
   const heads: Array<OpenHead & { shown: boolean }> = [];
 
   // One pass per repo; a repo linked from several workspaces is read once, and owned by whichever workspace has the delivery.
@@ -251,22 +305,50 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
       console.error(`[workflow] open PR status: listing ${repoFullName} failed:`, err);
       continue;
     }
+
+    let repoHasNoPermission = false;
+
     for (const pr of pulls) {
       const sha = pr.head?.sha;
       if (!sha) continue;
       s.checked++;
       const head: OpenHead = { repoFullName, prNumber: pr.number, sha };
       let shown = false;
+
+      // If repo already hit permission error, skip remaining PRs
+      if (repoHasNoPermission) {
+        s.skipped++;
+        s.skipReasons.noStatusesPermission++;
+        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no statuses:write permission`);
+        // Skipped heads are marked as shown (the skip is the final answer, not missing coverage)
+        heads.push({ ...head, shown: true });
+        continue;
+      }
+
       try {
         const r = await publishHead(run, links, pr, sha);
         shown = r.shown;
+        if (r.skippedNoDelivery) {
+          s.skipped++;
+          s.skipReasons.noDelivery++;
+          heads.push({ ...head, shown });
+          continue;
+        }
         if (r.by === 'release_candidate') s.candidates++;
         if (r.republished) s.republished++;
         if (r.wrote) s.published++;
         else if (r.unchanged) s.unchanged++;
       } catch (err) {
-        s.errors++;
-        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} failed:`, err);
+        if (err instanceof StatusesPermissionDeniedError) {
+          repoHasNoPermission = true;
+          s.skipped++;
+          s.skipReasons.noStatusesPermission++;
+          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: ${err.message}`);
+          shown = true;
+        } else {
+          s.errors++;
+          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} failed:`, err);
+        }
       }
       heads.push({ ...head, shown });
     }

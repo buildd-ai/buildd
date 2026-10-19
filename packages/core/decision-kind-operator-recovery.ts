@@ -33,8 +33,8 @@
  * Pure: no DB, no env.
  */
 
-import { choice } from '@builddai/ai-kit/decide';
-import type { DecisionKindConfig, DecisionQuestions, FeatureParse } from '@builddai/ai-kit/decide';
+import { choice } from '@buildd/ai-kit/decide';
+import type { DecisionKindConfig, DecisionQuestions, FeatureParse } from '@buildd/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 import type { DecisionObjective } from './decision-readout';
 

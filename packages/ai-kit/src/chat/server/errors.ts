@@ -9,7 +9,7 @@
  * `cause`, so it needs no import of `ai` or `@ai-sdk/provider`.
  */
 
-import type { ChatTurnErrorCode, TurnErrorData } from '@builddai/ai-kit/chat/contract';
+import type { ChatTurnErrorCode, TurnErrorData } from '@buildd/ai-kit/chat/contract';
 
 export const TURN_ERROR_MESSAGES: Record<ChatTurnErrorCode, string> = {
   insufficient_credit: 'The AI provider refused this turn: the key is out of credit or over its spending limit. Add credit or raise the key\'s limit, then try again.',

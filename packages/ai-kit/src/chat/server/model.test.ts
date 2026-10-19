@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import type { CallConfig, ResolvedPlan } from '@builddai/ai-kit/models';
+import type { CallConfig, ResolvedPlan } from '@buildd/ai-kit/models';
 import { modelFromPlan } from './model';
 
 const plan = {

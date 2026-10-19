@@ -3,7 +3,7 @@
  * the model proposed and never invents a field the input doesn't carry.
  *
  * The preview and field drafts, and the label lookup, are the kit's
- * (`approvalDraft` / `approvalLabel` from @builddai/ai-kit/chat/react). buildd
+ * (`approvalDraft` / `approvalLabel` from @buildd/ai-kit/chat/react). buildd
  * adds one richer draft through the kit's `custom` hook, a new mission with
  * its goal, done-when criteria, constraints and plan, and its own words for
  * each write (LABELS).
@@ -16,12 +16,12 @@ import {
   toolAction,
   toolInput,
   type ApprovalDraft as KitApprovalDraft,
-} from '@builddai/ai-kit/chat/react';
+} from '@buildd/ai-kit/chat/react';
 import { criterionLabel } from '@/lib/goal-criterion-label';
 import { toolNameOf, type ChatToolPart } from './chat-contract';
 
 export { firstParagraph };
-export type { GenericDraft, PreviewDraft } from '@builddai/ai-kit/chat/react';
+export type { GenericDraft, PreviewDraft } from '@buildd/ai-kit/chat/react';
 
 export interface DraftCriterion {
   label: string;

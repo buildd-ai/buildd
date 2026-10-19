@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { latestHandoffs } from '@builddai/ai-kit/chat/contract';
+import { latestHandoffs } from '@buildd/ai-kit/chat/contract';
 import {
   approvalRequestsIn, canonicalJson, createPermissionsApi, defineToolGroups, handoffEventMessage, handoffOf, handoffResult,
   hashToolInput, memoryChatStore, reconcileApprovals, ToolGroupsError,

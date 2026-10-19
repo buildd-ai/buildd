@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { defineTierPolicy } from '@builddai/ai-kit/chat/contract';
+import { defineTierPolicy } from '@buildd/ai-kit/chat/contract';
 
 describe('defineTierPolicy', () => {
   it('without options is the kit as before: Auto default, budget / standard / premium', () => {

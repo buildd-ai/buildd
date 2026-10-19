@@ -7,7 +7,7 @@
  * apps/runner/__tests__/unit/no-decision-definitions-in-runner.test.ts); it
  * gets the wire contract from ./question-gate.ts instead.
  */
-import { choice, type DecisionRun } from '@builddai/ai-kit/decide';
+import { choice, type DecisionRun } from '@buildd/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 import type { BriefedQuestion } from './question-brief';
 import {

@@ -43,7 +43,11 @@ function harness(o: {
     drain: async (id) => { o.onDrain?.(id); },
     reviews: async () => ({
       isCandidate: (config, pr) => classifyReleasePr(config, pr).kind === 'candidate',
-      mayBeCandidate: () => true,
+      mayBeCandidate: (config, refs) => config && config.enabled && config.candidate && config.candidate.branches?.some(pattern => {
+        // Simple glob-like matching: 'release/v*' matches 'release/v1.2.3'
+        const regex = new RegExp(`^${pattern.replace(/\*/g, '.*')}$`);
+        return refs.headRef && regex.test(refs.headRef);
+      }) || false,
       review: async () => o.review ?? 'not_requested',
       candidate: async () => ({ checks: [{ name: 'build', state: 'passing' }, { name: 'release candidate verified', state: 'passing' }], review: { verdict: 'pass' } }),
     }),
@@ -74,18 +78,21 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   });
 
   test('a second pass writes nothing (idempotent: GitHub already shows the answer)', async () => {
-    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
     await publishOpenPrStatuses(h.deps);
     const before = h.writes.length;
+    expect(before).toBe(2);
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.length).toBe(before);
     expect(s).toMatchObject({ published: 0, unchanged: 1, coverage: { verdict: 'covered' } });
   });
 
   test('a review asked for: "Review in progress"', async () => {
+    // No delivery owns it, but a review was asked for: the PR is live, so the host writes (never skipped).
     const h = harness({ pulls: [{ number: 7, sha: H(7) }], review: 'in_progress' });
-    await publishOpenPrStatuses(h.deps);
+    const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.at(-1)!.description.startsWith('Review in progress')).toBe(true);
+    expect(s).toMatchObject({ published: 1, skipped: 0 });
   });
 
   test('a kernel-owned head missing its status: the kernel republishes it (an effect at its version), the host never writes it', async () => {
@@ -153,20 +160,212 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   test('a PR claimed by the kernel while the host wrote pending: the kernel republishes after it', async () => {
     let calls = 0;
     const view = approvedView('d1', H(7));
-    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    // A review was asked for, so the unowned PR is live and the host writes; the claim lands during that write.
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }], review: 'in_progress' });
     h.deps.owned = async () => (calls++ === 0 ? null : 'd1');
     h.deps.loadView = async () => view;
     await publishOpenPrStatuses(h.deps);
+    expect(h.writes.length).toBe(2);
     expect(h.enqueued).toEqual([{ deliveryId: 'd1', version: 5 }]);
   });
 
   test('one repo failing to list does not stop the others, and counts as an error', async () => {
-    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
     const repos = await h.deps.repos!();
     h.deps.repos = async () => [{ ...repos[0]!, repoFullName: 'acme/broken' }, ...repos];
     const list = h.deps.listOpenPulls!;
     h.deps.listOpenPulls = async (i, r) => { if (r === 'acme/broken') throw new Error('500'); return list(i, r); };
     const s = await publishOpenPrStatuses(h.deps);
     expect(s).toMatchObject({ errors: 1, checked: 1, published: 1 });
+  });
+
+  test('a repo without statuses:write permission (403) skips all its PRs with a reason, not an error', async () => {
+    // Use bot PRs so they don't get skipped as noDelivery; permission error happens during publish
+    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }] });
+    h.deps.publish = async (i, p) => {
+      const error = new Error('GitHub API error: 403 Forbidden - Resource not accessible');
+      throw error;
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 0,
+      skipped: 2,
+      skipReasons: { noStatusesPermission: 2, noDelivery: 0 },
+      errors: 0,  // 403 permission denied is a skip, not an error
+      coverage: { verdict: 'covered', missing: [] },  // skipped heads are marked as shown, so coverage is covered
+    });
+  });
+
+  test('an ordinary PR with no delivery in a shared repo is skipped, not published', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    // owned returns null, meaning no delivery owns this PR
+    h.deps.owned = async () => null;
+    // Mock repos to return multiple workspaces for the same repo (shared repo)
+    const repos = await h.deps.repos!();
+    h.deps.repos = async () => [...repos, { ...repos[0], workspaceId: 'ws2' }];
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 1,
+      published: 0,  // no writes for unowned ordinary PR in shared repo
+      skipped: 1,     // counted as a skip
+      skipReasons: { noDelivery: 1, noStatusesPermission: 0 },
+      errors: 0,
+      coverage: { verdict: 'covered' },  // skipped heads are marked as shown
+    });
+  });
+
+  test('a closed delivery in a shared repo is skipped with noDelivery reason', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    // owned returns null, no delivery manages this PR (e.g., it's closed/stale)
+    h.deps.owned = async () => null;
+    const repos = await h.deps.repos!();
+    h.deps.repos = async () => [...repos, { ...repos[0], workspaceId: 'ws2' }];
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 1,
+      published: 0,
+      skipped: 1,
+      skipReasons: { noDelivery: 1, noStatusesPermission: 0 },
+      errors: 0,
+    });
+  });
+
+  test('repeat passes skip shared-repo PRs consistently (idempotent skips)', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    h.deps.owned = async () => null;
+    const repos = await h.deps.repos!();
+    h.deps.repos = async () => [...repos, { ...repos[0], workspaceId: 'ws2' }];
+    const s1 = await publishOpenPrStatuses(h.deps);
+    expect(s1).toMatchObject({ skipped: 1, published: 0 });
+    const s2 = await publishOpenPrStatuses(h.deps);
+    expect(s2).toMatchObject({ skipped: 1, published: 0 });
+    expect(h.writes).toEqual([]);  // No writes on either pass
+  });
+
+  test('a rate-limit 403 is an error, not skipped (and subsequent PRs still run)', async () => {
+    const h = harness({
+      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+    });
+    let callCount = 0;
+    h.deps.publish = async (i, p) => {
+      callCount++;
+      if (callCount === 1) {
+        // First PR hits a rate-limit 403 (not a permission denied)
+        const error = new Error('GitHub API error: 403 Rate limit exceeded');
+        throw error;
+      }
+      // Second PR succeeds
+      h.statuses.set(`${p.sha}|${p.context}`, { state: p.state, description: p.description });
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 1,  // second PR was still processed and published
+      skipped: 0,
+      errors: 1,  // rate-limit 403 is an error
+      coverage: { verdict: 'gaps' },  // PR 7 has no status due to error
+    });
+  });
+
+  test('a 403 from review reads does not skip the repo (is an error)', async () => {
+    const h = harness({
+      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+    });
+    let callCount = 0;
+    h.deps.reviews = async () => {
+      const base = await harness({}).deps.reviews!();
+      return {
+        ...base,
+        review: async () => {
+          callCount++;
+          if (callCount === 1) {
+            // First PR hits a 403 from review read (not statuses permission)
+            const error = new Error('GitHub API error: 403 Reviews not accessible');
+            throw error;
+          }
+          return 'not_requested';
+        },
+      };
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 1,  // second PR still runs and publishes
+      skipped: 0,
+      errors: 1,  // 403 from review is an error, not a permission skip
+      coverage: { verdict: 'gaps' },  // PR 7 has no status due to error
+    });
+  });
+
+  test('a 500 whose body contains "403" is an error, not skipped', async () => {
+    const h = harness({
+      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+    });
+    let callCount = 0;
+    h.deps.publish = async (i, p) => {
+      callCount++;
+      if (callCount === 1) {
+        // Simulate a 500 (not a 403, so not statuses permission)
+        const error = new Error('GitHub API error: 500 Internal server error with 403 Forbidden caught in handler');
+        throw error;
+      }
+      h.statuses.set(`${p.sha}|${p.context}`, { state: p.state, description: p.description });
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 1,  // second PR still runs and publishes
+      skipped: 0,
+      errors: 1,  // 500 is an error, not a permission skip
+      coverage: { verdict: 'gaps' },  // PR 7 has no status due to error
+    });
+  });
+
+  test('an ordinary publish failure is an error, not skipped (and subsequent PRs still run)', async () => {
+    const h = harness({
+      pulls: [{ number: 7, sha: H(7), author: 'bot[bot]' }, { number: 8, sha: H(8), author: 'bot[bot]' }],
+    });
+    let callCount = 0;
+    h.deps.publish = async (i, p) => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error('Network timeout');
+      }
+      h.statuses.set(`${p.sha}|${p.context}`, { state: p.state, description: p.description });
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 1,  // second PR still runs and publishes
+      skipped: 0,
+      errors: 1,
+      coverage: { verdict: 'gaps' },  // PR 7 has no status due to error
+    });
+  });
+
+  test('a release candidate PR in a shared repo is published, not skipped for noDelivery', async () => {
+    const releaseConfig = { enabled: true, prodBranch: 'main', candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['release-bot[bot]'] } };
+    const meta = { schema: 1, version: 'v1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: H(4), candidateSha: H(3), baseRef: 'main', baseSha: H(5), previousTag: null, amendment: 0, previousCandidateSha: null, supersedes: null, cutAt: '2026-01-01T00:00:00Z' };
+    const h = harness({
+      releaseConfig,
+      pulls: [{ number: 9, sha: H(3), headRef: 'release/v1.2.3', baseRef: 'main', author: 'release-bot[bot]', body: `<!-- release-candidate ${JSON.stringify(meta)} -->` }],
+    });
+    // No delivery owns this PR
+    h.deps.owned = async () => null;
+    // Make the repo shared (linked from 2 workspaces)
+    const repos = await h.deps.repos!();
+    h.deps.repos = async () => [...repos, { ...repos[0], workspaceId: 'ws2' }];
+    const s = await publishOpenPrStatuses(h.deps);
+    // Should be published as a candidate, not skipped
+    expect(s).toMatchObject({
+      checked: 1,
+      published: 1,  // candidate status was published
+      candidates: 1,
+      skipped: 0,  // not skipped (even though no delivery owns it)
+      skipReasons: { noDelivery: 0, noStatusesPermission: 0 },
+      errors: 0,
+      coverage: { verdict: 'covered' },
+    });
   });
 });

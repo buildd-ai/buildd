@@ -12,7 +12,7 @@
  * panel pins the latest key step under its live line and folds runs of
  * routine ones; the browser never re-derives this.
  */
-import { STEP_PART_TYPE, type StepData } from '@builddai/ai-kit/chat/contract';
+import { STEP_PART_TYPE, type StepData } from '@buildd/ai-kit/chat/contract';
 import { chatToolIsRead, chatToolNeedsApproval } from '@buildd/shared';
 
 type Phase = 'active' | 'done' | 'failed';

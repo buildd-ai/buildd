@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { expectDecisionPinned } from '@builddai/ai-kit/decide';
+import { expectDecisionPinned } from '@buildd/ai-kit/decide';
 import {
   DEFAULT_QUESTION_GATE_MAX_PUSHBACKS,
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,

@@ -23,9 +23,9 @@ import {
   type PreviewOutcome,
   type TurnUsageRecord,
 } from './index';
-import type { UsageReceipt } from '@builddai/ai-kit/models';
-import { APPROVAL_ROW_CAP, approvalRowOutcome, CHANGED_SINCE_SHOWN, isHeldBack, isSystemDenied, parseApprovalPreview, systemDeniedLine, systemDeniedNote } from '@builddai/ai-kit/chat/contract';
-import { PlanDeniedError } from '@builddai/ai-kit/models';
+import type { UsageReceipt } from '@buildd/ai-kit/models';
+import { APPROVAL_ROW_CAP, approvalRowOutcome, CHANGED_SINCE_SHOWN, isHeldBack, isSystemDenied, parseApprovalPreview, systemDeniedLine, systemDeniedNote } from '@buildd/ai-kit/chat/contract';
+import { PlanDeniedError } from '@buildd/ai-kit/models';
 
 // ── Mock model streams ────────────────────────────────────────────────────────
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };

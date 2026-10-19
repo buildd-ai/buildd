@@ -51,7 +51,7 @@
  *
  * ## Transport
  *
- * `decide` from `@builddai/ai-kit/decide`: the official TypeSafe SDK
+ * `decide` from `@buildd/ai-kit/decide`: the official TypeSafe SDK
  * (`@typesafe-ai/sdk`, MIT, pinned) pointed at OpenRouter's System One API
  * (`baseURL` `https://openrouter.ai/api`; the SDK appends `/v1/systemone`),
  * with validation, the deadline, retries and error mapping. Every SDK setting
@@ -82,7 +82,7 @@ import {
   type DecisionUsage,
   type DecisionEndpoint,
   type UsageSink,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import { decisionModelFor, isClefModel, normalizeDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelRoute, type DecisionModelSetting } from './decision-model';
@@ -91,7 +91,7 @@ import { loadTeamEntitlements } from './billing-limits';
 import { sqlWhere } from './db/relational-sql';
 
 // The question/answer types, request and response validation, `gateChoice` and
-// the transport live in `@builddai/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
+// the transport live in `@buildd/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
 // P2). This module keeps buildd's policy check and key resolution, and pins the
 // transport to its original retry rule, so its behaviour is unchanged.
 export {
@@ -103,7 +103,7 @@ export {
   MAX_CHOICE_OPTIONS,
   MIN_SCORE_LEVELS,
   MAX_SCORE_LEVELS,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 export type {
   DecisionText,
   ChoiceQuestion,
@@ -120,7 +120,7 @@ export type {
   GateOutcome,
   DecisionReceipt,
   UsageSink,
-} from '@builddai/ai-kit/decide';
+} from '@buildd/ai-kit/decide';
 
 /** OpenRouter's System One API root, per OpenRouter's TypeSafe SDK guide. */
 export const DECISIONS_BASE_URL = DECIDE_BASE_URL;

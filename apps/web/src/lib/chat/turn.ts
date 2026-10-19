@@ -46,8 +46,8 @@ import { buildChatTools, CORE_GROUPS, effectiveClass, FALLBACK_GROUPS, groupOf, 
 import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
-import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON, answerText } from '@builddai/ai-kit/chat/contract';
-import { DEFAULT_HISTORY_TOKENS, fitHistoryToBudget, messageFitsModel, modelTooBig, userTextOf } from '@builddai/ai-kit/chat/server';
+import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON, answerText } from '@buildd/ai-kit/chat/contract';
+import { DEFAULT_HISTORY_TOKENS, fitHistoryToBudget, messageFitsModel, modelTooBig, userTextOf } from '@buildd/ai-kit/chat/server';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';

@@ -3,7 +3,7 @@
 A small Cloudflare Worker that answers one question: for this **surface**
 (`chat | coding`) and **tier** (`premium-plus | premium | standard | budget`),
 which provider, model and effort? The policy logic is
-`@builddai/ai-kit/policy`, the same code an app can run locally with no service.
+`@buildd/ai-kit/policy`, the same code an app can run locally with no service.
 
 ```
 POST /v1/resolve    { surface, tier, app?, workspaceId? }  → { provider, model, effort, policyVersion, planId, surface, tier, source, experiment? }
@@ -96,6 +96,6 @@ bun apps/model-policy/scripts/deploy.ts --emit /tmp/model-policy-deploy.json [--
 ## Client side
 
 ```ts
-import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@builddai/ai-kit/policy';
+import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@buildd/ai-kit/policy';
 const policy = createPolicyClient({ policy: remotePolicy({ endpoint, token }), fallback: DEFAULT_MODEL_POLICY });
 ```

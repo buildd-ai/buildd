@@ -9,7 +9,7 @@
  * project). This script:
  *
  *   1. `npm pack`s `dist/` (or takes a tarball path as the first argument,
- *      e.g. one from `npm pack @builddai/ai-kit@0.1.0`),
+ *      e.g. one from `npm pack @buildd/ai-kit@0.1.0`),
  *   2. installs it into a fresh project in the OS temp dir, outside the
  *      monorepo, with a clean npmrc (public registry only, no user/global
  *      config),
@@ -107,14 +107,14 @@ try {
   writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'ai-kit-consumer', private: true, type: 'module' }, null, 2));
   npmInstall(['--no-package-lock', tarball], project);
 
-  const pkg = JSON.parse(readFileSync(join(project, 'node_modules', '@builddai', 'ai-kit', 'package.json'), 'utf8'));
+  const pkg = JSON.parse(readFileSync(join(project, 'node_modules', '@buildd', 'ai-kit', 'package.json'), 'utf8'));
   const peers = pkg.peerDependencies ?? {};
   console.log(`installed ${pkg.name}@${pkg.version}; peers: ${JSON.stringify(peers)}`);
 
   // Runs inside the consumer project, so resolution is the consumer's.
   writeFileSync(join(project, 'check.mjs'), `
 const phase = process.argv[2];
-const pkg = JSON.parse((await import('node:fs')).readFileSync(new URL('./node_modules/@builddai/ai-kit/package.json', import.meta.url), 'utf8'));
+const pkg = JSON.parse((await import('node:fs')).readFileSync(new URL('./node_modules/@buildd/ai-kit/package.json', import.meta.url), 'utf8'));
 let bad = 0;
 // Entries that exist to wrap a peer: bare, they must fail by naming it.
 const NEEDS_PEERS = { './chat/react': ['react', 'react-dom', '@ai-sdk/react', 'ai'] };

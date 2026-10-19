@@ -1,6 +1,6 @@
-name: Publish @builddai/ai-kit
+name: Publish @buildd/ai-kit
 
-# Publishes packages/ai-kit to public npm as @builddai/ai-kit, with provenance,
+# Publishes packages/ai-kit to public npm as @buildd/ai-kit, with provenance,
 # through npm trusted publishing (GitHub OIDC). No npm token is stored
 # anywhere: npm trusts this repo + this workflow file, configured once on the
 # package's npmjs.com settings page (Settings → Trusted publisher). That trust
@@ -121,8 +121,8 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$(npm view "@builddai/ai-kit@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
-            echo "::notice::@builddai/ai-kit@$VERSION is already on npm; nothing to release."
+          if [ "$(npm view "@buildd/ai-kit@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@buildd/ai-kit@$VERSION is already on npm; nothing to release."
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -233,8 +233,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "$(npm view "@builddai/ai-kit@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]; then
-            echo "::notice::@builddai/ai-kit@${VERSION} is already on npm; nothing to publish."
+          if [ "$(npm view "@buildd/ai-kit@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@buildd/ai-kit@${VERSION} is already on npm; nothing to publish."
             exit 0
           fi
           npm publish --provenance --access public

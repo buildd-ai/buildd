@@ -34,7 +34,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ChoiceQuestion, DecisionResult, decisionCall } from '@buildd/core/decision-client';
 import { parseBashTraceExcerpt } from '@buildd/core/bash-failure-trace';
-import { decisionReceiptError, type DecisionReceiptError } from '@builddai/ai-kit/decide';
+import { decisionReceiptError, type DecisionReceiptError } from '@buildd/ai-kit/decide';
 import { captureDecisionReplay, ORCHESTRATION_PRE_STATE_REASONS } from '@buildd/core/decision-replay';
 import type { TaskMismatch } from '@buildd/shared';
 import type { MismatchDiagnosis, StoredVerdictDecision, TaskVerdict, VerdictWording } from './task-verdict';

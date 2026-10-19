@@ -41,7 +41,7 @@ import {
   type MemoryRelevanceShadow,
   type MemoryRelevanceShadowInput,
 } from '@buildd/core/memory-retrieval';
-import type { DecisionReceipt } from '@builddai/ai-kit/decide';
+import type { DecisionReceipt } from '@buildd/ai-kit/decide';
 import { isStandardWorkspace } from './workspace-data-class';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 

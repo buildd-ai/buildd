@@ -1,4 +1,4 @@
--- @builddai/ai-kit/chat/schema.sql
+-- @buildd/ai-kit/chat/schema.sql
 --
 -- A REFERENCE layout for the tables a `ChatStore` needs (Postgres). The kit
 -- never runs this: each app writes its own migration with its own tool

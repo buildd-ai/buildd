@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { runDecisionKind, type DecisionFallbackCause, type DecisionRoute } from '@builddai/ai-kit/decide';
+import { runDecisionKind, type DecisionFallbackCause, type DecisionRoute } from '@buildd/ai-kit/decide';
 import { isInferenceAllowed, OPT_IN_CAPABILITIES } from '@buildd/core/inference-policy';
 import { listBuilddDecisionKinds } from '@buildd/core/decision-kinds';
 import {
