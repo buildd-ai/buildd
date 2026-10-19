@@ -28,7 +28,7 @@ import { socketClient, type SocketClient } from './client';
 import { actionResultText, createKeyDecoder, handleKey, type Effect, type Key } from './keys';
 import { renderFrame } from './render';
 import { NOT_LOGGED_IN, buildTalkLaunch, claudeLoggedIn, runTalk, talkContext, talkWorkspaceId, type TalkLaunch, type TalkPayload } from './talk';
-import { eventChangesQueue, initialState, reduce, type TopEvent, type TopState } from './state';
+import { eventChangesQueue, initialState, reduce, type TopDevBuild, type TopEvent, type TopState } from './state';
 
 export const EXIT_NO_RUNNER = 1;
 export const EXIT_NOT_A_TERMINAL = 64;
@@ -119,6 +119,18 @@ export interface RunTopOptions {
   processHooks?: boolean;
   /** Shorter floors (tests). */
   timing?: { taskEventMinMs?: number; idlePauseMs?: number };
+  /** `buildd top --dev`: the dev build, named in the header (devBuildFromEnv). */
+  build?: TopDevBuild | null;
+}
+
+/**
+ * The dev build of top, from what top-dev.ts hands the dev checkout:
+ * BUILDD_TOP_CHANNEL=dev, BUILDD_TOP_BUILD=<short sha>, and when the fetch
+ * failed BUILDD_TOP_STALE=1 with BUILDD_TOP_NOTICE saying why. Null otherwise.
+ */
+export function devBuildFromEnv(env: Record<string, string | undefined>): TopDevBuild | null {
+  if (env.BUILDD_TOP_CHANNEL !== 'dev') return null;
+  return { channel: 'dev', sha: env.BUILDD_TOP_BUILD || 'unknown', stale: env.BUILDD_TOP_STALE === '1', notice: env.BUILDD_TOP_NOTICE || null };
 }
 
 function defaultOpenUrl(url: string) {
@@ -146,7 +158,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const openUrl = opts.openUrl ?? defaultOpenUrl;
   let palette: Palette = opts.palette ?? terminalPalette(opts.env ?? process.env, true);
 
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team, build: opts.build });
   if (opts.notice) state = { ...state, status: { text: opts.notice, tone: 'info' } };
   let restored = false;
   let renderTimer: ReturnType<typeof setTimeout> | null = null;

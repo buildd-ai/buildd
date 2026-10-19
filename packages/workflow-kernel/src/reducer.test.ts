@@ -1716,6 +1716,34 @@ describe('T25/T26 trunk breaker (S24)', () => {
 describe('T27 ReviewRoundFailed (S29, AC-19)', () => {
   const v = (r: Partial<RoundSnapshot> = {}) => V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R(r)]);
   const f = (view: KernelView, max = 2) => run(view, { type: 'ReviewRoundFailed', actor: 'reviewer', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: max });
+  test('review callbacks are durably stored on the queued round', () => {
+    const reviewCallback = { url: 'https://example.test/hook', on: 'merge' as const };
+    const dec = applied(run(V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'failed' })]), {
+      type: 'ReviewRequested', actor: 'agent:organizer', headSha: 'H1', reviewCallback,
+    } as any));
+    expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ scope: { reviewCallback } });
+  });
+  for (const command of [
+    { type: 'HeadObserved', actor: 'effect:dispatch_review', live: live('H2') },
+    { type: 'BaseChanged', actor: 'effect:dispatch_review', live: live('H1', { baseRef: 'release' }) },
+  ] as const) {
+    test(`${command.type} carries an undelivered callback into the replacement round`, () => {
+      const reviewCallback = { url: 'https://example.test/hook', on: 'merge' };
+      const dec = applied(run(v({ scope: { revalidate: true, reviewCallback } }), command));
+      expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ scope: { reviewCallback } });
+    });
+    test(`${command.type} does not copy the callback of a reviewer already dispatched`, () => {
+      const dec = applied(run(v({ scope: { revalidate: true, reviewCallback: { url: 'https://example.test/hook', on: 'merge' } }, reviewerTaskId: 'reviewer-task' }), command));
+      const round = dec.rounds.find((r) => r.op === 'insert');
+      expect(round?.op === 'insert' ? round.scope?.reviewCallback : undefined).toBeUndefined();
+    });
+  }
+  test('deferred review revalidation survives a dispatch retry', () => {
+    const dec = applied(run(V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R({ scope: { revalidate: true } })]), {
+      type: 'ReviewRoundFailed', actor: 'kernel', roundId: 'r1', reason: 'infra', maxContractRetries: 2,
+    }));
+    expect(dec.effects.find((e) => e.kind === 'dispatch_review')?.payload.revalidate).toBe(true);
+  });
   test('re-queued at the same head and round number, then ESCALATED(review_unavailable); prose never approves', () => {
     const retry = applied(f(v()));
     expect(retry.rounds).toEqual([{ op: 'update', roundId: 'r1', whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: 1, clearReviewer: true } }]);

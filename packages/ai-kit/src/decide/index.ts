@@ -677,8 +677,39 @@ function makeClient(sdk: Sdk, apiKey: string, model: string, fetcher: Fetcher, h
     logLevel: 'warn',
     retry: { maxRetries: 0 },
     defaultHeaders: { ...headers },
-    fetch: fetcher as unknown as Fetch,
+    // SDK 0.7 zstd-compresses bodies of 1 KiB or more by default. Send them as
+    // plain JSON, as before: not every System One host accepts Content-Encoding.
+    compression: false,
+    fetch: bufferedFetch(fetcher) as unknown as Fetch,
   });
+}
+
+/**
+ * A response whose `text()` serves a body read up front.
+ *
+ * SDK 0.7 drains a clone of the response, then takes and releases a reader on
+ * the original before calling `text()` on it. Node leaves that body readable;
+ * Bun marks it used, so every call failed with "Body already used". Reading
+ * the body inside the fetch (still under the SDK's timeout signal) and serving
+ * `text()` from the buffer works the same on both runtimes.
+ */
+class BufferedResponse extends Response {
+  readonly #text: string;
+  constructor(text: string, from: Response) {
+    const nullBody = text === '' || from.status === 204 || from.status === 205 || from.status === 304;
+    super(nullBody ? null : text, { status: from.status, statusText: from.statusText, headers: from.headers });
+    this.#text = text;
+  }
+  override text(): Promise<string> {
+    return Promise.resolve(this.#text);
+  }
+}
+
+function bufferedFetch(fetcher: Fetcher): Fetcher {
+  return async (input, init) => {
+    const res = await fetcher(input, init);
+    return new BufferedResponse(await res.text(), res);
+  };
 }
 
 /** Map an SDK throw to an error kind. `retryable` feeds our own retry loop. */
