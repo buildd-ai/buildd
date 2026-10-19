@@ -22,6 +22,8 @@ export interface SpecCriterionStanding {
   text: string;
   verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | null;
   stale: boolean;
+  /** Review verdicts the deciding test result outranks. */
+  overriddenReviews?: number;
 }
 
 /** The Living Spec a task is pinned to, read server-side for the task page. */
@@ -108,6 +110,11 @@ export function SpecSourceBlock({ specSource, living }: SpecSourceBlockProps) {
                     <span className="font-mono text-text-muted shrink-0">{c.criterionId}</span>
                     <span className="truncate text-text-secondary min-w-0" title={c.text}>{c.text}</span>
                     <span className={`shrink-0 ml-auto ${st.tone}`}>{st.label}</span>
+                    {(c.overriddenReviews ?? 0) > 0 && (
+                      <span className="shrink-0 text-text-muted" data-testid="task-spec-outranked">
+                        · {c.overriddenReviews === 1 ? '1 review outranked' : `${c.overriddenReviews} reviews outranked`}
+                      </span>
+                    )}
                   </li>
                 );
               })}
