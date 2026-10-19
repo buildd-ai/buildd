@@ -78,10 +78,14 @@ export interface VerdictInput {
    */
   escalation?: {
     title: string;
-    summary: string;
-    open: number;
-    awaitingVerification: number;
-    resolved: number;
+    /** The question the person decides (lib/workflow/escalation-copy). */
+    question: string;
+    /** Why automation stopped, in words. */
+    why: string;
+    /** The unresolved findings by title; the decision card right below names them. */
+    unresolved: { open: string[]; awaitingVerification: string[] };
+    /** The action the button names; it opens that action's confirmation on this page. */
+    primary: { label: string; href: string };
   } | null;
   /**
    * A failed task that never ran: a task it depends on failed (`failedDependencyOf`,
@@ -284,9 +288,9 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         state: 'needs_you',
         label: e.title,
         labelTone: 'warning',
-        headline: `PR #${pr.number} · ${e.open} open, ${e.awaitingVerification} awaiting verification, ${e.resolved} resolved`,
-        cause: e.summary,
-        actions: [link('Decide', '#task-decision', 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
+        headline: e.question,
+        cause: e.why,
+        actions: [link(e.primary.label, e.primary.href, 'primary', false), link(`Open PR #${pr.number}`, pr.url)],
         causeKey: `needs_you:escalation:${e.title}`,
       };
     }
