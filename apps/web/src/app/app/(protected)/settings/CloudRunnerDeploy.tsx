@@ -3,11 +3,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Select } from '@/components/ui/Select';
 import { useCloudRunnerDeploy, DEPLOY_STEPS, stepLabel } from './_lib/use-cloud-runner-deploy';
-import { missingDeployPermissions, type CloudflareCapabilities } from '@/lib/cloudflare-credential-shared';
+import { missingDeployPermissions, missingDeployPermissionsFromVerification, type CloudflareCapabilities } from '@/lib/cloudflare-credential-shared';
 
 interface Props {
   teamId: string;
+  /** What a Verify on this page found; null until one runs. */
   capabilities: CloudflareCapabilities | null;
+  /** The row's stored verification text, which names what the last Verify refused. Used while `capabilities` is null. */
+  lastVerificationError?: string | null;
 }
 
 /**
@@ -19,7 +22,7 @@ interface Props {
  * mints the runner key and runs every Cloudflare call through the audited
  * deployment action path. This component drives the UI.
  */
-export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
+export default function CloudRunnerDeploy({ teamId, capabilities, lastVerificationError }: Props) {
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedWs, setSelectedWs] = useState('');
   const [loadingWs, setLoadingWs] = useState(true);
@@ -52,7 +55,9 @@ export default function CloudRunnerDeploy({ teamId, capabilities }: Props) {
     deploy(state.workspaceId, state.failedStep ?? undefined);
   }, [state.workspaceId, state.failedStep, deploy]);
 
-  const missingPerms = missingDeployPermissions(capabilities);
+  const missingPerms = capabilities
+    ? missingDeployPermissions(capabilities)
+    : missingDeployPermissionsFromVerification(lastVerificationError);
   const running = state.phase === 'running';
   const done = state.phase === 'done';
   const failed = state.phase === 'error';

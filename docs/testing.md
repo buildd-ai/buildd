@@ -264,6 +264,8 @@ expect(prompt).toContain('authentication method');
 
 When stdout is not a TTY (a log file, an agent shell) the runner prints a `[progress]` line every 30s: files done, elapsed, host load vs CPU count, and hinted work left. Documented durations assume an idle host; a load well above the CPU count (shared runner) slows every broad check, so a long run with advancing `[progress]` lines is slow, not hung.
 
+`cd apps/web && bun run build:only` has no progress output and stays in "Compiling" for a long time under the same load. Check `uptime` against the CPU count before waiting on it; if the host is oversubscribed, stop it, run the focused test files your change touches, and let CI (`build` job) be the full-build and full-suite evidence rather than adding contention.
+
 Run unit tests through the runner, never `bun test` directly:
 
 ```bash
@@ -297,6 +299,41 @@ section exists to prevent. It was also silently useless for a while: an e2e file
 called `process.exit(0)` at module scope when `BUILDD_TEST_SERVER` was unset, so
 `bun test` at the repo root aborted mid-collection and exited 0 having run
 almost nothing.
+
+### Read-only verification: run remotely at an exact SHA
+
+The isolated runner needs writable scratch for each file's temporary home and
+fixtures, plus a writable report destination. An `EPERM` from `mkdtemp` before
+any tests run is an environment failure, not passing or failing test evidence.
+Setting `TMPDIR` only helps when the sandbox already permits writes there;
+it does not grant filesystem access. Keep source protection enabled and use
+the manual **Verify Unit Tests** workflow when local writes are unavailable.
+
+After `verify-unit-tests.yml` is available on `dev`, dispatch it from trunk
+with the full, pushed commit SHA under review:
+
+```bash
+gh workflow run verify-unit-tests.yml --ref dev -f sha=<full-40-character-commit-sha>
+gh run list --workflow verify-unit-tests.yml --event workflow_dispatch --limit 10
+gh run watch <run-id> --exit-status
+gh run download <run-id> --dir <writable-evidence-directory>
+```
+
+Match the run title to your SHA before watching or downloading. The workflow
+checks out that exact SHA, checks `HEAD` against it, and runs the entire unit
+suite in three shards through `scripts/run-unit-tests.ts`. GitHub-hosted runner
+temp supplies writable scratch; the workflow receives no repository secrets and
+does not persist checkout credentials. Each shard retains `sha.txt` and its
+test report (including partial reports on failure) for 14 days. A missing report,
+cancelled run, or failed setup is inconclusive; require all three shards to pass.
+These manual runs provide evidence and do not replace required PR checks.
+
+For mobile/desktop evidence, dispatch `visual-qa.yml` from `dev` with
+`capture_ref=<the-same-full-sha>` and `viewport=mobile`, then `viewport=desktop`.
+Follow `.claude/skills/visual-review/SKILL.md` for route/plan selection and
+artifact review. Unit results alone do not establish visual verification.
+If workflow dispatch credentials are unavailable, record that limitation and
+leave the affected verification inconclusive.
 
 ### Slow locally: process-spawn cost, not CPU
 
