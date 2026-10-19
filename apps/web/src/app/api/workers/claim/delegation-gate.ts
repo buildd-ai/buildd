@@ -1,4 +1,6 @@
-import { describeDelegationGaps, type DelegationGap } from '@buildd/core/token-delegation';
+import {
+  delegationGrantCovering, describeDelegationGaps, readScheduleDelegation, type DelegationGap, type ScheduleDelegationGrant,
+} from '@buildd/core/token-delegation';
 import { preflightTaskDelegation } from '@/lib/task-delegation-checks';
 
 /**
@@ -10,14 +12,17 @@ import { preflightTaskDelegation } from '@/lib/task-delegation-checks';
  * question, the run ended, and its continuation asked the same question again.
  *
  * So a task is held here, before any agent turn, when its declared filing
- * targets are not granted, or a grant names a workspace the token minted from
- * this claiming account could not use. Not forceable: forcing would only start
- * the agent that then discovers the gap. A person fixes it by granting the
- * delegation (update_task, before claim) or by claiming from an account that
- * reaches the target.
+ * targets or reads (filingTargets, readsFrom) are not granted, or a grant
+ * names a workspace the token minted from this claiming account could not
+ * use. Not forceable: forcing would only start the agent that then discovers
+ * the gap. A person fixes it with the one write `grant` spells out
+ * (update_task { delegation }, before claim), or a runner account that
+ * reaches the target claims it.
  */
 export interface DelegationGateResult {
   gaps: DelegationGap[];
+  /** The task delegation that covers every missing grant; null when no grant would help. */
+  grant: { grants: ScheduleDelegationGrant[] } | null;
   detail: string;
 }
 
@@ -27,5 +32,9 @@ export async function checkDelegationGate(
 ): Promise<DelegationGateResult | null> {
   const gaps = await preflightTaskDelegation(task, account);
   if (!gaps.length) return null;
-  return { gaps, detail: describeDelegationGaps(gaps) };
+  const grant = delegationGrantCovering(gaps, readScheduleDelegation(task.delegation));
+  const action = grant
+    ? ` One action grants it, by a person who reaches each workspace: update_task { taskId: "${task.id}", delegation: ${JSON.stringify(grant)} }.`
+    : '';
+  return { gaps, grant, detail: `${describeDelegationGaps(gaps)}.${action}` };
 }

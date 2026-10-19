@@ -238,13 +238,58 @@ export function readFilingTargets(context: unknown): string[] {
   return parsed.ok ? parsed.targets : [];
 }
 
+// ── Declared reads ───────────────────────────────────────────────────────────
+//
+// The read counterpart of filingTargets (docs/specs/workspace-routing-and-reach.md
+// I-19): `readsFrom: [{ workspaceId, capabilities }]` names the other
+// workspaces a task will read and what it reads there. Also a need, never a
+// grant: an uncovered entry holds the task at claim instead of letting it
+// start and come back FORBIDDEN mid-run.
+
+export const READS_FROM_CONTEXT_KEY = 'readsFrom';
+
+/** The capabilities a declared read may name: the read half of the delegation vocabulary. */
+export const READ_CAPABILITIES: readonly ScheduleDelegationCapability[] = ['analytics:read'];
+
+export function parseReadsFrom(input: unknown): { ok: true; entries: ScheduleDelegationGrant[] } | { ok: false; error: string } {
+  if (input === undefined || input === null) return { ok: true, entries: [] };
+  const shape = `readsFrom must be an array of { workspaceId, capabilities } with capabilities from: ${READ_CAPABILITIES.join(', ')}`;
+  if (!Array.isArray(input)) return { ok: false, error: shape };
+  const entries: ScheduleDelegationGrant[] = [];
+  for (const e of input) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return { ok: false, error: shape };
+    const { workspaceId, capabilities, ...rest } = e as { workspaceId?: unknown; capabilities?: unknown };
+    if (Object.keys(rest).length) return { ok: false, error: `readsFrom entry has unknown field(s): ${Object.keys(rest).join(', ')}` };
+    if (typeof workspaceId !== 'string' || !UUID_RE.test(workspaceId)) return { ok: false, error: 'readsFrom workspaceId must be a workspace UUID' };
+    if (!Array.isArray(capabilities) || capabilities.length === 0) return { ok: false, error: shape };
+    for (const c of capabilities) {
+      if (c === 'tasks:create') return { ok: false, error: 'readsFrom declares reads; declare a workspace you will file tasks in with filingTargets' };
+      if (!isScheduleDelegationCapability(c) || !READ_CAPABILITIES.includes(c)) return { ok: false, error: `unknown read capability ${String(c)}; allowed: ${READ_CAPABILITIES.join(', ')}` };
+    }
+    const hit = entries.find(x => x.workspaceId === workspaceId);
+    if (hit) hit.capabilities = [...new Set([...hit.capabilities, ...(capabilities as ScheduleDelegationCapability[])])];
+    else entries.push({ workspaceId, capabilities: [...new Set(capabilities as ScheduleDelegationCapability[])] });
+  }
+  if (entries.length > SCHEDULE_DELEGATION_MAX_GRANTS) {
+    return { ok: false, error: `readsFrom may name at most ${SCHEDULE_DELEGATION_MAX_GRANTS} workspaces` };
+  }
+  return { ok: true, entries };
+}
+
+/** Read declared reads defensively from a task's context. */
+export function readReadsFrom(context: unknown): ScheduleDelegationGrant[] {
+  if (!context || typeof context !== 'object') return [];
+  const parsed = parseReadsFrom((context as Record<string, unknown>)[READS_FROM_CONTEXT_KEY]);
+  return parsed.ok ? parsed.entries : [];
+}
+
 // ── Claim pre-flight ─────────────────────────────────────────────────────────
 
 /**
  * Why a task's cross-workspace needs are not covered by the token its worker
  * would get:
- *  - `not_granted`: it declares a filing target no delegation grants
- *    tasks:create on;
+ *  - `not_granted`: it declares a filing target (or a read) no delegation
+ *    grants tasks:create (or that read capability) on;
  *  - `cross_team`: a grant names a workspace outside the task's team (a token
  *    never carries that, whatever the row says);
  *  - `out_of_token_reach`: the claiming account (which mints the token) does
@@ -267,6 +312,8 @@ export function findDelegationGaps(input: {
   /** Every grant the token would load: the task's own and its schedule's. */
   grants: readonly ScheduleDelegationGrant[];
   filingTargets: readonly string[];
+  /** Declared reads (readsFrom). */
+  readsFrom?: readonly ScheduleDelegationGrant[];
   ownTeamId: string | null;
   teamOf: (workspaceId: string) => string | null | undefined;
   accountReaches: (workspaceId: string, capability: ScheduleDelegationCapability) => boolean;
@@ -275,6 +322,13 @@ export function findDelegationGaps(input: {
   for (const target of input.filingTargets) {
     if (!delegationAllows(input.grants, target, 'tasks:create')) {
       gaps.push({ workspaceId: target, capability: 'tasks:create', reason: 'not_granted' });
+    }
+  }
+  for (const read of input.readsFrom ?? []) {
+    for (const capability of read.capabilities) {
+      if (!delegationAllows(input.grants, read.workspaceId, capability)) {
+        gaps.push({ workspaceId: read.workspaceId, capability, reason: 'not_granted' });
+      }
     }
   }
   for (const g of input.grants) {
@@ -295,11 +349,35 @@ const GAP_TEXT: Record<DelegationGapReason, string> = {
   out_of_token_reach: 'the runner account that would mint its token does not itself reach that workspace',
 };
 
+function gapText(g: DelegationGap): string {
+  if (g.reason === 'not_granted' && g.capability !== 'tasks:create') {
+    return `it declares it will read there, but no delegation grants ${g.capability} on it`;
+  }
+  return GAP_TEXT[g.reason];
+}
+
 /** One plain sentence per gap, for the claim refusal and the gate ledger. */
 export function describeDelegationGaps(gaps: readonly DelegationGap[]): string {
   return gaps
-    .map(g => `${g.capability} on workspace ${g.workspaceId}: ${GAP_TEXT[g.reason]}`)
+    .map(g => `${g.capability} on workspace ${g.workspaceId}: ${gapText(g)}`)
     .join('; ');
+}
+
+/**
+ * The one write that clears a held task's `not_granted` gaps: the task's own
+ * grants plus each missing capability, as the `delegation` value a person
+ * passes to update_task (which replaces the task's delegation, so the current
+ * grants are kept). Null when no gap is a missing grant (a reach or team gap
+ * no grant fixes) or the result would name too many workspaces.
+ */
+export function delegationGrantCovering(
+  gaps: readonly DelegationGap[],
+  currentTaskGrants: readonly ScheduleDelegationGrant[],
+): { grants: ScheduleDelegationGrant[] } | null {
+  const missing = gaps.filter(g => g.reason === 'not_granted').map(g => ({ workspaceId: g.workspaceId, capabilities: [g.capability] }));
+  if (!missing.length) return null;
+  const merged = mergeDelegationGrants(currentTaskGrants, missing);
+  return merged.overflow.length ? null : { grants: merged.grants };
 }
 
 // ── Explicit read outcomes ───────────────────────────────────────────────────
@@ -334,7 +412,7 @@ export function classifyAnalyticsReadFailure(error: unknown): Exclude<AnalyticsR
 }
 
 const STATUS_MEANING: Record<Exclude<AnalyticsReadStatus, 'OK' | 'NO_DATA'>, string> = {
-  FORBIDDEN: 'the caller is authenticated but not allowed to read this workspace (for a task token: neither its schedule nor the task itself carries a delegation granting analytics:read on it)',
+  FORBIDDEN: 'the caller is authenticated but not allowed to read this workspace (for a task token: neither its schedule nor the task itself carries a delegation granting analytics:read on it, or the runner account that minted it does not itself reach it)',
   UNAUTHORIZED: 'the token was not accepted at all (expired, revoked, or its minting key changed)',
   TOOL_UNAVAILABLE: 'the read failed for a reason unrelated to access (server error, timeout, or the store was unreachable)',
 };

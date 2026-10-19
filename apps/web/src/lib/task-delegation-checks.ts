@@ -12,13 +12,14 @@ import {
   mergeDelegationGrants,
   parseScheduleDelegationInput,
   readFilingTargets,
+  readReadsFrom,
   readScheduleDelegation,
   removeDelegationCapability,
   type DelegationGap,
   type ScheduleDelegationCapability,
   type TaskDelegation,
 } from '@buildd/core/token-delegation';
-import { loadRawTaskGrants, teamsOf } from './task-delegation';
+import { accountReachesDelegatedTarget, loadRawTaskGrants, teamsOf } from './task-delegation';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from './team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { clearCallerCache, callerDep } from './caller-cache';
@@ -26,34 +27,35 @@ import { clearCallerCache, callerDep } from './caller-cache';
 type DelegatedTaskRow = Parameters<typeof loadRawTaskGrants>[0];
 
 /**
- * Claim pre-flight: what this task needs across workspaces (its delegation and
- * its declared filing targets) that the token minted from `account` would not
- * carry or could not use. Empty = start the run. Checks same team, the
- * minting key's workspace list, and the account's own access to each target
- * (`canCreate` for tasks:create). That last check is stricter than the routes
- * for analytics:read, which honour team plus grant without asking whether the
- * account reaches the target (docs/specs/workspace-routing-and-reach.md D-3).
+ * Claim pre-flight: what this task needs across workspaces (its delegation,
+ * its declared filing targets and its declared reads) that the token minted
+ * from `account` would not carry or could not use. Empty = start the run.
+ * Checks same team, the minting key's workspace list, and the account's own
+ * access to each target (accountReachesDelegatedTarget): the same rule the
+ * token applies on every route (docs/specs/workspace-routing-and-reach.md D-3).
  */
 export async function preflightTaskDelegation(
   task: DelegatedTaskRow & { context?: unknown },
   account: Parameters<typeof verifyAccountWorkspaceAccess>[0] & { id: string; teamId?: string | null; workspaceIds?: string[] | null },
 ): Promise<DelegationGap[]> {
   const filingTargets = readFilingTargets(task.context).filter(t => t !== task.workspaceId);
+  const readsFrom = readReadsFrom(task.context).filter(r => r.workspaceId !== task.workspaceId);
   const grants = await loadRawTaskGrants(task);
-  if (!grants.length && !filingTargets.length) return [];
+  if (!grants.length && !filingTargets.length && !readsFrom.length) return [];
   const teams = await teamsOf([task.workspaceId, ...grants.map(g => g.workspaceId)]);
   const reach = new Map<string, boolean>();
   for (const g of grants) {
     for (const capability of g.capabilities) {
       const key = `${g.workspaceId}|${capability}`;
       const ok = tokenWorkspaceAllowed(account.workspaceIds, g.workspaceId)
-        && await verifyAccountWorkspaceAccess(account, g.workspaceId, capability === 'tasks:create' ? 'canCreate' : undefined);
+        && await accountReachesDelegatedTarget(account, g.workspaceId, capability);
       reach.set(key, ok);
     }
   }
   return findDelegationGaps({
     grants,
     filingTargets,
+    readsFrom,
     ownTeamId: teams.get(task.workspaceId) ?? null,
     teamOf: ws => teams.get(ws),
     accountReaches: (ws, cap) => reach.get(`${ws}|${cap}`) === true,
@@ -80,7 +82,7 @@ export async function resolveTaskDelegationWrite(
     return {
       ok: false,
       status: 403,
-      error: 'Only a person can grant a task delegation (a dashboard or OAuth session that reaches each target). An agent declares the need with filingTargets; a person grants it with update_task before the task is claimed, or approves its tasks:create capability request.',
+      error: 'Only a person can grant a task delegation (a dashboard or OAuth session that reaches each target). An agent declares the need with filingTargets or readsFrom; a person grants it with update_task before the task is claimed, or approves its tasks:create capability request.',
     };
   }
   const parsed = parseScheduleDelegationInput(input, taskWorkspaceId, 'task');

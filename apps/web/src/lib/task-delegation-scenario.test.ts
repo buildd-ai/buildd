@@ -58,6 +58,7 @@ const { mintTaskToken } = await import('./task-token');
 const { authenticateTaskScopedCaller, taskScopeAllowsDelegated } = await import('./task-token-auth');
 const { preflightTaskDelegation } = await import('./task-delegation-checks');
 const { buildContinuationTaskValues } = await import('./answer-resume');
+const { checkDelegationGate } = await import('@/app/api/workers/claim/delegation-gate');
 
 const savedSecret = process.env.AUTH_SECRET;
 afterAll(() => {
@@ -125,6 +126,54 @@ describe('a task without the grant', () => {
   });
 });
 
+describe('a task that declares it will read another workspace (readsFrom)', () => {
+  const READ_GRANT = { ...GRANT, grants: [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }] };
+  const reads = { readsFrom: [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }] };
+
+  it('with no grant, is held at claim with delegation_unmet and a ready grant for a person (AC-9)', async () => {
+    taskRow = { ...taskRow, delegation: null, context: reads };
+    expect(await preflightTaskDelegation(taskRow as any, account as any)).toEqual([
+      { workspaceId: TARGET_WS, capability: 'analytics:read', reason: 'not_granted' },
+    ]);
+    const gate = await checkDelegationGate(taskRow as any, account as any);
+    expect(gate?.grant).toEqual({ grants: [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }] });
+    expect(gate?.detail).toContain(`update_task { taskId: "${TASK}", delegation: {"grants":[{"workspaceId":"${TARGET_WS}","capabilities":["analytics:read"]}]} }`);
+  });
+
+  it('a grant that covers it lets the run start, and its token reads there', async () => {
+    taskRow = { ...taskRow, delegation: READ_GRANT, context: reads };
+    expect(await checkDelegationGate(taskRow as any, account as any)).toBeNull();
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'analytics:read')).toBe(true);
+  });
+
+  it('D-3: a granted read needs the claiming account\'s own access, at the claim and on the routes alike', async () => {
+    taskRow = { ...taskRow, delegation: READ_GRANT, context: reads };
+    accountReaches = (ws) => ws !== TARGET_WS;
+    // Held at claim for this runner, with no grant to offer: the grant exists.
+    const gate = await checkDelegationGate(taskRow as any, account as any);
+    expect(gate?.gaps).toEqual([{ workspaceId: TARGET_WS, capability: 'analytics:read', reason: 'out_of_token_reach' }]);
+    expect(gate?.grant).toBeNull();
+    // And a token minted from that account would not carry the read either.
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'analytics:read')).toBe(false);
+  });
+
+  it('D-3: a runner account that has access claims the held task and reads', async () => {
+    taskRow = { ...taskRow, delegation: READ_GRANT, context: reads };
+    accountReaches = () => true;
+    expect(await checkDelegationGate(taskRow as any, account as any)).toBeNull();
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'analytics:read')).toBe(true);
+  });
+
+  it('D-3: a filing grant needs canCreate on the target for the token too, as the pre-flight asks', async () => {
+    accountReaches = (_ws, permission) => permission !== 'canCreate';
+    const caller = await authenticateTaskScopedCaller(token());
+    expect(taskScopeAllowsDelegated(caller!, TARGET_WS, 'tasks:create')).toBe(false);
+  });
+});
+
 describe('its continuation', () => {
   const continuationOf = (parent: Record<string, unknown>) => buildContinuationTaskValues({
     task: parent as any,
@@ -153,6 +202,11 @@ describe('its continuation', () => {
     expect(description).toContain('May I file the follow-ups in the other workspace?');
     expect(description).toContain('Yes, file them there.');
     expect(description).toContain('do not ask it again');
+  });
+
+  it('keeps the declared reads, so the pre-flight still checks them', () => {
+    const readsFrom = [{ workspaceId: TARGET_WS, capabilities: ['analytics:read'] }];
+    expect(continuationOf({ ...taskRow, context: { readsFrom } }).context.readsFrom).toEqual(readsFrom);
   });
 
   it('a parent without a grant passes none on', () => {

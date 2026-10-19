@@ -1696,9 +1696,9 @@ export async function POST(req: NextRequest) {
     // turn, never forced past (claim/delegation-gate.ts).
     const delegationGap = await checkDelegationGate(task as any, account).catch((err) => {
       console.warn(`[claim] delegation pre-flight failed for task ${task.id}; holding it:`, (err as Error)?.message ?? err);
-      return { gaps: [], detail: 'the delegation pre-flight could not run; it is retried on the next poll' };
+      return { gaps: [], grant: null, detail: 'the delegation pre-flight could not run; it is retried on the next poll' };
     });
-    if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, message: delegationGap.detail }); continue; }
+    if (delegationGap) { deferTask(task, 'delegation_unmet', { gaps: delegationGap.gaps, grant: delegationGap.grant, message: delegationGap.detail }); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already

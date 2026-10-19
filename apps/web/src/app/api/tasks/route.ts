@@ -54,7 +54,7 @@ import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
 import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
-import { FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, type TaskDelegation } from '@buildd/core/token-delegation';
+import { FILING_TARGETS_CONTEXT_KEY, READS_FROM_CONTEXT_KEY, parseFilingTargets, parseReadsFrom, type TaskDelegation } from '@buildd/core/token-delegation';
 import {
   GATE_SLUGS,
   fireGateEvent,
@@ -579,9 +579,10 @@ export async function POST(req: NextRequest) {
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
       // Cross-workspace reach for this task's token (person only) and the
-      // workspaces it declares it will file tasks in (lib/task-delegation.ts).
+      // workspaces it declares it will file tasks in or read (lib/task-delegation.ts).
       delegation: rawDelegation,
       filingTargets: rawFilingTargets,
+      readsFrom: rawReadsFrom,
     } = body;
     // A reservation is only for a verified interactive session (the one the claim
     // route lets claim its own reserved task). Refused before anything is filed, so
@@ -775,12 +776,17 @@ export async function POST(req: NextRequest) {
       if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
       taskDelegation = write.value;
     }
-    // Declared filing targets are a need, not a grant: the claim holds the
-    // task until a delegation covers them (claim/delegation-gate.ts).
+    // Declared filing targets and reads are a need, not a grant: the claim
+    // holds the task until a delegation covers them (claim/delegation-gate.ts).
     const filingTargets = parseFilingTargets(rawFilingTargets ?? (incomingContext as Record<string, unknown> | undefined)?.[FILING_TARGETS_CONTEXT_KEY]);
     if (!filingTargets.ok) return NextResponse.json({ error: filingTargets.error }, { status: 400 });
     if (filingTargets.targets.length > 0) {
       incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
+    }
+    const readsFrom = parseReadsFrom(rawReadsFrom ?? (incomingContext as Record<string, unknown> | undefined)?.[READS_FROM_CONTEXT_KEY]);
+    if (!readsFrom.ok) return NextResponse.json({ error: readsFrom.error }, { status: 400 });
+    if (readsFrom.entries.length > 0) {
+      incomingContext = { ...(incomingContext ?? {}), [READS_FROM_CONTEXT_KEY]: readsFrom.entries } as typeof rawIncomingContext;
     }
     gateWorkspaceId = workspaceId;
 

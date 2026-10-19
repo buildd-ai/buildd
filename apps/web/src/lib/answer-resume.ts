@@ -25,7 +25,7 @@ import {
   isTerminalWorkerStatus,
   LIVE_WORKER_STATUSES,
 } from '@buildd/shared';
-import { FILING_TARGETS_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets } from '@buildd/core/token-delegation';
+import { FILING_TARGETS_CONTEXT_KEY, READS_FROM_CONTEXT_KEY, inheritTaskDelegation, readFilingTargets, readReadsFrom } from '@buildd/core/token-delegation';
 
 /**
  * How stale `workers.updatedAt` may be and still mean "the runner that holds
@@ -621,10 +621,11 @@ export function buildContinuationTaskValues(opts: {
   const parentContext = (opts.task?.context as Record<string, unknown>) || {};
   const currentIteration = (parentContext.iteration as number) || 1;
   // The same work keeps the same cross-workspace grant a person gave it, and
-  // the same declared need; without them the continuation would hit the wall
+  // the same declared needs; without them the continuation would hit the wall
   // its parent was granted past, or start without the claim pre-flight.
   const delegation = opts.task?.id ? inheritTaskDelegation({ id: opts.task.id, delegation: opts.task.delegation }) : null;
   const filingTargets = readFilingTargets(parentContext);
+  const readsFrom = readReadsFrom(parentContext);
 
   return {
     workspaceId: opts.workspaceId,
@@ -679,6 +680,7 @@ export function buildContinuationTaskValues(opts: {
       // reconstructing anything.
       answerDelivery: opts.delivery,
       ...(filingTargets.length ? { [FILING_TARGETS_CONTEXT_KEY]: filingTargets } : {}),
+      ...(readsFrom.length ? { [READS_FROM_CONTEXT_KEY]: readsFrom } : {}),
     },
   };
 }

@@ -4,6 +4,7 @@ import {
   parseScheduleDelegationInput, readScheduleDelegation, SCHEDULE_DELEGATION_MAX_GRANTS,
   mergeDelegationGrants, removeDelegationCapability, inheritTaskDelegation, parseFilingTargets, readFilingTargets,
   findDelegationGaps, describeDelegationGaps, type ScheduleDelegationCapability,
+  parseReadsFrom, readReadsFrom, delegationGrantCovering,
 } from '../token-delegation';
 
 const OWN = '00000000-0000-4000-8000-000000000001';
@@ -162,6 +163,70 @@ describe('task delegation', () => {
 
     it('a grant across teams is cross_team, whatever the account reaches', () => {
       expect(findDelegationGaps({ ...base, grants: [{ workspaceId: C, capabilities: ['tasks:create'] }], filingTargets: [] })[0].reason).toBe('cross_team');
+    });
+
+    it('a declared read with no grant is not_granted for that capability (AC-9)', () => {
+      const gaps = findDelegationGaps({ ...base, grants: [], filingTargets: [], readsFrom: [{ workspaceId: B, capabilities: ['analytics:read'] }] });
+      expect(gaps).toEqual([{ workspaceId: B, capability: 'analytics:read', reason: 'not_granted' }]);
+      expect(describeDelegationGaps(gaps)).toContain('it declares it will read there');
+      // A filing grant does not cover a read.
+      expect(findDelegationGaps({ ...base, grants: [{ workspaceId: B, capabilities: ['tasks:create'] }], filingTargets: [], readsFrom: [{ workspaceId: B, capabilities: ['analytics:read'] }] }))
+        .toEqual([{ workspaceId: B, capability: 'analytics:read', reason: 'not_granted' }]);
+      expect(findDelegationGaps({ ...base, grants: [{ workspaceId: B, capabilities: ['analytics:read'] }], filingTargets: [], readsFrom: [{ workspaceId: B, capabilities: ['analytics:read'] }] })).toEqual([]);
+    });
+  });
+
+  describe('declared reads (readsFrom)', () => {
+    it('parses entries of workspace UUID and read capabilities, merging a repeated workspace', () => {
+      expect(parseReadsFrom([{ workspaceId: B, capabilities: ['analytics:read'] }, { workspaceId: B, capabilities: ['analytics:read'] }]))
+        .toEqual({ ok: true, entries: [{ workspaceId: B, capabilities: ['analytics:read'] }] });
+      expect(parseReadsFrom(undefined)).toEqual({ ok: true, entries: [] });
+      expect(parseReadsFrom(null)).toEqual({ ok: true, entries: [] });
+    });
+
+    it('refuses, never drops, a malformed entry', () => {
+      expect(parseReadsFrom(B).ok).toBe(false);
+      expect(parseReadsFrom([B]).ok).toBe(false);
+      expect(parseReadsFrom([{ workspaceId: 'buildd', capabilities: ['analytics:read'] }]).ok).toBe(false);
+      expect(parseReadsFrom([{ workspaceId: B, capabilities: [] }]).ok).toBe(false);
+      expect(parseReadsFrom([{ workspaceId: B, capabilities: ['analytics:read'], extra: 1 }]).ok).toBe(false);
+      expect(parseReadsFrom(Array.from({ length: SCHEDULE_DELEGATION_MAX_GRANTS + 1 }, (_, i) => ({
+        workspaceId: `00000000-0000-4000-8000-0000000001${String(i).padStart(2, '0')}`, capabilities: ['analytics:read'],
+      }))).ok).toBe(false);
+    });
+
+    it('a write capability is not a read: tasks:create points at filingTargets', () => {
+      const r = parseReadsFrom([{ workspaceId: B, capabilities: ['tasks:create'] }]);
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error).toContain('filingTargets');
+    });
+
+    it('reads defensively from context', () => {
+      expect(readReadsFrom({ readsFrom: [{ workspaceId: B, capabilities: ['analytics:read'] }] })).toEqual([{ workspaceId: B, capabilities: ['analytics:read'] }]);
+      expect(readReadsFrom({ readsFrom: [{ workspaceId: 'x', capabilities: ['analytics:read'] }] })).toEqual([]);
+      expect(readReadsFrom(null)).toEqual([]);
+    });
+  });
+
+  describe('the one-action grant', () => {
+    it('is the task\'s own grants plus every not_granted gap', () => {
+      const current = [{ workspaceId: C, capabilities: ['tasks:create' as ScheduleDelegationCapability] }];
+      expect(delegationGrantCovering([
+        { workspaceId: B, capability: 'analytics:read', reason: 'not_granted' },
+        { workspaceId: B, capability: 'tasks:create', reason: 'not_granted' },
+      ], current)).toEqual({ grants: [
+        { workspaceId: C, capabilities: ['tasks:create'] },
+        { workspaceId: B, capabilities: ['analytics:read', 'tasks:create'] },
+      ] });
+    });
+
+    it('is null when a grant would not help (only reach or team gaps), or would overflow', () => {
+      expect(delegationGrantCovering([{ workspaceId: B, capability: 'analytics:read', reason: 'out_of_token_reach' }], [])).toBeNull();
+      expect(delegationGrantCovering([{ workspaceId: C, capability: 'analytics:read', reason: 'cross_team' }], [])).toBeNull();
+      const full = Array.from({ length: SCHEDULE_DELEGATION_MAX_GRANTS }, (_, i) => ({
+        workspaceId: `00000000-0000-4000-8000-0000000002${String(i).padStart(2, '0')}`, capabilities: ['analytics:read' as ScheduleDelegationCapability],
+      }));
+      expect(delegationGrantCovering([{ workspaceId: B, capability: 'analytics:read', reason: 'not_granted' }], full)).toBeNull();
     });
   });
 });

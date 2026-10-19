@@ -27,6 +27,8 @@ const WORKSPACES = [
 
 let scheduleRow: { workspaceId: string; delegation: unknown } | null = null;
 let taskRow: { workspaceId: string; scheduleId: string | null } = { workspaceId: KB_WS, scheduleId: SCHEDULE };
+// Whether the runner account that minted the token reaches a workspace itself (D-3).
+let accountReaches: (ws: string) => boolean = () => true;
 
 const ledger = mock(async (..._args: any[]) => ({ rows: [] as any[], outcomes: [] as any[], truncated: false }));
 const decisionStats = mock(async (..._args: any[]) => ({ decisions: { total: 3 } }));
@@ -54,6 +56,7 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => null }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => null }));
 mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: async (_u: unknown, account: { teamId: string } | null) => (account ? [account.teamId] : []),
+  verifyAccountWorkspaceAccess: async (_a: unknown, ws: string) => accountReaches(ws),
 }));
 mock.module('@buildd/core/decision-ledger', () => ({
   DECISION_LEDGER_MAX_ROWS: 500,
@@ -89,6 +92,7 @@ beforeEach(() => {
   process.env.AUTH_SECRET = 'scenario-secret';
   scheduleRow = { workspaceId: KB_WS, delegation: GRANT };
   taskRow = { workspaceId: KB_WS, scheduleId: SCHEDULE };
+  accountReaches = () => true;
   ledger.mockClear();
   ledger.mockImplementation(async () => ({ rows: [], outcomes: [], truncated: false }));
   decisionStats.mockClear();
@@ -149,6 +153,10 @@ describe('the same reviewer without a usable delegation (the blind run)', () => 
     ['a schedule of another workspace carries the grant', () => { scheduleRow = { workspaceId: SIBLING_WS, delegation: GRANT }; }],
     ['the grant names a workspace of another team', () => {
       scheduleRow = { workspaceId: KB_WS, delegation: { ...GRANT, grants: [{ workspaceId: FOREIGN_WS, capabilities: ['analytics:read'] }] } };
+    }],
+    // D-3: a grant never exceeds the reach of the account that minted the token.
+    ['the runner account that minted the token does not reach the granted workspace', () => {
+      accountReaches = (ws) => ws !== TARGET_WS;
     }],
   ];
   for (const [label, arrange] of cases) {

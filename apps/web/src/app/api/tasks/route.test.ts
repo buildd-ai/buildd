@@ -1053,6 +1053,24 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(400);
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
+
+    it('stores declared reads (readsFrom) in context for the claim pre-flight', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({ readsFrom: [{ workspaceId: TARGET, capabilities: ['analytics:read'] }] });
+      expect(response.status).toBe(200);
+      const row = values.mock.calls[0][0];
+      expect(row.context.readsFrom).toEqual([{ workspaceId: TARGET, capabilities: ['analytics:read'] }]);
+      expect(row.delegation ?? null).toBeNull();
+    });
+
+    it('refuses malformed readsFrom rather than dropping it', async () => {
+      arrange({ [OWN]: 'team-1' });
+      const response = await fileAsPerson({ readsFrom: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] });
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects analytics readers before inserting a task', async () => {
