@@ -35,6 +35,20 @@ describe('factFunnelScope: a delivery-owned row takes only what its delivery alr
     expect(render(q!).sql.match(/FROM workflow_deliveries kd/g)?.length).toBe(2);
   });
 
+  test('a non-terminal fact defers every delivery-owned row to the kernel, and excludes none', () => {
+    for (const kind of ['open', 'ci', 'conflict', 'unresolvable'] as const) {
+      expect(render(factFunnelScope.defers!(kind)!).sql).toBe(render(kernelOwnedRowSql()).sql);
+    }
+  });
+
+  test('the funnel statement for a CI fact reports a delivery-owned row and writes none', () => {
+    const q = recordPrFactSql({ workerId: 'w1' }, { kind: 'ci', status: 'ci_failed' }, {}, null, factFunnelScope.defers!('ci'));
+    const { sql } = render(q!);
+    expect(sql).toContain('EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id');
+    expect(sql).toContain(') AS deferred');
+    expect(sql).toContain('AND NOT prev.deferred AND');
+  });
+
   test("the kernel's own projection is unscoped: it is the writer", () => {
     expect(kernelProjectionScope.where('merged')).toBeNull();
     expect(kernelProjectionScope.where('closed')).toBeNull();

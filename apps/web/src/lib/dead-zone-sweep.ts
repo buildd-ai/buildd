@@ -305,6 +305,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
         await recordPrFact(
           { workerId: worker.id },
           isDirty ? { kind: 'conflict' } : { kind: 'ci', status: 'ci_failed', headSha: pr.head.sha, currentHeadSha: pr.head.sha },
+          { scope: factFunnelScope },
         );
         await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
 
