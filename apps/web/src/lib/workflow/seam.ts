@@ -837,7 +837,7 @@ export async function attemptEnded(p: {
   if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : undefined;
-    if (d.state === 'REPAIRING') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
+    if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
     if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
   const cmd: Command = {
@@ -861,7 +861,7 @@ export async function attemptEnded(p: {
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
-  if (result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence.carryForward && live) {
+  if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
     // §8.3: the legacy merge gate's `equivalentHeadShas`, projected after the committed carry as T13's is.
     const from = String(result.decision.evidence.carriedFrom ?? result.decision.evidence.previousHead ?? '');
     await (deps.exec ?? seamExec)(projectEquivalentHeadSql(deliveryId, from, live.headSha))

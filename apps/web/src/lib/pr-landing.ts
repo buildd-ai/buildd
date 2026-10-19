@@ -304,7 +304,8 @@ export type TreadmillVerdict =
  * May the landing proceed on a head that is a little behind base, rather than
  * refreshing it again? Only a head our own refresh produced qualifies, only
  * while the base has barely moved, only if the moved files are disjoint from the
- * PR's, and never when either side touches migrations, schema or lockfiles —
+ * PR's, and never when either side touches lockfiles, manifests or CI, nor when
+ * the base touches migrations or schema against the PR's own (92a439a6) —
  * those are where "unrelated" is not a safe assumption. Unknown file lists
  * refuse: a green measured against a base we cannot describe proves nothing.
  */

@@ -24,15 +24,10 @@ const CHECKS_PENDING = new Set<string | null>([null, 'pr_open', 'ci_running']);
 const KERNEL_OWNS_NEXT_MOVE = new Set(['AWAITING_REVIEW', 'REPAIRING', 'LANDING', 'APPROVED', 'BLOCKED_ON_TRUNK']);
 
 /** The kernel delivery this loop task owns (null = none, or released to legacy). Never throws. */
-async function ownerDelivery(task: { deliveryId?: string | null; deliveryRole?: string | null }): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
-  if (!task.deliveryId || task.deliveryRole !== 'owner') return null;
+async function ownerDelivery(taskId: string): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
   try {
-    const { kernelDeliveryById } = await import('@/lib/workflow/authority');
-    const id = await kernelDeliveryById(task.deliveryId);
-    if (!id) return null;
-    const { loadView } = await import('@/lib/workflow/kernel');
-    const d = (await loadView({ deliveryId: id })).delivery;
-    return d ? { state: d.state, prNumber: d.prNumber, mergedAt: d.mergedAt } : null;
+    const { kernelOwnerDeliveryFacts } = await import('@/lib/workflow/delivery-view');
+    return await kernelOwnerDeliveryFacts(taskId);
   } catch {
     return null;
   }
@@ -46,8 +41,6 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
       loopState: tasks.loopState,
       startAt: tasks.startAt,
       context: tasks.context,
-      deliveryId: tasks.deliveryId,
-      deliveryRole: tasks.deliveryRole,
     })
     .from(tasks)
     .where(eq(tasks.id, input.taskId))
@@ -76,7 +69,7 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
   // 92a439a6: a PR condition on a kernel owner reads the delivery too. MERGED satisfies it; while the
   // kernel owns the next move the loop holds for it below instead of spending an iteration.
   const prCondition = loopConfig.exitCondition.type === 'pr_checks_green' || loopConfig.exitCondition.type === 'pr_merged';
-  const delivery = prCondition && !shipped ? await ownerDelivery(loopData ?? {}) : null;
+  const delivery = prCondition && !shipped ? await ownerDelivery(input.taskId) : null;
   const deliveryMerged = delivery?.state === 'MERGED';
   const prNumber = shipped ?? prWorker?.prNumber ?? delivery?.prNumber ?? null;
   const prLifecycleStatus = shipped || deliveryMerged ? 'merged' : prWorker?.prLifecycleStatus ?? null;

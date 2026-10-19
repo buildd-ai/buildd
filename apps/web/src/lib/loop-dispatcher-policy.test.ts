@@ -32,8 +32,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/db/schema', () => ({ tasks: {}, workers: {} }));
 // 92a439a6: the kernel delivery the loop task owns (null = none, legacy decides).
 let ownerDelivery: { state: string; prNumber: number | null; mergedAt: string | null } | null = null;
-mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryById: async () => (ownerDelivery ? 'd1' : null) }));
-mock.module('@/lib/workflow/kernel', () => ({ loadView: async () => ({ delivery: ownerDelivery ? { id: 'd1', ...ownerDelivery } : null, rounds: [], attempts: [] }) }));
+mock.module('@/lib/workflow/delivery-view', () => ({ kernelOwnerDeliveryFacts: async () => ownerDelivery }));
 mock.module('drizzle-orm', () => ({ eq: () => ({}), and: () => ({}), desc: () => ({}), isNotNull: () => ({}) }));
 
 import { loopPolicy } from './loop-dispatcher-policy';
@@ -145,7 +144,7 @@ describe("loopPolicy resolves the task's own PR from an earlier worker", () => {
 describe('loopPolicy on a kernel owner while the kernel owns the PR', () => {
   const owned = (state: string, o: Partial<NonNullable<typeof ownerDelivery>> = {}) => {
     ownerDelivery = { state, prNumber: 42, mergedAt: null, ...o };
-    taskRow = { ...baseTask, loopIteration: 2, context: { loopHistory: [], loopWebhookWait: { prNumber: 42 } }, deliveryId: 'd1', deliveryRole: 'owner' } as typeof baseTask;
+    taskRow = { ...baseTask, loopIteration: 2, context: { loopHistory: [], loopWebhookWait: { prNumber: 42 } } };
   };
 
   for (const state of ['AWAITING_REVIEW', 'REPAIRING', 'LANDING', 'APPROVED', 'BLOCKED_ON_TRUNK']) {
