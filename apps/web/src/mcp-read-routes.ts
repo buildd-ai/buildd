@@ -1,14 +1,19 @@
 /**
- * The read routes MCP actions run in-process (lib/mcp-local-reads.ts, spec
- * 3ef37387 R-22). A composition root of its own (scripts/module-boundaries.ts)
- * because it imports route modules of every module, and not modules.ts: pages
- * and core libraries import modules.ts, so a table there put every route below
- * into their server graphs and the production build ran out of memory. Only
- * lib/mcp-local-reads.ts loads this file, lazily, on the first MCP read.
- * The most specific entry wins (as Next.js routes), whatever the order.
+ * Composition root for in-process MCP reads (lib/mcp-local-reads.ts, spec
+ * 3ef37387 R-22): it imports route modules of every module, so it is listed in
+ * scripts/module-boundaries.ts COMPOSITION_ROOTS.
+ *
+ * Kept out of modules.ts on purpose. Dozens of routes import modules.ts, and a
+ * route table there put every route below into each of their server bundles:
+ * `next build` then ran out of memory in compile. Only lib/mcp-local-reads.ts
+ * (behind the MCP route) may import this file.
  */
 import type { LocalRead } from '@/lib/mcp-local-reads';
 
+/**
+ * The read routes MCP actions run in-process (lib/mcp-local-reads.ts, spec
+ * 3ef37387 R-22). The most specific entry wins (as Next.js routes), whatever the order.
+ */
 export const MCP_LOCAL_READS: readonly LocalRead[] = [
   { path: '/api/tasks', load: () => import('@/app/api/tasks/route') },
   { path: '/api/tasks/:id', load: () => import('@/app/api/tasks/[id]/route') },

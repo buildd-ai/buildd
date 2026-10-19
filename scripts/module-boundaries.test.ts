@@ -158,7 +158,10 @@ describe('seams that have shipped stay cut', () => {
   });
 
   test('the composition roots are the only exempt importers', () => {
-    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts', 'apps/web/src/mcp-local-read-routes.ts']);
+    // mcp-read-routes.ts names route handlers for in-process MCP reads. It is
+    // not in modules.ts because dozens of routes import modules.ts, and each
+    // would then bundle every route it names (next build ran out of memory).
+    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts', 'apps/web/src/mcp-read-routes.ts']);
   });
 });
 

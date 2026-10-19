@@ -26,6 +26,7 @@ import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { MISSION_SUMMARY_VERSION, type MissionSummary } from '@buildd/shared';
 import { canonicalSummaryJson, computeMissionSummary, summariesEqual, type MissionSummaryInput } from './mission-summary';
 import { trackEvent } from './axiom';
+import { bumpChangeVersions, teamChangeScope } from './change-version';
 import { noteWorkChanged, type WorkChange, type WorkChangeBatch } from './work-changed';
 
 export interface StoredMissionSummary {
@@ -94,6 +95,8 @@ export interface MissionSummaryStoreDeps {
   now: () => number;
   /** The reconcile's counts, as a span (R-29: names and counts, never values). */
   record: (event: string, fields: Record<string, number | string>) => void;
+  /** Lists that read these workspaces' and teams' summaries change version (R-20, lib/change-version.ts). */
+  changed?: (scopes: string[]) => Promise<void>;
 }
 
 /** Missions per batched load: a burst of writes is loaded in chunks this size. */
@@ -182,6 +185,7 @@ export const defaultMissionSummaryStoreDeps: MissionSummaryStoreDeps = {
   },
   now: () => Date.now(),
   record: (event, fields) => trackEvent(event, fields),
+  changed: (scopes) => bumpChangeVersions(scopes),
 };
 
 /**
@@ -189,6 +193,18 @@ export const defaultMissionSummaryStoreDeps: MissionSummaryStoreDeps = {
  * builds one over its fixtures.
  */
 export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
+  /** Bump the change version of the workspaces and teams whose summaries were written. */
+  async function noteWritten(written: string[], inputs: Map<string, MissionSummaryInput>): Promise<void> {
+    if (!deps.changed || written.length === 0) return;
+    const scopes: string[] = [];
+    for (const id of written) {
+      const m = inputs.get(id)?.missionRows[0] as { workspaceId?: string | null; teamId?: string | null } | undefined;
+      if (m?.workspaceId) scopes.push(m.workspaceId);
+      if (m?.teamId) scopes.push(teamChangeScope(m.teamId));
+    }
+    try { await deps.changed(scopes); } catch (err) { console.error('[mission-summary] change version bump failed:', err); }
+  }
+
   /** Load, compute and write these missions' summaries now. Returns what was written. */
   async function recompute(missionIds: string[]): Promise<{ computed: Map<string, StoredMissionSummary>; written: string[] }> {
     const computed = new Map<string, StoredMissionSummary>();
@@ -210,7 +226,9 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
         }
       }
       for (const r of rows) computed.set(r.missionId, r);
-      written.push(...await deps.write(rows));
+      const wrote = await deps.write(rows);
+      written.push(...wrote);
+      await noteWritten(wrote, inputs);
     }
     return { computed, written };
   }
@@ -241,6 +259,8 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
     const readAt = deps.now();
     const inputs = await deps.load(ids);
     const fresh: StoredMissionSummary[] = [];
+    /** Only a summary that changed moves a list's change version; an unchanged rewrite does not. */
+    const differ = new Set<string>();
     for (const id of ids) {
       const input = inputs.get(id);
       if (!input) continue;
@@ -253,11 +273,12 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
         continue;
       }
       const prev = stored.get(id);
-      if (!prev) counts.missing++;
-      else if (prev.version !== MISSION_SUMMARY_VERSION) counts.otherVersion++;
+      if (!prev) { counts.missing++; differ.add(id); }
+      else if (prev.version !== MISSION_SUMMARY_VERSION) { counts.otherVersion++; differ.add(id); }
       else if (summariesEqual(prev.summary, summary)) { counts.unchanged++; }
       else {
         counts.repaired++;
+        differ.add(id);
         try {
           const atStored = computeMissionSummary(input, new Date(prev.computedAt).getTime());
           if (!summariesEqual(prev.summary, atStored)) {
@@ -284,7 +305,9 @@ export function createMissionSummaryStore(deps: MissionSummaryStoreDeps) {
         });
       }
     }
-    counts.written = (await deps.write(fresh)).length;
+    const wrote = await deps.write(fresh);
+    counts.written = wrote.length;
+    await noteWritten(wrote.filter(id => differ.has(id)), inputs);
     deps.record('mission_summary.reconcile', { limit, ...counts });
     return counts;
   }

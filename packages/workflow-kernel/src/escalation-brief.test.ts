@@ -66,6 +66,14 @@ describe('deriveEscalationBrief', () => {
     for (const a of deriveEscalationBrief(v)!.actions) expect(a.impact.length).toBeGreaterThan(0);
   });
 
+  test('the host\'s sentence says why this viewer cannot override; it never hides an available override', () => {
+    const v = V(D(), { findings: [F(1)] });
+    const ov = (p: Parameters<typeof deriveEscalationBrief>[1]) => deriveEscalationBrief(v, p)!.actions.find((a) => a.id === 'approve_override')!;
+    const role = 'Only a team owner or admin can approve past remaining findings.';
+    expect(ov({ overridePermitted: false, hasMergePermission: false, overrideUnavailableReason: role })).toMatchObject({ available: false, unavailableReason: role });
+    expect(ov({ overridePermitted: true, hasMergePermission: true, overrideUnavailableReason: role })).toMatchObject({ available: true, unavailableReason: null });
+  });
+
   test('null outside a review-family escalation', () => {
     expect(deriveEscalationBrief(V(D({ state: 'AWAITING_REVIEW', stateReason: null })))).toBeNull();
     expect(deriveEscalationBrief(V(D({ stateReason: 'landing_needs_human' })))).toBeNull();

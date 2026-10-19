@@ -29,7 +29,7 @@ const TOP_FIELDS = [
   'id', 'taskId', 'taskTitle', 'workspaceId', 'workspaceName', 'status', 'startedAt', 'completedAt',
   'lastActivity', 'currentAction', 'milestones', 'prUrl', 'error', 'waitingFor', 'tokenTally',
   // Which route the run used (run-route.ts), and the model it asked for.
-  'route', 'costBasis', 'taskBackend', 'sessionModel',
+  'route', 'costBasis', 'taskBackend', 'sessionModel', 'routedWhy',
 ] as const;
 
 /** The tool-call input fields top reads (describeToolCall, planOf). */

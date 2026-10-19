@@ -8,7 +8,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { NextRequest } from 'next/server';
 import { matchLocalRead as match, runLocalRead, shadowedRoutes } from './mcp-local-reads';
-import { MCP_LOCAL_READS as LOCAL_READS, MCP_LOCAL_READ_SHADOWS as SHADOWS } from '../mcp-local-read-routes';
+import { MCP_LOCAL_READS as LOCAL_READS, MCP_LOCAL_READ_SHADOWS as SHADOWS } from '../mcp-read-routes';
 
 const matchLocalRead = (p: string) => match(p, LOCAL_READS, SHADOWS);
 
@@ -86,23 +86,23 @@ describe('a dynamic entry never takes a path a static sibling route serves', () 
     ).toEqual(shadowedRoutes(routes, LOCAL_READS));
   });
 
-  it('the table stays out of modules.ts, and only this reader imports it', () => {
-    // modules.ts is in the server graph of pages and core libraries; a route
-    // import there puts every API route in each of those graphs, and the
-    // production build ran out of memory the day it did.
-    const src = join(import.meta.dir, '..');
-    expect(readFileSync(join(src, 'modules.ts'), 'utf8')).not.toMatch(/import\(['"]@\/app\/[^'"]*\/route['"]\)/);
+  it('only lib/mcp-local-reads.ts imports the table, and modules.ts names no route handler', () => {
+    // modules.ts is imported by dozens of routes; a route table there put every
+    // route it names into each of their server bundles and `next build` ran out
+    // of memory in compile.
+    const SRC = join(import.meta.dir, '..');
     const importers: string[] = [];
     const walk = (dir: string) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
         const p = join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
         if (!/\.tsx?$/.test(e.name) || /\.test\.tsx?$/.test(e.name)) continue;
-        if (/['"]@\/mcp-local-read-routes['"]|['"](\.\.?\/)+mcp-local-read-routes['"]/.test(readFileSync(p, 'utf8'))) importers.push(relative(src, p).split(sep).join('/'));
+        if (/['"]@\/mcp-read-routes['"]|['"]\.\.?\/(\.\.\/)*mcp-read-routes['"]/.test(readFileSync(p, 'utf8'))) importers.push(relative(SRC, p).split(sep).join('/'));
       }
     };
-    walk(src);
-    expect(importers).toEqual(['lib/mcp-local-reads.ts']);
+    walk(SRC);
+    expect(importers.filter(f => f !== 'mcp-read-routes.ts')).toEqual(['lib/mcp-local-reads.ts']);
+    expect(readFileSync(join(SRC, 'modules.ts'), 'utf8')).not.toMatch(/import\(['"]@\/app\/[^'"]*\/route['"]\)/);
   });
 
   it('a more specific entry wins regardless of table order', () => {

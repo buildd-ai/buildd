@@ -6,7 +6,7 @@
  * (packages/core/mcp-tools.ts `ApiFn`). It used to `fetch` this server's own
  * origin for every call: one more HTTP request through the edge, the proxy and
  * a fresh function per tool read, for an answer the same process could give.
- * A GET whose path is in `MCP_LOCAL_READS` (apps/web/src/mcp-local-read-routes.ts) now runs that route's own `GET`
+ * A GET whose path is in `MCP_LOCAL_READS` (apps/web/src/mcp-read-routes.ts) now runs that route's own `GET`
  * handler directly, with the same request a fetch would have sent (the
  * caller's bearer, the interactive-session and grant-workspace headers), so
  * auth, scoping and the response shape are the route's, unchanged.
@@ -32,14 +32,14 @@ export interface LocalRead {
 
 /**
  * The table lives in its own composition root (`MCP_LOCAL_READS`,
- * apps/web/src/mcp-local-read-routes.ts): it imports route modules of every
- * module, which core may not (scripts/module-boundaries.ts). Not modules.ts:
- * pages import that, and the table would put every route in their graphs.
- * Read once, when the first MCP read runs.
+ * apps/web/src/mcp-read-routes.ts): it imports route modules of every module,
+ * which core may not (scripts/module-boundaries.ts). Not modules.ts: every
+ * route that imports modules.ts would bundle all of these routes. Read once,
+ * when the first MCP read runs.
  */
 async function localReads(): Promise<{ table: readonly LocalRead[]; shadows: readonly string[] }> {
-  const modules = (await import('@/mcp-local-read-routes')) as { MCP_LOCAL_READS?: readonly LocalRead[]; MCP_LOCAL_READ_SHADOWS?: readonly string[] };
-  return { table: modules.MCP_LOCAL_READS ?? [], shadows: modules.MCP_LOCAL_READ_SHADOWS ?? [] };
+  const { MCP_LOCAL_READS, MCP_LOCAL_READ_SHADOWS } = await import('@/mcp-read-routes');
+  return { table: MCP_LOCAL_READS, shadows: MCP_LOCAL_READ_SHADOWS };
 }
 
 const isDyn = (seg: string) => seg.startsWith(':');
@@ -72,7 +72,7 @@ function matchPattern(pat: string[], segs: string[]): Record<string, string> | n
  * `shadows` are the routes not in the table that Next.js prefers over an
  * entry's dynamic segment (`/api/missions/capabilities` over
  * `/api/missions/:id`). Derived from the routes on disk by `shadowedRoutes`;
- * lib/mcp-local-reads.test.ts fails when the list in mcp-local-read-routes.ts drifts.
+ * lib/mcp-local-reads.test.ts fails when the list in mcp-read-routes.ts drifts.
  */
 export function matchLocalRead(
   pathname: string,
