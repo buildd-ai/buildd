@@ -6,11 +6,10 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, not, or } from 'drizzle-orm';
-import { declaresNoScope } from '@buildd/core/path-overlap';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
-import { producesNoFileEdits, type OpenPrTask } from './coordination-gates';
+import type { OpenPrTask } from './coordination-gates';
 import type { MissionInFlightRow } from './claim-plan-input';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -88,21 +87,17 @@ export interface MissionCoordinationData {
   missionClaimMap: Map<string, MissionClaimData>;
   /** missionId → in-flight NON-review tasks (reviews never occupy a mission slot). */
   missionActiveCountMap: Map<string, number>;
-  /** missionId → its in-flight tasks that declared no file scope (`declaresNoScope`). */
-  missionAdvisoryInFlight: Map<string, Set<string>>;
   missionInFlightRows: MissionInFlightRow[];
 }
 
 /**
  * Mission rows plus their in-flight tasks: ONE row-level query feeds the
- * concurrency count and the advisory-manifest serialization guard. Reviews
- * and non-file-editing tasks are excluded from the guard on both sides.
+ * concurrency count (reviews excluded) and the claim planner's input.
  */
 export async function loadMissionCoordination(missionIds: string[]): Promise<MissionCoordinationData> {
   const out: MissionCoordinationData = {
     missionClaimMap: new Map(),
     missionActiveCountMap: new Map(),
-    missionAdvisoryInFlight: new Map(),
     missionInFlightRows: [],
   };
   if (missionIds.length === 0) return out;
@@ -128,12 +123,6 @@ export async function loadMissionCoordination(missionIds: string[]): Promise<Mis
     if (!row.missionId) continue;
     if (!isDispatchedReview(row.category, row.context)) {
       out.missionActiveCountMap.set(row.missionId, (out.missionActiveCountMap.get(row.missionId) ?? 0) + 1);
-    }
-    if (row.category !== 'review' && !producesNoFileEdits(row.outputRequirement)
-      && declaresNoScope(row.pathManifest as string[] | null)) {
-      const set = out.missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
-      if (row.taskId) set.add(row.taskId);
-      out.missionAdvisoryInFlight.set(row.missionId, set);
     }
   }
   return out;
