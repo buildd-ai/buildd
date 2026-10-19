@@ -773,6 +773,20 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // view=status: what a poller reads (the runner's reconcile and terminal
+  // checks): status, error and the task's status, never the workspace row or
+  // the worker's JSON columns. API keys only; the owner check is the same.
+  if (account && req.nextUrl.searchParams.get('view') === 'status') {
+    const lean = await db.query.workers.findFirst({
+      where: sqlWhere(eq(workers.id, id)),
+      columns: { id: true, status: true, error: true, accountId: true, taskId: true, workspaceId: true, claimedByUserId: true },
+      with: { task: { columns: { status: true } } },
+    });
+    if (!lean) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    if (!callerOwnsWorker(account, lean)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    return NextResponse.json({ id: lean.id, status: lean.status, error: lean.error ?? null, task: lean.task ? { status: lean.task.status } : null });
+  }
+
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(eq(workers.id, id)),
     with: { task: true, workspace: true },
