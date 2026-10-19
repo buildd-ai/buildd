@@ -795,6 +795,11 @@ T13's does. A delta read from the approval that lists no file (§8.3a) is the sa
 evidence: the PR's own diff is the approved one, so it carries with no round (evidence
 `emptyDelta`, `carriedFrom`).
 
+The carry is a rule of `APPROVED`, `LANDING`, `BLOCKED_ON_TRUNK` and `REPAIRING` only. A
+review fix (`FIXING`) has an open verdict, so a base merge pushed while it runs is never
+carried, whatever evidence the command holds: it is a foreign push, and the fix's end queues
+a `base_refresh` round (workflow-kernel-library AC-79).
+
 ### 8.3a Delta approval and round triggers (58c8961e)
 
 An approval at `A` plus a passing delta review of `A..B` is the approval at `B`: the

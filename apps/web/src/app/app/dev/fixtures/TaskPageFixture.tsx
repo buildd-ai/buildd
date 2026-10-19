@@ -14,6 +14,7 @@ import TaskTitle from '../../(protected)/tasks/[id]/TaskTitle';
 import { HeaderStatusPill } from '../../(protected)/tasks/[id]/TaskSidePanel';
 import { ASK_ABOUT_CLASS } from '@/components/chat/ChatEntry';
 import { TaskShippedBody, TaskShippedDetails, TaskShippedTitle } from '../../(protected)/tasks/[id]/TaskShippedHeader';
+import EscalationDecision from '@/components/EscalationDecision';
 import { TASK_PAGE_CASES, parseTaskPageCase, taskPageFixture, type TaskPageCase } from './task-page-fixtures';
 import { TASK_PAGE_FIXTURE_STATE } from './visual-review-fixtures';
 
@@ -58,6 +59,7 @@ export function TaskPageFixture() {
           {f.track && <Lifecycle state={f.track.state} phrase={f.track.phrase} className="mt-3" />}
         </div>
         {f.verdict && <TaskVerdictBlock verdict={f.verdict} displayStatus="completed" />}
+        {f.escalation && <EscalationDecision brief={f.escalation.brief} copy={f.escalation.copy} prNumber={1234} workspaceId="example" />}
         <TaskChecks
           checks={f.checks}
           prNumber={f.view.prNumber}
