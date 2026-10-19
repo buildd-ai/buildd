@@ -41,8 +41,8 @@ describe('one active-team resolver for the shell and Home', () => {
 
 describe('the headline counts the same set as the Needs-you list', () => {
   it('one derived list, built from the initiative-filtered queue, feeds the headline and the cards', () => {
-    expect(home).toMatch(/deriveHomeNeedsYou\(\{ queue: filteredActionQueue/);
-    expect(home).toContain('items={attention}');
+    expect(home).toMatch(/deriveHomeNeedsYou\(\{ queue,/);
+    expect(home).toContain('region={region}');
     expect(home).not.toContain('homeHeadlineSentence(');
     expect(home).not.toContain('needsYouCount');
     expect(home).not.toContain('waiting on you`');
