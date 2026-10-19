@@ -590,7 +590,7 @@ describe('prRefsIn', () => {
     // Both interruptions fire in this run: timeout at ~50ms, then budget at ~80ms.
     // The first label (timeout) sticks due to `this.interrupted ??= why` (nullish coalescing).
     // If you change ??= to =, the budget label overwrites it and the test fails.
-    claims(9);
+    gh["org/kb/issues/6/comments"] = [{ body: "superseded by #9" }];
     // Candidate with commits so patch-id is attempted: two parallel commitDiffs calls.
     mergedPr('org/kb', 9, [{ filename: 'apps/x.ts', status: 'added', patch: null }], { commits: 3 });
     const shas = ['a', 'b', 'c'];
