@@ -496,8 +496,11 @@ describe('F-3: an exhausted delivery; redeliver_dispatch records in shadow, then
     }
     const [acct] = await q<{ id: string }>(sql`INSERT INTO accounts (type, name, api_key, team_id, level)
       VALUES ('service', ${`svc-${RUN}`}, ${`bld_test_${RUN}`}, ${w.teamId}::uuid, 'admin') RETURNING id`);
+    // Runner presence reads the claim rule (a grant), never the deprecated heartbeat workspace_ids.
+    await q(sql`INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create)
+      VALUES (${acct.id}::uuid, ${workspaceId}::uuid, true, true)`);
     await q(sql`INSERT INTO worker_heartbeats (account_id, local_ui_url, workspace_ids, last_heartbeat_at)
-      VALUES (${acct.id}::uuid, ${`http://runner-${RUN}.test`}, ${JSON.stringify([workspaceId])}::jsonb, now())`);
+      VALUES (${acct.id}::uuid, ${`http://runner-${RUN}.test`}, '[]'::jsonb, now())`);
     incident = (await port.insert({
       workspaceId, signature: `repeated_failure|ws=${workspaceId}|dispatch_delivery_exhausted`, detectorVersion: 'fps-v2', rule: 'repeated_failure',
       reasonCode: 'repeated_failure.dispatch_delivery_exhausted', title: 'Synthetic delivery exhausted', severity: 'high', status: 'open',

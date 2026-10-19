@@ -146,6 +146,37 @@ describe('dependency-blocked work is not an ask', () => {
     expect(view.nextAction).toContain('runner picks it up');
   });
 
+  it('no runner online: the queued task says so instead of "next in line for a runner"', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      health: 'STALLED',
+      runnerOnline: false,
+      openTasks: [{ id: 'y', status: 'pending' }],
+    });
+    expect(view.kind).toBe('waiting');
+    expect(view.situation.headline).toContain('No runner online');
+    expect(view.situation.headline).not.toContain('next in line');
+    expect(view.nextAction).toContain('runner');
+  });
+
+  it('a runner known online, or presence unknown, keeps next in line', () => {
+    for (const runnerOnline of [true, undefined]) {
+      const view = deriveMissionStateView({ ...base, health: 'STALLED', runnerOnline, openTasks: [{ id: 'y', status: 'pending' }] });
+      expect(view.situation.headline).toContain('next in line for a runner');
+    }
+  });
+
+  it('a stranded local mission does not list quiet unverified criteria as also outstanding', () => {
+    const view = deriveMissionStateView({
+      ...localQueued,
+      localStrand: { stranded: true, quietMs: 2 * 60 * 60_000, claimableTaskIds: ['t1'], flipBlockedReason: null },
+      criteriaGate: { state: 'unverified', label: 'Criteria unverified', tone: 'neutral', detail: null } as never,
+      criteriaItems: [{ label: 'It works', verdict: null }] as never,
+    });
+    expect(view.situation.alsoOutstanding.map(f => f.kind)).not.toContain('criterion_unverified');
+    expect(view.outstanding.map(f => f.kind)).not.toContain('criterion_unverified');
+  });
+
   it('a stranded local mission whose only work is dep-blocked is not stranded (nothing is claimable)', () => {
     const view = deriveMissionStateView({
       ...depBlockedOnPrs,

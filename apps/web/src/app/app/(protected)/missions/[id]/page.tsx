@@ -16,7 +16,7 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
-import { isSurfaceAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -71,7 +71,6 @@ import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-ta
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { emptyVisualReviewModel } from '@/lib/visual-review-model';
 import type { SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
@@ -264,7 +263,7 @@ async function MissionDetailBody({
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
   // An audit or a fix from one, by role or title: only then is there a visual review to read.
   const hasVisualAudit = (mission.tasks ?? []).some(t =>
-    t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? '') || isSurfaceFixTask(t.title));
+    isMissionAuditTask(t) || isSurfaceFixTask(t.title));
 
   const [
     missionFollowupTasks,
@@ -508,7 +507,7 @@ async function MissionDetailBody({
     },
     gitConfig: workspaceForPolicy?.gitConfig ?? null,
     tasks: decisionTasks as unknown as SurfaceAuditGateTask[],
-    ...(decisionTasks.some(t => isSurfaceAuditTask(t.title ?? '')) ? {} : { ledger: [] }),
+    ...(decisionTasks.some(t => isMissionAuditTask(t)) ? {} : { ledger: [] }),
   }).catch((err) => {
     console.error('[mission-page] visual review state load failed', err);
     return null;
@@ -855,7 +854,7 @@ async function MissionDetailBody({
   const showAuditWaiver = !!surfaceAuditWaiver
     || (visualPresentation
       ? visualPresentation.canWaive
-      : (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+      : (mission.tasks ?? []).some(t => isMissionAuditTask(t))
         || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true));
   const vs = boardVisual?.summary;
   const visualReview = vs
