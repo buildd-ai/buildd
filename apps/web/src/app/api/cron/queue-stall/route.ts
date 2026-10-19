@@ -68,7 +68,6 @@ import { isSubjectDead } from '@/lib/subject-gate-contract';
 // that was byte-for-byte hasBypassFlag — a third copy of gate logic in the very
 // job whose purpose is to catch gate logic drifting.
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY } from '@/lib/bypass-flags';
-import { declaresNoScope } from '@buildd/core/path-overlap';
 // Reporting only. The credential state this reads has deliberately NO
 // task-level gate (`capability_mismatch` / `checkCapabilityMatch` were removed
 // in PR #1864 and replaced by configuration-time surfacing); the watchdog names
@@ -145,7 +144,6 @@ export type StallGate =
   | 'subject_dead'
   | 'workspace_cap_reached'
   | 'backend_credential_missing'
-  | 'advisory_manifest'
   | 'routing_paused'
   | 'no_gate_identified';
 
@@ -172,7 +170,6 @@ interface Candidate {
   subjectPrNumber: number | null;
   subjectResolution: string | null;
   subjectAnchor: { source?: string | null } | null;
-  pathManifest: string[] | null;
   priority: number | null;
   kind: string | null;
   // Who the task is for — decides which personal role the connector gate reads.
@@ -181,14 +178,6 @@ interface Candidate {
   scheduleId?: string | null;
   workspace?: CandidateWorkspace | null;
 }
-
-/**
- * missionId → the scope-undeclared task currently holding that mission's single
- * serialization slot in the claim loop (`declaresNoScope` + a live worker).
- * Empty unless an examined task actually has an undeclared scope, so a queue of
- * concrete-manifest tasks pays nothing for this.
- */
-type AdvisoryPeerIndex = Map<string, { id: string; title: string }>;
 
 interface DepIndex {
   byId: Map<string, { title: string; status: string }>;
@@ -213,16 +202,12 @@ interface GateVerdict {
  * watchdog named. Notably the connector gate stays AHEAD of the concurrency cap
  * so a permanent capability block is never masked by a transient queue wait.
  *
- * Two gates have no /start counterpart and therefore sit BELOW every gate that
- * does, in permanence order: `backend_credential_missing` (permanent until an
- * operator adds a credential) then `advisory_manifest` (self-clearing). Both
- * only speak when /start would have returned 200, so /start's own 422 ordering
- * is reproduced verbatim.
+ * Reporting-only reasons sit below every gate /start can name, so an
+ * operator sees /start's own rejection first.
  */
 async function resolveStallGate(
   task: Candidate,
   deps: DepIndex,
-  advisoryPeers: AdvisoryPeerIndex,
   strandProbe: BackendStrandProbe,
   pacingProbe: PacingProbe,
   now: Date,
@@ -389,7 +374,7 @@ async function resolveStallGate(
   // as `no_gate_identified` ("no runner is polling this workspace"), which sends
   // the operator to look at runners when the fix is one credential in Settings.
   // There is intentionally no /start gateReason for it, so it ranks below every
-  // gate /start does name, and above the self-clearing `advisory_manifest`.
+  // gate /start does name.
   {
     const stranded = await strandProbe.check({
       backend: task.backend,
@@ -403,30 +388,6 @@ async function resolveStallGate(
           `routed to ${stranded.label}, which has no credential for this team — ` +
           `no runner can claim it. Add one in Settings → Models, or ` +
           `disable ${stranded.label} team-wide to reroute this work`,
-      };
-    }
-  }
-
-  // ── Advisory-manifest mission serialization ───────────────────────────────
-  // The claim loop allows at most ONE scope-undeclared task per mission in
-  // flight (declaresNoScope: null / [] / ['**']). Unlike every gate above this
-  // one is a soft, self-clearing deferral, which is exactly why it is last: it
-  // must never mask a permanent block, and the tasks that reach here have
-  // already passed every gate /start knows about, so the alternative report is
-  // the actively misleading `no_gate_identified` ("no runner is offering this
-  // role") for a task a gate IS holding.
-  //
-  // It is reported at all because the 4h threshold has already filtered out
-  // normal transience — the same reason `workspace_cap_reached` is in the
-  // ladder. The realistic non-self-clearing case is a peer parked in
-  // `waiting_input` (its worktree still holds edits, so the slot is genuinely
-  // taken): that waits on a human answering a question, which can be days.
-  if (task.missionId && declaresNoScope(task.pathManifest)) {
-    const peer = advisoryPeers.get(task.missionId);
-    if (peer && peer.id !== task.id) {
-      return {
-        gate: 'advisory_manifest',
-        detail: `mission already has a scope-undeclared task in flight: "${peer.title}" — declare a pathManifest on either task, or unblock that one`,
       };
     }
   }
@@ -536,10 +497,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       subjectPrNumber: true,
       subjectResolution: true,
       subjectAnchor: true,
-      // Feeds the advisory-manifest gate. Unselected reads as undefined, which
-      // declaresNoScope() would (correctly) call "no scope declared" — so an
-      // omission here turns the gate on for the entire queue rather than off.
-      pathManifest: true,
       priority: true,
       kind: true,
       createdByUserId: true,
@@ -635,44 +592,6 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
-  // ── Advisory-manifest peer index ──────────────────────────────────────────
-  // Only queried when an examined task actually has an undeclared scope AND a
-  // mission — the gate is mission-scoped, so a mission-less task can never hit
-  // it and a concrete-manifest queue skips the round trip entirely.
-  const advisoryPeers: AdvisoryPeerIndex = new Map();
-  const advisoryMissionIds = [...new Set(
-    examinedSet
-      .filter(t => t.missionId && declaresNoScope(t.pathManifest))
-      .map(t => t.missionId as string),
-  )];
-  if (advisoryMissionIds.length > 0) {
-    const peerRows = await db.query.tasks.findMany({
-      where: sqlWhere(inArray(tasks.missionId, advisoryMissionIds)),
-      columns: { id: true, title: true, missionId: true, pathManifest: true },
-      with: {
-        // LIVE_WORKER_STATUSES is the same in-flight set the claim loop's guard
-        // uses — `waiting_input` included, because that worker's worktree still
-        // holds uncommitted edits and the slot is genuinely taken.
-        workers: { columns: { status: true } },
-      },
-    });
-    for (const peer of peerRows as Array<{
-      id: string;
-      title: string;
-      missionId: string | null;
-      pathManifest: string[] | null;
-      workers?: Array<{ status: string }> | null;
-    }>) {
-      if (!peer.missionId || advisoryPeers.has(peer.missionId)) continue;
-      if (!declaresNoScope(peer.pathManifest)) continue;
-      const inFlight = (peer.workers ?? []).some(
-        w => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status),
-      );
-      if (!inFlight) continue;
-      advisoryPeers.set(peer.missionId, { id: peer.id, title: peer.title });
-    }
-  }
-
   // ── Evaluate gates ────────────────────────────────────────────────────────
   interface StalledReport {
     taskId: string;
@@ -700,7 +619,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const task = examinedSet[i];
     let verdict: GateVerdict | null = null;
     try {
-      verdict = await resolveStallGate(task, deps, advisoryPeers, strandProbe, pacingProbe, now);
+      verdict = await resolveStallGate(task, deps, strandProbe, pacingProbe, now);
     } catch (err) {
       // A gate helper throwing must not blind the whole run — report it as its
       // own finding rather than losing the task.

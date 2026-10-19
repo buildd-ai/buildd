@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql, readDeltaForApproval, type GithubFactReader } from './facts';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
@@ -828,12 +828,23 @@ export async function attemptEnded(p: {
   if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     proof = { liveContainsLocal: false, contentDiffChanged: true };
   }
-  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  // AC-79: a review fix whose PR moved off its bound head only by a merge of the base pushed nothing of
+  // its own: the PR's diff at the live head, against the base, is the diff at the bound head.
+  const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
+    ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
+    : false;
+  // T11 / §8.3 (92a439a6): a repair whose head leaves the PR's diff unchanged (an agent conflict repair
+  // that only merged the base) keeps the approval. Read here as HeadObserved reads it: when the end
+  // arrives before the push webhook, that later HeadObserved is `head_unchanged` and never reads it.
+  // A fix in FIXING (AC-79 above) never reads it: only REPAIRING carries here.
+  let carryForward: 'content_equivalent' | 'own_refresh' | null = null;
+  // 58c8961e: otherwise a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
-  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : undefined;
-    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+    if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
+    if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
   const cmd: Command = {
     type: 'AttemptEnded',
@@ -851,10 +862,18 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(carryForward ? { carryForward } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
+    ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
+  if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
+    // §8.3: the legacy merge gate's `equivalentHeadShas`, projected after the committed carry as T13's is.
+    const from = String(result.decision.evidence.carriedFrom ?? result.decision.evidence.previousHead ?? '');
+    await (deps.exec ?? seamExec)(projectEquivalentHeadSql(deliveryId, from, live.headSha))
+      .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${deliveryId}:`, err));
+  }
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
@@ -990,7 +1009,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
 // ── §9 completion gate ──────────────────────────────────────────────────────
 
 export interface GateRefusal {
-  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff';
+  code: 'delivery_not_advanced' | 'repair_still_conflicted' | 'repair_still_colliding' | 'repair_unrelated_diff' | 'repair_base_only';
   error: string;
   hint: string;
   boundHeadSha: string | null;
@@ -1075,6 +1094,16 @@ export async function fixCompletionGate(p: {
     // re-review, which verifies it like any fix.
     const ctx = ctxOf(p.task);
     const human = ctx.trigger === 'human';
+    // AC-79: the head moved only by a merge of the base (the PR's diff is the bound head's): nothing on
+    // it is the fix's own work, so it cannot complete on it.
+    if (p.task.deliveryRole === 'fix' && !human && attempt.boundHeadSha && await baseOnlyMove(p.task.workspaceId, d.repoFullName, attempt.boundHeadSha, live, deps, repo)) {
+      return {
+        code: 'repair_base_only',
+        error: `PR #${d.prNumber}'s head moved only by a merge of its base since your fix started at ${attempt.boundHeadSha.slice(0, 7)}: none of the commits on it is your fix.`,
+        hint: 'Fix the findings and push your own commits, then complete again. A merge of the base does not count as the fix.',
+        boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha,
+      };
+    }
     const claim = p.fixedElsewhere && openFindings(view).some((f) => p.fixedElsewhere!.findingIds.includes(f.id)) ? p.fixedElsewhere : null;
     if (p.task.deliveryRole === 'fix' && !human && !claim && attempt.boundHeadSha) {
       const reader = readerFor(deps, repo.installationId);
@@ -1108,6 +1137,21 @@ export async function fixCompletionGate(p: {
     liveHeadSha: live.headSha,
     localHeadSha: p.localHeadSha,
   };
+}
+
+/**
+ * AC-79: did the PR move from `fromSha` to the live head only by base commits? True only on a read
+ * that says the PR's diff against the base is the same at both (`contentEquivalent`); unread is false.
+ */
+async function baseOnlyMove(
+  workspaceId: string, repoFullName: string, fromSha: string, live: LivePr | null, deps: SeamDeps,
+  repo?: { installationId: number } | null,
+): Promise<boolean> {
+  if (!live || live.state !== 'open' || live.merged || live.headSha === fromSha || !live.baseRef) return false;
+  const r = repo ?? await (deps.repoFor ?? workspaceRepo)(workspaceId);
+  const reader = r ? readerFor(deps, r.installationId) : null;
+  if (!reader?.contentEquivalent) return false;
+  return (await reader.contentEquivalent(repoFullName, live.baseRef, fromSha, live.headSha).catch(() => null)) === true;
 }
 
 // ── T9: a fix attempt is claimed ────────────────────────────────────────────
@@ -2223,10 +2267,21 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
 }
 
 /**
- * §6 scope amendments: the scope decision for a task added to a mission,
- * recorded once (workflow/scope-amendments.ts). `workspaceId` is the task's.
+ * §6 scope amendments: the scope decision for a task added to a mission (filed
+ * into it, or linked to it), recorded once (workflow/scope-amendments.ts).
+ * `workspaceId` is the task's.
  */
-export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string }) {
+export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string; origin?: 'filed' | 'linked' }) {
   const { decideTaskScope } = await import('./scope-amendments');
-  return decideTaskScope({ taskId: p.taskId, actor: p.actor });
+  return decideTaskScope({ taskId: p.taskId, actor: p.actor, origin: p.origin });
+}
+
+/**
+ * §6 scope amendments: the answer to a held scope decision (it fits, it
+ * changes the mission, it belongs elsewhere, or the task left the mission),
+ * recorded once, releasing the hold. `workspaceId` is the task's.
+ */
+export async function missionScopeResolveCommand(p: { workspaceId: string; missionId: string; taskId: string; answer: string; actor: string }) {
+  const { resolveTaskScope } = await import('./scope-amendments');
+  return resolveTaskScope({ missionId: p.missionId, taskId: p.taskId, answer: p.answer, actor: p.actor });
 }
