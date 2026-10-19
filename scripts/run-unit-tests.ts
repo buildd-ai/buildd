@@ -441,6 +441,44 @@ export function admissionLimit(concurrency: number, load1: number, cpuCount: num
 }
 
 const ADMISSION_POLL_MS = 2_000;
+const START_GATE_DEFAULT_WAIT_MS = 60_000;
+
+/**
+ * Start gate for the whole run. Per-file admission above only thins files
+ * already in flight; a run that begins while the host is severely
+ * oversubscribed (another suite or a production build running) still puts its
+ * first files into the contention. Wait a bounded time for the load to fall
+ * under the severe line before starting, then proceed anyway (admission keeps
+ * concurrency low). Returns how long it waited. `BUILDD_TEST_ADMISSION_WAIT_MS`
+ * sets the bound; 0 disables the wait.
+ */
+export async function waitForHostRoom(options: {
+  load1: () => number;
+  cpuCount: number;
+  maxWaitMs: number;
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (message: string) => void;
+}): Promise<number> {
+  const pollMs = options.pollMs ?? ADMISSION_POLL_MS * 5;
+  const sleep = options.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
+  let waited = 0;
+  let announced = false;
+  while (waited < options.maxWaitMs && isHostSeverelyOversubscribed(options.load1(), options.cpuCount)) {
+    if (!announced) {
+      options.log?.(`[admission] load ${options.load1().toFixed(1)} on ${options.cpuCount} CPUs; waiting up to ${Math.round(options.maxWaitMs / 1000)}s for room before starting`);
+      announced = true;
+    }
+    await sleep(pollMs);
+    waited += pollMs;
+  }
+  return waited;
+}
+
+export function startGateWaitMs(env: string | undefined): number {
+  const n = Number(env);
+  return env === undefined || env.trim() === '' || !Number.isFinite(n) || n < 0 ? START_GATE_DEFAULT_WAIT_MS : Math.floor(n);
+}
 
 export async function runWithConcurrency<T>(
   items: readonly T[],
@@ -1037,6 +1075,14 @@ async function main(): Promise<void> {
   process.once('SIGTERM', onKill);
   process.once('SIGINT', onKill);
 
+  if (process.env.BUILDD_TEST_ADMISSION !== 'off') {
+    await waitForHostRoom({
+      load1: () => loadavg()[0],
+      cpuCount: cpus().length,
+      maxWaitMs: startGateWaitMs(process.env.BUILDD_TEST_ADMISSION_WAIT_MS),
+      log: console.log,
+    });
+  }
   const admission = process.env.BUILDD_TEST_ADMISSION === 'off'
     ? {}
     : { limit: () => admissionLimit(concurrency, loadavg()[0], cpus().length) };
