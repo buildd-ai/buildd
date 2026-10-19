@@ -283,6 +283,25 @@ export async function readDeltaForApproval(
   return github.reviewedDelta(repoFullName, live.baseRef, from, live.headSha).catch(() => null);
 }
 
+/**
+ * AC-79 (workflow-kernel-library.md §5): did the move from the head a FIXING delivery holds to
+ * `live` bring only base commits? `own_refresh` when the platform's own `refresh_branch`, pinned
+ * to the held head, updated the branch; `compare` when the PR's diff against the base is the same
+ * at both heads (a merge of the base, by anyone). Null when it is not read (another state, the
+ * fix reported this head itself, no reader) or the read says the diff changed or could not tell.
+ */
+export async function baseOnlyReading(
+  view: KernelView, repoFullName: string, live: LivePr, exec: Exec, github?: GithubFactReader,
+): Promise<'own_refresh' | 'compare' | null> {
+  const d = view.delivery;
+  if (!d || d.state !== 'FIXING' || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
+  const bound = view.attempts.find((a) => a.id === d.boundAttemptId);
+  if (!bound || bound.reportedShas.includes(live.headSha)) return null;
+  if (((await exec(ownRefreshSql(d.id, d.currentHeadSha))).rows ?? []).length > 0) return 'own_refresh';
+  if (!live.baseRef || !github?.contentEquivalent) return null;
+  return (await github.contentEquivalent(repoFullName, live.baseRef, d.currentHeadSha, live.headSha).catch(() => null)) === true ? 'compare' : null;
+}
+
 /** A `refresh_branch` effect of this delivery, pinned to `headSha`, that updated (or is updating) the branch. */
 export function ownRefreshSql(deliveryId: string, headSha: string): SQL {
   return sql`-- workflow:own_refresh
@@ -372,10 +391,12 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
         : null;
       // 58c8961e: what changed since the approval, read only when the next round could be a delta review.
       const delta = live && !carryForward ? await readDeltaForApproval(view, fact.repoFullName, live, github) : null;
+      // AC-79: while a review fix runs, a push that brought only base commits is foreign (never the fix's).
+      const baseOnly = live ? await baseOnlyReading(view, fact.repoFullName, live, exec, github) : null;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}), ...(baseOnly ? { baseOnly } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}), ...(delta ? { delta } : {}) },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}), ...(delta ? { delta } : {}), ...(baseOnly ? { baseOnly } : {}) },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
         held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound } : null,
       };

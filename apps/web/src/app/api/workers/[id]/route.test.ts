@@ -1108,6 +1108,46 @@ describe('GET /api/workers/[id]', () => {
   });
 });
 
+describe('GET /api/workers/[id]?view=status', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+  });
+  const statusReq = () => new NextRequest(`http://localhost:3000/api/workers/${WORKER_ID}?view=status`, {
+    headers: new Headers({ Authorization: 'Bearer bld_test' }),
+  });
+
+  it('reads only the status columns and the task status, never the workspace row', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', claimedByUserId: null,
+      status: 'running', error: null, task: { status: 'in_progress' },
+    });
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: 'worker-1', status: 'running', error: null, task: { status: 'in_progress' } });
+    const args = (mockWorkersFindFirst.mock.calls.at(-1) as any[])[0];
+    expect(args.columns).toBeDefined();
+    expect(args.columns.milestones).toBeUndefined();
+    expect(args.with.task).toEqual({ columns: { status: true } });
+    expect(args.with.workspace).toBeUndefined();
+  });
+
+  it('keeps the owner check: another account gets 403', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-2', taskId: 't', workspaceId: 'w', claimedByUserId: null, status: 'running', error: null, task: null });
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(403);
+  });
+
+  it('404 when the worker does not exist', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue(null);
+    const res = await GET(statusReq(), { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/workers/[id] — dashboard session', () => {
   const SESSION_WORKER = {
     id: 'worker-1',

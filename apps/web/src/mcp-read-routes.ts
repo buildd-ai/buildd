@@ -77,5 +77,6 @@ export const MCP_LOCAL_READ_SHADOWS: readonly string[] = [
   '/api/workers/local-sessions',
   '/api/workers/mine',
   '/api/workers/queue',
+  '/api/workers/status',
   '/api/workspaces/match-repos',
 ];

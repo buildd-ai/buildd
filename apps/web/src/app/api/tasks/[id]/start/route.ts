@@ -377,8 +377,7 @@ export async function POST(
 
     // ── Coordination gates ──────────────────────────────────────────────────
     // The claim loop's in-loop gates: path overlap with an open PR or a live
-    // path claim, mission concurrency and pacing, one scope-undeclared task
-    // per mission, planner order. /start used to accept a task these held, so
+    // path claim, mission concurrency and pacing, planner order. /start used to accept a task these held, so
     // the page said "Queued at front · No runner has responded" while an idle
     // runner deferred it on every poll. Same predicates as the claim route
     // (claim/coordination-gates). A probe read failure (null) falls back to

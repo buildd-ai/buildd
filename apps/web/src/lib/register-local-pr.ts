@@ -32,8 +32,8 @@ async function persistLocalPr(input: LocalPrRegistration): Promise<void> {
     inArray(workers.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(workspaceRepoMatches(input.repo))),
   )).returning({ id: workers.id });
   // The PR's state is a fact on the fact cache (recordPrFact), never a bare write.
-  const { recordPrFact } = await import('@buildd/core/pr-facts');
-  if (bound.length) await recordPrFact({ workerIds: bound.map((b) => b.id) }, { kind: 'open' });
+  const [{ recordPrFact }, { factFunnelScope }] = await Promise.all([import('@buildd/core/pr-facts'), import('./workflow/pr-fact-scope')]);
+  if (bound.length) await recordPrFact({ workerIds: bound.map((b) => b.id) }, { kind: 'open' }, { scope: factFunnelScope });
   // The stored mission summary reads these PR fields (delivery.prNumber/prUrl): note the workers so it is rewritten.
   if (bound.length) (await import('./work-changed')).noteWorkChanged({ workerIds: bound.map((b) => b.id) });
 }
