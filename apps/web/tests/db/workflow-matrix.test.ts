@@ -1583,7 +1583,7 @@ describe('S16–S21', () => {
     expect(d.state).toBe('ESCALATED');
     const n = (await transitions(o.deliveryId)).length;
 
-    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true }, { ref: { deliveryId: o.deliveryId } });
+    const resolve = (expectedVersion: number) => applyCommand({ type: 'HumanResolve', actor: 'human:owner', choice: 'approve', expectedVersion, commitId: 'H1', hasMergePermission: true, overridePermitted: true }, { ref: { deliveryId: o.deliveryId } });
     expect(await resolve(d.version - 1)).toEqual({ result: 'stale', reason: 'version_moved', current: { state: 'ESCALATED', version: d.version, head: 'H1', round: 1 } });
     expect((await transitions(o.deliveryId)).length).toBe(n);
     expect(await resolve(d.version)).toMatchObject({ result: 'applied' });
