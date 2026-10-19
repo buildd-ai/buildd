@@ -75,6 +75,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   sessionEndPushCount: true,
   sessionEndPushes: true,
   lastToolDenial: true,
+  lastCompleteTaskAttempt: true, // the agent's own complete_task params, already in toolCalls
   output: true,
   toolCalls: true,
   messages: true,
