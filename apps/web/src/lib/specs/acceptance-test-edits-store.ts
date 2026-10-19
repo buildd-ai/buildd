@@ -2,7 +2,6 @@ import { db } from '@buildd/core/db';
 import { missions, specs, tasks, workers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { githubApi } from '@/lib/github';
 import { workerOwnsPr } from '@/lib/repo-scope';
 import { isUuid } from '@/lib/uuid';
@@ -54,10 +53,10 @@ export async function flagAcceptanceTestEdits(input: {
   const worker = await db.query.workers.findFirst({
     where: sqlWhere(workerOwnsPr(input.repoFullName, input.prNumber)),
     columns: { id: true },
-    with: { task: { columns: { id: true, missionId: true, context: true, taskClass: true, kind: true, title: true, mode: true, creationSource: true, category: true } } },
+    with: { task: { columns: { id: true, missionId: true, context: true, taskClass: true } } },
   });
   const task = worker?.task;
-  if (!task?.missionId || !isDeliverableTask(task)) return null;
+  if (!task?.missionId || task.taskClass !== 'work') return null; // stored discriminator; core must not import the missions helper
   if ((task.context as Record<string, unknown> | null)?.acceptanceTests) return null;
   const mission = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)), columns: { goalCriteria: true } });
   const { paths, scope } = await acceptanceOf(mission?.goalCriteria);
