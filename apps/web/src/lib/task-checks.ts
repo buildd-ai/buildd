@@ -91,7 +91,7 @@ const ROUND_WORD: Record<string, { state: CheckState; word: string }> = {
   escalate: { state: 'blocked', word: 'Escalated to a person' },
 };
 
-function roundReading(r: RoundSnapshot): { state: CheckState; word: string } {
+export function roundReading(r: RoundSnapshot): { state: CheckState; word: string } {
   if (r.status === 'queued') return { state: 'pending', word: 'Awaiting review' };
   if (r.status === 'reviewing') return { state: 'running', word: 'In review' };
   if (r.status === 'failed') return { state: 'failed', word: 'Review run failed' };

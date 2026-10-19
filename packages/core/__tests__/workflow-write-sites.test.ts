@@ -441,6 +441,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/app/api/webhooks/ingest/route.ts': PERSON('an external tracker issue closed or reopened'),
   'apps/web/src/app/api/github/webhook/route.ts': `${PERSON('a GitHub issue closed or reopened')}; ${NON_DELIVERY('a release task\'s release PR CI (releaseResult, context.releasePrPending)')}. The branch-name merge match moved to pr-merged-legacy-task.ts`,
   'apps/web/src/app/api/workers/[id]/interrupt/route.ts': NON_DELIVERY('a person takes over from a reviewer: the reviewer task (category review), never the owner; the kernel gets human_takeover (T27)'),
+  'apps/web/src/lib/specs/acceptance-gate-apply.ts': NON_DELIVERY('completes or reopens a mission\'s acceptance-tests task (a spec-process task with no PR, so never delivery-owned)'),
   'apps/web/src/lib/held-pr-tasks.ts': NON_DELIVERY('settles a release task held on its release PR (context.releasePrPending); release PRs never open a delivery'),
   'apps/web/src/lib/mission-surface-audit.ts': NON_DELIVERY('cancels a pending, unclaimed surface audit left with no dependencies'),
   'apps/web/src/lib/quality-scout-actions.ts': NON_DELIVERY('retires a pending, unclaimed scout follow-up'),
