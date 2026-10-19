@@ -139,7 +139,7 @@ describe('explicit unknown workspaceId fails loudly', () => {
   it('names the legitimate ways forward and never suggests filing elsewhere', async () => {
     for (const visible of [[{ name: 'a' }], []]) {
       const msg = unknownWorkspaceMessage('x', visible);
-      expect(msg).toContain('request_capability tasks:create');
+      expect(msg).toContain('request_capability { provider: "buildd", access: "write"');
       expect(msg).toContain('person');
       expect(msg).not.toMatch(/file the follow-up/i);
       expect(msg).not.toMatch(/in a visible workspace/i);
