@@ -78,29 +78,21 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   });
 
   test('a second pass writes nothing (idempotent: GitHub already shows the answer)', async () => {
-    const view = approvedView('d1', H(7));
-    const h = harness({
-      pulls: [{ number: 7, sha: H(7) }],
-      owned: { 7: { id: 'd1', view } },
-      onDrain: () => { for (const c of CONTEXTS) h.statuses.set(`${H(7)}|${c}`, { state: 'success', description: 'Ready to merge: 7777777 approved by review' }); },
-    });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
     await publishOpenPrStatuses(h.deps);
     const before = h.writes.length;
+    expect(before).toBe(2);
     const s = await publishOpenPrStatuses(h.deps);
     expect(h.writes.length).toBe(before);
     expect(s).toMatchObject({ published: 0, unchanged: 1, coverage: { verdict: 'covered' } });
   });
 
   test('a review asked for: "Review in progress"', async () => {
-    const h = harness({
-      pulls: [{ number: 7, sha: H(7) }],
-      review: 'in_progress',
-      owned: { 7: { id: 'd1', view: approvedView('d1', H(7)) } },
-      onDrain: () => { for (const c of CONTEXTS) h.statuses.set(`${H(7)}|${c}`, { state: 'pending', description: 'Review in progress' }); },
-    });
-    await publishOpenPrStatuses(h.deps);
-    // The kernel owns this, so it republishes, and the drain sets the status
-    expect(h.statuses.get(`${H(7)}|${CONTEXTS[1]}`)?.description).toContain('Review in progress');
+    // No delivery owns it, but a review was asked for: the PR is live, so the host writes (never skipped).
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }], review: 'in_progress' });
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(h.writes.at(-1)!.description.startsWith('Review in progress')).toBe(true);
+    expect(s).toMatchObject({ published: 1, skipped: 0 });
   });
 
   test('a kernel-owned head missing its status: the kernel republishes it (an effect at its version), the host never writes it', async () => {
@@ -166,30 +158,25 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
   });
 
   test('a PR claimed by the kernel while the host wrote pending: the kernel republishes after it', async () => {
+    let calls = 0;
     const view = approvedView('d1', H(7));
-    const h = harness({ pulls: [{ number: 7, sha: H(7) }], owned: { 7: { id: 'd1', view } } });
-    // Simulate a concurrent claim: after ownerOf finds no owner initially, ownership changes to 'd1'
-    let called = false;
-    const originalOwned = h.deps.owned!;
-    h.deps.owned = async (...args) => {
-      // On second call (from ownerOf inside publishHead after checking ownership), return 'd1'
-      const result = called ? 'd1' : await originalOwned(...args);
-      called = true;
-      return result;
-    };
+    // A review was asked for, so the unowned PR is live and the host writes; the claim lands during that write.
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }], review: 'in_progress' });
+    h.deps.owned = async () => (calls++ === 0 ? null : 'd1');
+    h.deps.loadView = async () => view;
     await publishOpenPrStatuses(h.deps);
+    expect(h.writes.length).toBe(2);
     expect(h.enqueued).toEqual([{ deliveryId: 'd1', version: 5 }]);
   });
 
   test('one repo failing to list does not stop the others, and counts as an error', async () => {
-    const view = approvedView('d1', H(7));
-    const h = harness({ pulls: [{ number: 7, sha: H(7) }], owned: { 7: { id: 'd1', view } } });
+    const h = harness({ pulls: [{ number: 7, sha: H(7), author: 'renovate[bot]' }] });
     const repos = await h.deps.repos!();
     h.deps.repos = async () => [{ ...repos[0]!, repoFullName: 'acme/broken' }, ...repos];
     const list = h.deps.listOpenPulls!;
     h.deps.listOpenPulls = async (i, r) => { if (r === 'acme/broken') throw new Error('500'); return list(i, r); };
     const s = await publishOpenPrStatuses(h.deps);
-    expect(s).toMatchObject({ errors: 1, checked: 1, published: 0 }); // owned PR republishes, not publishes
+    expect(s).toMatchObject({ errors: 1, checked: 1, published: 1 });
   });
 
   test('a repo without statuses:write permission (403) skips all its PRs with a reason, not an error', async () => {

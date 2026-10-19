@@ -172,9 +172,11 @@ interface HeadRun {
   reviews: OpenPrReviews;
   /** False on the web host's webhook path: a kernel write (an effect and its drain) is the control plane's, so only the floor does it. */
   kernelRepublish: boolean;
+  /** True on the floor's sweep: a PR with no live delivery and no review asked for is skipped, not written pending. */
+  skipUnowned?: boolean;
 }
 
-type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean };
+type HeadResult = { shown: boolean; by: OpenHeadAnswer['by'] | null; wrote: boolean; republished: boolean; unchanged: boolean; skippedNoDelivery: boolean };
 
 /** Error thrown when publish fails due to statuses:write permission denied. */
 class StatusesPermissionDeniedError extends Error {
@@ -196,7 +198,7 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
     ((await exec(enqueueEffectSql(id, version, { kind: 'publish_landing_status', dedupeKey: republishKey(id, version), payload: { version } }))).rows ?? []).length > 0);
   const drain = deps.drain ?? (async (id) => (await import('./seam')).drainDelivery(id));
 
-  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false };
+  const out: HeadResult = { shown: false, by: null, wrote: false, republished: false, unchanged: false, skippedNoDelivery: false };
   const read = () => Promise.all(LANDING_STATUS_CONTEXTS.map((c) => statusOf(installationId, repoFullName, sha, c).catch(() => null)));
   const matches = (cur: Shown[], want: LandingStatus) => cur.every((x) => x && x.state === want.state && x.description === want.description);
   const ownerOf = async () => {
@@ -220,10 +222,19 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
   const workspaceId = candidateLink?.workspaceId ?? link.workspaceId;
   // Only what the answer needs: the kernel's own answer reads no review state.
   const kernelHere = openHeadStatus({ sha, view });
+  const review = kernelHere.by === 'kernel' || candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number });
+  // No live delivery, no review asked for, not a bot's, a draft or a (possible) release candidate: a stale
+  // ordinary PR nobody in buildd is working on. The floor leaves it alone rather than writing pending on it.
+  if (run.skipUnowned && !owner && !candidateLink && review === 'not_requested' && !pr.draft
+    && !pr.user?.login?.toLowerCase().endsWith('[bot]') && !links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts))) {
+    out.skippedNoDelivery = true;
+    out.shown = true;
+    return out;
+  }
   const answer = kernelHere.by === 'kernel' ? kernelHere : openHeadStatus({
     sha, view,
     candidate: candidateLink ? await reviews.candidate({ workspaceId, installationId, repoFullName, prNumber: pr.number, sha }) : null,
-    review: candidateLink ? undefined : await reviews.review({ workspaceId, prNumber: pr.number }),
+    review,
   });
   out.by = answer.by;
   const current = await read();
@@ -268,7 +279,7 @@ async function publishHead(run: HeadRun, links: LinkedRepo[], pr: OpenPull, sha:
 export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promise<OpenPrStatusSummary> {
   const exec = deps.exec ?? dbExec;
   const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
-  const run: HeadRun = { deps, exec, reviews, kernelRepublish: true };
+  const run: HeadRun = { deps, exec, reviews, kernelRepublish: true, skipUnowned: true };
 
   const s: Omit<OpenPrStatusSummary, 'coverage'> = {
     repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, skipped: 0,
@@ -296,7 +307,6 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
     }
 
     let repoHasNoPermission = false;
-    const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, exec));
 
     for (const pr of pulls) {
       const sha = pr.head?.sha;
@@ -315,29 +325,15 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         continue;
       }
 
-      // Check if this PR is owned by any delivery
-      let prOwner: string | null = null;
-      for (const l of links) {
-        prOwner = await owned(l.workspaceId, repoFullName, pr.number);
-        if (prOwner) break;
-      }
-
-      // Skip unowned non-candidate PRs (bots, drafts, and ordinary PRs always go to publishHead if they could be candidates)
-      const isBot = pr.user?.login?.toLowerCase().includes('[bot]');
-      const isDraft = pr.draft;
-      const facts = prFacts(pr, sha, repoFullName);
-      const couldBeCandidate = links.some((l) => reviews.mayBeCandidate(l.releaseConfig, facts));
-      if (!prOwner && !isBot && !isDraft && !couldBeCandidate) {
-        s.skipped++;
-        s.skipReasons.noDelivery++;
-        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no live delivery`);
-        heads.push({ ...head, shown: true });
-        continue;
-      }
-
       try {
         const r = await publishHead(run, links, pr, sha);
         shown = r.shown;
+        if (r.skippedNoDelivery) {
+          s.skipped++;
+          s.skipReasons.noDelivery++;
+          heads.push({ ...head, shown });
+          continue;
+        }
         if (r.by === 'release_candidate') s.candidates++;
         if (r.republished) s.republished++;
         if (r.wrote) s.published++;
