@@ -8,7 +8,7 @@ let allowed = true;
 const calls: unknown[][] = [];
 mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
 mock.module('@/lib/specs/store', () => ({ reach: async () => allowed }));
-mock.module('@/lib/specs/evidence-tracking', () => ({
+mock.module('@/lib/specs/verdict-provenance', () => ({
   evidenceForCriterion: async (...a: unknown[]) => { calls.push(['forward', ...a]); return [{ verdictId: 'v1', kind: 'test', ref: 'bun test x' }]; },
   criteriaForEvidence: async (...a: unknown[]) => { calls.push(['backward', ...a]); return [{ specRevisionId: REV, criterionId: 'AC-1', verdictId: 'v1' }]; },
 }));

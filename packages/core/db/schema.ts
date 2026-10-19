@@ -3336,7 +3336,7 @@ export const verdictCriteria = pgTable('verdict_criteria', {
  * test path), `task` (the task that created the test or ran the check), `pr`
  * (the PR number that delivered it) or `commit` (the head SHA it judged).
  * Written best-effort after a verdict is recorded
- * (apps/web/src/lib/specs/evidence-tracking.ts); spec_outcome_verdicts.evidence
+ * (apps/web/src/lib/specs/verdict-provenance.ts); spec_outcome_verdicts.evidence
  * stays the blob the folds read.
  */
 export const verdictEvidence = pgTable('verdict_evidence', {

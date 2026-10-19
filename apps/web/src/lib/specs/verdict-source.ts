@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { specCriterionRecords, specOutcomeVerdicts, specVerdictSources, verdictCriteria } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
-import { trackVerdictEvidence } from './evidence-tracking';
+import { trackVerdictEvidence } from './verdict-provenance';
 import { determiningVerdict, verdictSourceOfEvidence, verifiedByOfEvidence } from '@buildd/spec-contract/outcome';
 
 /**

@@ -64,7 +64,7 @@ export async function trackVerdictEvidence(verdictId: string): Promise<void> {
       verdictId, specRevisionId: v.specRevisionId, criterionId: v.criterionId, kind: i.kind, ref: i.ref,
     }))).onConflictDoNothing();
   } catch (err) {
-    console.error('[evidence-tracking] could not record verdict evidence', err instanceof Error ? err.message : err);
+    console.error('[verdict-provenance] could not record verdict evidence', err instanceof Error ? err.message : err);
   }
 }
 

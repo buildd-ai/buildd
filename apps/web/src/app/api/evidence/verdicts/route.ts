@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { specCaller } from '@/lib/specs/caller';
 import { reach } from '@/lib/specs/store';
-import { criteriaForEvidence, evidenceForCriterion, type EvidenceKind } from '@/lib/specs/evidence-tracking';
+import { criteriaForEvidence, evidenceForCriterion, type EvidenceKind } from '@/lib/specs/verdict-provenance';
 
 const KINDS: readonly EvidenceKind[] = ['test', 'task', 'pr', 'commit'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

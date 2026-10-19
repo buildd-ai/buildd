@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { evidenceItemsOf, groupByCriterion } from './evidence-tracking';
+import { evidenceItemsOf, groupByCriterion } from './verdict-provenance';
 
 const UUID = '11111111-2222-4333-8444-555555555555';
 
