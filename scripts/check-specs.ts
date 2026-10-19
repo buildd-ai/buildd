@@ -241,9 +241,13 @@ export function resolveSymbols(symbols: string[]): Set<string> {
     } catch {
       continue; // unreadable or binary — nothing to learn from it
     }
-    for (const m of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
-      if (wanted.has(m[0])) {
-        found.add(m[0]);
+    // A substring probe rejects nearly every file without tokenizing it, which
+    // is what keeps a docs-only/dead-symbol scan (the whole tree) from taking
+    // tens of seconds on a loaded host. The word-boundary regex then confirms.
+    for (const sym of wanted) {
+      if (found.has(sym) || !text.includes(sym)) continue;
+      if (new RegExp(`(?<![A-Za-z0-9_$])${sym.replace(/[$]/g, '\\$&')}(?![A-Za-z0-9_$])`).test(text)) {
+        found.add(sym);
         if (found.size === wanted.size) return new Set(); // every claim resolved
       }
     }

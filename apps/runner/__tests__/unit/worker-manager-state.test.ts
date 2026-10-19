@@ -692,7 +692,8 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(task);
-      await new Promise(r => setTimeout(r, 300));
+      // Wait for the nudged second session and its park, not a fixed delay.
+      await waitFor(() => mockQueryPrompts.length >= 2 && manager.getWorker('w-nudge-park')?.status === 'waiting');
 
       expect(mockQueryPrompts.length).toBe(2);
       expect(mockQueryPrompts[1]).toBe('Take one more shot at it.');
