@@ -194,6 +194,16 @@ describe('historyPrStateOf', () => {
   });
 });
 
+describe('historyPrStateOf: a live delivery with no projected PR state (PR 5211 shape)', () => {
+  const w = { prNumber: 7, prLifecycleStatus: 'ci_failed', mergedAt: null } as Parameters<typeof historyPrStateOf>[0];
+  it('reads open, not the worker row\'s stale ci_failed', () => {
+    expect(historyPrStateOf(w, { prState: null, prNumber: 7, state: 'AWAITING_REVIEW' })).toBe('open');
+  });
+  it('a settled delivery still falls through to the worker columns', () => {
+    expect(historyPrStateOf({ ...w, prLifecycleStatus: 'merged' }, { prState: null, prNumber: 7, state: 'MERGED' })).toBe('merged');
+  });
+});
+
 describe('kernelUnmergedPr (§17.5: explain\'s state chain reads the delivery)', () => {
   const task = { id: 't1', title: 'feat: x', status: 'completed' };
   it('a live delivery is unmerged; a settled one is not', () => {

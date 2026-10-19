@@ -87,6 +87,8 @@ export function activityFixture(step: number) {
   const args = { tasks, missions, rules };
   return {
     step: s,
+    tasks,
+    missions,
     now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
     history: buildActivityHistory(args),
   };
