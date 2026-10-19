@@ -145,6 +145,30 @@ function Parked({ view }: { view: KernelOperatorView }) {
   );
 }
 
+function DeadEffects({ view }: { view: KernelOperatorView }) {
+  const d = view.deadEffects;
+  if (d.total === 0) return <div data-testid="kernel-dead-effects" data-total={0} className="text-sm text-text-secondary">No dead effects.</div>;
+  return (
+    <div data-testid="kernel-dead-effects" data-total={d.total} className="space-y-2">
+      <div className="text-sm text-status-error">
+        {plural(d.total, 'effect is', 'effects are')} dead on a live delivery. The floor closes dead effects once their delivery is over or their head has moved on; these need an operator.
+      </div>
+      <ul className="divide-y divide-border-default">
+        {d.rows.map((e) => (
+          <li key={e.id} className="py-2 text-xs">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-mono text-text-primary">{label(e.kind)}</span>
+              <span className="text-text-secondary">{e.repo && e.prNumber ? `${e.repo}#${e.prNumber}` : 'mission epoch'}{e.deliveryState ? `, ${label(e.deliveryState)}` : ''}</span>
+              <span className="text-text-muted">dead {ageOf(e.deadAt, view.now)} after {e.attempts} tries</span>
+            </div>
+            {e.lastError && <div className="text-text-muted break-words">Last error: {e.lastError}</div>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function FloorRuns({ runs, now }: { runs: FloorRun[]; now: number }) {
   if (runs.length === 0) return <div data-testid="kernel-floor" className="text-sm text-text-secondary">No floor runs.</div>;
   return (
@@ -244,6 +268,7 @@ export function KernelSection({ view }: { view: KernelOperatorView | null }) {
 
       <Block title="Written by the web host" testid="kernel-block-web"><WebHost view={view} /></Block>
       <Block title="Parked commands" testid="kernel-block-parked"><Parked view={view} /></Block>
+      <Block title="Dead effects" testid="kernel-block-dead-effects"><DeadEffects view={view} /></Block>
       <Block title="Last floor runs" testid="kernel-block-floor"><FloorRuns runs={view.floorRuns} now={view.now} /></Block>
 
       <Block title={scoped ? 'Recent transitions, filtered' : 'Recent transitions'} testid="kernel-block-transitions">

@@ -26,6 +26,7 @@ function steps(o: Partial<Record<keyof KernelFloorDeps, () => Promise<unknown>>>
       repos: 1, checked: 2, published: 1, republished: 1, unchanged: 0, candidates: 0, errors: 0,
       coverage: { context: 'Buildd / Review approval', checked: 2, missing: [], verdict: 'covered' },
     }) as KernelFloorDeps['publishOpenPrStatuses'],
+    sweepDeadEffects: step('sweepDeadEffects', { closed: 0, live: 0, oldestAgeS: 0, byKind: {} }) as KernelFloorDeps['sweepDeadEffects'],
     readOutboxDepth: async () => ({ parked: 1, parkedOldestAgeS: 5400, effectsDue: 2, effectsOldestAgeS: 30 }),
   };
   return { ran, deps };
@@ -37,7 +38,7 @@ describe('the scheduled pass', () => {
     const s = steps();
     const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
-    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainDueEpochEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
+    expect(s.ran.sort()).toEqual(['drainDueEffects', 'drainDueEpochEffects', 'drainParkedCommands', 'pruneCommands', 'publishOpenPrStatuses', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles', 'sweepDeadEffects']);
     expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 12, changed: 10, errors: 0 });
   });
 
@@ -164,5 +165,27 @@ describe('the floor span', () => {
     }
     expect(spans[0].attributes['kernel.outbox.unread']).toBe(true);
     expect('kernel.outbox.parked' in spans[0].attributes).toBe(false);
+  });
+});
+
+describe('dead effects', () => {
+  it('a sweep that closes rows is a repair; live dead effects ride the floor span and are not an error', async () => {
+    const spans: KernelSpanRecord[] = [];
+    setKernelSpanSink((r) => spans.push(r));
+    const s = steps({ sweepDeadEffects: async () => ({ closed: 2, live: 3, oldestAgeS: 86_400, byKind: { publish_landing_status: 2, dispatch_ci_fix: 1 } }) });
+    const r = await runKernelFloor(s.deps);
+    expect(kernelFloorOutcome(r)).toEqual({ processed: 12, changed: 12, errors: 0 });
+    const floor = spans.find((x) => x.name === 'kernel.floor')!;
+    expect(floor.attributes['kernel.floor.dead_effects.closed']).toBe(2);
+    expect(floor.attributes['kernel.floor.dead_effects.live']).toBe(3);
+    expect(floor.attributes['kernel.floor.dead_effects.oldest_age_s']).toBe(86_400);
+    expect(floor.error).toBe(false);
+  });
+
+  it('a sweep that fails is isolated and counted as an error', async () => {
+    const s = steps({ sweepDeadEffects: async () => { throw new Error('db down'); } });
+    const r = await runKernelFloor(s.deps);
+    expect(r.deadEffects).toEqual({ error: 'db down' });
+    expect(kernelFloorOutcome(r).errors).toBe(1);
   });
 });

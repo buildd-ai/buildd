@@ -1474,6 +1474,18 @@ export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAut
   return typeof value === 'string' && (RUNNER_CODEX_AUTH_SOURCES as readonly string[]).includes(value);
 }
 
+/**
+ * The model route a claim recorded for a task's run (`workers.model_route`):
+ * which credential the run was set up to spend, never the credential. Words
+ * mirror the claim's own route decision (api/workers/claim/claude-model-route.ts).
+ */
+export const RECORDED_MODEL_ROUTES = ['oauth_seat', 'agent_endpoint', 'anthropic_api_key', 'runner_provider', 'cloud_egress'] as const;
+export type RecordedModelRoute = (typeof RECORDED_MODEL_ROUTES)[number];
+
+export function isRecordedModelRoute(value: unknown): value is RecordedModelRoute {
+  return typeof value === 'string' && (RECORDED_MODEL_ROUTES as readonly string[]).includes(value);
+}
+
 /** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
 export interface RunnerModelAuthHeartbeatFields {
   modelAuthSource?: RunnerModelAuthSource;
@@ -4273,6 +4285,8 @@ export interface FleetRunner {
   maxSlots: number;
   online: boolean;
   slots: FleetSlot[];
+  /** Recorded model route of the runs on this runner in the window, by count. Absent when none was recorded. */
+  routes?: { route: RecordedModelRoute; count: number }[];
   /**
    * Set when this row is an elastic group of ephemeral `--once` runs (one cloud
    * dispatcher, lib/fleet-view.ts) rather than one machine. Its slots are its
