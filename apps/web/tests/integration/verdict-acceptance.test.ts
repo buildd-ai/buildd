@@ -9,17 +9,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   determiningVerdict, foldGovernedOutcome, verdictSourceOf, verdictSourceOfEvidence,
-  type CriterionVerdict, type VerdictSource,
-} from '../../packages/spec-contract/src/outcome';
-
-const HEAD = 'a'.repeat(40);
-const OLD = 'b'.repeat(40);
-
-const row = (
-  source: VerdictSource, criterionId: string, verdict: CriterionVerdict['verdict'], at: number, headSha: string | null = HEAD,
-): CriterionVerdict => ({ criterionId, verdict, headSha, at: new Date(at), source });
-const test_ = (c: string, v: CriterionVerdict['verdict'], at: number, h: string | null = HEAD) => row('test', c, v, at, h);
-const review = (c: string, v: CriterionVerdict['verdict'], at: number, h: string | null = HEAD) => row('review', c, v, at, h);
+} from '../../../../packages/spec-contract/src/outcome';
+import { HEAD, OLD, review, test_ } from './fixtures/verdict-cases';
 
 describe('test-first precedence', () => {
   it('AC-122 a check run is a test; every other author is a review', () => {
