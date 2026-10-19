@@ -70,6 +70,19 @@ describe('verdict source precedence (a test result outranks a reviewer opinion)'
     expect(out.criteria[0]).toMatchObject({ verdict: 'fail', source: 'test' });
   });
 
+  it('AC-129: the outranked review pass is kept as a note beside the failed test', () => {
+    const out = foldGovernedOutcome(['R-1'], [t('R-1', 'fail', HEAD, 1), r('R-1', 'pass', HEAD, 2), r('R-1', 'pass', OLD, 3)], HEAD);
+    expect(out.outcome).toBe('fail');
+    expect(out.criteria[0].verdict).toBe('fail');
+    expect(out.criteria[0].notes).toEqual([{ verdict: 'pass', source: 'review', headSha: HEAD, at: new Date(2) }]);
+  });
+
+  it('no note when no test decides, or when there is no outranked review', () => {
+    expect(foldGovernedOutcome(['R-1'], [r('R-1', 'fail', HEAD, 1), r('R-1', 'pass', HEAD, 2)], HEAD).criteria[0].notes).toEqual([]);
+    expect(foldGovernedOutcome(['R-1'], [t('R-1', 'fail', HEAD, 1)], HEAD).criteria[0].notes).toEqual([]);
+    expect(foldGovernedOutcome(['R-1'], [], HEAD).criteria[0].notes).toEqual([]);
+  });
+
   it('a later review fail does not undo a passing test on the current head', () => {
     const out = foldGovernedOutcome(['R-1'], [t('R-1', 'pass', HEAD, 1), r('R-1', 'fail', HEAD, 2)], HEAD);
     expect(out.outcome).toBe('verified');
