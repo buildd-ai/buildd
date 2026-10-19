@@ -23,6 +23,7 @@ import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql,
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
+import { scheduleEffectDrain } from './effect-timer';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
@@ -111,11 +112,17 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
       console.error(`[workflow] landing lane release for delivery ${deliveryId} failed:`, err);
       return [] as string[];
     });
+    // What this drain parked, backed off or left pending comes due on the effect timer (effect-timer.ts),
+    // not at the next unrelated drain. The woken waiter is queued before its drain: if that drain is
+    // cut short, the next tick runs it.
+    for (const waiter of woken) if (waiter !== deliveryId) await scheduleEffectDrain(waiter, deps.exec);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     for (const waiter of woken) if (waiter !== deliveryId) await drainDelivery(waiter, deps);
     return total;
   } catch (err) {
-    // The effect rows are durable; the cron drain picks up whatever this missed.
+    // The effect rows are durable; the effect timer and the floor pick up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     return null;
   }
 }
