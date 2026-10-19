@@ -9,7 +9,7 @@
  * own final verification task files it (`specRepairStamp`).
  */
 
-export const MISSION_VERIFICATION_CONTEXT_KEYS = ['finalVerification', 'specRepair'] as const;
+export const MISSION_VERIFICATION_CONTEXT_KEYS = ['finalVerification', 'specRepair', 'acceptanceTests'] as const;
 
 /**
  * Context keys only the release flow writes. `releaseCandidateFix` is stamped
