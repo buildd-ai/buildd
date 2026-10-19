@@ -7,9 +7,10 @@
  * - It leads with the question, then says why automation stopped, in words.
  * - It names every unresolved finding instead of counting them.
  * - It offers Review findings plus only the actions this person may take now and
- *   the page can carry out. Approving past findings is never offered from here:
- *   no route on this page records it, so a button would promise an approval it
- *   cannot back. The routes re-check access on every request.
+ *   the page can carry out. Approving past findings shows only when the server
+ *   said this viewer may (the merge policy allows an override, a team owner or
+ *   admin, merge permission on GitHub); an agent never gets it. It is never the
+ *   primary. The routes re-check access on every request.
  */
 import type { EscalationAction, EscalationActionId, EscalationBrief } from '@buildd/workflow-kernel/escalation-brief';
 import type { AttemptSnapshot, RoundSnapshot } from '@buildd/workflow-kernel/types';
@@ -17,7 +18,7 @@ import { countWord } from '@buildd/shared';
 export { DECISION_LABELS } from '@buildd/shared';
 
 /** The actions this page can carry out (EscalationDecision's handlers). */
-export const HANDLED_ACTIONS: ReadonlySet<EscalationActionId> = new Set(['review_findings', 'request_fix', 'force_re_review']);
+export const HANDLED_ACTIONS: ReadonlySet<EscalationActionId> = new Set(['review_findings', 'request_fix', 'force_re_review', 'approve_override']);
 
 export interface DecisionCopy {
   /** The heading: what the person is asked to decide. */

@@ -15,8 +15,9 @@
  *  - **Hard edges** (never co-scheduled, never run against in-flight work):
  *    concrete-to-concrete `pathsOverlap`, overlap with a live lease, overlap
  *    with an open PR's pinned files, a shared serialized surface (e.g. the
- *    migration namespace), an unresolved `dependsOn`, and — for nodes with no
- *    usable scope at all — today's one-per-mission mutex.
+ *    migration namespace), and an unresolved `dependsOn`. A node with no
+ *    usable scope has no hard edge for that alone: it starts, and the merge
+ *    settles an overlap (docs/specs/claim-overlap-scheduling.md).
  *  - **Soft edges**: any pair where at least one side's scope is predicted.
  *    Weight = max(setConfidence of the predicted sides) × overlapFraction,
  *    replaced by a stored overlap answer when one exists. Soft edges only ever
@@ -83,7 +84,6 @@ export interface PlannerCandidate extends PlannerScopeFields {
   hasOpenPr?: boolean;
   /**
    * False for work that never edits files (reviews, artifact/no-output tasks).
-   * Such nodes are exempt from the no-scope mission mutex, as they are today.
    */
   editsFiles?: boolean;
   /**
@@ -180,8 +180,7 @@ export type HardEdgeKind =
   | 'lease_overlap'
   | 'open_pr_overlap'
   | 'serialized_surface'
-  | 'depends_on'
-  | 'no_scope_mutex';
+  | 'depends_on';
 
 export type EdgeKind = HardEdgeKind | 'soft_overlap';
 
@@ -284,7 +283,7 @@ interface ResolvedScope {
   /** Usable predicted scope (only when there is no concrete scope), or null. */
   predicted: string[] | null;
   confidence: number;
-  /** No usable scope at all: today's mission mutex applies. */
+  /** No usable scope at all (no edge of its own; soft edges need scope). */
   noScope: boolean;
 }
 
@@ -346,13 +345,6 @@ function hardEdgeBetween(c: Node, o: Node, holds?: ClaimPlanInput['overlapHolds'
     }
   }
   for (const s of c.surfaces) if (o.surfaces.has(s)) return 'serialized_surface';
-  if (
-    c.scope.noScope && o.scope.noScope && c.editsFiles && o.editsFiles
-    && c.missionId != null && c.missionId === o.missionId
-    && (o.candidate || o.inFlight?.kind === 'worker')
-  ) {
-    return 'no_scope_mutex';
-  }
   return null;
 }
 

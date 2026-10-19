@@ -73,6 +73,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   close_pr: 'prs',
   update_pr: 'prs',
   request_pr_review: 'prs',
+  approve_pr_override: 'prs',
   list_releases: 'prs',
   get_release: 'prs',
   release_status: 'prs',
@@ -249,6 +250,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_schedules: 'more',
   read_evidence: 'more',
   record_pr_supersession: 'more',
+  approve_pr_override: 'more', // a person's own session only; offered on the task page
   get_release: 'more',
   list_releases: 'more',
   release_status: 'more',
@@ -348,7 +350,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   prs: {
     parts: [
       { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
-      { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
+      { text: 'reviews', actions: ['get_pr_review', 'request_pr_review', 'approve_pr_override'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
   },
@@ -449,6 +451,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   close_pr: 'close a PR',
   update_pr: 'replace a PR\'s body',
   request_pr_review: 'dispatch PR review',
+  approve_pr_override: 'approve a PR past its findings (a person)',
   list_releases: 'recent releases',
   get_release: 'one release with its tasks',
   release_status: 'what a release would ship; CI green?',
@@ -713,8 +716,10 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],
   prs: [
-    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review', 'approve_pr_override'] }]),
     param('releaseId', str, [{ text: 'Release UUID', actions: ['get_release'] }]),
+    param('headSha', str, [{ text: 'The head you decided on', actions: ['approve_pr_override'] }]),
+    param('reason', str, [{ text: 'Why (recorded)', actions: ['approve_pr_override'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact', 'link_artifact', 'list_artifact_links'] }]),

@@ -6,7 +6,6 @@ const snap = (over: Partial<CoordinationSnapshot> = {}): CoordinationSnapshot =>
   activeClaims: null,
   mission: null,
   missionActiveCount: 0,
-  missionAdvisoryInFlight: null,
   orderedBehind: null,
   liveTaskIds: new Set(),
   now: new Date('2026-10-07T12:00:00Z'),
@@ -50,15 +49,19 @@ describe('evaluateCoordinationGates', () => {
     expect(reasons[0].blocker).toMatchObject({ id: 'h', live: true });
   });
 
-  it('mission concurrency, pacing, and the scope-undeclared mutex', () => {
+  it('mission concurrency and pacing hold an undeclared task; undeclared scope alone never does', () => {
     const mission = { status: 'active', maxConcurrentTasks: 2, pacingMode: 'paced' as const, pacingMaxPerHour: 1, lastTaskStartedAt: new Date('2026-10-07T11:50:00Z') };
-    const kinds = evaluateCoordinationGates(task({ missionId: 'm', pathManifest: ['**'] }), snap({ mission, missionActiveCount: 2, missionAdvisoryInFlight: new Set(['peer']) })).map(r => r.kind);
-    expect(kinds).toEqual(['mission_concurrent', 'mission_paced', 'scope_undeclared_mutex']);
+    const kinds = evaluateCoordinationGates(task({ missionId: 'm', pathManifest: ['**'] }), snap({ mission, missionActiveCount: 2 })).map(r => r.kind);
+    expect(kinds).toEqual(['mission_concurrent', 'mission_paced']);
+    const free = { status: 'active', maxConcurrentTasks: 5, pacingMode: 'eager' as const, pacingMaxPerHour: null, lastTaskStartedAt: null };
+    for (const pathManifest of [null, [], ['**']]) {
+      expect(evaluateCoordinationGates(task({ missionId: 'm', pathManifest }), snap({ mission: free, missionActiveCount: 3 }))).toEqual([]);
+    }
   });
 
-  it('reviews skip mission concurrency/pacing, and a non-editing task skips the mutex', () => {
+  it('reviews skip mission concurrency/pacing', () => {
     const mission = { status: 'active', maxConcurrentTasks: 1, pacingMode: 'eager' as const, pacingMaxPerHour: null, lastTaskStartedAt: null };
-    const s = snap({ mission, missionActiveCount: 5, missionAdvisoryInFlight: new Set(['peer']) });
+    const s = snap({ mission, missionActiveCount: 5 });
     const review = task({ missionId: 'm', category: 'review', context: { reviewerFor: 'pr-1' }, pathManifest: null });
     expect(evaluateCoordinationGates(review, s)).toEqual([]);
     const research = task({ missionId: 'm', pathManifest: null, outputRequirement: 'artifact_required' });

@@ -6,16 +6,19 @@ import type { EscalationAction, EscalationActionId, EscalationBrief } from '@bui
 import Sheet from '@/components/ui/Sheet';
 import FindingDisposeForm from './FindingDisposeForm';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import { countWord } from '@buildd/shared';
 import { DECISION_LABELS, parseDecisionHash, type DecisionCopy } from '@/lib/workflow/escalation-copy';
 
 const ENDPOINT: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'apply-recommendation',
   force_re_review: 're-review',
+  approve_override: 'approve-override',
 };
 
 const DONE: Partial<Record<EscalationActionId, string>> = {
   request_fix: 'One more fix was requested. The automatic budget is still spent.',
   force_re_review: 'A forced re-review was requested for the current head.',
+  approve_override: 'Head approved over remaining findings. Merge follows the workspace policy.',
 };
 
 /**
@@ -36,10 +39,13 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
   const [confirming, setConfirming] = useState<EscalationAction | null>(null);
   const [note, setNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const [showFindings, setShowFindings] = useState(false);
+  // Approve and override takes an optional reason in its confirmation sheet.
+  const [overrideReason, setOverrideReason] = useState('');
 
   function choose(a: EscalationAction) {
     if (a.id === 'review_findings') { setShowFindings((v) => !v); return; }
     setNote(null);
+    if (a.id === 'approve_override') setOverrideReason('');
     setConfirming(a);
   }
 
@@ -57,19 +63,21 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
     return () => window.removeEventListener('hashchange', open);
   }, [copy.actions]);
 
-  async function confirm(a: EscalationAction) {
+  async function confirmAction(a: EscalationAction) {
     const path = ENDPOINT[a.id];
     if (!path) return;
     setBusy(true);
+    const head = brief.decisionHead.headSha ? { headSha: brief.decisionHead.headSha, version: brief.decisionHead.version } : {};
+    const extra = a.id === 'approve_override' && overrideReason.trim() ? { reason: overrideReason.trim() } : {};
     try {
       // AC-45: the decision is bound to the head and delivery version this card showed; a stale one comes back 409 with a plain sentence.
       const res = await fetch(`/api/prs/${prNumber}/${path}`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, ...(brief.decisionHead.headSha ? { headSha: brief.decisionHead.headSha, version: brief.decisionHead.version } : {}) }),
+        body: JSON.stringify({ workspaceId, ...head, ...extra }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setNote({ tone: 'err', text: data.error || `Could not ${a.label.toLowerCase()}. Try again.` });
-      else { setNote({ tone: 'ok', text: DONE[a.id] ?? 'Done.' }); router.refresh(); }
+      else { setNote({ tone: 'ok', text: DONE[a.id] ?? 'Done.' }); setOverrideReason(''); router.refresh(); }
     } catch {
       setNote({ tone: 'err', text: `Could not ${a.label.toLowerCase()}. Try again.` });
     } finally {
@@ -82,6 +90,7 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
     [DECISION_LABELS.open, copy.unresolved.open],
     [DECISION_LABELS.awaitingVerification, copy.unresolved.awaitingVerification],
   ];
+  const remaining = brief.totals.open + brief.totals.addressedAwaitingVerification;
   // #5154: a finding can be waived or deferred while it is open or awaiting verification.
   const groups: Array<{ label: string; list: typeof brief.findings.open; disposable: boolean }> = [
     { label: DECISION_LABELS.open, list: brief.findings.open, disposable: true },
@@ -144,8 +153,13 @@ export default function EscalationDecision({ brief, copy, prNumber, workspaceId 
           <div className="flex flex-col gap-3 px-4 pb-4">
             <p data-testid="decision-sheet-impact" className="text-body text-text-primary">{confirming.impact}</p>
             <p className="text-meta text-text-muted">Who can do this: {confirming.requires}.</p>
+            {confirming.id === 'approve_override' && (
+              <label data-testid="decision-override-reason" className="flex flex-col gap-1 text-meta text-text-secondary">Reason (optional)
+                <textarea value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} rows={2} maxLength={500} className="border border-border-default bg-surface-1 px-2 py-1 text-body text-text-primary" />
+              </label>
+            )}
             <div className="flex flex-col gap-2 md:flex-row">
-              <PrimaryAction data-testid="decision-sheet-confirm" fullWidthOnMobile pending={busy} onClick={() => confirm(confirming)}>{confirming.label}</PrimaryAction>
+              <PrimaryAction data-testid="decision-sheet-confirm" fullWidthOnMobile pending={busy} onClick={() => confirmAction(confirming)}>{confirming.id === 'approve_override' ? `Approve over ${countWord(remaining)} ${remaining === 1 ? 'finding' : 'findings'}` : confirming.label}</PrimaryAction>
               <button type="button" disabled={busy} onClick={() => setConfirming(null)} className="inline-flex min-h-11 w-full items-center justify-center border-2 border-border-strong px-4 text-body font-medium text-text-primary hover:bg-surface-3 md:w-auto">Cancel</button>
             </div>
           </div>

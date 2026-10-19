@@ -51,6 +51,23 @@ describe('EscalationDecision', () => {
   });
 });
 
+describe('EscalationDecision approve and override (#5209)', () => {
+  test('shown only when the server says this viewer may, as a secondary action', () => {
+    const brief = deriveEscalationBrief(view, { overridePermitted: true, hasMergePermission: true })!;
+    const copy = decisionCopy(brief, { rounds: view.rounds, ledger: view.attempts });
+    const html = renderToStaticMarkup(<EscalationDecision brief={brief} copy={copy} prNumber={7} workspaceId="w1" />);
+    expect(html).toContain('data-testid="decision-action-approve_override"');
+    expect(html).toContain('Approve and override');
+    expect(html).not.toMatch(/btn-primary[^>]*data-testid="decision-action-approve_override"|data-testid="decision-action-approve_override"[^>]*btn-primary/);
+  });
+
+  test('posts to the approve-override route with the optional reason', async () => {
+    const src = await Bun.file(new URL('./EscalationDecision.tsx', import.meta.url)).text();
+    expect(src).toContain("approve_override: 'approve-override'");
+    expect(src).toContain('reason: overrideReason.trim()');
+  });
+});
+
 describe('EscalationDecision confirm', () => {
   test('posts the head and version the card showed, and shows a stale refusal in its own words', async () => {
     const src = await Bun.file(new URL('./EscalationDecision.tsx', import.meta.url)).text();

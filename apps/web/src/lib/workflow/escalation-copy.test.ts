@@ -74,10 +74,16 @@ describe('decisionCopy', () => {
     const c = decisionCopy(deriveEscalationBrief(stuck)!, { rounds, ledger });
     expect(c.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review']);
     expect(c.actions.every((a) => a.available)).toBe(true);
-    // Even when policy and permission allow it, approval is never the primary action.
-    const permitted = decisionCopy(deriveEscalationBrief(stuck, { overridePermitted: true, hasMergePermission: true })!, { rounds, ledger });
-    expect(permitted.primary.id).not.toBe('approve_override');
     expect(c.actions.some((a) => a.id === 'approve_override')).toBe(false);
+    // Policy allows it but this viewer lacks merge permission: still not offered.
+    const noMerge = decisionCopy(deriveEscalationBrief(stuck, { overridePermitted: true, hasMergePermission: false })!, { rounds, ledger });
+    expect(noMerge.actions.some((a) => a.id === 'approve_override')).toBe(false);
+  });
+
+  test('approve and override is offered when the server says this viewer may, and is never the primary', () => {
+    const permitted = decisionCopy(deriveEscalationBrief(stuck, { overridePermitted: true, hasMergePermission: true })!, { rounds, ledger });
+    expect(permitted.actions.map((a) => a.id)).toEqual(['review_findings', 'request_fix', 'force_re_review', 'approve_override']);
+    expect(permitted.primary.id).toBe('request_fix');
   });
 
   test('the primary action is the one that moves the PR: a fix when one is open, else a re-review', () => {
@@ -108,7 +114,8 @@ describe('decision hash', () => {
     expect(decisionActionHref('request_fix')).toBe('#task-decision-request_fix');
     expect(parseDecisionHash('#task-decision-request_fix')).toBe('request_fix');
     expect(parseDecisionHash('#task-decision')).toBeNull();
-    expect(parseDecisionHash('#task-decision-approve_override')).toBeNull();
+    expect(parseDecisionHash('#task-decision-approve_override')).toBe('approve_override');
+    expect(parseDecisionHash('#task-decision-merge')).toBeNull();
     expect(parseDecisionHash('#review-findings')).toBeNull();
   });
 });

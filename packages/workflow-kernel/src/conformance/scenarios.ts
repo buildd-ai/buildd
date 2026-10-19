@@ -3008,4 +3008,38 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq({ reviewers: await s.count('dispatch_review'), fixes: await s.count('dispatch_fix') }, { reviewers: 1, fixes: 0 }, 'nothing dispatched');
     },
   },
+  {
+    name: 'r7 AC-45/AC-46 approve and override: a person with merge permission, under a policy that allows it, approves the head past its findings once; it lands once and Buildd / Review approval says so',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 134);
+      const v = (await s.d()).version;
+      const approve = () => s.submit({ type: 'HumanResolve', actor: 'human:u1', choice: 'approve', expectedVersion: v, commitId: 'H1', hasMergePermission: true, overridePermitted: true, reason: 'accepted as is', decision: { id: `approve_override:H1:v${v}`, headSha: 'H1' } });
+      const before = (await host.transitions(s.deliveryId)).length;
+      applied(await approve(), 'APPROVED', 'the override');
+      eq(pick(await s.d(), ['approvedHeads', 'approvalBasis', 'stateReason']), { approvedHeads: ['H1'], approvalBasis: 'human', stateReason: null }, 'a person approved exactly H1');
+      notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'the same decision again');
+      eq((await host.transitions(s.deliveryId)).length - before, 1, 'one transition');
+      eq(await s.findingStates(), { 'src/a.ts': 'open', 'src/b.ts': 'open' }, 'the findings stay listed, not resolved');
+      eq(pick(landingStatusOf(await s.view())!, ['state', 'sha', 'description']), { state: 'success', sha: 'H1', description: 'Ready to merge: H1 approved by a person over 2 open findings' }, 'Buildd / Review approval reflects the override');
+      applied(await s.land('H1'), 'LANDING', 'the landing passes the open findings on the person\'s approval');
+      notApplied(await approve(), 'duplicate', 'idempotency_key_seen', 'replayed while landing');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'merge_call').map((e) => e.payload.headSha), ['H1'], 'one merge call, at the approved head');
+    },
+  },
+  {
+    name: 'r7 AC-46 approve and override is refused for a stale head, an agent, a person without merge permission, and a policy that does not allow it; nothing moves',
+    async run(host) {
+      const s = await exhaustedWithTwoFindings(host, 135);
+      applied(await s.push('H2', { changedPaths: ['src/a.ts'] }), 'ESCALATED', 'a push the person has not seen');
+      const v = (await s.d()).version;
+      const base = { type: 'HumanResolve' as const, actor: 'human:u1', choice: 'approve' as const, expectedVersion: v, commitId: 'H2', hasMergePermission: true, overridePermitted: true, decision: { id: `approve_override:H2:v${v}`, headSha: 'H2' } };
+      notApplied(await s.submit({ ...base, commitId: 'H1', decision: { id: 'approve_override:H1', headSha: 'H1' } }), 'rejected', 'decision_head_stale', 'decided on the older head');
+      notApplied(await s.submit({ ...base, actor: 'agent:t9' }), 'rejected', 'human_required', 'an agent approving for a person');
+      notApplied(await s.submit({ ...base, hasMergePermission: false }), 'rejected', 'no_merge_permission', 'no merge permission');
+      notApplied(await s.submit({ ...base, overridePermitted: false }), 'rejected', 'override_not_permitted', 'the policy does not allow it');
+      notApplied(await s.submit({ ...base, overridePermitted: undefined }), 'rejected', 'override_not_permitted', 'absent reads as not allowed');
+      eq(pick(await s.d(), ['state', 'stateReason', 'version', 'approvedHeads']), { state: 'ESCALATED', stateReason: 'review_exhausted', version: v, approvedHeads: [] }, 'nothing moved');
+      eq(await s.count('merge_call'), 0, 'nothing lands');
+    },
+  },
 ];
