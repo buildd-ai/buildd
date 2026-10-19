@@ -95,6 +95,9 @@ export interface OpenPrStatusSummary {
   /** Heads already showing their answer. */
   unchanged: number;
   candidates: number;
+  /** Heads skipped due to repo or permission issues (not counted as errors). */
+  skipped: number;
+  skipReasons: { noStatusesPermission: number; noDelivery: number };
   errors: number;
   coverage: StatusCoverage;
 }
@@ -230,7 +233,10 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
   const reviews = await (deps.reviews ?? (async () => (await import('@/modules')).openPrReviewReads()))();
   const run: HeadRun = { deps, exec, reviews, kernelRepublish: true };
 
-  const s: Omit<OpenPrStatusSummary, 'coverage'> = { repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, errors: 0 };
+  const s: Omit<OpenPrStatusSummary, 'coverage'> = {
+    repos: 0, checked: 0, published: 0, republished: 0, unchanged: 0, candidates: 0, skipped: 0,
+    skipReasons: { noStatusesPermission: 0, noDelivery: 0 }, errors: 0,
+  };
   const heads: Array<OpenHead & { shown: boolean }> = [];
 
   // One pass per repo; a repo linked from several workspaces is read once, and owned by whichever workspace has the delivery.
@@ -251,12 +257,25 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
       console.error(`[workflow] open PR status: listing ${repoFullName} failed:`, err);
       continue;
     }
+
+    let repoHasNoPermission = false;
     for (const pr of pulls) {
       const sha = pr.head?.sha;
       if (!sha) continue;
       s.checked++;
       const head: OpenHead = { repoFullName, prNumber: pr.number, sha };
       let shown = false;
+
+      // If repo already hit permission error, skip remaining PRs
+      if (repoHasNoPermission) {
+        s.skipped++;
+        s.skipReasons.noStatusesPermission++;
+        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no statuses:write permission`);
+        // Skipped heads are marked as shown (the skip is the final answer, not missing coverage)
+        heads.push({ ...head, shown: true });
+        continue;
+      }
+
       try {
         const r = await publishHead(run, links, pr, sha);
         shown = r.shown;
@@ -265,8 +284,18 @@ export async function publishOpenPrStatuses(deps: OpenPrStatusDeps = {}): Promis
         if (r.wrote) s.published++;
         else if (r.unchanged) s.unchanged++;
       } catch (err) {
-        s.errors++;
-        console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} failed:`, err);
+        // Detect 403 permission denied and skip the entire repo
+        if (err instanceof Error && err.message.includes('403')) {
+          repoHasNoPermission = true;
+          s.skipped++;
+          s.skipReasons.noStatusesPermission++;
+          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} skipped: no statuses:write permission`);
+          // Skipped heads are marked as shown (the skip is the final answer, not missing coverage)
+          shown = true;
+        } else {
+          s.errors++;
+          console.error(`[workflow] open PR status for ${repoFullName}#${pr.number} failed:`, err);
+        }
       }
       heads.push({ ...head, shown });
     }

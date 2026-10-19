@@ -169,4 +169,36 @@ describe('every open PR head gets Buildd / Review approval (spec §4, AC-76)', (
     const s = await publishOpenPrStatuses(h.deps);
     expect(s).toMatchObject({ errors: 1, checked: 1, published: 1 });
   });
+
+  test('a repo without statuses:write permission (403) skips all its PRs with a reason, not an error', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }, { number: 8, sha: H(8) }] });
+    h.deps.publish = async (i, p) => {
+      const error = new Error('GitHub API error: 403 Forbidden');
+      (error as any).status = 403;
+      throw error;
+    };
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 2,
+      published: 0,
+      skipped: 2,
+      skipReasons: { noStatusesPermission: 2, noDelivery: 0 },
+      errors: 0,  // 403 is a skip, not an error
+      coverage: { verdict: 'covered', missing: [] },  // skipped heads are marked as shown, so coverage is covered
+    });
+  });
+
+  test('a PR with no delivery is counted as skipped, not an error', async () => {
+    const h = harness({ pulls: [{ number: 7, sha: H(7) }] });
+    // owned returns null, meaning no delivery owns this PR
+    h.deps.owned = async () => null;
+    const s = await publishOpenPrStatuses(h.deps);
+    expect(s).toMatchObject({
+      checked: 1,
+      published: 1,  // the host writes pending status
+      skipped: 0,     // it's not skipped, it's handled as unowned
+      errors: 0,
+      coverage: { verdict: 'covered' },
+    });
+  });
 });
