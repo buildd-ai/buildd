@@ -937,7 +937,7 @@ export function HealthClient({
                       </button>
                     </div>
                     <RunnerIsolation runner={hb} now={now} expanded={!!health?.expanded} />
-                    {health?.expanded && <RunnerRoute runner={hb} />}
+                    {health?.expanded && <RunnerRoute runner={{ ...hb, recentRoutes: fleetRow?.routes }} />}
                     {health?.expanded && (
                       <div className="px-4 pb-4 space-y-3 border-t border-border-default bg-surface-1/50">
                         <RunnerSlotDetail
