@@ -49,3 +49,30 @@ export async function withMissionStages<T extends TaskWithMission>(
     return tasks;
   }
 }
+
+/**
+ * The open missions of a /api/missions/recent answer, the ones whose
+ * mission-loop events `buildd top` listens for (delivered missions no longer
+ * loop).
+ */
+export function openMissionIds(missions: ReadonlyArray<{ id?: unknown; completedAt?: unknown; status?: unknown }>): string[] {
+  return missions
+    .filter(m => typeof m.id === 'string' && !m.completedAt && m.status !== 'completed' && m.status !== 'archived')
+    .map(m => m.id as string);
+}
+
+/**
+ * The runner's local GET /api/tasks (what `buildd top` and the local UI read):
+ * one conditional server read of the task list with its stages
+ * (`/api/tasks?include=missionStages`); an older server that answers without
+ * them gets the stages asked separately, as before.
+ */
+export async function readTaskListWithStages<T extends TaskWithMission>(client: {
+  listTasksWithStages(): Promise<{ tasks: T[]; missionStages: Record<string, MissionStage> | null }>;
+  listMissionStages(ids: string[]): Promise<Record<string, MissionStage>>;
+}): Promise<T[]> {
+  const listed = await client.listTasksWithStages();
+  return listed.missionStages
+    ? attachMissionStages(listed.tasks, listed.missionStages)
+    : await withMissionStages(listed.tasks, ids => client.listMissionStages(ids));
+}
