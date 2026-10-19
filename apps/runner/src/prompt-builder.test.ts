@@ -230,6 +230,7 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
       'user-preferences',
       'resolved-context-providers',
       'task-description',
+      'untestable-acceptance-checks',
       'design-source',
       'work-kind',
       'handoff-requirement',
@@ -305,4 +306,28 @@ describe('buildPromptWithComposition — refused tool calls are not a stop instr
       });
     }
   }
+});
+
+describe('R-82: acceptance checks that need judgement', () => {
+  it('requires a reason and a review method for every untestable check', () => {
+    const ctx = baseCtx();
+    ctx.task.title = '[acceptance tests] Prepare checks';
+    const { promptText } = buildPromptWithComposition(ctx);
+    expect(promptText).toContain('## Untestable acceptance checks');
+    expect(promptText).toContain('criterion id');
+    expect(promptText).toContain('why an executable test cannot check it');
+    expect(promptText).toContain('code review or screenshots');
+    expect(promptText).toContain('create_artifact');
+    expect(promptText).toContain('complete_task');
+  });
+
+  it('keeps the instructions when the acceptance task is renamed', () => {
+    const ctx = baseCtx();
+    ctx.task.context = { acceptanceTests: { missionId: 'm', specId: 's' } };
+    expect(buildPromptWithComposition(ctx).promptText).toContain('## Untestable acceptance checks');
+  });
+
+  it('does not ask ordinary building work to classify acceptance checks', () => {
+    expect(buildPromptWithComposition(baseCtx()).promptText).not.toContain('## Untestable acceptance checks');
+  });
 });

@@ -74,6 +74,11 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           Only {v.narrowed.criterionIds.join(', ')}: {v.narrowed.reason}
         </p>
       )}
+      {(['tested', 'judged'] as const).map(group => v[group].length > 0 && (
+        <p key={group} className="text-meta text-text-secondary leading-snug break-words" data-testid={`outcome-spec-${group}`}>
+          {group === 'tested' ? 'Tested' : 'Judged'}: <span className="font-mono text-text-muted">{v[group].join(', ')}</span>
+        </p>
+      ))}
       {v.open.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-open">
           {v.open.map(o => (
