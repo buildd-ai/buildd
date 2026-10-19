@@ -182,8 +182,10 @@ mock.module('@/lib/goal-criteria-accepted', () => ({
 // The surface-audit gate has its own suite; here it is a controllable verdict.
 let surfaceGate: any = { required: false, why: 'no_ui_change' };
 const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGate);
+let auditWaived = false;
 mock.module('@/lib/mission-surface-audit-gate', () => ({
   evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
+  surfaceAuditWaived: mock(async () => auditWaived),
 }));
 // The one idempotent audit writer; under `automatic` the gate files through it.
 let auditRequestResult: any = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
@@ -538,6 +540,44 @@ describe('canCompleteMission — task rows', () => {
         expect(d.code).toBe('infra_stalled');
         expect(d.infraStalledTitles).toEqual(['Deploy the worker']);
       });
+    });
+  });
+
+  describe('a stalled audit the owner waived', () => {
+    const stalledRound2 = () => work('failed', '[surface audit] round 2: Mobile nav', { roleSlug: 'visual-auditor', result: { errorType: 'infra_stalled' } });
+    beforeEach(() => { auditWaived = false; });
+
+    it('is history once a waiver is recorded: the mission can complete, the row stays failed', async () => {
+      activeMission();
+      auditWaived = true;
+      taskRows = [work('completed', 'Build the nav'), stalledRound2()];
+      const d = await canCompleteMission('m1');
+      expect(d.ok).toBe(true);
+      expect(d.infraStalledTitles).toEqual([]);
+    });
+
+    it('gives the same answer whichever order the stall and the waiver landed in (and a repeat waiver)', async () => {
+      activeMission();
+      auditWaived = true; // a duplicate waiver note is still one fact: waived
+      taskRows = [stalledRound2(), work('completed', 'Build the nav')];
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+      expect((await canCompleteMission('m1')).ok).toBe(true);
+    });
+
+    it('without a waiver the stall still blocks', async () => {
+      activeMission();
+      taskRows = [work('completed', 'Build the nav'), stalledRound2()];
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('infra_stalled');
+    });
+
+    it('a waiver never clears a stalled implementation task', async () => {
+      activeMission();
+      auditWaived = true;
+      taskRows = [work('failed', 'Deploy the worker', { result: { errorType: 'infra_stalled' } }), stalledRound2()];
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('infra_stalled');
+      expect(d.infraStalledTitles).toEqual(['Deploy the worker']);
     });
   });
 

@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql, readDeltaForApproval, type GithubFactReader } from './facts';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
@@ -833,12 +833,18 @@ export async function attemptEnded(p: {
   const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
     ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
     : false;
-  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  // T11 / §8.3 (92a439a6): a repair whose head leaves the PR's diff unchanged (an agent conflict repair
+  // that only merged the base) keeps the approval. Read here as HeadObserved reads it: when the end
+  // arrives before the push webhook, that later HeadObserved is `head_unchanged` and never reads it.
+  // A fix in FIXING (AC-79 above) never reads it: only REPAIRING carries here.
+  let carryForward: 'content_equivalent' | 'own_refresh' | null = null;
+  // 58c8961e: otherwise a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
-  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : undefined;
-    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+    if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
+    if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
   const cmd: Command = {
     type: 'AttemptEnded',
@@ -856,11 +862,18 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(carryForward ? { carryForward } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
     ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
+  if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
+    // §8.3: the legacy merge gate's `equivalentHeadShas`, projected after the committed carry as T13's is.
+    const from = String(result.decision.evidence.carriedFrom ?? result.decision.evidence.previousHead ?? '');
+    await (deps.exec ?? seamExec)(projectEquivalentHeadSql(deliveryId, from, live.headSha))
+      .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${deliveryId}:`, err));
+  }
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }

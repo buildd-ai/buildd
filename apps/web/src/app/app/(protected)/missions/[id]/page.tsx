@@ -429,6 +429,7 @@ async function MissionDetailBody({
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
+      (mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit,
     ).catch(() => new Map()),
     // Which claim-gate arm released each dependency, and why each queued task
     // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
