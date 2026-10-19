@@ -9448,11 +9448,41 @@ describe('PATCH /api/workers/[id]', () => {
           workspaceId: 'ws-1', reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
         });
         // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
-        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
+        // 7105282e: one key per reviewer and round, so a second send is the same command to the ledger.
+        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null }, idempotencyKey: expect.stringMatching(/^record_review_verdict:reviewer-task-1:/) });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
         expect(mockLandPr).not.toHaveBeenCalled();
         expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+      });
+
+      it('7105282e: a verdict the control plane did not apply is sent once more under the same key', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        let n = 0;
+        mockRecordReviewVerdict.mockImplementation(async () => {
+          if (n++ === 0) throw new realKernelClient.ControlPlaneUnavailableError('timed out', 'not_applied');
+          return { handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'APPROVED' } }, toState: 'APPROVED' };
+        });
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(2);
+        expect(mockRecordReviewVerdict.mock.calls[1][1].idempotencyKey).toBe(mockRecordReviewVerdict.mock.calls[0][1].idempotencyKey);
+        mockRecordReviewVerdict.mockImplementation(async () => ({ handled: false }));
+      });
+
+      it('7105282e: a verdict parked for the floor is not sent again from the PATCH and acts on nothing', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockImplementation(async () => {
+          const err = new realKernelClient.ControlPlaneUnavailableError('timed out', 'unknown');
+          err.parked = true;
+          throw err;
+        });
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        mockRecordReviewVerdict.mockImplementation(async () => ({ handled: false }));
       });
 
       it('S5: a replayed verdict (duplicate) acts on nothing', async () => {

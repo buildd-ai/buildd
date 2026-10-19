@@ -4,7 +4,7 @@
  * strand. One builder for the missions list and Home, so the two cards and the
  * mission page name the same state (spec 8e137fdb I-1).
  */
-import { deriveLocalStrand } from './local-strand';
+import { deriveLocalStrand, type LocalStrand } from './local-strand';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { openCriteriaChecks, type MissionVisualReviewSummary } from './mission-open-checks';
 import type { MissionDeliveryInput } from './delivery-projection';
@@ -23,7 +23,7 @@ export function missionDeliveryFacts(
   m: FactsMission,
   visualReview: MissionVisualReviewSummary | null | undefined,
   now: number,
-): Pick<MissionDeliveryInput, 'missionPrMerged' | 'visualReview' | 'criteriaPending' | 'criteriaPendingLabel' | 'localStrand'> {
+): Pick<MissionDeliveryInput, 'missionPrMerged' | 'visualReview' | 'criteriaPending' | 'criteriaPendingLabel'> & { localStrand: LocalStrand | null } {
   const tasks = (m.tasks ?? []) as never[];
   const missionPrMerged = deriveMissionIntegrationPr({ mission: m, tasks })?.state === 'merged';
   // AC-7: every open required check, the selected outcome spec included.

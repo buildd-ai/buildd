@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { readFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -205,11 +205,20 @@ describe('publish-runner-image workflow', () => {
   });
 
   describe('cloud runner bundle', () => {
-    test('the Docker Hub mirror is skipped, not failed, when it is not configured', () => {
+    test('an unconfigured Docker Hub mirror fails the run: a release with no pullable image cannot be deployed', () => {
       const { code, outputs, log } = runScript(step('publish', 'Mirror to Docker Hub').run, mkdtempSync(join(tmpdir(), 'runner-image-hub-')), { TAG: 'v1.2.3', IMAGE: 'ghcr.io/x/y' });
-      expect(code).toBe(0);
+      expect(code).not.toBe(0);
       expect(outputs.ref).toBeUndefined();
-      expect(log).toContain('::warning::');
+      expect(log).toContain('::error::');
+      expect(log).not.toContain('::warning::');
+    });
+
+    test('a partly configured mirror names what is missing', () => {
+      const { code, log } = runScript(step('publish', 'Mirror to Docker Hub').run, mkdtempSync(join(tmpdir(), 'runner-image-hub-')), { TAG: 'v1.2.3', IMAGE: 'ghcr.io/x/y', DOCKERHUB_IMAGE: 'org/runner' });
+      expect(code).not.toBe(0);
+      expect(log).toContain('DOCKERHUB_USERNAME');
+      expect(log).toContain('DOCKERHUB_TOKEN');
+      expect(log).not.toContain('DOCKERHUB_IMAGE,');
     });
 
     test('the mirror runs after the GHCR push and hands its digest-pinned ref to the bundle job', () => {
@@ -231,6 +240,19 @@ describe('publish-runner-image workflow', () => {
       expect(attach.run).toContain('cloud-runner-$TAG.json');
       expect(attach.run).toContain('gh release upload "$TAG"');
       expect(attach.env.DOCKERHUB_REF).toBe('${{ needs.publish.outputs.dockerhub_ref }}');
+      // Always passed: the builder refuses an empty ref rather than bundling a placeholder.
+      expect(attach.run).toContain('--image "$DOCKERHUB_REF"');
+      expect(attach.run).not.toContain('${DOCKERHUB_REF:+');
+    });
+
+    test('the bundle builder refuses to write an asset without a digest-pinned image', () => {
+      for (const extra of [[], ['--image', ''], ['--image', 'ghcr.io/x/y:v1.2.3']]) {
+        const out = join(mkdtempSync(join(tmpdir(), 'runner-bundle-')), 'b.json');
+        const p = Bun.spawnSync(['bun', 'apps/cloud-runner/scripts/build-release-bundle.ts', '--tag', 'v1.2.3', '--out', out, ...extra], { cwd: join(import.meta.dir, '..') });
+        expect(p.exitCode).toBe(1);
+        expect(p.stderr.toString()).toContain('--image');
+        expect(existsSync(out)).toBe(false);
+      }
     });
   });
 });

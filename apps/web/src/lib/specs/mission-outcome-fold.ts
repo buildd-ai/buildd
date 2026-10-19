@@ -1,4 +1,5 @@
 import type { CriterionVerdict, LivingSpecCriterionStanding } from '@buildd/shared';
+import { determiningVerdict, type VerdictSource } from '@buildd/spec-contract/outcome';
 
 /**
  * The mission-level half of Living Specs Slice 12 (D-19/D-20, R-49..R-53),
@@ -37,6 +38,8 @@ export interface MissionVerdictRow {
   verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported';
   headSha: string | null;
   at: Date | string;
+  /** Absent reads as a review; a test result outranks one (determiningVerdict). */
+  source?: VerdictSource;
 }
 
 export interface MissionSpecFold {
@@ -74,29 +77,28 @@ export function foldMissionSpec(input: {
   target: MissionTarget;
 }): MissionSpecFold {
   const waived = new Set(input.waived);
+  const grouped = new Map<string, MissionVerdictRow[]>();
+  for (const r of input.rows) grouped.set(r.criterionId, [...(grouped.get(r.criterionId) ?? []), r]);
   const newest = new Map<string, MissionVerdictRow>();
-  for (const r of input.rows) {
-    const prev = newest.get(r.criterionId);
-    if (!prev || new Date(r.at).getTime() >= new Date(prev.at).getTime()) newest.set(r.criterionId, r);
-  }
+  for (const [id, rows] of grouped) newest.set(id, determiningVerdict(rows)!);
   const targetSha = input.target.kind === 'integration' ? input.target.headSha : null;
   const staleFails = new Set<string>();
 
   const standings: LivingSpecCriterionStanding[] = input.scope.map((criterionId) => {
     const row = newest.get(criterionId);
-    if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id } : {}) };
+    if (waived.has(criterionId)) return { criterionId, standing: 'waived', headSha: row?.headSha ?? null, ...(row ? { verdictId: row.id, source: row.source ?? 'review' } : {}) };
     if (!row) return { criterionId, standing: 'missing', headSha: null };
     // A fail stands while it judged the target as it is now. Once the target
     // moves past it (a repair or any other mission PR merged), it is stale and
     // checked again, like a pass (c5a2c67b R-4). With no known target it stands.
     if (row.verdict === 'fail' && (input.target.kind === 'unknown' || verdictIsCurrent(input.target, row.headSha))) {
-      return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id };
+      return { criterionId, standing: 'fail', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
     if (!verdictIsCurrent(input.target, row.headSha)) {
       if (row.verdict === 'fail') staleFails.add(criterionId);
-      return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id };
+      return { criterionId, standing: 'stale', headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
     }
-    return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id };
+    return { criterionId, standing: row.verdict, headSha: row.headSha, verdictId: row.id, source: row.source ?? 'review' };
   });
 
   const judged = standings.filter((s) => s.standing !== 'waived');

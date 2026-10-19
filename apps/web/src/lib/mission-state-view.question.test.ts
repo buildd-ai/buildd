@@ -17,7 +17,7 @@ import { affordanceFor } from '@/components/missions/MissionSituationBlock';
 
 const base: MissionStateInput = { status: 'active', isHeld: false, activeAgents: 0, health: 'NOMINAL' };
 const PROMPT = 'Which database should the import write to?';
-const ask = { taskId: 't1', title: 'Import the fixtures', prompt: PROMPT };
+const ask = { taskId: 't1', title: 'Import the fixtures', prompt: PROMPT, repairTaskId: null };
 
 describe('deriveMissionStateView — an open question', () => {
   const local: MissionStateInput = {
@@ -93,6 +93,43 @@ describe('missionOpenQuestions', () => {
       { id: 't3', title: 'Running', status: 'in_progress', workers: [{ status: 'running', waitingFor: null }] },
     ];
     expect(missionOpenQuestions(rows)).toEqual([ask]);
+  });
+
+  it('carries the repair a recovered park waits on', () => {
+    const rows = [{ id: 't1', title: 'Import the fixtures', status: 'assigned', workers: [{ status: 'waiting_input', waitingFor: { prompt: PROMPT, disposition: 'recovered', repairTaskId: 'repair-1' } }] }];
+    expect(missionOpenQuestions(rows)).toEqual([{ ...ask, repairTaskId: 'repair-1' }]);
+  });
+});
+
+// Regression: a session that ended after complete_task failed on ECONNRESET
+// was parked `recovered` on a repair task (the gate decided no person was
+// needed), yet explain() read the same park as awaiting_decision.
+describe('deriveMissionStateView — a park recovered onto a repair task', () => {
+  const recovered = { taskId: 't1', title: 'fix(ci): dev is red', prompt: 'This session ended without delivering anything', repairTaskId: 'abcd1234-aaaa-4bbb-8ccc-000000000000' };
+  const input: MissionStateInput = {
+    ...base,
+    activeAgents: 1,
+    openTasks: [{ id: 't1', status: 'assigned', title: 'fix(ci): dev is red' }],
+    openQuestions: [recovered],
+  };
+
+  it('is a self-resolving wait on the repair, never a decision for a person', () => {
+    const view = deriveMissionStateView(input);
+    expect(view.kind).toBe('waiting');
+    expect(missionNeedsYou(view)).toBe(false);
+    expect(view.waitingOn).toMatchObject({ kind: 'self_resolving_wait', reason: 'platform repair' });
+    const label = (view.waitingOn as { label: string }).label;
+    expect(label).toContain('abcd1234');
+    expect(label).not.toContain('abcd1234-aaaa');
+    expect(view.situation.nextAction ?? '').not.toMatch(/Answer/);
+    expect(view.outstanding.map(f => f.kind)).not.toContain('human_decision');
+  });
+
+  it('a real question beside it still leads, and only the real one is counted', () => {
+    const view = deriveMissionStateView({ ...input, openQuestions: [recovered, { ...ask, taskId: 't2' }] });
+    expect(view.kind).toBe('awaiting_decision');
+    expect(view.situation.headline).toBe(PROMPT);
+    expect(view.situation.focus).toMatchObject({ kind: 'human_decision', question: { taskIds: ['t2'] } });
   });
 });
 

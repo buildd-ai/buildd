@@ -102,8 +102,9 @@ beforeAll(async () => {
     throw new Error('No workspaces available on server — cannot run E2E tests');
   }
 
-  // Pick a workspace (prefer one named "buildd" for consistency)
-  const ws = workspaces.find((w: any) => w.name?.toLowerCase().includes('buildd')) || workspaces[0];
+  // Prefer the explicitly trusted CI fixture; keep local development usable.
+  const ws = workspaces.find((w: any) => w.name === 'integration-test-workspace')
+    || workspaces.find((w: any) => w.name?.toLowerCase().includes('buildd')) || workspaces[0];
   testWorkspaceId = ws.id;
   console.log(`  Workspace: ${ws.name} (${testWorkspaceId})`);
 
@@ -261,6 +262,7 @@ describe.skipIf(!HAS_SERVER || !RUN_API_TESTS)('E2E: Server API', () => {
     const marker = `MISSION_API_${Date.now()}`;
 
     const mission = await server.createMission({
+      workspaceId: testWorkspaceId,
       title: `[E2E-TEST] ${marker}`,
       description: 'E2E API test',
     });
@@ -279,6 +281,7 @@ describe.skipIf(!HAS_SERVER || !RUN_API_TESTS)('E2E: Server API', () => {
 
   test('can create a task linked to a mission', async () => {
     const mission = await server.createMission({
+      workspaceId: testWorkspaceId,
       title: `[E2E-TEST] Link test ${Date.now()}`,
     });
     createdMissionIds.push(mission.id);
@@ -297,8 +300,12 @@ describe.skipIf(!HAS_SERVER || !RUN_API_TESTS)('E2E: Server API', () => {
 
     expect(task.missionId).toBe(mission.id);
 
-    // Mission should reflect the new task; organizer (planning) task excluded from count
-    const updated = await server.getMission(mission.id);
+    // Stored summaries refresh after the write response. Wait for convergence;
+    // organizer planning tasks remain excluded from the deliverable count.
+    const updated = await pollUntil(async () => {
+      const summary = await server.getMission(mission.id);
+      return summary.totalTasks === 1 ? summary : null;
+    }, { timeout: 30_000, interval: 500, label: 'linked task in mission summary' });
     expect(updated.totalTasks).toBe(1);
   });
 });
@@ -467,6 +474,7 @@ describe.skipIf(!HAS_SERVER || !RUN_WORKER_TESTS)('E2E: Worker Execution', () =>
     const marker = `MISSION_${Date.now()}`;
 
     const mission = await server.createMission({
+      workspaceId: testWorkspaceId,
       title: `[E2E-TEST] Mission ${marker}`,
       description: 'E2E test: verify mission progress tracks task completion',
     });
@@ -500,7 +508,10 @@ describe.skipIf(!HAS_SERVER || !RUN_WORKER_TESTS)('E2E: Worker Execution', () =>
     bailIfQuotaExhausted(finalWorker);
     expect(finalWorker.status).toBe('done');
 
-    const updatedMission = await server.getMission(mission.id);
+    const updatedMission = await pollUntil(async () => {
+      const summary = await server.getMission(mission.id);
+      return summary.totalTasks >= 1 && summary.completedTasks >= 1 ? summary : null;
+    }, { timeout: 30_000, interval: 500, label: 'completed task in mission summary' });
     expect(updatedMission.id).toBe(mission.id);
     expect(updatedMission.totalTasks).toBeGreaterThanOrEqual(1);
     expect(updatedMission.completedTasks).toBeGreaterThanOrEqual(1);

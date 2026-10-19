@@ -234,7 +234,13 @@ describe('a loop exit leaves a kernel owner\'s status to the kernel', () => {
     // The merge's own fan-out may already have advanced the loop; either way it is advanced once.
     await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId);
     expect(await evaluateAndAdvanceLoopOnMerge(pr.workerId, pr.ownerTaskId, w.workspaceId)).toBe(false);
-    const t = await taskRow(pr.ownerTaskId);
+    // When the fan-out won the loop's compare-and-set, its projection of the parked task runs
+    // unawaited (mission-subscribers): wait for it rather than read the task mid-flight.
+    let t = await taskRow(pr.ownerTaskId);
+    for (let i = 0; i < 50 && t.status !== 'completed'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      t = await taskRow(pr.ownerTaskId);
+    }
     expect({ status: t.status, loop: t.loop_state }).toEqual({ status: 'completed', loop: 'satisfied' });
   });
 

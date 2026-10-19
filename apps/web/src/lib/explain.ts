@@ -529,6 +529,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
       createdAt: t.createdAt,
       roleSlug: t.roleSlug,
     })),
+    m.autoSurfaceAudit as boolean | null | undefined,
   );
 
   // S35: a failed attempt the kernel already replaced (its delivery is live or
@@ -736,6 +737,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
         ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
+        ...(superseded.waived ? { waived: true as const } : {}),
       })),
     },
   };
