@@ -291,6 +291,7 @@ export function boundEvidenceRefs(refs: unknown): VerificationEvidenceRef[] {
 // The Living Specs fold lives in the portable contract (packages/spec-contract),
 // so a product that copies Living Specs copies the same rule, not a port of it.
 export {
-  GOVERNED_OUTCOMES, foldGovernedOutcome,
+  GOVERNED_OUTCOMES, VERDICT_SOURCES, foldGovernedOutcome, determiningVerdict, verdictSourceOf, verdictSourceOfEvidence,
+  type VerdictSource,
   type GovernedOutcome, type CriterionVerdict, type CriterionStanding, type GovernedOutcomeReadout,
 } from '@buildd/spec-contract/outcome';

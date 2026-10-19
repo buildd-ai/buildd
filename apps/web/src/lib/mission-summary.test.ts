@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { MISSION_SUMMARY_VERSION } from '@buildd/shared';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { canonicalSummaryJson, computeMissionSummary, homeReadingOf, summariesEqual } from './mission-summary';
-import { projectMissionDelivery, toDeliveryRow } from './delivery-projection';
+import { deliveryAtRead, projectMissionDelivery, toDeliveryRow } from './delivery-projection';
+import { deriveLocalStrand, LOCAL_SESSION_QUIET_MS } from './local-strand';
 import { buildMissionCardView } from './mission-card-view';
 import { buildMissionListCard, type ListMissionRow } from './mission-list-card';
 import { missionDeliveryFacts } from './mission-delivery-facts';
@@ -148,6 +149,51 @@ describe('computeMissionSummary: Home\'s reading (3ef37387 R-13)', () => {
     const s = computeMissionSummary({ ...input, visualReview: review }, NOW);
     expect(s.visualReview).toEqual(review as never);
     expect(homeReadingOf(s).delivery.visualOpen).toMatchObject({ text: 'Visual review queued' });
+  });
+});
+
+describe('computeMissionSummary: the stored Home delivery has no clock in it (3ef37387 R-13 / AC-2)', () => {
+  const localWorld = () => {
+    const w = makeWorld();
+    // A local mission whose one pending task was filed just now, with no session on it.
+    Object.assign(w.missions.find(m => m.id === 'm-held')!, { executor: 'local', isHeld: false });
+    Object.assign(w.tasks.find(t => t.id === 't-h1')!, { createdAt: new Date(NOW), updatedAt: new Date(NOW) });
+    return w;
+  };
+  const deliveryAt = (now: number) => homeReadingOf(summaryOf('m-held', localWorld(), now)).delivery;
+
+  it('a summary computed at T is the summary computed any time later, until an input changes', () => {
+    expect(canonicalSummaryJson(deliveryAt(NOW))).toBe(canonicalSummaryJson(deliveryAt(NOW + LOCAL_SESSION_QUIET_MS + 60_000)));
+    expect(canonicalSummaryJson(deliveryAt(NOW))).toBe(canonicalSummaryJson(deliveryAt(NOW + 5 * 86_400_000)));
+  });
+
+  it('read at T + the quiet window, it equals a fresh compute there', () => {
+    const later = NOW + LOCAL_SESSION_QUIET_MS + 60_000;
+    const read = deliveryAtRead(deliveryAt(NOW), later);
+    const fresh = deliveryAtRead(deliveryAt(later), later);
+    expect(read).toEqual(fresh);
+    expect(read.exception?.text).toBe('No session is running it');
+    expect(read.next).toMatch(/^Waiting for your session \(none for /);
+  });
+
+  it('read before the window it is still waiting; read after it matches the live projection', () => {
+    expect(deliveryAtRead(deliveryAt(NOW), NOW).exception?.text).toBe('Waiting for your session');
+    const input = inputsFromWorld(localWorld(), ['m-held']).get('m-held')!;
+    const tasks = input.taskRows.map(t => ({ ...t, workers: input.workerRows.filter(w => w.taskId === t.id) }));
+    const row = { ...input.missionRows[0], tasks } as unknown as ListMissionRow;
+    const m = row as unknown as Record<string, any>;
+    for (const later of [NOW, NOW + LOCAL_SESSION_QUIET_MS + 60_000]) {
+      const live = projectMissionDelivery({
+        id: 'm-held', title: m.title, status: m.status, href: '/app/missions/m-held', isHeld: m.isHeld, armedAt: m.armedAt,
+        integrationBranch: false, tasks: row.tasks as never,
+        ...missionDeliveryFacts(row as never, undefined, later),
+      }, missionHelpers);
+      const { quietSince: _q, ...read } = deliveryAtRead(deliveryAt(NOW), later);
+      const { strip: _s, ...liveRow } = toDeliveryRow(live);
+      const { strip: _r, ...readRow } = read;
+      expect(readRow).toEqual(liveRow);
+    }
+    expect(deriveLocalStrand({ executor: 'local', status: 'active', tasks: tasks as never, now: NOW })).not.toBeNull();
   });
 });
 

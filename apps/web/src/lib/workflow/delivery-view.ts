@@ -255,6 +255,26 @@ WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
 }
 
 /**
+ * The newest kernel-owned delivery a loop task owns, for its owner loop's PR exit condition
+ * (lib/loop-dispatcher-policy.ts, 92a439a6): while the kernel owns the PR's next move the loop
+ * waits instead of spending an iteration, and `MERGED` satisfies it. Null when the task owns
+ * none or it was released to legacy. A SELECT; throws on a read failure.
+ */
+export async function kernelOwnerDeliveryFacts(
+  taskId: string,
+  exec: Exec = dbExec,
+): Promise<{ state: string; prNumber: number | null; mergedAt: string | null } | null> {
+  const res = await exec(sql`-- workflow:kernel_owner_delivery_facts
+SELECT d.state AS state, d.pr_number AS "prNumber", d.merged_at AS "mergedAt"
+FROM workflow_deliveries d
+WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)} AND d.owner_task_id = ${taskId}::uuid
+ORDER BY d.created_at DESC LIMIT 1`);
+  const r = (res.rows ?? [])[0] as { state?: unknown; prNumber?: unknown; mergedAt?: unknown } | undefined;
+  if (!r || typeof r.state !== 'string') return null;
+  return { state: r.state, prNumber: r.prNumber == null ? null : Number(r.prNumber), mergedAt: r.mergedAt == null ? null : String(r.mergedAt) };
+}
+
+/**
  * The merge commit of each merged delivery the given tasks own, for a
  * mission's integrated target on a direct mission (lib/specs/mission-outcome.ts:
  * a verdict holds only at a commit containing every one). Any authority: a

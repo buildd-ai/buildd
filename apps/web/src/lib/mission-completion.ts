@@ -16,7 +16,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { isSurfaceAuditTask, surfaceAuditMissingReason, surfaceAuditPendingReason } from '@buildd/core/surface-audit';
-import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
+import { evaluateSurfaceAuditGate, surfaceAuditWaived } from '@/lib/mission-surface-audit-gate';
 import type { VisualImpactAssessment } from '@/lib/workflow/visual-review-impact';
 import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import { after } from 'next/server';
@@ -558,6 +558,13 @@ export async function canCompleteMission(
   if (infraStalled.some(isAuditRow)) {
     const replaced = await replacedAuditIds(mission, loadModel);
     if (replaced.size > 0) infraStalled = infraStalled.filter(t => !(isAuditRow(t) && replaced.has(t.id)));
+  }
+  // A person's recorded waiver retires the audit as a blocker whatever order
+  // it landed in: a stalled audit is the check that was waived, not a failed
+  // deliverable. The row stays failed and the waiver stays on record (the
+  // audit is waived, not passed); an implementation task still blocks.
+  if (infraStalled.some(isAuditRow) && await surfaceAuditWaived(mission as { id: string; autoSurfaceAudit?: boolean | null; workspaceId?: string | null })) {
+    infraStalled = infraStalled.filter(t => !isAuditRow(t));
   }
   if (infraStalled.length > 0) {
     base.infraStalledTitles = infraStalled.map(t => t.title);

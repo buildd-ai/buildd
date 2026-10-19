@@ -198,6 +198,13 @@ describe('buildReviewerContext — text from the prompts table', () => {
   const row = (id: string, body: string, version = 1) => ({ id, version, body, contentHash: promptContentHash(body) });
   const allPlaceholders = (template: string) => templatePlaceholders(template).map(p => `{{${p}}}`).join('\n');
 
+  it('the checkout instruction gives a read-only fallback that still reports the commit read', () => {
+    const out = checkoutInstruction(BASE.headSha);
+    expect(out).toContain('read-only');
+    expect(out).toContain(`git archive ${BASE.headSha}`);
+    expect(out).toContain(`git rev-parse ${BASE.headSha}^{commit}`);
+  });
+
   it('an active row replaces the instructional text; the per-PR values still fill it', async () => {
     resetPrompts();
     installPrompts([row(REVIEWER_CONTEXT_PROMPT_ID, `# Private reviewer text\n${allPlaceholders(REVIEWER_CONTEXT_TEMPLATE)}`)]);

@@ -105,7 +105,7 @@ export interface StateBecauseExtras {
    * (not gated on `view.kind`), since these tasks never drive `failing` and
    * would otherwise be invisible to `because[]`.
    */
-  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number | null; supersedingTaskId?: string | null; replacedByAudit?: true }>;
+  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number | null; supersedingTaskId?: string | null; replacedByAudit?: true; waived?: true }>;
 }
 
 /**
@@ -138,6 +138,16 @@ export function buildStateBecause(
   }
 
   for (const t of extra.supersededTasks ?? []) {
+    if (t.waived) {
+      links.push(
+        link(
+          `Visual audit "${t.title ?? t.id}" stalled on infrastructure, but its review was waived by a person, so it does not count as a mission failure.`,
+          'mission audit waiver',
+          { ...base, taskId: t.id },
+        ),
+      );
+      continue;
+    }
     if (t.replacedByAudit || t.prNumber == null) {
       links.push(
         link(

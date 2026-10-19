@@ -614,7 +614,7 @@ export interface MissionStateInput {
    * `activeAgents` (a waiting worker is live), so this is what tells the
    * accessor the live work is waiting on an answer.
    */
-  openQuestions?: Array<{ taskId: string; title?: string | null; prompt: string | null }>;
+  openQuestions?: Array<{ taskId: string; title?: string | null; prompt: string | null; repairTaskId?: string | null }>;
   /**
    * From `deriveLocalStrand` (lib/local-strand.ts), plus the refusal the
    * executor flip would meet (`continueOnRunnerBlockedReason`). Read only on a
@@ -1068,7 +1068,25 @@ function resolve(input: MissionStateInput): Resolution {
 
 /** Rule 4¾ — a worker waiting on a person's answer. */
 function questionFact(input: MissionStateInput): Resolution | null {
-  const qs = input.openQuestions ?? [];
+  const parked = input.openQuestions ?? [];
+  // A `recovered` park waits on its repair task, not on a person: the task
+  // resumes when the repair completes (agent-question-protocol AC-55).
+  const qs = parked.filter(q => !q.repairTaskId);
+  const repair = parked.find(q => q.repairTaskId)?.repairTaskId;
+  if (qs.length === 0 && repair) {
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'self_resolving_wait',
+        tone: 'neutral',
+        label: `Waiting: repair task ${repair.slice(0, 8)} is fixing a platform blocker; this resumes when it completes`,
+        reason: 'platform repair',
+        waitUntil: null,
+      },
+      displayState: isLocal(input) ? 'local' : 'active',
+      source: 'workers.waitingFor',
+    };
+  }
   if (qs.length === 0) return null;
   const prompt = qs.length === 1 ? qs[0].prompt : null;
   return {

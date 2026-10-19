@@ -58,7 +58,7 @@ import type { ReviewerGateResult, ReviewerTaskStatus } from '@/lib/reviewer-gate
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import HomeLive, { type HomeRegion } from './HomeLive';
-import { groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
+import { deliveryAtRead, groupQuietCauses, quietCauseOf, selectHomeMilestones, type MissionDeliveryRow, type QuietMissionCause } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeListedMission } from '@/lib/home-attention';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
@@ -1040,8 +1040,8 @@ function applyMissions(view: HomeView, input: {
   view.quietCauses = groupQuietCauses(causes);
   view.quietMissions = view.quietCauses.reduce((n, c) => n + c.count, 0);
   view.milestones = selectHomeMilestones([
-    ...input.moving.map(m => ({ ...m.home.delivery, open: open(m) })),
-    ...liveOpen.map(m => m.home.delivery),
+    ...input.moving.map(m => ({ ...deliveryAtRead(m.home.delivery, now), open: open(m) })),
+    ...liveOpen.map(m => deliveryAtRead(m.home.delivery, now)),
   ]);
 
   const recentDone = (m: MissionReading) => m.status === 'completed' && isRecentlyDelivered({ completedAt: m.completedAt }, now, RECENT_DONE_MS);

@@ -19,10 +19,11 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { carryForwardReading, catchUpBase, ingestFact, projectEquivalentHeadSql, readDeltaForApproval, type GithubFactReader } from './facts';
 import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
+import { scheduleEffectDrain } from './effect-timer';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelDeliveryInWorkspace, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
@@ -31,7 +32,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, floorCheckedSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
+import { ENDED_REVIEWER_GRACE_MS, endedReviewerSql, floorCandidatesSql, floorCheckedSql, roundWaitingOnReviewer, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -111,11 +112,17 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
       console.error(`[workflow] landing lane release for delivery ${deliveryId} failed:`, err);
       return [] as string[];
     });
+    // What this drain parked, backed off or left pending comes due on the effect timer (effect-timer.ts),
+    // not at the next unrelated drain. The woken waiter is queued before its drain: if that drain is
+    // cut short, the next tick runs it.
+    for (const waiter of woken) if (waiter !== deliveryId) await scheduleEffectDrain(waiter, deps.exec);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     for (const waiter of woken) if (waiter !== deliveryId) await drainDelivery(waiter, deps);
     return total;
   } catch (err) {
-    // The effect rows are durable; the cron drain picks up whatever this missed.
+    // The effect rows are durable; the effect timer and the floor pick up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
+    await scheduleEffectDrain(deliveryId, deps.exec);
     return null;
   }
 }
@@ -833,12 +840,18 @@ export async function attemptEnded(p: {
   const baseOnly = attemptKind === 'fix' && d.state === 'FIXING' && boundHead && d.repoFullName
     ? await baseOnlyMove(p.task.workspaceId, d.repoFullName, boundHead, live, deps)
     : false;
-  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  // T11 / §8.3 (92a439a6): a repair whose head leaves the PR's diff unchanged (an agent conflict repair
+  // that only merged the base) keeps the approval. Read here as HeadObserved reads it: when the end
+  // arrives before the push webhook, that later HeadObserved is `head_unchanged` and never reads it.
+  // A fix in FIXING (AC-79 above) never reads it: only REPAIRING carries here.
+  let carryForward: 'content_equivalent' | 'own_refresh' | null = null;
+  // 58c8961e: otherwise a repair's head on an approved delivery may be reviewed as a delta of the approval.
   let delta: DeltaReading | null = null;
-  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : undefined;
-    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+    if (d.state === 'REPAIRING' && d.approvalBasis && d.approvalBasis !== 'policy') carryForward = (await carryForwardReading(view, d.repoFullName, live, deps.exec ?? seamExec, reader)).evidence;
+    if (!carryForward && deltaApprovalSource(view)) delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
   }
   const cmd: Command = {
     type: 'AttemptEnded',
@@ -856,11 +869,18 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(carryForward ? { carryForward } : {}),
     ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
     ...(baseOnly ? { baseOnly: true } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
+  if (attemptKind !== 'owner' && result.result === 'applied' && result.decision.toState === 'APPROVED' && result.decision.evidence?.carryForward && live) {
+    // §8.3: the legacy merge gate's `equivalentHeadShas`, projected after the committed carry as T13's is.
+    const from = String(result.decision.evidence.carriedFrom ?? result.decision.evidence.previousHead ?? '');
+    await (deps.exec ?? seamExec)(projectEquivalentHeadSql(deliveryId, from, live.headSha))
+      .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${deliveryId}:`, err));
+  }
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
@@ -1223,7 +1243,7 @@ export async function recordReviewVerdict(p: {
   evidenceSha?: string | null;
   /** What the reviewer said about findings (§5): its structured output, read defensively. */
   output?: unknown;
-}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null; settled?: CommandResult }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
   // Fail closed: a delivery of another workspace throws, never `handled: false`, which the PATCH reads
@@ -1243,8 +1263,20 @@ export async function recordReviewVerdict(p: {
     ...(p.evidenceSha !== undefined ? { evidenceSha: p.evidenceSha, reviewerTaskId: p.reviewerTask.id, maxContractRetries: REVIEW_CONTRACT_RETRIES } : {}),
     ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
   }, { ref: { deliveryId }, exec: deps.exec });
+  // 7105282e: a completed reviewer always settles its round. A verdict T6 refused or kept stale
+  // (a head the round was not for, a round it no longer applies to) leaves an open round waiting on
+  // a reviewer that already ended, and nothing else re-asks: fail the round as T27 does. T27 itself
+  // answers stale when the round is closed, not current, or waits on another reviewer.
+  let settled: CommandResult | null = null;
+  if (result.result === 'rejected' || result.result === 'stale') {
+    settled = await applyCommand({
+      type: 'ReviewRoundFailed', actor: `reviewer:${p.reviewerTask.id}`, roundId, reason: 'verdict_not_applied',
+      maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.reviewerTask.id,
+    }, { ref: { deliveryId }, exec: deps.exec });
+    if (settled.result === 'applied') console.log(`[workflow] round ${roundId}: verdict ${result.result} (${result.reason}); the round failed (T27) instead of waiting on an ended reviewer`);
+  }
   await drainDelivery(deliveryId, deps);
-  return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null };
+  return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null, ...(settled ? { settled } : {}) };
 }
 
 /**
@@ -1876,7 +1908,7 @@ export interface FloorSummary {
  */
 export async function reconcileKernelDeliveries(
   deps: SeamDeps = {},
-  o: { limit?: number; minQuietMs?: number; only?: string[] } = {},
+  o: { limit?: number; minQuietMs?: number; only?: string[]; reviewerGraceMs?: number } = {},
 ): Promise<FloorSummary> {
   const exec = deps.exec ?? seamExec;
   const s: FloorSummary = { checked: 0, imported: 0, enqueued: 0, errors: 0 };
@@ -1933,6 +1965,23 @@ export async function reconcileKernelDeliveries(
         const r = await applyCommand({ type: 'RepairNotNeeded', actor: source, attemptId: stranded, reason: 'head_moved', live }, { ref: { deliveryId }, exec: deps.exec });
         if (r.result === 'applied') {
           s.imported++;
+          view = await loadView({ deliveryId }, deps.exec);
+        }
+      }
+      // 7105282e: a round still waiting on a reviewer task that ended a while ago with nothing
+      // recorded (its verdict never reached the kernel) is failed as T27 fails it: asked again at
+      // the same head and round number, then review_unavailable. Keyed per reviewer, so a later
+      // pass over the same ended reviewer is a duplicate.
+      const waiting = roundWaitingOnReviewer(view);
+      if (waiting && ((await exec(endedReviewerSql({ ...waiting, graceMs: o.reviewerGraceMs ?? ENDED_REVIEWER_GRACE_MS }))).rows ?? []).length > 0) {
+        const r = await applyCommand({
+          type: 'ReviewRoundFailed', actor: source, roundId: waiting.roundId, reason: 'reviewer_ended',
+          maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: waiting.reviewerTaskId,
+        }, { ref: { deliveryId }, exec: deps.exec });
+        if (r.result === 'applied') {
+          s.imported++;
+          console.log(`[workflow] floor ${repoFullName}#${prNumber}: round ${waiting.roundId} waited on ended reviewer ${waiting.reviewerTaskId}; failed (T27)`);
+          await drainDelivery(deliveryId, deps);
           view = await loadView({ deliveryId }, deps.exec);
         }
       }
