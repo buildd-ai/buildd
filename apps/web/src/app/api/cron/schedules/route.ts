@@ -1,3 +1,4 @@
+import { resolveTaskWorkspace, routedFrom, withWorkspaceRouting, type WorkspaceRouting } from '@/lib/workspace-routing';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
@@ -527,14 +528,22 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           continue;
         }
 
-        // Resolve workspace: schedule.workspaceId takes priority, fall back to mission.workspaceId
-        let taskWorkspaceId = schedule.workspaceId;
-        if (!taskWorkspaceId && linkedMission?.workspaceId) {
-          taskWorkspaceId = linkedMission.workspaceId;
-        }
-        // Auto-create orchestrator workspace if mission has a teamId but no workspace
-        if (!taskWorkspaceId && linkedMission?.teamId) {
+        // Resolve the home through the one resolver (lib/workspace-routing.ts):
+        // schedule, then mission; a workspace-less mission runs in the team's
+        // coordination workspace.
+        const scheduleRouted = resolveTaskWorkspace({
+          schedule: { workspaceId: schedule.workspaceId },
+          mission: { workspaceId: linkedMission?.workspaceId },
+        });
+        let taskWorkspaceId: string | null | undefined;
+        let workspaceRouting: WorkspaceRouting | undefined;
+        if (scheduleRouted.ok) {
+          taskWorkspaceId = scheduleRouted.routing.workspaceId;
+          workspaceRouting = scheduleRouted.routing;
+        } else if (linkedMission?.teamId) {
+          // Auto-create orchestrator workspace if mission has a teamId but no workspace
           taskWorkspaceId = (await getOrCreateCoordinationWorkspace(linkedMission.teamId)).id;
+          workspaceRouting = routedFrom(taskWorkspaceId, 'mission', "the mission has no workspace, so the team's coordination workspace");
         }
 
         if (!taskWorkspaceId) {
@@ -905,7 +914,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             ...(resolvedMode === 'planning' ? { outputRequirement: 'none' as const } : {}),
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
-            context: taskContext,
+            context: workspaceRouting ? withWorkspaceRouting(taskContext as Record<string, unknown>, workspaceRouting) : taskContext,
             creationSource: linkedMission ? 'orchestrator' : 'schedule',
             scheduleId: schedule.id,
             kind: cadence.kind,

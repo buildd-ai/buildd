@@ -22,6 +22,7 @@ import { systemRoleIntent, VISUAL_REVIEW_IS_MISSION_SCOPED } from '@/lib/system-
 import type { ApiFn } from '@buildd/core/mcp-tools';
 import type { ChatApprovalPreview } from '@buildd/shared';
 import { hashToolInput } from './canonical';
+import { namedWorkspace, workspaceTerms, type RoutableWorkspace } from './routing';
 import { opSpec } from './registry';
 import { isUuid, resolveTaskRef, type TaskScope } from './targets';
 import { watchEventTypes, watchWhenPhrase } from '@/lib/watch-notice';
@@ -227,6 +228,17 @@ const answerQuestion: Builder = async (input, env) => {
   };
 };
 
+/** The reach-filtered workspaces with the names a message may use for them. */
+async function workspaceListOf(env: PreviewEnv): Promise<RoutableWorkspace[]> {
+  try {
+    const data = await env.read('/api/workspaces');
+    const list = (Array.isArray(data?.workspaces) ? data.workspaces : []) as Obj[];
+    return list.map(w => ({ id: String(w.id), name: String(w.name ?? 'workspace'), terms: workspaceTerms({ name: String(w.name ?? ''), repo: w.repo ?? null }) }));
+  } catch {
+    return [];
+  }
+}
+
 /** A workspace by id or name, among the reach-filtered workspace list; null when out of reach. */
 async function workspaceOf(env: PreviewEnv, ref: string | null): Promise<{ id: string; name: string } | null> {
   if (!ref) return null;
@@ -282,6 +294,22 @@ const createTask: Builder = async (input, env) => {
   if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
   if (standalone) changes.push({ label: 'Mission', before: null, after: 'none' });
   const workspaceId = str(input.workspaceId) ?? mission?.workspaceId ?? env.scope.workspaceId ?? null;
+  // The card names the home and why, never "this workspace" (routing spec I-17).
+  const home = await workspaceOf(env, workspaceId);
+  const homeName = home?.name ?? null;
+  const why = str(input.workspaceId) ? 'you named it' : mission ? "it is the mission's workspace" : 'this conversation is in it';
+  if (homeName && !mission) changes.push({ label: 'Workspace', before: null, after: `${homeName} (${why})` });
+  // An inferred subject is a suggestion on the card, never applied alone (D-4).
+  let suggestion: string | null = null;
+  if (!str(input.workspaceId) && !mission) {
+    const all = await workspaceListOf(env);
+    const hit = namedWorkspace(`${title}\n${str(input.description) ?? ''}`, all);
+    const named = hit && hit !== workspaceId ? all.find(w => w.id === hit) : null;
+    if (named) {
+      suggestion = `The text mentions ${named.name}. This task will be filed in ${homeName ?? 'the current workspace'}; to file it in ${named.name}, ask for that.`;
+      changes.push({ label: 'Suggested workspace', before: null, after: `${named.name} (not applied)` });
+    }
+  }
   const { missionId: _missionId, ...rest } = input;
   return {
     ok: true,
@@ -296,8 +324,8 @@ const createTask: Builder = async (input, env) => {
       v: 1, verb: mission ? 'New task in' : 'New task',
       target: mission
         ? { kind: 'mission', id: mission.id, label: String(mission.title), workspaceId: mission.workspaceId ?? null }
-        : { kind: 'workspace', id: workspaceId ?? 'default', label: 'this workspace', workspaceId },
-      changes, fingerprint: fingerprint(mission?.id ?? workspaceId ?? '', changes),
+        : { kind: 'workspace', id: workspaceId ?? 'default', label: homeName ?? 'this workspace', workspaceId },
+      changes, ...(suggestion ? { note: suggestion } : {}), fingerprint: fingerprint(mission?.id ?? workspaceId ?? '', changes),
     },
   };
 };

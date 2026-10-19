@@ -241,8 +241,10 @@ describe('the owner\'s examples', () => {
 
   it('missionId null files a standalone task even with a mission docked: the card says "none", the write carries no missionId', async () => {
     const { preview } = await proposeAndApprove('create_task', { title: 'Unrelated cleanup', description: 'Tidy the lint config.', missionId: null });
-    expect(approvalHeadline(preview)).toBe('New task: this workspace');
+    expect(approvalHeadline(preview)).toBe('New task: harborline-web');
     expect(preview.changes.map(approvalChangeLine)).toContain('Mission: + none');
+    // The card names the home and why, not "this workspace".
+    expect(preview.changes.map(approvalChangeLine).join('\n')).toContain('Workspace: + harborline-web (this conversation is in it)');
     expect(writes).toHaveLength(1);
     expect(writes[0]).not.toContain('missionId');
   });

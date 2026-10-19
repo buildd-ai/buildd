@@ -881,6 +881,33 @@ describe('POST /api/tasks', () => {
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
+    it('refuses a declared subject elsewhere with delegation_required naming it, and files nothing at home', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      const other = '00000000-0000-4000-8000-0000000000b2';
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+        body: { subject: other, workspaceId: 'ws-1', workspaceSource: 'caller_default', title: 'About B' },
+      }));
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.code).toBe('delegation_required');
+      expect(body.error).toContain(other);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('records the routing on the task it files (caller default)', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const values = mock(() => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Follow-up', context: { workspaceRouting: 'forged' } },
+      }));
+      const row = (values.mock.calls[0] as any[])[0];
+      expect(row.context.workspaceRouting).toMatchObject({ workspaceId: 'ws-1', source: 'caller_default' });
+      expect(typeof row.context.workspaceRouting.reason).toBe('string');
+    });
+
     describe('with a schedule delegation (scheduled reviewer files a follow-up elsewhere)', () => {
       const delegated = (capabilities: string[]) => ({
         ...scoped,

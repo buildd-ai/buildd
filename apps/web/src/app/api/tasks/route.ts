@@ -48,6 +48,7 @@ import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
 import { resolveSubjectPolicy, isIdentifyingSubjectKeyType } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { resolvePrReachGrant, withoutPrReachGrant, type PrReachFiler } from '@/lib/pr-reach-grant';
+import { resolveTaskWorkspace, withWorkspaceRouting, withoutWorkspaceRouting, type WorkspaceRouting, type WorkspaceRoutingInput } from '@/lib/workspace-routing';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
@@ -582,6 +583,11 @@ export async function POST(req: NextRequest) {
       // workspaces it declares it will file tasks in (lib/task-delegation.ts).
       delegation: rawDelegation,
       filingTargets: rawFilingTargets,
+      // What the task is about (a workspace UUID, name or owner/repo): the home
+      // when no workspace is named. workspaceSource only labels a workspaceId
+      // the caller filled in as its own default ('caller_default').
+      subject: rawSubject,
+      workspaceSource: rawWorkspaceSource,
     } = body;
     // A reservation is only for a verified interactive session (the one the claim
     // route lets claim its own reserved task). Refused before anything is filed, so
@@ -619,7 +625,7 @@ export async function POST(req: NextRequest) {
     // release-candidate keys (context.releaseCandidateFix, releaseCandidateAmendPr),
     // which only the CI-retry path and the amendment write.
     const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
-    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
+    let incomingContext = withoutWorkspaceRouting(withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)))) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -693,19 +699,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Resolve workspace: explicit param → auto-resolve for API accounts
+    // Resolve the home through the one resolver (lib/workspace-routing.ts):
+    // explicit → subject → source → schedule/mission → caller default.
     let workspaceId: string | undefined;
-
-    if (rawWorkspaceId) {
+    let workspaceRouting: WorkspaceRouting | undefined;
+    const accessCaller = apiAccount ? { account: apiAccount } : { userId: user!.id };
+    const resolveRef = async (ref: unknown) => {
       // Resolve by UUID, repo name, or workspace name, and decide reach with
       // the shared rule (lib/workspace-access.ts) — the one workspace listing
       // and mission creation use. "Exists but not reachable" is a 403 that
       // says so, not a misleading "not found".
-      const access = await resolveWorkspaceAccess(
-        String(rawWorkspaceId),
-        apiAccount ? { account: apiAccount } : { userId: user!.id },
-        'canCreate',
-      );
+      const access = await resolveWorkspaceAccess(String(ref), accessCaller, 'canCreate');
       if (!access.ok) {
         return NextResponse.json(
           { error: access.error },
@@ -713,22 +717,63 @@ export async function POST(req: NextRequest) {
           { status: access.reason === 'no_access' ? 403 : 400 },
         );
       }
-      workspaceId = access.workspace.id;
-    } else if (apiAccount?.taskScope) {
-      workspaceId = apiAccount.taskScope.workspaceId;
-    } else if (apiAccount && isGrantSession(apiAccount)) {
-      // A grant session never falls back to the shared team account's links:
-      // only its own (single) granted workspace can be implied.
-      const granted = constrainToGranted(apiAccount, apiAccount.workspaceIds ?? [], 'write');
-      if (granted.length !== 1) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
-      workspaceId = granted[0];
-    } else if (apiAccount) {
-      // Auto-resolve: if account linked to exactly one workspace, use it
-      const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
-      if ('error' in result) {
-        return NextResponse.json({ error: result.error }, { status: result.status });
+      return access.workspace.id;
+    };
+    // A caller's own default is not an explicit choice: a declared subject beats it.
+    const explicitRef = rawWorkspaceId && rawWorkspaceSource !== 'caller_default' ? rawWorkspaceId : undefined;
+    const subjectRef = !explicitRef && typeof rawSubject === 'string' && rawSubject.trim() ? rawSubject.trim() : undefined;
+    if (rawSubject !== undefined && typeof rawSubject !== 'string') {
+      return NextResponse.json({ error: 'subject must be a workspace UUID, name or owner/repo' }, { status: 400 });
+    }
+    let routingInput: WorkspaceRoutingInput = {};
+    if (explicitRef) {
+      const r = await resolveRef(explicitRef);
+      if (typeof r !== 'string') return r;
+      routingInput = { explicit: { workspaceId: r, ref: String(explicitRef) } };
+    } else if (subjectRef) {
+      // A UUID subject is taken as named: the reach check below answers a
+      // workspace the caller cannot file in with delegation_required naming it,
+      // rather than a lookup that hides it (I-14).
+      const r = isUuid(subjectRef) ? subjectRef : await resolveRef(subjectRef);
+      if (typeof r !== 'string') return r;
+      routingInput = { subject: { workspaceId: r, ref: subjectRef } };
+    } else {
+      // Source, then mission, then the caller's default.
+      let missionHome: string | null = null;
+      if (missionId && isUuid(missionId) && !apiAccount?.taskScope) {
+        const m = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { workspaceId: true } }).catch(() => null);
+        missionHome = m?.workspaceId ?? null;
       }
-      workspaceId = result.workspaceId;
+      let callerDefault: string | undefined;
+      if (rawWorkspaceId) {
+        const r = await resolveRef(rawWorkspaceId);
+        if (typeof r !== 'string') return r;
+        callerDefault = r;
+      } else if (apiAccount?.taskScope) {
+        callerDefault = apiAccount.taskScope.workspaceId;
+      } else if (apiAccount && isGrantSession(apiAccount)) {
+        // A grant session never falls back to the shared team account's links:
+        // only its own (single) granted workspace can be implied.
+        const granted = constrainToGranted(apiAccount, apiAccount.workspaceIds ?? [], 'write');
+        if (granted.length !== 1 && !missionHome) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
+        callerDefault = granted.length === 1 ? granted[0] : undefined;
+      } else if (apiAccount && !missionHome) {
+        // Auto-resolve: if account linked to exactly one workspace, use it
+        const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
+        if ('error' in result) {
+          return NextResponse.json({ error: result.error }, { status: result.status });
+        }
+        callerDefault = result.workspaceId;
+      }
+      routingInput = {
+        mission: missionHome ? { workspaceId: missionHome } : null,
+        callerDefault: callerDefault ? { workspaceId: callerDefault, reason: rawWorkspaceId ? "no subject was given, so the caller's own workspace" : undefined } : null,
+      };
+    }
+    const routed = resolveTaskWorkspace(routingInput);
+    if (routed.ok) {
+      workspaceId = routed.routing.workspaceId;
+      workspaceRouting = routed.routing;
     }
 
     if (!workspaceId) {
@@ -739,8 +784,9 @@ export async function POST(req: NextRequest) {
     // (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
       return NextResponse.json({
-        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
+        error: `A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. This task belongs in workspace ${workspaceId} (${workspaceRouting?.source === 'subject' ? 'its declared subject' : 'the workspace named'}), which this token has no grant on, so nothing was filed. Ask for it with request_capability { capability: 'tasks:create', resource: '${workspaceId}' }: a person approves it and the run keeps going.`,
         code: 'delegation_required',
+        workspaceId,
       }, { status: 403 });
     }
     // A delegated filing stays inside the delegated workspace: a mission link
@@ -783,6 +829,9 @@ export async function POST(req: NextRequest) {
       incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
     }
     gateWorkspaceId = workspaceId;
+    if (workspaceRouting) {
+      incomingContext = withWorkspaceRouting(incomingContext as Record<string, unknown> | null | undefined, workspaceRouting) as typeof rawIncomingContext;
+    }
 
     // Validate workspace exists and fetch webhook config in one query
     const targetWorkspace = await db.query.workspaces.findFirst({
