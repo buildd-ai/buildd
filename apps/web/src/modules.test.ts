@@ -77,7 +77,8 @@ describe('composition root', () => {
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
     ]);
     expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch', 'reviews:spec-checks-on-open']);
-    expect(byEvent('task.left_mission')).toEqual(['visual-qa:surface-audit-detach']);
+    expect(byEvent('task.left_mission')).toEqual(['missions:withdraw-scope-decision', 'visual-qa:surface-audit-detach']);
+    expect(byEvent('task.joined_mission')).toEqual(['missions:decide-linked-task-scope']);
     expect(byEvent('task.role_changed')).toEqual(['jev-decisions:task-role-correction']);
     expect(byEvent('task.override_started')).toEqual(['jev-decisions:override-start-decision']);
     // The mission wakes and dependents unblock before the release trigger.
@@ -102,7 +103,7 @@ describe('composition root', () => {
       'jev-decisions:verdict-on-close',
     ]);
     expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
-    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep']);
+    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep', 'reviews:orphan-pr-sweep']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:record-pr-moved-off-delivery', 'missions:retarget-surface-intents']);

@@ -7,6 +7,7 @@
 import type { MissionEpochHooks } from '@/lib/workflow/delivery-ship';
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
+import { missionRefreshEffectHandlers } from '@/lib/mission-branch-refresh';
 
 export const missionEpochHooks: MissionEpochHooks = {
   async workOf(missionId) {
@@ -28,4 +29,6 @@ export const missionEpochHooks: MissionEpochHooks = {
   async repoWorkspaceOf(missionId, missionWorkspaceId) {
     return (await resolveMissionRepoWorkspaceId({ missionId, missionWorkspaceId })).workspaceId;
   },
+  // The writable epoch's refresh, drained by the kernel floor (lib/workflow/epoch-effects.ts).
+  epochEffectHandlers: missionRefreshEffectHandlers,
 };

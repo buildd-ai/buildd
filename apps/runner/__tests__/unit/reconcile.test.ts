@@ -26,6 +26,8 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 
 const mockUpdateWorker = mock(async () => ({}));
 const mockGetWorkerRemote = mock(async (_id: string) => null as any);
+// Default null: a server without GET /api/workers/status, so reconcile reads one by one.
+const mockGetWorkerStatuses = mock(async (_ids: string[]) => null as any);
 const mockListWorkspaces = mock(async () => []);
 const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
@@ -41,6 +43,7 @@ mock.module('../../src/buildd', () => ({
   BuilddClient: class {
     updateWorker = mockUpdateWorker;
     getWorkerRemote = mockGetWorkerRemote;
+    getWorkerStatuses = mockGetWorkerStatuses;
     claimTask = mockClaimTask;
     getWorkspaceConfig = mockGetWorkspaceConfig;
     getCompactObservations = mockGetCompactObservations;
@@ -218,6 +221,57 @@ describe('reconcileLocalWorkers', () => {
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();
     mockGetWorkerRemote.mockResolvedValue(null); // restore module-level default
+    mockGetWorkerStatuses.mockReset();
+    mockGetWorkerStatuses.mockResolvedValue(null);
+  });
+
+  // One read for every live worker (GET /api/workers/status), not one full
+  // GET /api/workers/[id] each.
+  test('reads every live worker in one batched read when the server has it', async () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-b-live', status: 'working' }));
+    injectWorker(manager, makeWorker({ id: 'w-b-done', status: 'working' }));
+    injectWorker(manager, makeWorker({ id: 'w-b-gone', status: 'waiting' }));
+    injectWorker(manager, makeWorker({ id: 'w-b-foreign', status: 'working' }));
+    mockGetWorkerStatuses.mockResolvedValue({
+      workers: {
+        'w-b-live': { status: 'running', error: null, task: { status: 'in_progress' } },
+        'w-b-done': { status: 'completed', error: null, task: { status: 'completed' } },
+      },
+      missing: ['w-b-gone'],
+    });
+
+    const result = await manager.reconcileLocalWorkers();
+
+    expect(mockGetWorkerStatuses).toHaveBeenCalledTimes(1);
+    expect((mockGetWorkerStatuses.mock.calls[0] as any[])[0].sort()).toEqual(['w-b-done', 'w-b-foreign', 'w-b-gone', 'w-b-live']);
+    expect(mockGetWorkerRemote).not.toHaveBeenCalled();
+    expect(result).toEqual({ checked: 4, cleaned: 2 });
+    expect(manager.getWorker('w-b-live')?.status).toBe('working');
+    expect(manager.getWorker('w-b-done')?.status).toBe('done');
+    expect(manager.getWorker('w-b-gone')?.status).toBe('error');
+    // Neither owned nor missing (another account's row, a refused read): left alone.
+    expect(manager.getWorker('w-b-foreign')?.status).toBe('working');
+  });
+
+  test('a failed batched read leaves every worker untouched', async () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-b-err', status: 'working' }));
+    mockGetWorkerStatuses.mockRejectedValue(new TypeError('fetch failed'));
+    const result = await manager.reconcileLocalWorkers();
+    expect(result.cleaned).toBe(0);
+    expect(manager.getWorker('w-b-err')?.status).toBe('working');
+    expect(mockGetWorkerRemote).not.toHaveBeenCalled();
+  });
+
+  test('a server without the batched read is read one worker at a time', async () => {
+    const manager = new WorkerManager(testConfig);
+    injectWorker(manager, makeWorker({ id: 'w-b-old1', status: 'working' }));
+    injectWorker(manager, makeWorker({ id: 'w-b-old2', status: 'working' }));
+    mockGetWorkerStatuses.mockResolvedValue(null);
+    mockGetWorkerRemote.mockResolvedValue({ status: 'running', task: { status: 'in_progress' } });
+    await manager.reconcileLocalWorkers();
+    expect(mockGetWorkerRemote).toHaveBeenCalledTimes(2);
   });
 
   test('cleans up local worker when remote worker is 404 (not found)', async () => {

@@ -224,7 +224,7 @@ describe('POST /api/admin/backfill-merged-prs', () => {
     expect(data.unresolvable).toBe(1);
     expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
     expect(recordedFacts).toEqual([
-      { target: { workerId: 'w1' }, fact: { kind: 'unresolvable', reason: expect.any(String) }, opts: undefined },
+      { target: { workerId: 'w1' }, fact: { kind: 'unresolvable', reason: expect.any(String) }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } },
     ]);
     // Bookkeeping still advances in its own write, without the guarded column.
     expect(mockSet).toHaveBeenCalledWith({ prLastCheckedAt: expect.any(Date), prCheckFailureCount: 6 });

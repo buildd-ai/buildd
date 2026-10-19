@@ -6,8 +6,8 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { prFactApplies, recordPrFact, recordPrFactSql, unscopedPrFactScope, type PrFactScope } from '../pr-facts';
-import { guardSql, prFactProjectionSql, setSql } from '../pr-fact-sql';
+import { prFactApplies, recordPrFact, recordPrFactSql, setPrFactsRecordedHook, unscopedPrFactScope, type PrFactScope } from '../pr-facts';
+import { guardSql, prFactProjectionSql, prLiveProjectionSql, setSql } from '../pr-fact-sql';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -57,7 +57,7 @@ describe('recordPrFactSql', () => {
 /**
  * S4a (docs/specs/workflow-kernel-library.md §1): a terminal fact (merged, closed) carries a
  * scope, minted in the kernel, that keeps delivery-owned rows out of the funnel unless their
- * delivery already says the same thing. A non-terminal fact needs none.
+ * delivery already says the same thing. A non-terminal fact is scoped too (below).
  */
 describe('terminal facts are scoped (S4a)', () => {
   const scope = (where: string): PrFactScope => ({ ...unscopedPrFactScope('test'), where: () => sql.raw(where) });
@@ -75,9 +75,6 @@ describe('terminal facts are scoped (S4a)', () => {
     // @ts-expect-error: as above.
     await expect(recordPrFact({ workerId: 'w1' }, { kind: 'merged', mergedAt: new Date() }, { exec })).rejects.toThrow('scope');
     expect(ran).toBe(0);
-    // A non-terminal fact needs no scope.
-    await recordPrFact({ workerId: 'w1' }, { kind: 'open' }, { exec });
-    expect(ran).toBe(1);
   });
 
   test('an unscoped scope adds no predicate', () => {
@@ -93,6 +90,90 @@ describe('terminal facts are scoped (S4a)', () => {
     const closed = render(prFactProjectionSql({ kind: 'closed' }, { from: sql.raw('d'), where: sql.raw('carries(d, w)') })).sql;
     expect(closed).toContain("pr_lifecycle_status = 'closed'");
     expect(closed).toContain('w.merged_at IS NULL AND (w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN (');
+  });
+});
+
+/**
+ * Every fact is scoped (AC-1, the non-terminal half): an open, CI, conflict or unresolvable fact
+ * on a delivery-owned row is the kernel's to project (kernel.ts `w_live`). The scope's `defers`
+ * predicate names those rows: the funnel reports them (so a caller's side effects still see a new
+ * fact) and writes none of them.
+ */
+describe('non-terminal facts are scoped: a deferred row is reported, never written', () => {
+  const deferring = (defers: string): PrFactScope => ({ ...unscopedPrFactScope('test'), defers: () => sql.raw(defers) });
+
+  test('a non-terminal fact with no scope is refused before any statement runs', async () => {
+    let ran = 0;
+    const exec = async () => { ran++; return { rows: [] }; };
+    // @ts-expect-error: every fact needs a scope.
+    await expect(recordPrFact({ workerId: 'w1' }, { kind: 'ci', status: 'ci_failed' }, { exec })).rejects.toThrow('scope');
+    // @ts-expect-error: as above.
+    await expect(recordPrFact({ workerId: 'w1' }, { kind: 'open' })).rejects.toThrow('scope');
+    expect(ran).toBe(0);
+  });
+
+  test('the deferred rows are locked and reported, and the UPDATE skips them', () => {
+    const q = recordPrFactSql({ workerId: 'w1' }, { kind: 'ci', status: 'ci_failed' }, {}, null, sql.raw('kernel_owned(w)'));
+    const { sql: text } = render(q!);
+    expect(text).toContain('kernel_owned(w) AS deferred');
+    expect(text).toMatch(/UPDATE workers w SET [\s\S]*FROM prev\n\s*WHERE w\.id = prev\.id AND NOT prev\.deferred AND /);
+    expect(text).toContain('WHERE prev.deferred OR prev.id IN (SELECT id FROM upd)');
+  });
+
+  test('with nothing deferred the statement is the plain one', () => {
+    const text = render(recordPrFactSql({ workerId: 'w1' }, { kind: 'ci', status: 'ci_failed' })!).sql;
+    expect(text).not.toContain('deferred');
+    expect(text).toContain('RETURNING w.id, w.task_id, w.workspace_id, prev.previous_status');
+  });
+
+  test('recordPrFact returns a deferred row flagged, and tells the recorded hook only what it wrote', async () => {
+    let q: string | null = null;
+    const exec = async (s: Parameters<PgDialect['sqlToQuery']>[0]) => {
+      q = render(s).sql;
+      return { rows: [
+        { id: 'w1', task_id: 't1', workspace_id: 'ws', previous_status: 'ci_green', deferred: true },
+        { id: 'w2', task_id: 't2', workspace_id: 'ws', previous_status: 'pr_open', deferred: false },
+      ] };
+    };
+    const told: string[][] = [];
+    setPrFactsRecordedHook((rows) => told.push(rows.map((r) => r.id)));
+    try {
+      const rows = await recordPrFact({ workerIds: ['w1', 'w2'] }, { kind: 'ci', status: 'ci_failed' }, { exec, scope: deferring('kernel_owned(w)') });
+      expect(rows).toEqual([
+        { id: 'w1', taskId: 't1', workspaceId: 'ws', previousStatus: 'ci_green', deferred: true },
+        { id: 'w2', taskId: 't2', workspaceId: 'ws', previousStatus: 'pr_open', deferred: false },
+      ]);
+      expect(told).toEqual([['w2']]);
+      expect(q).toContain('kernel_owned(w) AS deferred');
+    } finally {
+      setPrFactsRecordedHook(null);
+    }
+  });
+
+  test('a terminal fact never defers: its scope keeps the row out instead', async () => {
+    let q = '';
+    const exec = async (s: Parameters<PgDialect['sqlToQuery']>[0]) => { q = render(s).sql; return { rows: [] }; };
+    await recordPrFact({ workerId: 'w1' }, { kind: 'closed' }, { exec, scope: { ...deferring('kernel_owned(w)'), where: () => sql.raw('NOT agrees(w)') } });
+    expect(q).toContain('NOT agrees(w)');
+    expect(q).not.toContain('deferred');
+  });
+
+  test('an unscoped scope defers nothing', () => {
+    expect(unscopedPrFactScope('test').defers?.('ci') ?? null).toBeNull();
+  });
+
+  test("the kernel transition's live projection: the delivery's own reading at its current head", () => {
+    const { sql: text } = render(prLiveProjectionSql({ from: sql.raw('d'), where: sql.raw('carries(d, w)') }));
+    expect(text).toContain("WHEN d.mergeable = 'dirty' AND d.mergeable_head_sha = d.current_head_sha THEN 'conflict'");
+    expect(text).toContain("WHEN d.ci = 'red' AND d.ci_head_sha = d.current_head_sha THEN 'ci_failed'");
+    expect(text).toContain("WHEN d.ci = 'green' AND d.ci_head_sha = d.current_head_sha THEN 'ci_green'");
+    expect(text).toContain("ELSE 'pr_open'");
+    expect(text).toContain('conflict_detected_at = CASE WHEN');
+    // Terminal wins: a merged row is never moved back, and a terminal or closed delivery projects nothing here (T17 / T18 do).
+    expect(text).toContain("w.merged_at IS NULL AND w.pr_lifecycle_status IS DISTINCT FROM 'merged'");
+    expect(text).toContain('d.state NOT IN (');
+    expect(text).toContain('w.pr_lifecycle_status IS DISTINCT FROM');
+    expect(text).toContain('RETURNING w.id');
   });
 });
 

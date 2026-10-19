@@ -5803,10 +5803,14 @@ export type WorkflowCommandOutboxRow = typeof workflowCommandOutbox.$inferSelect
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
+// A row is owed by a PR delivery (delivery + transition) or by a mission epoch
+// (workflow-kernel-library.md §6: the writable epoch's branch refresh, drained
+// by apps/web/src/lib/workflow/epoch-effects.ts). Never both, never neither.
 export const workflowEffects = pgTable('workflow_effects', {
   id: uuid('id').primaryKey().defaultRandom(),
-  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
-  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }).notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }),
+  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }),
+  epochId: uuid('epoch_id').references(() => workflowMissionEpochs.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),
   dedupeKey: text('dedupe_key').notNull(),
   payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
@@ -5822,6 +5826,8 @@ export const workflowEffects = pgTable('workflow_effects', {
   dedupeUnique: uniqueIndex('workflow_effects_dedupe_unique').on(t.dedupeKey),
   dueIdx: index('workflow_effects_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
   deliveryIdx: index('workflow_effects_delivery_idx').on(t.deliveryId, t.createdAt),
+  epochIdx: index('workflow_effects_epoch_idx').on(t.epochId, t.createdAt).where(sql`${t.epochId} IS NOT NULL`),
+  oneOwner: check('workflow_effects_one_owner', sql`(${t.epochId} IS NULL AND ${t.deliveryId} IS NOT NULL AND ${t.transitionId} IS NOT NULL) OR (${t.epochId} IS NOT NULL AND ${t.deliveryId} IS NULL AND ${t.transitionId} IS NULL)`),
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
@@ -5898,6 +5904,8 @@ export const workflowScopeAmendments = pgTable('workflow_scope_amendments', {
   confidence: real('confidence'),
   fallback: text('fallback'),
   actor: text('actor'),
+  // A held decision's answer: 'in_scope' | 'amend_scope' | 'out_of_scope' (a person) | 'withdrawn' (the task left the mission).
+  resolution: text('resolution').$type<'in_scope' | 'amend_scope' | 'out_of_scope' | 'withdrawn'>(),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   resolvedBy: text('resolved_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

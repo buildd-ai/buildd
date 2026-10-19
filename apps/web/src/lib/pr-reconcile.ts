@@ -367,7 +367,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     const terminal = shouldMarkUnresolvable({ failureCount, prOpenedAt, now: new Date() });
 
     await recordCheck(worker.id, { prCheckFailureCount: failureCount }).catch(() => {});
-    if (terminal) await recordPrFact({ workerId: worker.id }, { kind: 'unresolvable', reason }).catch(() => {});
+    if (terminal) await recordPrFact({ workerId: worker.id }, { kind: 'unresolvable', reason }, { scope: factFunnelScope }).catch(() => {});
 
     if (terminal) {
       result.unresolvable++;
@@ -574,7 +574,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // never overwrite an existing conflictDetectedAt — matching the
           // webhook's own guard.
           const newlyConflicted = pr.mergeable_state === 'dirty' && !worker.conflictDetectedAt;
-          if (newlyConflicted) await recordPrFact({ workerId: worker.id }, { kind: 'conflict' });
+          if (newlyConflicted) await recordPrFact({ workerId: worker.id }, { kind: 'conflict' }, { scope: factFunnelScope });
           await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
           if (newlyConflicted) result.conflictsDetected++;
           result.skipped++;

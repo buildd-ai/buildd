@@ -696,6 +696,40 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(unsafe.toState).toBe('AWAITING_PUSH');
     expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
   });
+  test('AC-79: a merge of the base while the fix runs is a foreign push, never credited, and addresses nothing', () => {
+    const findings = [{ id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 't', required: true, status: 'open' as const, lastRound: 1 }];
+    const v = { ...fixing(), findings } as never;
+    for (const baseOnly of ['own_refresh', 'compare'] as const) {
+      const dec = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true }, baseOnly, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('FIXING');
+      expect(dec.patch.currentHeadSha).toBe('H2');
+      expect(dec.attempts).toEqual([]);
+      expect(dec.evidence).toMatchObject({ foreignPush: true, baseOnly });
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // Without the fact the same push is the fix's (§6.9 ancestry), as before.
+    const own = applied(run(v, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true } }));
+    expect(own.attempts[0]).toMatchObject({ attemptId: 'a1', set: { appendReportedSha: 'H2' } });
+    // A head the fix itself reported stays its own, whatever the compare says.
+    const reported = applied(run({ ...fixing({ reportedShas: ['H2'] }), findings } as never, { type: 'HeadObserved', actor: 'webhook', live: live('H2'), baseOnly: 'compare' }));
+    expect(reported.evidence.foreignPush).toBeUndefined();
+  });
+  test('AC-79: a fix that ends on a head moved only by a base merge does not complete; a delta round scoped to the refresh is queued', () => {
+    const merged = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running' })]);
+    for (const outcome of ['success', 'failed'] as const) {
+      const dec = applied(end(merged, { attemptId: 'a1', outcome, localHeadSha: null, commitCount: 0, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true }, baseOnly: true, changedPaths: ['src/a.ts'] }));
+      expect(dec.toState).toBe('AWAITING_REVIEW');
+      expect(dec.evidence.proof).toBeUndefined();
+      expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'noop' } });
+      expect(dec.attempts[0]).not.toMatchObject({ set: { pushedHeadSha: 'H2' } });
+      expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta', trigger: 'base_refresh', scope: { refresh: { fromHeadSha: 'H1', toHeadSha: 'H2' } } }));
+      expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+      expect(dec.findings ?? []).toEqual([]);
+    }
+    // A head that did not move is not this rule: the no-change end stands.
+    expect(applied(end(fixing(), { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1'), baseOnly: true })).toState).toBe('AWAITING_PUSH');
+  });
   const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {
@@ -857,6 +891,21 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
     expect(effectKinds(ex)).toContain('escalate_exhaustion');
+  });
+  test('fa37ed4b (#4996): round 2 of 3 asking for changes owes fix 2; round 3 of 3 escalates once, to a person', () => {
+    const rc = (n: number, head: string) => R({ id: `r${n}`, round: n, headSha: head, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    const fix = (n: number, head: string) => A({ id: `a${n}`, attemptNo: n, boundHeadSha: head, triggerReason: `r${n}`, taskId: `ft${n}`, status: 'done', outcome: 'success' });
+
+    const two = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 2, currentHeadSha: 'H2' }), [rc(1, 'H1'), R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' })], [fix(1, 'H1')]), { roundId: 'r2', headBound: 'H2' }));
+    expect(two.toState).toBe('CHANGES_REQUESTED');
+    expect(two.effects.filter((e) => e.kind === 'dispatch_fix').map((e) => e.dedupeKey)).toEqual(['dispatch_fix:d1:r2:2']);
+    expect(effectKinds(two)).not.toContain('escalate_exhaustion');
+
+    const three = applied(verdict(V(D({ state: 'AWAITING_REVIEW', currentRound: 3, currentHeadSha: 'H3' }), [rc(1, 'H1'), rc(2, 'H2'), R({ id: 'r3', round: 3, headSha: 'H3', kind: 'delta' })], [fix(1, 'H1'), fix(2, 'H2')]), { roundId: 'r3', headBound: 'H3' }));
+    expect({ to: three.toState, why: three.patch.stateReason }).toEqual({ to: 'ESCALATED', why: 'review_exhausted' });
+    expect(effectKinds(three).filter((k) => k === 'escalate_exhaustion')).toHaveLength(1);
+    expect(effectKinds(three)).not.toContain('dispatch_fix');
+    expect(effectKinds(three)).not.toContain('dispatch_review');
   });
   test('escalate and server-overridden approve → ESCALATED(review_escalated)', () => {
     expect(applied(verdict(v(), { verdict: 'escalate', effectiveVerdict: 'escalate' })).patch.stateReason).toBe('review_escalated');
@@ -1472,11 +1521,11 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     // A superseded PR already shipped: abandoning it is refused, not a silent no-op.
     expectResult(ab(V(D({ state: 'SUPERSEDED', supersededByPr: 9 }))), 'rejected', 'not_closed_unmerged');
   });
-  test('T20 and T21 both project the edge onto the worker rows and wake the mission (Slice D)', () => {
+  test('T20 and T21 both project the edge onto the worker rows and wake the mission; only T20 carries findings (Slice D, §5)', () => {
     const c = V(D({ state: 'CLOSED_UNMERGED' }));
     const t20 = applied(run(c, { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'r', authorised: true }));
     const t21 = applied(run(c, { type: 'Abandon', actor: 'human:u', reason: 'dropped' }));
-    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
+    expect(effectKinds(t20)).toEqual(['project_supersession', 'carry_findings', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(t21.patch).toMatchObject({ stateReason: 'dropped', recordedBy: 'human:u' });
   });
@@ -1514,6 +1563,21 @@ describe('T22–T24', () => {
     expect(ok.guard.headSha).toBe('H2');
     expect(ok.patch).toMatchObject({ approvedHeads: ['H2'], approvalBasis: 'human' });
     expect(ok.evidence).toMatchObject({ commitId: 'H2' });
+  });
+  // Living Spec r7 AC-45/AC-46: an approval past remaining required findings is an override; the policy has to allow it.
+  test('HumanResolve(approve) over open findings needs overridePermitted, and the bypass names the findings', () => {
+    const f = (id: string, status: string, required = true) => ({ id, originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: `${id}.ts`, line: 1, title: id, required, status, lastRound: 1 }) as never;
+    const e: KernelView = { ...V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentHeadSha: 'H2' })), findings: [f('a', 'open'), f('b', 'addressed'), f('c', 'resolved'), f('d', 'open', false)] };
+    const hr = (o: Partial<Extract<Command, { type: 'HumanResolve' }>>) => run(e, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true, ...o });
+    expectResult(hr({}), 'rejected', 'override_not_permitted');
+    expectResult(hr({ overridePermitted: false }), 'rejected', 'override_not_permitted');
+    expectResult(hr({ hasMergePermission: false, overridePermitted: true }), 'rejected', 'no_merge_permission');
+    const ok = applied(hr({ overridePermitted: true, reason: 'accepted' }));
+    expect(ok.toState).toBe('APPROVED');
+    expect(ok.bypass).toMatchObject({ choice: 'approve', actor: 'human:u', reason: 'accepted', overriddenFindings: ['a', 'b'] });
+    // Nothing left to override: a plain approval, as before.
+    const clean: KernelView = { ...e, findings: [f('c', 'resolved')] };
+    expect(applied(run(clean, { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H2', hasMergePermission: true })).toState).toBe('APPROVED');
   });
   test('DeliveryFailed: no PR only', () => {
     expectResult(run(V(D()), { type: 'DeliveryFailed', actor: 'runner', reason: 'x' }), 'rejected', 'pr_bound');

@@ -78,9 +78,10 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
-import { workerIdForNewPr, wouldDisplaceLivePr } from '@/lib/worker-pr-slot';
+import { otherOpenTaskPrs, supersessionPrompt, workerIdForNewPr, wouldDisplaceLivePr } from '@/lib/worker-pr-slot';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { githubReviewCounts } from '@buildd/shared';
 
 
 /**
@@ -1426,6 +1427,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // The task's other open PRs, minus the ones just closed as superseded: a
+    // later PR that re-implements an earlier one must say so, or the earlier
+    // one stays open with nobody deciding it.
+    const closedNow = new Set((supersededPrs ?? []).filter(p => p.closed).map(p => p.prNumber));
+    const otherOpenPrs = (await otherOpenTaskPrs(worker.taskId ?? null, prData.number).catch(() => []))
+      .filter(p => !closedNow.has(p.number));
+    const supersessionHint = supersessionPrompt(prData.number, otherOpenPrs);
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1435,6 +1444,7 @@ export async function POST(req: NextRequest) {
         title: prData.title,
       },
       ...(autoMergeEnabled ? { autoMergeEnabled: true } : {}),
+      ...(supersessionHint ? { otherOpenPrs, supersessionHint } : {}),
       ...(supersededPrs && supersededPrs.length > 0 ? { supersededPrs } : {}),
     });
   } catch (error) {
@@ -2733,6 +2743,8 @@ export async function GET(req: NextRequest) {
       approved: reviewStates.filter(s => s === 'APPROVED').length,
       changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
       pending: reviewStates.filter(s => s === 'PENDING').length,
+      // GitHub's own state for a review posted as a comment (every review buildd posts on a PR its App opened), AC-24.
+      commented: githubReviewCounts(reviewList).commented,
     };
 
     // Canonical state: GitHub is authoritative for open versus closed; the

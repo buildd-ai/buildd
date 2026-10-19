@@ -3,10 +3,10 @@
  * conflict) is created with.
  *
  * A repair used to copy its owner's manifest verbatim. When the owner declared
- * no scope (`['**']`, or nothing), the repair was scope-undeclared too, and the
- * claim loop's advisory_manifest gate runs one scope-undeclared task per mission
- * at a time, so a repo-wide owner (or any in-flight undeclared task) held every
- * repair of its PR. A repair edits the PR's files, so it can say so.
+ * no scope (`['**']`, or nothing), the repair was scope-undeclared too. A repair
+ * edits the PR's files, so it can say so: the overlap policy then sees real
+ * paths (an unmergeable one still holds). Scope is precision, never a
+ * precondition to start: an undeclared repair starts as well.
  *
  * Result: the owner's concrete entries, unioned with the PR's changed files when
  * they are known. With neither, today's behaviour (the owner's manifest as it

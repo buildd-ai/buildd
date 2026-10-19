@@ -15,8 +15,15 @@
  *    review keeps the version it was reviewed under; the next one carries the
  *    new version from the mission row);
  *  - held (ask, or an amendment that weakens a completion criterion): the row,
- *    a hold on the task (`context.heldBy`, the claim gate's single-task hold)
- *    and one mission note asking a person.
+ *    a hold on the task (`context.heldBy`, the claim gate's single-task hold,
+ *    naming the mission) and one mission note asking a person.
+ *
+ * The decision is asked when the task is filed into the mission and when an
+ * existing task is linked to it (`origin: 'linked'`). A held decision is
+ * answered once (`resolveTaskScope`): it fits, it changes the mission (the
+ * amendment applies, compare-and-set like any other), it belongs elsewhere
+ * (the task is cancelled), or the task left the mission (`withdrawn`). Every
+ * answer releases the hold that decision placed and answers its note.
  *
  * Reached from outside the kernel through the seam (`kernel-client`'s
  * `mission_scope` op) and `delivery-ship` (reads).
@@ -25,14 +32,18 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { decideAndRecord } from '@buildd/workflow-kernel/decide';
 import {
-  MISSION_SCOPE_POINT, clipScopeText, planScope, type ScopeCriterion, type ScopePlan, type ScopeProposal,
+  MISSION_SCOPE_POINT, SCOPE_HOLD_REASON, clipScopeText, planScope, planScopeResolution, scopeHold,
+  type ScopeCriterion, type ScopePlan, type ScopeProposal, type ScopeResolutionPlan,
 } from '@buildd/workflow-kernel/scope-amendments';
 import type { Decide, Store } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
-export const SCOPE_HOLD_REASON = 'mission_scope_decision';
+export { SCOPE_HOLD_REASON };
+
+/** Every scope question note's title ends so: how an answer finds the note it answers. */
+export const SCOPE_QUESTION_SUFFIX = ' change what this mission delivers?';
 
 export interface ScopeAmendmentRow {
   id: string;
@@ -44,12 +55,13 @@ export interface ScopeAmendmentRow {
   scopeVersionAfter: number | null;
   reason: string | null;
   weakens: Array<{ criterion: string; how: string }>;
+  resolution: string | null;
   createdAt: string;
 }
 
 export function scopeAmendmentsSql(missionIds: string[]): SQL {
   return sql`-- workflow:scope_amendments
-SELECT id, mission_id, source_task_id, decision, status, scope_version_before, scope_version_after, reason, weakens, created_at
+SELECT id, mission_id, source_task_id, decision, status, scope_version_before, scope_version_after, reason, weakens, resolution, created_at
 FROM workflow_scope_amendments
 WHERE mission_id IN (SELECT (jsonb_array_elements_text(${JSON.stringify(missionIds)}::jsonb))::uuid)
 ORDER BY mission_id, created_at`;
@@ -66,6 +78,7 @@ export async function scopeAmendmentsFor(missionIds: string[], exec: Exec = dbEx
       scopeVersionAfter: r.scope_version_after == null ? null : Number(r.scope_version_after),
       reason: r.reason == null ? null : String(r.reason),
       weakens: Array.isArray(r.weakens) ? (r.weakens as Array<{ criterion: string; how: string }>) : [],
+      resolution: r.resolution == null ? null : String(r.resolution),
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     };
     out.set(row.missionId, [...(out.get(row.missionId) ?? []), row]);
@@ -119,7 +132,7 @@ WITH a AS (
   ON CONFLICT (mission_id, source_task_id) DO NOTHING
   RETURNING id)${hold ? sql`,
 h AS (
-  UPDATE tasks SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('heldBy', jsonb_build_object('at', ${hold.at}::text, 'userId', NULL, 'reason', ${SCOPE_HOLD_REASON}::text)),
+  UPDATE tasks SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('heldBy', ${json(scopeHold(p.missionId, hold.at))}),
     updated_at = now()
   WHERE id = ${p.taskId}::uuid AND status = 'pending' AND EXISTS (SELECT 1 FROM a)
   RETURNING id),
@@ -145,7 +158,7 @@ export type ScopeOutcome =
 interface TaskRow {
   id: string; title: string; description: string | null; mission_id: string | null; workspace_id: string;
   task_class: string | null; mode: string | null; creation_source: string | null; context: Record<string, unknown> | null;
-  parent_mode: string | null;
+  parent_mode: string | null; parent_mission_id: string | null;
 }
 interface MissionRow {
   id: string; title: string; description: string | null; goal_criteria: ScopeCriterion[] | null; scope_version: number;
@@ -166,25 +179,49 @@ function proposalOf(context: Record<string, unknown> | null): ScopeProposal | nu
 
 const labelOf = (c: ScopeCriterion): string => c.label?.trim() || (c.type === 'description' ? String(c.description ?? '') : c.type === 'command' ? `command: ${c.command ?? ''}` : c.type);
 
+async function taskRow(exec: Exec, taskId: string): Promise<TaskRow | undefined> {
+  return (((await exec(sql`-- workflow:scope_task
+SELECT t.id, t.title, t.description, t.mission_id, t.workspace_id, t.task_class, t.mode, t.creation_source, t.context,
+  pt.mode AS parent_mode, pt.mission_id AS parent_mission_id
+FROM tasks t LEFT JOIN tasks pt ON pt.id = t.parent_task_id
+WHERE t.id = ${taskId}::uuid`)).rows ?? []) as TaskRow[])[0];
+}
+
+async function missionRow(exec: Exec, missionId: string): Promise<MissionRow | undefined> {
+  return (((await exec(sql`-- workflow:scope_mission
+SELECT id, title, description, goal_criteria, scope_version, status, team_id, workspace_id FROM missions WHERE id = ${missionId}::uuid`)).rows ?? []) as MissionRow[])[0];
+}
+
+const missionScope = (m: MissionRow) => ({ description: m.description, goalCriteria: m.goal_criteria, scopeVersion: Number(m.scope_version ?? 1) });
+
+/**
+ * Is this task the organizer decomposing the mission's own brief (the
+ * contract, not a change to it)? A task filed by the organizer, a conflict
+ * fix, or a child of a planning task is. A task linked from elsewhere is
+ * only when its planning parent belongs to this same mission: work the
+ * organizer planned for another mission, moved here, is new to this one.
+ */
+function isOrganizerDecomposition(task: TaskRow, origin: 'filed' | 'linked'): boolean {
+  if (origin === 'linked') return task.parent_mode === 'planning' && task.parent_mission_id === task.mission_id;
+  return task.creation_source === 'orchestrator' || task.creation_source === 'conflict' || task.parent_mode === 'planning';
+}
+
 /**
  * Decide the scope of a task added to a mission, once, and write what it
  * means. Idempotent: a second call for the same task reads the recorded
- * decision and writes nothing new.
+ * decision and writes nothing new. `origin` is how it was added: filed into
+ * the mission (the default) or linked to it (`manage_missions link_task`, a
+ * task PATCH setting `missionId`); both get the same decision and the same
+ * compare-and-set on the mission's scope version.
  */
-export async function decideTaskScope(p: { taskId: string; actor: string }, deps: ScopeDeps = {}): Promise<ScopeOutcome> {
+export async function decideTaskScope(p: { taskId: string; actor: string; origin?: 'filed' | 'linked' }, deps: ScopeDeps = {}): Promise<ScopeOutcome> {
   const exec = deps.exec ?? dbExec;
-  const [task] = ((await exec(sql`-- workflow:scope_task
-SELECT t.id, t.title, t.description, t.mission_id, t.workspace_id, t.task_class, t.mode, t.creation_source, t.context, pt.mode AS parent_mode
-FROM tasks t LEFT JOIN tasks pt ON pt.id = t.parent_task_id
-WHERE t.id = ${p.taskId}::uuid`)).rows ?? []) as TaskRow[];
+  const task = await taskRow(exec, p.taskId);
   if (!task) return { decided: false, reason: 'not_found' };
   if (!task.mission_id) return { decided: false, reason: 'not_in_mission' };
   if (task.task_class !== 'work' || task.mode === 'planning') return { decided: false, reason: 'not_deliverable' };
   const proposal = proposalOf(task.context);
-  // The organizer decomposing its own brief is the contract, not a change to it.
-  if (!proposal && (task.creation_source === 'orchestrator' || task.creation_source === 'conflict' || task.parent_mode === 'planning')) {
-    return { decided: false, reason: 'organizer_decomposition' };
-  }
+  if (!proposal && isOrganizerDecomposition(task, p.origin ?? 'filed')) return { decided: false, reason: 'organizer_decomposition' };
 
   const { workflowKernel } = await import('./kernel-ports');
   const kernel = deps.store && deps.decide ? null : await workflowKernel();
@@ -201,8 +238,7 @@ WHERE mission_id = ${task.mission_id}::uuid AND source_task_id = ${task.id}::uui
         scopeVersion: Number(existing.scope_version_after ?? existing.scope_version_before), reason: String(existing.reason ?? ''),
       };
     }
-    const [mission] = ((await exec(sql`-- workflow:scope_mission
-SELECT id, title, description, goal_criteria, scope_version, status, team_id, workspace_id FROM missions WHERE id = ${task.mission_id}::uuid`)).rows ?? []) as MissionRow[];
+    const mission = await missionRow(exec, task.mission_id);
     if (!mission) return { decided: false, reason: 'not_found' };
     if (mission.status === 'archived') return { decided: false, reason: 'mission_terminal' };
     const merged = Number((((await exec(sql`-- workflow:scope_deliveries
@@ -223,19 +259,18 @@ SELECT count(*) AS n FROM workflow_mission_epochs WHERE mission_id = ${mission.i
     );
     const plan = planScope({
       verdict: fact.verdict, reason: fact.reason,
-      mission: { description: mission.description, goalCriteria: mission.goal_criteria, scopeVersion: Number(mission.scope_version ?? 1) },
-      task: { id: task.id, title: task.title }, proposal,
+      mission: missionScope(mission), task: { id: task.id, title: task.title }, proposal,
     });
     const at = (deps.now ?? (() => new Date()))().toISOString();
     const hold = plan.status === 'held' ? {
       at,
-      noteTitle: `Does "${clipScopeText(task.title, 120)}" change what this mission delivers?`,
+      noteTitle: `Does "${clipScopeText(task.title, 120)}"${SCOPE_QUESTION_SUFFIX}`,
       noteBody: [
         `"${task.title}" was added to this mission and is on hold until you decide, because ${plan.decision === 'ask' ? 'buildd could not tell whether it fits the mission as written' : plan.reason}.`,
         '',
         '- It fits the mission as written: resume the task.',
-        `- It changes the mission: edit the mission's description or goals${plan.weakens.length > 0 ? ' (keeping the checks it would have weakened, or removing them yourself)' : ''}, then resume the task.`,
-        '- It belongs elsewhere: move or cancel the task.',
+        `- It changes the mission: accept the change on the task${plan.weakens.length > 0 ? ' (this removes or loosens the checks named above)' : ''}, or edit the mission's description or goals yourself, then resume the task.`,
+        '- It belongs elsewhere: cancel the task, or move it to another mission.',
       ].join('\n'),
     } : null;
     const r = ((await exec(recordScopeSql({
@@ -251,4 +286,95 @@ SELECT count(*) AS n FROM workflow_mission_epochs WHERE mission_id = ${mission.i
     // Another amendment moved the mission, or another caller recorded this task: read again.
   }
   throw new Error(`scope decision for task ${p.taskId} did not converge`);
+}
+
+// ── A person's answer to a held decision ────────────────────────────────────
+
+export type ScopeAnswerOutcome =
+  | { resolved: false; reason: 'not_found' | 'no_decision' | 'not_in_mission' | 'invalid_answer' }
+  | { resolved: true; replayed: boolean; resolution: string; scopeVersion: number; cancelled: boolean };
+
+/**
+ * The answer as one statement. The row moves from `held` to `resolved` only
+ * once; an accepted amendment moves the mission only if it is still at the
+ * version the plan read (and the open delivery with no PR yet takes the new
+ * version), and the row moves only if that happened. The task's hold is
+ * released only when it is the one this mission's decision placed; `out of
+ * scope` also cancels a task still pending. The decision's open question
+ * note is answered.
+ */
+export function resolveScopeSql(p: { missionId: string; taskId: string; plan: Extract<ScopeResolutionPlan, { act: true }>; actor: string }): SQL {
+  const { missionId, taskId, plan } = p;
+  const amend = plan.amend;
+  const heldRow = sql`SELECT 1 FROM workflow_scope_amendments WHERE mission_id = ${missionId}::uuid AND source_task_id = ${taskId}::uuid AND status = 'held'`;
+  const ours = sql`(t.context->'heldBy'->>'reason' = ${SCOPE_HOLD_REASON}::text AND COALESCE(t.context->'heldBy'->>'missionId', ${missionId}::text) = ${missionId}::text)`;
+  const cancel = sql`(${plan.cancelTask}::boolean AND t.status = 'pending')`;
+  return sql`-- workflow:scope_resolve
+WITH ${amend ? sql`m AS (
+  UPDATE missions SET description = ${amend.after.description}::text, goal_criteria = ${json(amend.after.goalCriteria)},
+    scope_version = ${amend.scopeVersionAfter}::int, updated_at = now()
+  WHERE id = ${missionId}::uuid AND scope_version = ${amend.scopeVersionBefore}::int AND EXISTS (${heldRow})
+  RETURNING id),
+e AS (
+  UPDATE workflow_mission_epochs SET scope_version = ${amend.scopeVersionAfter}::int, version = version + 1, updated_at = now()
+  WHERE mission_id = ${missionId}::uuid AND state = 'open' AND pr_number IS NULL AND EXISTS (SELECT 1 FROM m)
+  RETURNING id),
+` : sql``}r AS (
+  UPDATE workflow_scope_amendments SET status = 'resolved', resolution = ${plan.resolution}::text, resolved_at = now(), resolved_by = ${p.actor}::text${amend ? sql`,
+    scope_version_after = ${amend.scopeVersionAfter}::int, after = ${json(amend.after)}, weakens = ${json(amend.weakens)}` : sql``}
+  WHERE mission_id = ${missionId}::uuid AND source_task_id = ${taskId}::uuid AND status = 'held'${amend ? sql` AND EXISTS (SELECT 1 FROM m)` : sql``}
+  RETURNING id),
+h AS (
+  UPDATE tasks t SET
+    context = CASE WHEN ${ours} THEN t.context - 'heldBy' ELSE t.context END,
+    status = CASE WHEN ${cancel} THEN 'cancelled' ELSE t.status END,
+    updated_at = now()
+  WHERE t.id = ${taskId}::uuid AND EXISTS (SELECT 1 FROM r) AND (${ours} OR ${cancel})
+  RETURNING t.status),
+n AS (
+  UPDATE mission_notes SET status = 'answered'
+  WHERE mission_id = ${missionId}::uuid AND task_id = ${taskId}::uuid AND author_type = 'system' AND type = 'question' AND status = 'open'
+    AND title LIKE ${`%${SCOPE_QUESTION_SUFFIX}`}::text AND EXISTS (SELECT 1 FROM r)
+  RETURNING id)
+SELECT EXISTS (SELECT 1 FROM r) AS written, (SELECT status FROM h LIMIT 1) AS task_status`;
+}
+
+/**
+ * Record the answer to a held scope decision of task `taskId` in mission
+ * `missionId`, once, and do what it means. Idempotent: an answered decision
+ * is read back (`replayed`), never answered again. A person answers only for
+ * a task still in the mission; `withdrawn` is for one that left it.
+ */
+export async function resolveTaskScope(
+  p: { missionId: string; taskId: string; answer: string; actor: string },
+  deps: Pick<ScopeDeps, 'exec'> = {},
+): Promise<ScopeAnswerOutcome> {
+  const exec = deps.exec ?? dbExec;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const row = ((await exec(sql`-- workflow:scope_existing
+SELECT status, resolution, scope_version_after, scope_version_before FROM workflow_scope_amendments
+WHERE mission_id = ${p.missionId}::uuid AND source_task_id = ${p.taskId}::uuid`)).rows ?? [])[0] as Record<string, unknown> | undefined;
+    if (!row) return { resolved: false, reason: 'no_decision' };
+    const scopeVersion = Number(row.scope_version_after ?? row.scope_version_before);
+    if (row.status === 'resolved') return { resolved: true, replayed: true, resolution: String(row.resolution ?? ''), scopeVersion, cancelled: false };
+    const task = await taskRow(exec, p.taskId);
+    const mission = await missionRow(exec, p.missionId);
+    if (!task || !mission) return { resolved: false, reason: 'not_found' };
+    if (p.answer !== 'withdrawn' && task.mission_id !== p.missionId) return { resolved: false, reason: 'not_in_mission' };
+    const plan = planScopeResolution({
+      answer: p.answer, held: { status: String(row.status) }, mission: missionScope(mission),
+      task: { id: task.id, title: task.title }, proposal: proposalOf(task.context),
+    });
+    if (!plan.act) return plan.reason === 'not_held' ? { resolved: false, reason: 'no_decision' } : { resolved: false, reason: plan.reason };
+    const r = ((await exec(resolveScopeSql({ missionId: p.missionId, taskId: p.taskId, plan, actor: p.actor }))).rows ?? [])[0] as
+      { written?: unknown; task_status?: unknown } | undefined;
+    if (r?.written === true || r?.written === 't') {
+      return {
+        resolved: true, replayed: false, resolution: plan.resolution,
+        scopeVersion: plan.amend?.scopeVersionAfter ?? scopeVersion, cancelled: plan.cancelTask && r.task_status === 'cancelled',
+      };
+    }
+    // Another amendment moved the mission, or another answer landed first: read again.
+  }
+  throw new Error(`scope answer for task ${p.taskId} did not converge`);
 }

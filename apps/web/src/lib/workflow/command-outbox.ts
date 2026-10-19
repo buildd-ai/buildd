@@ -23,9 +23,10 @@
  * web host that could not reach it costs nothing more. On the web host (shadow, or the liveness
  * fallback) it re-submits through the one client, which sends it to the control plane in own mode.
  */
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Exec } from './kernel';
+import type { OutboxDepth } from './kernel-telemetry';
 import { kernelHost } from './kernel-host';
 import { COMMAND_LEASE_MS, COMMAND_RETENTION_DAYS, postgresCommandLedger, type CommandLedger } from './command-ledger';
 import {
@@ -50,6 +51,7 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   abandon: false,
   // A person clicked and got the 503: they click again.
   dispose_finding: false,
+  approve_override: false,
   // The floor imports a PR it does not know (reconcile.ts), and re-drains effects on its own.
   open_delivery: false,
   drain: false,
@@ -57,6 +59,9 @@ export const PARK_ON_UNAVAILABLE: Record<KernelOp, boolean> = {
   heal: false,
   mission_epoch: false,
   mission_scope: false,
+  // A person answering gets the 503 and answers again; a withdrawal is re-sent by nothing, but the
+  // decision stays held and is answered by the next person to look.
+  mission_scope_resolve: false,
   // The runner reports an attempt's end once; the floor re-sends an owner's end, never a repair's or a review's.
   attempt_ended: true,
   // A requeue is reported once too. The door's caller projects it on the web host meanwhile, so a
@@ -333,4 +338,30 @@ export async function drainParkedCommands(deps: ParkedDrainDeps = {}): Promise<P
   }
   summary.pruned = await outbox.prune().catch(() => 0);
   return summary;
+}
+
+// ── Depth ───────────────────────────────────────────────────────────────────
+
+/**
+ * What is still waiting after a floor pass: door commands parked for the floor (and the oldest's age),
+ * and kernel effects due or stuck past their lease (and the oldest's due age). Both reads use the
+ * tables' partial due indexes.
+ */
+export function outboxDepthSql(): SQL {
+  return sql`-- workflow:outbox_depth
+SELECT
+  (SELECT count(*)::int FROM workflow_command_outbox WHERE status = 'pending') AS parked,
+  (SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0)::float8 FROM workflow_command_outbox WHERE status = 'pending') AS parked_oldest_s,
+  (SELECT count(*)::int FROM workflow_effects
+    WHERE (status = 'pending' AND not_before <= now()) OR (status = 'delivering' AND lease_until < now())) AS effects_due,
+  (SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(not_before)), 0)::float8 FROM workflow_effects
+    WHERE (status = 'pending' AND not_before <= now()) OR (status = 'delivering' AND lease_until < now())) AS effects_oldest_s`;
+}
+
+export async function readOutboxDepth(exec: Exec = dbExec): Promise<OutboxDepth> {
+  const row = (((await exec(outboxDepthSql())).rows ?? []) as Array<Record<string, unknown>>)[0] ?? {};
+  return {
+    parked: Number(row.parked ?? 0), parkedOldestAgeS: Number(row.parked_oldest_s ?? 0),
+    effectsDue: Number(row.effects_due ?? 0), effectsOldestAgeS: Number(row.effects_oldest_s ?? 0),
+  };
 }

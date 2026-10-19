@@ -39,7 +39,7 @@ export const SERVED_BY = 'x-buildd-served-by';
  * pass through to the web app. index.test.ts reads the web app's directory
  * and fails when one is missing here.
  */
-const WORKER_ID_SIBLINGS = new Set(['active', 'claim', 'heartbeat', 'local-sessions', 'mine', 'queue']);
+const WORKER_ID_SIBLINGS = new Set(['active', 'claim', 'heartbeat', 'local-sessions', 'mine', 'queue', 'status']);
 
 /** The route a request addresses, with its path params; null when it is not an execution route. */
 export function matchRoute(method: string, pathname: string): { route: Route; params: Record<string, string> } | null {
@@ -54,7 +54,11 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
   return null;
 }
 
-export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string }
+export interface Env {
+  EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string;
+  /** Axiom ingest token for the kernel's spans (axiom-export.ts); unset: no spans leave the Worker. */
+  AXIOM_INGEST_TOKEN?: string; AXIOM_TRACES_DATASET?: string; AXIOM_OTLP_URL?: string;
+}
 
 /**
  * The kernel command API (docs/specs/workflow-kernel-library.md §3): served on

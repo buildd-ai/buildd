@@ -25,6 +25,8 @@ const REPO = join(import.meta.dir, '../../../..');
 const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(|callerOwnsWorker\(|(?:park|unpark|reattach)Where\(/; // the park predicates apply it via ownedByCaller (lib/worker-park.ts)
 
 const OPTED_IN = [
+  // Batched worker status (runner reconcile): only the caller account's workers (callerOwnsWorker), and a per-task token only its own task's worker (.taskScope).
+  'apps/web/src/app/api/workers/status/route.ts',
   // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
   // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
@@ -64,6 +66,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/missions/[id]/evaluate/route.ts',
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
   'apps/web/src/app/api/missions/[id]/route.ts',
+  // Refuses a task token (.taskScope): approving past open findings is a person's decision.
+  'apps/web/src/app/api/prs/[prNumber]/approve-override/route.ts',
   'apps/web/src/app/api/prs/route.ts',
   // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
   'apps/web/src/app/api/providers/explain/route.ts',

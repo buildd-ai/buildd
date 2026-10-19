@@ -41,6 +41,7 @@ import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
@@ -131,7 +132,28 @@ import { readRound } from '@/lib/read-round';
 export const dynamic = 'force-dynamic';
 
 
-export default async function MissionDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+};
+
+/**
+ * Live events re-render this body through `loadRegion` (components/LiveRegion.tsx)
+ * instead of a router refresh. The body is the same function either way, so what
+ * a live event skips is the layout, not any of the mission's own reads: the board
+ * rows and header are derived from the whole mission read (gates, deliveries,
+ * release and visual state), and have no smaller source to render from.
+ */
+export default async function MissionDetailPage(props: PageProps) {
+  const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
+  async function loadRegion() {
+    'use server';
+    return MissionDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
+  }
+  return <LiveRegion load={loadRegion}>{await MissionDetailBody(props)}</LiveRegion>;
+}
+
+async function MissionDetailBody({
   params,
   searchParams,
 }: {

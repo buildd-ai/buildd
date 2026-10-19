@@ -76,6 +76,12 @@ export interface EscalationBriefPermissions {
   overridePermitted?: boolean;
   /** The viewer holds merge permission on the repo (T14's evidence for an approval). */
   hasMergePermission?: boolean;
+  /**
+   * The host's own sentence for why this viewer cannot override (their team role, an unlinked
+   * GitHub account, a check that could not be made). Replaces the default wording; ignored when
+   * the override is available.
+   */
+  overrideUnavailableReason?: string | null;
 }
 
 const REVIEW_FAMILY_REASONS = new Set(['review_escalated', 'review_exhausted', 'review_unavailable']);
@@ -141,9 +147,10 @@ export function deriveEscalationBrief(view: KernelView, perms: EscalationBriefPe
       impact: 'Records your approval of the current head over the remaining findings, which stay listed as overridden. Merge then follows the workspace policy.',
       requires: 'Merge permission on the repo, and a policy that allows an override',
       available: perms.overridePermitted === true && perms.hasMergePermission === true && hasHead,
-      unavailableReason: perms.overridePermitted !== true
-        ? 'The merge policy does not allow approving past remaining findings.'
-        : perms.hasMergePermission !== true ? 'You do not hold merge permission on this repo.' : hasHead ? null : 'The PR has no recorded head to approve.',
+      unavailableReason: !hasHead ? 'The PR has no recorded head to approve.'
+        : perms.overridePermitted === true && perms.hasMergePermission === true ? null
+        : perms.overrideUnavailableReason
+          ?? (perms.overridePermitted !== true ? 'The merge policy does not allow approving past remaining findings.' : 'You do not hold merge permission on this repo.'),
     },
   ];
 

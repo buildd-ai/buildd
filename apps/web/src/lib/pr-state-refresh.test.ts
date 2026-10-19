@@ -543,7 +543,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-ci-fail' },
       fact: { kind: 'ci', status: 'ci_green', headSha: 'sha-abc', currentHeadSha: 'sha-abc' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
@@ -569,7 +569,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-ci-green' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-def', currentHeadSha: 'sha-def' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });
@@ -599,7 +599,7 @@ describe('refreshStaleWorkers', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w-2010' },
       fact: { kind: 'ci', status: 'ci_failed', headSha: 'sha-2010', currentHeadSha: 'sha-2010' },
-      opts: undefined,
+      opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) },
     }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });

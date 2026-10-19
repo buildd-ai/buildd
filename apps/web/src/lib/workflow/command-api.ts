@@ -42,6 +42,7 @@ import { verifyRequest } from '@buildd/dispatch-contract';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
+import { KERNEL_SPAN, commandOutcomeOf, commandSpanAttributes, emitKernelSpan } from './kernel-telemetry';
 import type { InstallationResolution } from './command-installation';
 import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
@@ -80,6 +81,8 @@ export interface KernelOps {
   abandon: { input: Parameters<Seam['abandonDelivery']>[0]; result: Awaited<ReturnType<Seam['abandonDelivery']>> };
   /** §5: a person waives or defers one finding. Person-only: see PERSON_OPS. */
   dispose_finding: { input: Parameters<Seam['disposeFinding']>[0]; result: Awaited<ReturnType<Seam['disposeFinding']>> };
+  /** r7 AC-45: a person approves the head past remaining findings. Person-only: see PERSON_OPS. */
+  approve_override: { input: Parameters<Seam['approveOverrideThroughKernel']>[0]; result: Awaited<ReturnType<Seam['approveOverrideThroughKernel']>> };
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
@@ -92,6 +95,8 @@ export interface KernelOps {
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
   mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
+  /** The answer to a held scope decision, recorded once; the hold is released (§6 scope amendments). */
+  mission_scope_resolve: { input: Parameters<Seam['missionScopeResolveCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeResolveCommand']>> };
   /**
    * T4: an attempt of a delivery ended (the worker PATCH, the reaper, a cancel, a reviewer takeover).
    * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
@@ -152,11 +157,13 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   record_supersession: (s, i) => s.recordSupersession(i),
   abandon: (s, i) => s.abandonDelivery(i),
   dispose_finding: (s, i) => s.disposeFinding(i),
+  approve_override: (s, i) => s.approveOverrideThroughKernel(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
   heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
+  mission_scope_resolve: (s, i) => s.missionScopeResolveCommand(i),
   attempt_ended: (s, { workspaceId, ...p }) => {
     // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
@@ -213,7 +220,7 @@ const isSystemDeliveryOp = (op: unknown): op is 'drain' | 'heal' => op === 'drai
  * Ops only a signed-in person may submit, as `human:<their id>`: an agent, an API key or a grant
  * session is refused here, before the reach check, whatever actor string its input names.
  */
-export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding']);
+export const PERSON_OPS: ReadonlySet<KernelOp> = new Set<KernelOp>(['dispose_finding', 'approve_override']);
 /** Why `principal` may not submit `op`, or null: a person-only op needs a `user` whose id is the input's `human:` actor. */
 export function personOpRefusal(op: KernelOp, input: unknown, principal: KernelPrincipal | null): string | null {
   if (!PERSON_OPS.has(op)) return null;
@@ -438,6 +445,29 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */
 export async function handleCommandRequest(req: Request, deps: CommandServerDeps = {}): Promise<Response> {
+  // The command's span (kernel-telemetry.ts `kernel.command`): op, outcome, status, latency, on the control plane.
+  const startedAt = Date.now();
+  const seen: { op?: string } = {};
+  const res = await handleCommandRequestUnreported(req, deps, seen);
+  if ((deps.host ?? kernelHost)() === 'control-plane') await reportCommand(res, seen.op ?? null, startedAt);
+  return res;
+}
+
+async function reportCommand(res: Response, op: string | null, startedAt: number): Promise<void> {
+  try {
+    const body = (await res.clone().json().catch(() => null)) as { code?: unknown; replayed?: unknown } | null;
+    const outcome = commandOutcomeOf(res.status, body);
+    const latencyMs = Date.now() - startedAt;
+    emitKernelSpan({
+      name: KERNEL_SPAN.command, startMs: startedAt, durationMs: latencyMs, error: outcome !== 'applied' && outcome !== 'replayed',
+      attributes: commandSpanAttributes({ op, status: res.status, outcome, code: typeof body?.code === 'string' ? body.code : null, latencyMs }),
+    });
+  } catch {
+    // Telemetry never reaches the answer.
+  }
+}
+
+async function handleCommandRequestUnreported(req: Request, deps: CommandServerDeps, seen: { op?: string }): Promise<Response> {
   const env = deps.env ?? process.env;
   const host = (deps.host ?? kernelHost)();
   if (req.method !== 'POST') return refuse(405, 'method_not_allowed', 'POST only');
@@ -457,6 +487,7 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   try { body = JSON.parse(text); } catch { return refuse(400, 'bad_request', 'body is not JSON'); }
   const problem = commandProblem(body);
   if (problem) return refuse(400, 'bad_request', problem);
+  seen.op = (body as CommandRequest).op;
   return applyCommandRequest(body as CommandRequest, deps);
 }
 
