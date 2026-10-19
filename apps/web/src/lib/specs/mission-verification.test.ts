@@ -1,10 +1,20 @@
 import { describe, it, expect, mock } from 'bun:test';
 
-mock.module('@buildd/core/db', () => ({ db: {} }));
+let prior: any[] = [];
+let runs: unknown[] = [];
+mock.module('./mission-acceptance-checks', () => ({ runFinalAcceptanceChecks: async (...args: unknown[]) => { runs.push(args); } }));
+mock.module('@buildd/core/db', () => ({ db: {
+  query: {
+    tasks: { findMany: async () => prior },
+    missions: { findFirst: async () => ({ id: 'm', title: 'Mission', workspaceId: 'ws', integrationBranchEnabled: true, workingBranch: 'mission/x' }) },
+    workspaces: { findFirst: async () => ({ id: 'ws' }) },
+  },
+  insert: () => ({ values: () => ({ returning: async () => [{ id: 'new-final' }] }) }),
+} }));
 mock.module('@/lib/dispatch-authority', () => ({ announceTaskCreated: async () => {}, wakeTask: async () => {} }));
 mock.module('@/lib/effective-roles', () => ({ pickEffectiveRole: async () => null }));
 
-const { decideFinalVerification, targetKey, MAX_ATTEMPTS_PER_TARGET } = await import('./mission-verification');
+const { decideFinalVerification, targetKey, MAX_ATTEMPTS_PER_TARGET, ensureFinalVerification } = await import('./mission-verification');
 
 const A = 'a'.repeat(40);
 const direct = (mergeShas: string[]) => ({ kind: 'direct' as const, mergeShas, validHeads: new Set<string>() });
@@ -35,4 +45,16 @@ describe('final verification is filed once per integrated target', () => {
     const twice = Array.from({ length: MAX_ATTEMPTS_PER_TARGET }, (_, i) => ({ id: `t${i}`, status: 'failed', targetKey: 'k' }));
     expect(decideFinalVerification(twice, 'k').kind).toBe('open');
   });
+});
+
+it('launches mechanical checks for both newly filed and reused final verification tasks', async () => {
+  const criterion = { type: 'living_spec', specId: 's', specRevisionId: 'r', revision: 1, contentHash: 'h' } as any;
+  const standing = { target: { kind: 'integration', headSha: A, branch: 'mission/x' }, scope: [], standings: [], title: 'Spec' } as any;
+  prior = []; runs = [];
+  expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('dispatched');
+  expect(runs).toEqual([['new-final', 'm']]);
+  prior = [{ id: 'old-final', status: 'completed', context: { finalVerification: { missionId: 'm', targetKey: `head:${A}` } } }];
+  runs = [];
+  expect((await ensureFinalVerification('m', criterion, standing)).kind).toBe('open');
+  expect(runs).toEqual([['old-final', 'm']]);
 });

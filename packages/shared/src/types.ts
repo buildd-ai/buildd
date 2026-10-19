@@ -3287,6 +3287,8 @@ export interface LivingSpecCriterionStanding {
   standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
   headSha: string | null;
   verdictId?: string;
+  /** Review verdicts a deciding test result outranks (spec 1dc6cc39 R-85); absent reads 0. */
+  overriddenReviews?: number;
 }
 
 /**

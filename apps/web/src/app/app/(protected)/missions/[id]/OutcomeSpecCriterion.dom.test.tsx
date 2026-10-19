@@ -92,14 +92,13 @@ const setInput = (el: HTMLInputElement, value: string) => {
 describe('outcome spec row', () => {
   it('counts only real passes: a waived and a stale requirement are not passed', () => {
     render();
-    const summary = container.querySelector('[data-testid="outcome-spec-summary"]')!.textContent!;
-    expect(summary).toContain('Revision 7');
-    expect(summary).toContain('One of four pass on abc1234.');
+    // The count, commit and unmet ids are the Checks row's; this block holds only the actions.
+    expect(specRow().textContent).not.toContain('Revision 7');
+    expect(specRow().textContent).not.toContain('pass on abc1234');
     expand();
     const open = container.querySelector('[data-testid="outcome-spec-open"]')!.textContent!;
-    expect(open).toContain('Out of date');
-    expect(open).toContain('R-2');
-    expect(open).toContain('Not checked');
+    expect(open).not.toContain('Out of date');
+    expect(open).toContain('Waive R-2');
     expect(container.querySelector('[data-testid="outcome-spec-waived"]')!.textContent).toContain('R-3 waived: not part of this mission');
     expect(container.querySelector('[data-testid="unwaive-R-3"]')!.textContent).toBe('Unwaive');
   });
