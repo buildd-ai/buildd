@@ -9,6 +9,7 @@
  * runs, and CI's `db-architecture` job provides one. It never skips: a suite
  * that silently passes with no database is the failure this exists to stop.
  */
+import { afterEach, expect } from 'bun:test';
 import { db } from '@buildd/core/db';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
@@ -18,6 +19,43 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LEGACY_MIGRATIONS_PATH, loadLegacyMap } from '@buildd/core/db/legacy-migrations';
 import { readMigrationTree } from '@buildd/core/db/migrate-tree';
+
+/**
+ * No DB test may reach the live control plane. A test that sends a signed kernel
+ * command (own mode + a command key) without first installing its in-process
+ * control plane would otherwise hit the real host over the network; the refusal
+ * comes back as an error some tests tolerate, so the test passes while leaking.
+ * Every fetch to that origin that is not answered by a test's own wrapper lands
+ * here: it throws, and the test that made it fails in afterEach (the throw alone could be swallowed by a door that tolerates errors).
+ */
+const LIVE_CONTROL_PLANE_ORIGIN = 'https://control-plane.buildd.dev'; // kernel-client.ts CONTROL_PLANE_URL
+const GUARD = Symbol.for('buildd.db-tests.live-control-plane-guard');
+const liveControlPlaneLeaks: string[] = [];
+
+function installLiveControlPlaneGuard(): void {
+  const g = globalThis as Record<symbol, unknown>;
+  if (g[GUARD]) return;
+  g[GUARD] = true;
+  const real = globalThis.fetch;
+  const guarded = (async (input: string | URL | Request, init?: RequestInit) => {
+    const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const origins = [LIVE_CONTROL_PLANE_ORIGIN, process.env.CONTROL_PLANE_URL].filter(Boolean) as string[];
+    if (origins.some((o) => href.startsWith(o.replace(/\/+$/, '')))) {
+      const msg = `a test sent a request to the live control plane (${href}). Install the in-process control plane before the step that submits a command, or run that step in shadow mode.`;
+      liveControlPlaneLeaks.push(msg);
+      throw new Error(msg);
+    }
+    return real(input, init);
+  }) as typeof fetch;
+  globalThis.fetch = Object.assign(guarded, { preconnect: (real as { preconnect?: unknown }).preconnect }) as typeof fetch;
+}
+installLiveControlPlaneGuard();
+
+afterEach(() => {
+  if (liveControlPlaneLeaks.length === 0) return;
+  const leaks = liveControlPlaneLeaks.splice(0);
+  throw new Error(leaks.join('\n'));
+});
 
 export function assertDbConfigured(): void {
   const url = process.env.DATABASE_URL;

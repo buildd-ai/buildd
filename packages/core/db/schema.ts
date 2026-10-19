@@ -3762,6 +3762,48 @@ export const taskSchedules = pgTable('task_schedules', {
   enabledNextRunIdx: index('task_schedules_enabled_next_run_idx').on(t.enabled, t.nextRunAt),
 }));
 
+// Where a schedule's home moved, or was proposed to move
+// (docs/specs/workspace-routing-and-reach.md §6). One open proposal per
+// schedule; every accepted move, through a proposal or the schedule PATCH,
+// is one row here, which is the schedule's move history.
+export const scheduleMoves = pgTable('schedule_moves', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }).notNull(),
+  fromWorkspaceId: uuid('from_workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  toWorkspaceId: uuid('to_workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // task = a run proposed it; auto = repeated refusals proposed it; direct = a person moved it by PATCH.
+  origin: text('origin').notNull().$type<'task' | 'auto' | 'direct'>(),
+  // open (awaiting a person) | accepted (the schedule moved) | kept (declined, stays put) | replaced (a newer proposal took its place).
+  status: text('status').notNull().$type<'open' | 'accepted' | 'kept' | 'replaced'>(),
+  reason: text('reason'),
+  // What the run attached, e.g. the reads that came back FORBIDDEN.
+  evidence: jsonb('evidence').$type<{ note?: string; refusals?: Array<{ taskId: string; capability: string; at: string }> }>(),
+  proposedByTaskId: uuid('proposed_by_task_id'),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedByAccountId: uuid('decided_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  // Accept + read grant: the old home stays readable (analytics:read) under the moved schedule.
+  grantedOldHome: boolean('granted_old_home').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  scheduleIdx: index('schedule_moves_schedule_idx').on(t.scheduleId, t.createdAt),
+  openPerScheduleIdx: uniqueIndex('schedule_moves_open_per_schedule_idx').on(t.scheduleId).where(sql`status = 'open'`),
+}));
+
+// A schedule-spawned task was refused on a workspace of its own team that it
+// has no reach into. Two runs refused on the same workspace propose the move
+// (apps/web/src/lib/schedule-move.ts). One row per (schedule, workspace, task).
+export const scheduleRefusals = pgTable('schedule_refusals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  scheduleId: uuid('schedule_id').references(() => taskSchedules.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').notNull(),
+  capability: text('capability').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniq: uniqueIndex('schedule_refusals_unique_idx').on(t.scheduleId, t.workspaceId, t.taskId),
+}));
+
 // GitHub App Integration
 export const githubInstallations = pgTable('github_installations', {
   id: uuid('id').primaryKey().defaultRandom(),

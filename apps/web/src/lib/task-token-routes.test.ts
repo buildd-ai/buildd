@@ -111,6 +111,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workspaces/[id]/config/route.ts',
   'apps/web/src/app/api/workspaces/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',
+  'apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/move-proposal/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/route.ts',
   'apps/web/src/app/api/workspaces/route.ts',

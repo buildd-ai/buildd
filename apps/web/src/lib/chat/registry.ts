@@ -336,6 +336,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   deploy: { reason: 'worker-only', note: 'Authority is an Operator task\'s role grant in its workspace; a person in chat has no task.' },
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
+  propose_schedule_move: { reason: 'worker-only', note: 'Only a schedule-spawned task may propose moving its schedule.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
   get_decision: { reason: 'worker-only', note: 'The weekly decision audit reads one decision to grade it; people read the decision features readout instead.' },
   label_decision: { reason: 'worker-only', note: 'The weekly decision audit grades decisions; a person corrects one with the override on the decision itself.' },

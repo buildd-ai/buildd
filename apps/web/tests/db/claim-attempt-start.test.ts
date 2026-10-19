@@ -74,7 +74,7 @@ async function floorPass(keys: string[]) {
   const outbox = postgresCommandOutbox();
   // The control plane applies commands only in own mode.
   process.env.EXECUTION_MODE = 'own';
-  process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
+  process.env.KERNEL_COMMAND_SECRET = 'test:db-test-command-secret';
   resetKernelModeCache();
   setKernelHost('control-plane');
   try {
@@ -126,7 +126,7 @@ type Outage = 'refused' | '503' | 'hang';
 /** `calls` counts the AttemptStarted requests it was sent. */
 function controlPlaneDown(how: Outage = 'refused'): { calls: () => number } {
   process.env.EXECUTION_MODE = 'own';
-  process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
+  process.env.KERNEL_COMMAND_SECRET = 'test:db-test-command-secret';
   resetKernelModeCache();
   resetAttemptStartBreaker();
   setKernelHost('web');

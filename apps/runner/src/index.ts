@@ -1,3 +1,4 @@
+import { createPeriodicSelfHeal } from './self-heal';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
@@ -3498,27 +3499,9 @@ setInterval(async () => {
 }, 60_000); // Check every 60 seconds
 
 // Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
-let lastSelfHeal = Date.now();
-setInterval(async () => {
-  if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
-  lastSelfHeal = Date.now();
-
-  try {
-    const { runDiagnostics, autoFix } = await import('./doctor');
-    // This process is the runner: its line is whether its socket answers, not a ps match.
-    const report = runDiagnostics({ runnerProcess: ownRunnerProcessCheck() });
-    const fixable = report.checks.filter(c => c.status !== 'ok' && c.fixable);
-    if (fixable.length > 0) {
-      console.log(`[self-heal] ${fixable.length} issue(s) detected: ${fixable.map(c => c.name).join(', ')}`);
-      const fixes = autoFix(report);
-      for (const f of fixes) {
-        console.log(`[self-heal] ${f.success ? '✓' : '✗'} ${f.check}: ${f.message}`);
-      }
-    }
-  } catch (err: any) {
-    console.error('[self-heal] Doctor check failed:', err.message);
-  }
-}, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes
+// Doctor uses synchronous git and filesystem checks. Run it in a child so
+// the local socket continues serving health and worker requests during repairs.
+setInterval(createPeriodicSelfHeal(), 60_000);
 
 // Liveness heartbeat: a positive log signal so host-level monitors that watch
 // stdout staleness can distinguish "runner idle" from "runner wedged". Worker

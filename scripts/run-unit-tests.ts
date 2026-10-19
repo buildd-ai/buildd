@@ -664,6 +664,14 @@ export async function runTestFile(
         { cause: err },
       );
     }
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'EROFS') {
+      throw new Error(
+        `Cannot create a per-file test home in ${tmpdir()} (${code}): the temp directory is read-only here. ` +
+          'Point TMPDIR at a writable directory (e.g. an ignored directory inside your worktree) and re-run.',
+        { cause: err },
+      );
+    }
     throw err;
   }
   const buildHome = join(testHome, 'home');
