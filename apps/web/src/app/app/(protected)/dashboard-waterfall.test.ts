@@ -26,11 +26,13 @@ const CEILINGS: Record<string, number> = {
   // Chat availability is read from its cache, never awaited (spec 3ef37387 R-17).
   'layout.tsx': 2,
   'missions/page.tsx': 11,
-  'missions/[id]/page.tsx': 15,
+  // 17: the live-region wrapper awaits its params and the body once each (not reads).
+  'missions/[id]/page.tsx': 17,
   // 21: the plan-chain eyebrow (runner online count) landed alongside the
   // stored evidence record, each adding one wait; the failure-kind lookup
   // (worker vs verification failure) adds one more, only for failed tasks.
-  'tasks/[id]/page.tsx': 21,
+  // +2 for the live-region wrapper (params, then the body); neither is a read.
+  'tasks/[id]/page.tsx': 23,
 };
 
 /**

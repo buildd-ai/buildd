@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_scope_amendments" ADD COLUMN "resolution" text;

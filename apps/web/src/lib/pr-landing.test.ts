@@ -355,13 +355,18 @@ describe('evaluateTreadmillBound', () => {
   });
 
   it.each([
-    ['migration on the base side', ['packages/core/drizzle/0100_x.sql'], ['apps/web/src/a.ts']],
+    ['migration on both sides', ['packages/core/drizzle/0100_x.sql'], ['packages/core/drizzle/0099_mine.sql']],
     ['migration on the PR side', ['x/other.ts'], ['packages/core/drizzle/0100_x.sql']],
     ['schema on the PR side', ['x/other.ts'], ['packages/core/db/schema.ts']],
     ['lockfile on the base side', ['bun.lock'], ['apps/web/src/a.ts']],
     ['lockfile on the PR side', ['x/other.ts'], ['package-lock.json']],
   ])('refuses %s', (_n, baseFiles, prFiles) => {
     expect(evaluateTreadmillBound({ ...ok, baseFiles, prFiles }).accepted).toBe(false);
+  });
+
+  // 92a439a6: a migration only the base carries is no risk to a PR that changes no schema.
+  it('accepts a migration or schema change on the base side alone', () => {
+    expect(evaluateTreadmillBound({ ...ok, baseFiles: ['packages/core/drizzle/0100_x.sql', 'packages/core/db/schema.ts'] }).accepted).toBe(true);
   });
 
   it('refuses when either side could not be enumerated', () => {
@@ -1455,7 +1460,7 @@ describe('landPr — behind base is work with an owner', () => {
   it.each([
     ['base moved past N commits', { ahead_by: TREADMILL_MAX_BASE_COMMITS + 1, files: ['x/o.ts'] }],
     ['base touched a file the PR touches', { ahead_by: 1, files: ['apps/web/src/a.ts'] }],
-    ['base touched a migration', { ahead_by: 1, files: ['packages/core/drizzle/0200_y.sql'] }],
+    ['base touched a lockfile', { ahead_by: 1, files: ['bun.lock'] }],
   ])('refreshes again when %s', async (_n, movement) => {
     markerStore = marker({ pendingHeadSha: 'head1', refreshCount: 1 });
     gh.baseMovement = movement;
@@ -1558,9 +1563,9 @@ describe('landPr — behind base is work with an owner', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('a spent cycle on a migration-touching base is unsafe, not merely busy', async () => {
+  it('a spent cycle on a lockfile-touching base is unsafe, not merely busy', async () => {
     markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW).toISOString() });
-    gh.baseMovement = { ahead_by: 1, files: ['packages/core/drizzle/0241_x.sql'] };
+    gh.baseMovement = { ahead_by: 1, files: ['bun.lock'] };
     expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'refresh_unsafe' });
   });
 
