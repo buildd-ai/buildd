@@ -1262,17 +1262,27 @@ deferred behind its own lineage's PR.
 3. **A PR that cannot land never reads as ready.** `deriveMissionStateView`
    takes `landingBlocked`, one entry per unmerged PR, built in `explain.ts` from
    current landing facts. Precedence: kernel delivery state (`REPAIRING`,
-   `BLOCKED_ON_TRUNK`, `ESCALATED`), then the newest `pr_landing` gate row, then
+   `BLOCKED_ON_TRUNK`, `ESCALATED`, and any state not yet approved on its current
+   head: `AWAITING_REVIEW` is `review_pending`, `CHANGES_REQUESTED` and `FIXING`
+   are `fix_pending`, `AWAITING_PUSH` is `push_pending`, all platform-owned), then the newest `pr_landing` gate row, then
    `prLifecycleStatus = 'conflict'`. When every unmerged PR has a blocker, the
    verdict is `blocked` with a `landing_blocked` descriptor, not `review`. The
    descriptor carries the cause (`conflicted`, `migration_collision`,
    `repair_queued`, `repair_running`, `repair_exhausted`, `human_decision`,
-   `trunk_blocked`, `ci_pending`), the owner (`platform` or `person`) and the
+   `trunk_blocked`, `ci_pending`, `review_pending`, `fix_pending`,
+   `push_pending`), the owner (`platform` or `person`) and the
    next action. A person-owned blocker is `blocked` and counts as needs-you. A
    platform-owned one is `waiting`. Only refusing landing outcomes
    (`deferred`, `stranded`, `rejected`) are facts; shadow `warned` rows are not. A mixed
    set keeps the `merge` reading, as `ci_red` does. Regression:
-   `mission-state-view.test.ts`, "dirty PR mislabeled ready".
+   `mission-state-view.test.ts`, "dirty PR mislabeled ready"; the in-flight
+   delivery states: `mission-state-view.landing.test.ts`, PR 5211 shape. The
+   review status a caller polls (`get_pr_review`) counts the review-fix budget
+   (`attempts.review_fix`), not rounds, unless changes are being requested: every
+   new head opens a round, so "round 11 of 3" counted pushes. A round in flight
+   carries no summary or feedback from an earlier round's reviewer task. A history
+   node of a delivery with no projected PR state reads `open`, never the worker
+   row's cached CI state.
 
 4. **An attempt is never blocked by its own lineage.** For `taskClass: 'attempt'`
    the claim route's open-PR backstop exempts every PR in
