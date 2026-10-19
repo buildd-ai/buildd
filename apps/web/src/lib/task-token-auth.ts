@@ -305,17 +305,30 @@ export async function taskScopeAllowsMissionTask(
 /**
  * Read-only widening of `taskScopeAllowsMissionTask`: a worker-level task token
  * may also READ any task in its own workspace, the
- * same tasks `list_tasks` shows it. Writes keep the stricter rule above.
+ * same tasks `list_tasks` shows it, and a task it filed (parent is its task,
+ * or created by its task's worker) in a workspace where its delegation grants
+ * `tasks:create`. Writes keep the stricter rule above.
  */
 export async function taskScopeAllowsMissionTaskRead(
   account: { level?: string | null; taskScope?: TaskScope },
-  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null },
+  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null; createdByWorkerId?: string | null },
 ): Promise<boolean> {
   if (await taskScopeAllowsMissionTask(account, task)) return true;
-  if (!account.taskScope) return true;
+  const scope = account.taskScope;
+  if (!scope) return true;
   // list_tasks and recall already show a task token every task in its own
   // workspace; get_task answering 404 for one of them (e.g. a reviewer reading
   // the builder task it reviews, which sits on no mission) sent callers off
   // to guess. The workspace is the same boundary list_tasks enforces.
-  return !!task.workspaceId && task.workspaceId === account.taskScope.workspaceId;
+  if (!!task.workspaceId && task.workspaceId === scope.workspaceId) return true;
+  // A task that filed a child elsewhere under a tasks:create delegation can
+  // follow up on that child, and only that child.
+  if (!delegationAllows(scope.delegations, task.workspaceId, 'tasks:create')) return false;
+  if (task.parentTaskId === scope.taskId) return true;
+  if (!task.createdByWorkerId) return false;
+  const creator = await db.query.workers.findFirst({
+    where: { RAW: sqlWhereFn((w, { eq: eqOp }) => eqOp(w.id, task.createdByWorkerId!)) },
+    columns: { taskId: true },
+  });
+  return !!creator && creator.taskId === scope.taskId;
 }
