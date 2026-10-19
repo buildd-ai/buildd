@@ -74,6 +74,15 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           Only {v.narrowed.criterionIds.join(', ')}: {v.narrowed.reason}
         </p>
       )}
+      {v.outranked.length > 0 && (
+        <ul className="space-y-1" data-testid="outcome-spec-outranked">
+          {v.outranked.map(o => (
+            <li key={o.criterionId} className="text-meta text-text-muted leading-snug">
+              <span className="font-mono">{o.criterionId}</span>: {o.note}
+            </li>
+          ))}
+        </ul>
+      )}
       {v.open.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-open">
           {v.open.map(o => (
@@ -100,6 +109,11 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
             </li>
           ))}
         </ul>
+      )}
+      {v.judged.length > 0 && (
+        <p className="text-meta text-text-muted leading-snug" data-testid="outcome-spec-judged">
+          Passed by reviewer: <span className="font-mono">{v.judged.join(', ')}</span>
+        </p>
       )}
       {v.waived.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-waived">

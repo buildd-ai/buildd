@@ -51,6 +51,7 @@ import { promptEvalDeps } from '@/lib/prompt-evals/store';
 import { observeBase, observeCiGreen, observePrState, systemPrincipal, withWebhookBudget } from '@/lib/workflow/kernel-client';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { invalidateGithubApproval } from '@/lib/github-approval';
+import { flagAcceptanceEditsForPr } from '@/lib/acceptance-edit-store';
 import { kernelDeliveriesLandingAt } from '@/lib/workflow/authority';
 import { LANDING_STATUS_CONTEXTS } from '@buildd/workflow-kernel/landing-gate';
 
@@ -745,6 +746,9 @@ async function handlePullRequestEvent(event: {
   if (pr?.number && repository?.full_name) await invalidateGithubApproval(repository.full_name, pr.number);
   if ((action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') && event.installation?.id) {
     await republishPrHeads(event.installation.id, repository.full_name, [{ number: pr.number, sha: pr.head.sha }]);
+  }
+  if ((action === 'opened' || action === 'reopened' || action === 'synchronize') && event.installation?.id) {
+    await flagAcceptanceEditsForPr({ installationId: event.installation.id, repoFullName: repository.full_name, prNumber: pr.number, headSha: pr.head.sha });
   }
   if (action === 'opened' || action === 'reopened' || action === 'synchronize' || action === 'ready_for_review') {
     await registerLocalPr({ branch: pr.head.ref, repo: repository.full_name, headRepo: pr.head.repo?.full_name ?? null, number: pr.number,

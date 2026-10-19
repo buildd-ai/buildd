@@ -1,10 +1,19 @@
 import { db } from '@buildd/core/db';
 import { specs } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import type { LivingSpecView } from '@/components/SpecSourceBlock';
+import type { LivingSpecView, SpecCriterionStanding } from '@/components/SpecSourceBlock';
 import { isUuid } from '@/lib/uuid';
 import { readGovernedOutcome, type OutcomeView } from './outcome';
 import { scopeOf } from '@buildd/spec-contract/scope';
+
+/** What the task page shows per criterion: the standing, and any model result a test outranked as a note beside it (R-85). */
+export function viewCriteria(criteria: ReadonlyArray<OutcomeView['criteria'][number]>): SpecCriterionStanding[] {
+  return criteria.map((c) => ({
+    criterionId: c.criterionId, text: c.text, verdict: c.verdict, stale: c.stale,
+    notes: c.notes.map((n) => ({ verdict: n.verdict, source: n.source })),
+    overriddenReviews: c.overriddenReviews,
+  }));
+}
 
 /**
  * The Living Spec a task is pinned to, for the task page: its title, the
@@ -26,7 +35,7 @@ export async function loadLivingSpecView(taskId: string, specId: string, pin: un
         ? {
           outcome: read.outcome.outcome,
           reason: read.outcome.reason,
-          criteria: (read.outcome.criteria as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({ criterionId: c.criterionId, text: c.text, verdict: c.verdict, stale: c.stale })),
+          criteria: viewCriteria(read.outcome.criteria as ReadonlyArray<OutcomeView['criteria'][number]>),
         }
         : null,
     };
