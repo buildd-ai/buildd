@@ -361,6 +361,28 @@ describe('per-member runner usage', () => {
   });
 });
 
+describe('per-member runner usage uses the same principal as mine/others', () => {
+  it('names the task owner, not the claimer, and the member row agrees with the Mine split', () => {
+    const s = buildOccupancySeries({
+      window: '24h', now: NOW, viewerId: 'me',
+      workers: [
+        // Managed runner: claimed by a service key (or another member), task owned by me.
+        row({ ownerId: 'claimer', taskOwnerId: 'me', runnerClass: 'managed', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        // Another member's task, claimed by me.
+        row({ ownerId: 'me', taskOwnerId: 'you', runnerClass: 'personal', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+        // Service-owned task: unattributed, no named member.
+        row({ ownerId: 'claimer', taskOwnerId: null, runnerClass: 'managed', startedAt: NOW - 2 * H, completedAt: NOW - H }),
+      ],
+    });
+    const byId = Object.fromEntries((s.members ?? []).map(m => [m.id, m]));
+    expect(Object.keys(byId).sort()).toEqual(['me', 'you']);
+    expect(byId.me.isMe).toBe(true);
+    expect(byId.me.avg).toBeCloseTo(s.summary.runnerBy.mine.avg, 9);
+    expect(byId.you.avg).toBeCloseTo(s.summary.runnerBy.others.avg, 9);
+    expect(byId.claimer).toBeUndefined();
+  });
+});
+
 describe('By member uses the same principal as Mine', () => {
   const managed = (over: Partial<OccupancyWorkerRow>) => row({ ownerId: 'key-creator', taskOwnerId: 'task-owner', startedAt: NOW - 3 * H, completedAt: NOW - H, ...over });
   for (const win of ['24h', '7d', '30d'] as const) {
