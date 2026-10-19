@@ -113,6 +113,23 @@ describe('buildFleetSnapshot', () => {
     expect(s.live).toBe(1);
   });
 
+  it('tallies the recorded model route of each run on a runner, leaving unrecorded runs out', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 3)],
+      [
+        worker('a', 'http://atlas.local:8766', { modelRoute: 'anthropic_api_key' }),
+        worker('b', 'http://atlas.local:8766', { modelRoute: 'anthropic_api_key', status: 'completed', completedAt: min(5) }),
+        worker('c', 'http://atlas.local:8766', { modelRoute: 'oauth_seat', status: 'completed', completedAt: min(4) }),
+        worker('d', 'http://atlas.local:8766', { modelRoute: null }),
+      ],
+      { now: NOW },
+    );
+    expect(s.runners[0].routes).toEqual([
+      { route: 'anthropic_api_key', count: 2 },
+      { route: 'oauth_seat', count: 1 },
+    ]);
+  });
+
   it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
     expect(snap.runners[0].slots[0].lane.bars.map(b => b.missionId)).toEqual(['m1', 'm1']);
   });

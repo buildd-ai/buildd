@@ -12,7 +12,7 @@ import {
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity, readIsolationRecord } from '@buildd/shared';
 import { runnerLiveCandidateCutoff, withLiveRunnerBeats } from './runner-beats';
-import { classifyRunnerOwnership } from './runner-ownership';
+import { classifyRunnerOwnership, isViewersPersonalRunner } from './runner-ownership';
 import { liveLinkCondition } from './granted-links';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
@@ -112,7 +112,7 @@ export async function getRunnerHeartbeats(
       shared: hb.shared !== false,
       runnerClass: classifyRunnerOwnership(hb.account),
       authType: hb.account?.authType === 'oauth' || hb.account?.authType === 'api' ? hb.account.authType : undefined,
-      mine: viewerUserId != null && hb.account?.createdByUserId === viewerUserId,
+      mine: isViewersPersonalRunner(hb.account, viewerUserId),
     }));
 }
 
