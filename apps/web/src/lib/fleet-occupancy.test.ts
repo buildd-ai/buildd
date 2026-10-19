@@ -468,6 +468,26 @@ describe('AC-5 edge cases', () => {
   });
 });
 
+describe('one accountable principal across totals, Mine and member rows', () => {
+  const span = { startedAt: NOW - 3 * H, completedAt: NOW - H };
+  for (const [window, now] of [['24h', NOW], ['7d', NOW], ['30d', NOW]] as const) {
+    it(`${window}: the task owner, not the claimer, is the member row and Mine on runner work`, () => {
+      const s = buildOccupancySeries({ window, now, viewerId: 'me', workers: [row({ ...span, ownerId: 'claimer', taskOwnerId: 'me', runnerClass: 'managed' })] });
+      expect(s.summary.runnerBy.mine.avg).toBeGreaterThan(0);
+      expect(s.members?.map(m => m.id)).toEqual(['me']);
+    });
+    it(`${window}: service-owned work with a claimer gets no named member row`, () => {
+      const s = buildOccupancySeries({ window, now, viewerId: 'me', workers: [row({ ...span, ownerId: 'claimer', taskOwnerId: null, runnerClass: 'managed' })] });
+      expect(s.summary.runnerBy.unattributed.avg).toBeGreaterThan(0);
+      expect(s.members ?? []).toEqual([]);
+    });
+  }
+  it('the claimer decides when the caller does not know the task owner', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'me', workers: [row({ ...span, ownerId: 'me' })] });
+    expect(s.members?.map(m => m.id)).toEqual(['me']);
+  });
+});
+
 describe('principal for work, physical runner for occupancy', () => {
   const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
 
@@ -511,3 +531,4 @@ describe('principal for work, physical runner for occupancy', () => {
     expect(s.members!.map(m => m.id)).toEqual(['B']);
   });
 });
+

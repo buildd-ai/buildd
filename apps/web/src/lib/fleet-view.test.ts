@@ -611,6 +611,30 @@ describe('one runner, one count (Settings, Health and list_runners agree)', () =
   });
 });
 
+describe('slot "mine" follows the accountable principal', () => {
+  const hb: FleetHeartbeatRow = { id: 'h1', accountId: 'acct', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
+  const w = (id: string, runner: string, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner, status: 'running', startedAt: min(10),
+    task: { id: `t-${id}`, title: `feat(${id}): something`, roleSlug: 'builder', missionId: null }, ...over,
+  });
+  const mineOf = (row: FleetWorkerRow) => buildFleetSnapshot([hb], [row], { now: NOW, viewerId: 'me' }).runners[0].slots.find(s => s.worker)!.worker!.mine;
+
+  it('runner work: the task owner decides, not the claimer', () => {
+    expect(mineOf(w('a', 'http://atlas.local:8766', { ownerId: 'claimer', taskOwnerId: 'me' }))).toBe(true);
+    expect(mineOf(w('b', 'http://atlas.local:8766', { ownerId: 'me', taskOwnerId: 'you' }))).toBe(false);
+  });
+  it('service-owned runner work with a claimer is unattributed, never someone', () => {
+    expect(mineOf(w('c', 'http://atlas.local:8766', { ownerId: 'me', taskOwnerId: null }))).toBeNull();
+  });
+  it('the claimer decides when the task owner is not supplied', () => {
+    expect(mineOf(w('d', 'http://atlas.local:8766', { ownerId: 'me' }))).toBe(true);
+  });
+  it('session claims are each their claimer\'s; a teammate\'s is not mine', () => {
+    const snap = buildFleetSnapshot([hb], [w('s1', 'mcp', { ownerId: 'me', taskOwnerId: 'you' }), w('s2', 'mcp', { ownerId: 'you', taskOwnerId: 'me' })], { now: NOW, viewerId: 'me' });
+    expect(snap.sessions!.slots.map(s => s.worker?.mine).sort()).toEqual([false, true]);
+  });
+});
+
 describe('slot `mine` follows the task owner, not the claimer', () => {
   const hb: FleetHeartbeatRow = { id: 'h', accountId: 'acct', localUiUrl: 'http://atlas.local:1', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000) };
   const w = (id: string, over: Partial<FleetWorkerRow>): FleetWorkerRow => ({
@@ -645,3 +669,4 @@ describe('slot `mine` follows the task owner, not the claimer', () => {
     expect(build([w('x', { ownerId: 'B' })], 'B').runners[0].slots[0].worker?.mine).toBe(true);
   });
 });
+
