@@ -146,13 +146,12 @@ A task the plan orders behind a blocker reports the soft deferral
 per (task, blocker) pair, so repeated polls add no rows. The default `off` MUST
 leave the claim exactly as described above. Explicit `taskId` claims never plan.
 
-The watchdog reports two reasons that are NOT `gateReason` values and never will
-be, ordered below every gate `/start` can name (so `/start`'s 422 ordering is
-reproduced verbatim) and among themselves by permanence:
-`backend_credential_missing` (permanent until an operator adds a credential),
-then `advisory_manifest` (self-clearing). Reporting is not gating: the watchdog
-withholds nothing from the claim query, which is why naming the missing
-credential here does not reintroduce the removed capability gate.
+The watchdog reports `backend_credential_missing` below every gate `/start`
+can name, preserving `/start`'s rejection order. Reporting is not gating: the
+watchdog withholds nothing from the claim query, so naming the missing credential
+here does not reintroduce the removed capability gate. It does not classify
+undeclared scope as a stall: the retired per-mission serialization no longer
+holds these tasks.
 
 Two entries appear in the hard-gate table above rather than here, because the
 claim loop counts them but `/start` also rejects on them: `subject_dead`

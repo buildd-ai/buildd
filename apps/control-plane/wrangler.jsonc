@@ -24,7 +24,9 @@
   // :10 like the web app's merge-state pass, so it opens no extra Neon wake window. A no-op in
   // shadow. Cron triggers are script settings, not version settings: `wrangler versions deploy`
   // does not apply them; a change here takes `wrangler triggers deploy` (or `wrangler deploy`).
-  "triggers": { "crons": ["10 * * * *"] },
+  // Plus every minute: the effect timer (apps/web/src/lib/workflow/effect-timer.ts) drains an effect when
+  // its not_before is reached. It reads Redis and touches no Postgres while nothing is due.
+  "triggers": { "crons": ["10 * * * *", "* * * * *"] },
   "vars": {
     // shadow: pass everything through to the web app. own: serve the execution routes here.
     "EXECUTION_MODE": "own",

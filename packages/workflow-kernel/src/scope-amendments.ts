@@ -17,6 +17,8 @@
  */
 import type { DecisionPoint } from './decide';
 
+export { SCOPE_HOLD_REASON, isOwnScopeHold, scopeHold } from './scope-hold';
+
 export const SCOPE_VERDICTS = ['in_scope', 'amend_scope', 'ask'] as const;
 export type ScopeVerdict = (typeof SCOPE_VERDICTS)[number];
 
@@ -174,4 +176,53 @@ export function planScope(p: {
     };
   }
   return { ...base, decision: 'amend_scope', status: 'applied', after, weakens, scopeVersionAfter: next, reason: p.reason };
+}
+
+// ── A person's answer to a held decision ────────────────────────────────────
+
+/**
+ * The answers to a held decision: a person says the task fits the mission as written, changes it
+ * (the amendment applies), or belongs elsewhere (the task is cancelled); `withdrawn` is buildd's,
+ * when the task left the mission before anyone answered.
+ */
+export const SCOPE_ANSWERS = ['in_scope', 'amend_scope', 'out_of_scope', 'withdrawn'] as const;
+export type ScopeAnswer = (typeof SCOPE_ANSWERS)[number];
+
+export type ScopeResolutionPlan =
+  | { act: false; reason: 'not_held' | 'invalid_answer' }
+  | {
+    act: true;
+    resolution: ScopeAnswer;
+    /** The amendment a person accepted, on the contract as it is now. Null unless `amend_scope`. */
+    amend: {
+      after: { description: string | null; goalCriteria: ScopeCriterion[] | null };
+      scopeVersionBefore: number;
+      scopeVersionAfter: number;
+      weakens: Weakening[];
+    } | null;
+    cancelTask: boolean;
+  };
+
+/**
+ * A person's answer to a held decision as what to write. Pure. Every answer releases the hold.
+ * An accepted amendment is planned again on the mission as it is now (it may have moved since the
+ * hold), and applies even when it weakens a criterion: a weakening was held so a person decides,
+ * and this is that person deciding.
+ */
+export function planScopeResolution(p: {
+  answer: string;
+  held: { status: string };
+  mission: MissionScopeState;
+  task: { id: string; title: string };
+  proposal?: ScopeProposal | null;
+}): ScopeResolutionPlan {
+  if (!(SCOPE_ANSWERS as readonly string[]).includes(p.answer)) return { act: false, reason: 'invalid_answer' };
+  if (p.held.status !== 'held') return { act: false, reason: 'not_held' };
+  const resolution = p.answer as ScopeAnswer;
+  if (resolution !== 'amend_scope') return { act: true, resolution, amend: null, cancelTask: resolution === 'out_of_scope' };
+  const plan = planScope({ verdict: 'amend_scope', reason: 'accepted', mission: p.mission, task: p.task, proposal: p.proposal });
+  return {
+    act: true, resolution, cancelTask: false,
+    amend: { after: plan.after!, scopeVersionBefore: p.mission.scopeVersion, scopeVersionAfter: p.mission.scopeVersion + 1, weakens: plan.weakens },
+  };
 }

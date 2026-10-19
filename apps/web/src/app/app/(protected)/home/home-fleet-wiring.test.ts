@@ -25,7 +25,7 @@ describe('Home live workers', () => {
   // delivery and Landed this week. The ticker, the release queue and the In
   // flight counters live on Activity and Health.
   it('Home is one HomeBody: decisions first, then Agents / Moving / Landed in grid areas', () => {
-    expect(home.match(/<HomeBody\b/g)).toHaveLength(1);
+    expect(home.match(/<HomeLive\b/g)).toHaveLength(1);
     expect(body).toContain('data-testid="home-waiting-on-you"');
     expect(body.indexOf('data-testid="home-waiting-on-you"')).toBeLessThan(body.indexOf('data-testid="home-body"'));
     expect(body).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_done']");

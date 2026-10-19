@@ -16,7 +16,7 @@ import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
-import { isSurfaceAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
+import { isMissionAuditTask, isSurfaceFixTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -41,6 +41,7 @@ import MissionShippedHeader from './MissionShippedHeader';
 import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
+import { LiveRegion } from '@/components/LiveRegion';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
@@ -63,12 +64,13 @@ import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import { buildActivityEpisodes, kernelOwnedBy } from '@/lib/activity-delivery';
+import { missionHistoryInputs } from '@/lib/mission-history-input';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { emptyVisualReviewModel } from '@/lib/visual-review-model';
 import type { SurfaceAuditGateTask } from '@/lib/mission-surface-audit-gate';
@@ -129,7 +131,28 @@ import { readRound } from '@/lib/read-round';
 export const dynamic = 'force-dynamic';
 
 
-export default async function MissionDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; visualReview?: string }>;
+};
+
+/**
+ * Live events re-render this body through `loadRegion` (components/LiveRegion.tsx)
+ * instead of a router refresh. The body is the same function either way, so what
+ * a live event skips is the layout, not any of the mission's own reads: the board
+ * rows and header are derived from the whole mission read (gates, deliveries,
+ * release and visual state), and have no smaller source to render from.
+ */
+export default async function MissionDetailPage(props: PageProps) {
+  const [{ id }, search] = await Promise.all([props.params, props.searchParams]);
+  async function loadRegion() {
+    'use server';
+    return MissionDetailBody({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
+  }
+  return <LiveRegion load={loadRegion}>{await MissionDetailBody(props)}</LiveRegion>;
+}
+
+async function MissionDetailBody({
   params,
   searchParams,
 }: {
@@ -240,7 +263,7 @@ export default async function MissionDetailPage({
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
   // An audit or a fix from one, by role or title: only then is there a visual review to read.
   const hasVisualAudit = (mission.tasks ?? []).some(t =>
-    t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? '') || isSurfaceFixTask(t.title));
+    isMissionAuditTask(t) || isSurfaceFixTask(t.title));
 
   const [
     missionFollowupTasks,
@@ -405,6 +428,7 @@ export default async function MissionDetailPage({
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
+      (mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit,
     ).catch(() => new Map()),
     // Which claim-gate arm released each dependency, and why each queued task
     // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
@@ -483,7 +507,7 @@ export default async function MissionDetailPage({
     },
     gitConfig: workspaceForPolicy?.gitConfig ?? null,
     tasks: decisionTasks as unknown as SurfaceAuditGateTask[],
-    ...(decisionTasks.some(t => isSurfaceAuditTask(t.title ?? '')) ? {} : { ledger: [] }),
+    ...(decisionTasks.some(t => isMissionAuditTask(t)) ? {} : { ledger: [] }),
   }).catch((err) => {
     console.error('[mission-page] visual review state load failed', err);
     return null;
@@ -773,6 +797,20 @@ export default async function MissionDetailPage({
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
   }));
 
+  // Highlights are Activity's episodes over this mission's own tasks (the rows
+  // already carry the kernel delivery overlay), not a second fold of the board.
+  const historyEpisodes = layout === 'feed'
+    ? buildActivityEpisodes({
+        ...missionHistoryInputs({
+          mission: { id, title: mission.title, status: mission.status, isHeld: (mission as any).isHeld, armedAt: (mission as any).armedAt, integrationBranchEnabled: (mission as any).integrationBranchEnabled },
+          tasks: allTasks as never,
+          digestOf,
+          rules: missionHelpers,
+        }),
+        rules: missionHelpers,
+      })
+    : [];
+
   const dbInitiative = (mission as any).initiative as { id: string; title: string } | null | undefined;
 
   const breadcrumb = resolveMissionBreadcrumb({
@@ -816,7 +854,7 @@ export default async function MissionDetailPage({
   const showAuditWaiver = !!surfaceAuditWaiver
     || (visualPresentation
       ? visualPresentation.canWaive
-      : (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+      : (mission.tasks ?? []).some(t => isMissionAuditTask(t))
         || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true));
   const vs = boardVisual?.summary;
   const visualReview = vs
@@ -1175,6 +1213,7 @@ export default async function MissionDetailPage({
     tasks: allTasks as unknown as MissionDeliveryTaskRow[],
     digestOf,
     rules: missionHelpers,
+    kernelOf: (taskId) => kernelOwnedBy(deliveryViews, taskId),
   });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.
@@ -1378,6 +1417,7 @@ export default async function MissionDetailPage({
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
+            episodes={historyEpisodes}
             completionText={completionText}
             visual={boardVisual}
             notesEntry={<MissionNotesSheet missionId={id} />}

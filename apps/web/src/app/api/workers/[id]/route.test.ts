@@ -920,6 +920,20 @@ mock.module('@/lib/task-recovery-hold', () => ({
   resolveCredentialIdentity: mockResolveCredentialIdentity,
 }));
 
+// `after()` throws outside a request, so every other test here runs the
+// deferred work inline. This seam lets one describe install a fake that behaves
+// like a request: it captures the callbacks and the test decides when they run.
+// The real drain logic is kept; only the `after` it is handed is swapped.
+const realDeferredReplyWork = { ...(await import('@/lib/deferred-reply-work')) };
+const { after: realAfter } = await import('next/server');
+let afterImpl: ((cb: () => Promise<unknown>) => void) | null = null;
+mock.module('@/lib/deferred-reply-work', () => ({
+  ...realDeferredReplyWork,
+  deferredReplyWork: () => realDeferredReplyWork.deferredReplyWork({
+    after: (cb) => (afterImpl ? afterImpl(cb) : realAfter(cb)),
+  }),
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -9359,6 +9373,65 @@ describe('PATCH /api/workers/[id]', () => {
       });
     }
 
+    // v0.367.0 deferred the terminal follow-up with after(): outside a request
+    // after() throws and everything ran inline, so this file stayed green while
+    // production dropped reviewer verdicts. These cases give after() a request's
+    // behaviour, including a client that disconnects mid-handler.
+    describe('after() behaves like a request', () => {
+      afterEach(() => { afterImpl = null; });
+
+      const timings = {
+        'the drain runs after the reply': async (callbacks: Array<() => unknown>, handler: Promise<unknown>) => {
+          await handler;
+          while (callbacks.length) await callbacks.shift()!();
+        },
+        'the drain also runs once mid-handler (client disconnect)': async (callbacks: Array<() => unknown>, handler: Promise<unknown>) => {
+          await Promise.resolve(); // the handler is in flight
+          if (callbacks.length) await callbacks.shift()!();
+          await handler;
+          while (callbacks.length) await callbacks.shift()!();
+        },
+      } as const;
+
+      for (const [name, drive] of Object.entries(timings)) {
+        it(`a reviewer's completion records its verdict, ends its attempt and writes its terminal record: ${name}`, async () => {
+          setupReviewerTaskCompletion('approve', { kernel: true });
+          mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'APPROVED' } }, toState: 'APPROVED' });
+          mockWorkflowAttemptEnded.mockReset();
+          mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+          mockFireTerminalRecord.mockClear();
+          const callbacks: Array<() => unknown> = [];
+          afterImpl = (cb) => { callbacks.push(cb); };
+
+          const handler = PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+          await drive(callbacks, handler);
+          const res = await handler;
+
+          expect(res.status).toBe(200);
+          expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
+          expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+          expect(mockFireTerminalRecord).toHaveBeenCalledTimes(1);
+        });
+      }
+
+      it('a terminal report finishes its outcome work before the reply, with no drain at all', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'APPROVED' } }, toState: 'APPROVED' });
+        mockWorkflowAttemptEnded.mockReset();
+        mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+        mockFireTerminalRecord.mockClear();
+        const callbacks: Array<() => unknown> = [];
+        afterImpl = (cb) => { callbacks.push(cb); };
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        // The drain never ran (the request was cut), and the outcome is recorded.
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
+        expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+        expect(mockFireTerminalRecord).toHaveBeenCalledTimes(1);
+      });
+    });
+
     describe('workflow kernel round (one authority per delivery)', () => {
       const current = { state: 'AWAITING_REVIEW', version: 4, head: 'h2', round: 2 };
 
@@ -9375,11 +9448,41 @@ describe('PATCH /api/workers/[id]', () => {
           workspaceId: 'ws-1', reviewerTask: { id: 'reviewer-task-1', deliveryId: 'delivery-1' }, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'abc123',
         });
         // Through the kernel client, for the caller that reported it (AC-9: the control plane applies it in own mode).
-        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null } });
+        // 7105282e: one key per reviewer and round, so a second send is the same command to the ledger.
+        expect(mockRecordReviewVerdict.mock.calls[0][1]).toEqual({ principal: { kind: 'account', id: 'account-1', grant: null }, idempotencyKey: expect.stringMatching(/^record_review_verdict:reviewer-task-1:/) });
         expect(mockPostPrReview).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
         expect(mockLandPr).not.toHaveBeenCalled();
         expect(missionNoteInserts.some((n) => n.type === 'reviewer_approved')).toBe(false);
+      });
+
+      it('7105282e: a verdict the control plane did not apply is sent once more under the same key', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        let n = 0;
+        mockRecordReviewVerdict.mockImplementation(async () => {
+          if (n++ === 0) throw new realKernelClient.ControlPlaneUnavailableError('timed out', 'not_applied');
+          return { handled: true, result: { result: 'applied', transitionId: 't1', deliveryId: 'delivery-1', version: 5, decision: { toState: 'APPROVED' } }, toState: 'APPROVED' };
+        });
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(2);
+        expect(mockRecordReviewVerdict.mock.calls[1][1].idempotencyKey).toBe(mockRecordReviewVerdict.mock.calls[0][1].idempotencyKey);
+        mockRecordReviewVerdict.mockImplementation(async () => ({ handled: false }));
+      });
+
+      it('7105282e: a verdict parked for the floor is not sent again from the PATCH and acts on nothing', async () => {
+        setupReviewerTaskCompletion('approve', { kernel: true });
+        mockRecordReviewVerdict.mockImplementation(async () => {
+          const err = new realKernelClient.ControlPlaneUnavailableError('timed out', 'unknown');
+          err.parked = true;
+          throw err;
+        });
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(mockRecordReviewVerdict).toHaveBeenCalledTimes(1);
+        expect(mockPostPrReview).not.toHaveBeenCalled();
+        expect(mockLandPr).not.toHaveBeenCalled();
+        mockRecordReviewVerdict.mockImplementation(async () => ({ handled: false }));
       });
 
       it('S5: a replayed verdict (duplicate) acts on nothing', async () => {

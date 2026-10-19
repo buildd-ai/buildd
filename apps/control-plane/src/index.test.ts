@@ -293,10 +293,10 @@ describe('the kernel command API (workflow-kernel-library.md §3)', () => {
 });
 
 describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
-  it('is committed hourly at :10, sharing the web app\'s merge-state wake window', async () => {
+  it('is committed hourly at :10 (sharing the web app\'s merge-state wake window) plus every minute for the effect timer', async () => {
     const { readFileSync } = await import('node:fs');
     const cfg = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
-    expect(cfg).toContain('"triggers": { "crons": ["10 * * * *"] }');
+    expect(cfg).toContain('"triggers": { "crons": ["10 * * * *", "* * * * *"] }');
   });
 
   it('in shadow the tick does nothing: no database read, no outbound call', async () => {
@@ -314,6 +314,18 @@ describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
     }
     expect(seen).toEqual([]);
     expect(logs.some((l) => l.includes('[kernel-floor] skipped: shadow'))).toBe(true);
+  });
+
+  it('the per-minute tick is the effect timer, not the floor: in shadow it does nothing and never runs the floor', async () => {
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      await worker.scheduled({ cron: '* * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'shadow' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      console.log = realLog;
+    }
+    expect(logs.some((l) => l.includes('[kernel-floor]'))).toBe(false);
   });
 
   it('in own mode without KERNEL_COMMAND_SECRET (not switched over) the tick does nothing either', async () => {

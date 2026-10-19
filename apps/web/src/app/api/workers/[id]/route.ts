@@ -84,7 +84,7 @@ import { legacyRepairCompletionGate, legacyReviewFixCompletionGate, type LegacyR
 import { legacyDiffTouchesFindings, fixedElsewhereOf, noopEvidenceOf, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, notOwnerTaskSql, projectOwnerEnd, projectRequeue, recordLocalHead, requeueingAttemptIsCurrentSql, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { endedAtOf, isOwnerTask, reopenOwner, withdrawOwner } from '@/lib/workflow/owner-attempt';
 // T4 and T6 are applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
-import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { adoptReviewVerdict, attemptEnded as workflowAttemptEnded, attemptRequeued as workflowAttemptRequeued, kernelPrincipalOf, recordReviewVerdict, submitReviewVerdict, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -105,7 +105,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, republishPrHeads } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR, reconcileRecoverableBlockerRepair, republishPrHeads } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -810,6 +810,11 @@ async function patchWorker(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  // Non-outcome work only (telemetry, notifications, cache and ledger writes).
+  // A client that disconnects mid-handler lets the drain run early, and what is
+  // queued after it schedules a second after() that waitUntil may not cover.
+  // So a verdict, an attempt end, a release decision or a terminal record goes
+  // through `terminalWork` (inline for a terminal report), never through here.
   const afterReply = deferredReplyWork();
 
   const authHeader = req.headers.get('authorization');
@@ -1477,6 +1482,22 @@ async function patchWorker(
       hold = parked.hold;
       parkAdmitted = parked.admitted;
       stored = parked.waitingFor as typeof briefed;
+      // Parked on a repair that already landed (it finished before this park
+      // arrived): the repair's own completion found nothing to resume, so
+      // resume here, after this park is written (agent-question-protocol AC-55).
+      const parkedRepairId = (stored as { disposition?: string; repairTaskId?: unknown } | null)?.disposition === 'recovered'
+        ? (stored as { repairTaskId?: unknown }).repairTaskId : null;
+      if (status === 'waiting_input' && typeof parkedRepairId === 'string' && isUuid(parkedRepairId)) {
+        await afterReply('recoverable-blocker-late-park', async () => {
+          const repair = await db.query.tasks.findFirst({
+            where: sqlWhere(and(eq(tasks.id, parkedRepairId), eq(tasks.status, 'completed'))),
+            columns: { id: true, result: true },
+          });
+          if (!repair) return;
+          const summary = (repair.result as { summary?: unknown } | null)?.summary;
+          await reconcileRecoverableBlockerRepair({ id: repair.id, summary: typeof summary === 'string' ? summary : null });
+        });
+      }
     }
     // Sensitive: no prose, but the disposition fields are not prose and must
     // survive — Needs You admission reads them.
@@ -4698,6 +4719,13 @@ async function patchWorker(
         await resolveCompletedTask(taskId, worker.workspaceId);
       });
 
+      // A recoverable-blocker repair landed: resume the tasks parked on it
+      // (agent-question-protocol AC-55). Idempotent, so a duplicate completion is harmless.
+      await runStep('recoverable-blocker-reconcile', async () => {
+        if (effectiveOutcome !== 'completed' || shouldAutoRetry) return;
+        await reconcileRecoverableBlockerRepair({ id: taskId, context: terminalTaskRow[0]?.context ?? null, summary: typeof body.summary === 'string' ? body.summary : null });
+      });
+
       // Re-arm any schedule that was deferred by its per-schedule concurrent cap
       // if the cap is now freed because this task just completed.
       await runStep('rearm-cap-deferred-schedules', async () => {
@@ -4875,33 +4903,35 @@ async function patchWorker(
       if (terminalRow?.deliveryRole !== 'owner') await runStep('workflow-attempt-ended', workflowAttemptEnd);
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
-      await runStep('notify', async () => {
-        const taskRecord = await db.query.tasks.findFirst({
-          where: sqlWhere(eq(tasks.id, taskId)),
-          // startAt feeds the auto-retry wake below.
-          columns: {
-            id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
-            missionId: true, backend: true, roleSlug: true, runnerPreference: true, startAt: true,
-          },
-          with: {
-            workspace: {
-              columns: {
-                id: true, name: true, teamId: true, repo: true, webhookConfig: true,
-                githubInstallationId: true, githubRepoId: true,
-              },
-            },
-          },
-        });
-        if (shouldAutoRetry && taskRecord) {
+      // The auto-retry wake is delivery, not a notification: it stays inline.
+      // Telling people (the emit below) changes no outcome, so it goes after
+      // the reply (R-33). Nothing else in this block may move there: the
+      // verdict, the attempt end, the release decision and the terminal record
+      // are outcomes, and `after()` is not guaranteed to run them (a client
+      // that disconnects can end the request before the drain is scheduled).
+      const notifyTaskRow = () => db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, taskId)),
+        columns: { id: true, title: true, startAt: true },
+        with: { workspace: { columns: { name: true, teamId: true } } },
+      });
+      if (shouldAutoRetry) {
+        await runStep('retry-wake', async () => {
+          const taskRecord = await notifyTaskRow();
+          if (!taskRecord) return;
           // The requeue is already durable (tasks trigger); this labels it and
           // kicks delivery. A backoff/loop startAt keys the wake onto the
           // trigger's scheduled row instead of spending an immediate no-op one.
           const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
           const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
           await wakeTask(completedTaskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
-        }
-        const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
-        if (taskRecord && notifyTeamId) {
+        });
+      }
+      // A release held for CI is not an outcome yet (the release PR's CI emits it).
+      if (!(releaseHeld && !shouldAutoRetry)) {
+        await afterReply('task outcome notification', () => runStep('notify', async () => {
+          const taskRecord = await notifyTaskRow();
+          const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
+          if (!taskRecord || !notifyTeamId) return;
           // A contract violation (planning/review) reports `status:'completed'`
           // in the request body — that's what the agent claimed — but the task
           // was overridden to failed/requeued above. Using the raw body status
@@ -4909,11 +4939,8 @@ async function patchWorker(
           // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
           // already applies this same correction).
           // A completion-policy slot overrides the report the same way: a
-          // loop that ran out of attempts or a failed release is a failure,
-          // and a release held for CI is not an outcome yet (the release
-          // PR's CI emits it, github/webhook).
+          // loop that ran out of attempts or a failed release is a failure.
           const isDone = status === 'completed' && !contractViolation && !slotFailure;
-          if (releaseHeld && !shouldAutoRetry) return;
           // Who hears about it (the team's channel, the subscriptions ledger,
           // a chat-filed mission's conversation) is the modules' business.
           await emit({
@@ -4930,8 +4957,8 @@ async function patchWorker(
             error: error ?? null,
             failure: shouldAutoRetry ? null : slotFailure,
           }, { isolate: (_label, fn) => runStep('notify', fn) });
-        }
-      });
+        }));
+      }
 
       // Credential health tracking: update health state on auth failure or success.
       await runStep('credential-health', () => recordCredentialHealthForOutcome(taskId, status, error));
@@ -6201,10 +6228,14 @@ async function handleReviewerOutcomeIfNeeded(
   // head or round is kept on its round for audit and does nothing else (no
   // GitHub review, no fix, no merge). The kernel's effects post the review,
   // dispatch the fix and raise escalations; the legacy writes below do not run.
+  // 7105282e: never dropped. Every send carries one key per reviewer and round;
+  // one the control plane did not answer is parked for the floor, a refused or
+  // stale verdict fails its round (T27) in the seam, and a round still waiting
+  // on this reviewer once it has ended a while is failed by the floor.
   let kernelOwnsVerdict = false;
   if (reviewerTask.deliveryId && ctx.workflowRoundId) {
     kernelOwnsVerdict = true;
-    const kv = await recordReviewVerdict({
+    const sent = await submitReviewVerdict({
       workspaceId,
       reviewerTask: { id: reviewerTaskId, deliveryId: reviewerTask.deliveryId, context: ctx },
       verdict: output.verdict,
@@ -6213,16 +6244,19 @@ async function handleReviewerOutcomeIfNeeded(
       confidence: output.confidence,
       evidenceSha,
       output,
-    }, { principal }).catch((err) => {
-      console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
-      void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
-      return null;
-    });
-    if (!kv) return;
+    }, { principal, record: recordReviewVerdict });
+    if (sent.status !== 'answered') {
+      const detail = sent.status === 'parked' ? `parked for the floor to re-send (${sent.why})` : `not recorded; the floor fails the round once the reviewer has ended a while (${sent.error})`;
+      console.error(`[reviewer] workflow kernel did not answer the verdict for PR #${prNumber}: ${detail}`);
+      void reportOps({ source: 'workflow-kernel:verdict', severity: sent.status === 'parked' ? 'warning' : 'error', message: `verdict not recorded for PR #${prNumber}`, detail });
+      return;
+    }
+    const kv = sent.answer;
     if (!kv.handled) {
       kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
     } else if (kv.result.result !== 'applied') {
-      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      const settled = kv.settled ? `; round ${kv.settled.result === 'applied' ? 'failed (T27)' : `left (${kv.settled.result}: ${kv.settled.reason})`}` : '';
+      console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied${settled}`);
       return;
     }
   }

@@ -216,6 +216,8 @@ export type WaitingOnDescriptor =
       visualRunning?: true;
       /** Every open row is queued and nothing holds it: next in line for a runner. */
       nextInLine?: true;
+      /** Every open row is queued, nothing holds it, and no runner able to claim the workspace's work has heartbeated recently. */
+      noRunner?: true;
       /** Every open row is queued for reasons with no wording, or for different ones: waiting, no cause named. */
       waitingNoCause?: true;
     }
@@ -513,6 +515,12 @@ export function isGated(
  * source that could contradict it was consulted and had nothing to say.)
  */
 export interface MissionStateInput {
+  /**
+   * Whether a runner able to claim this workspace's work has heartbeated
+   * recently. `false` makes queued work read "No runner online" instead of
+   * "next in line for a runner"; absent or `true` keeps the latter.
+   */
+  runnerOnline?: boolean;
   /** `missions.status`. */
   status: string;
   /** Start gate not released (`startMode === 'held'`). */
@@ -606,7 +614,7 @@ export interface MissionStateInput {
    * `activeAgents` (a waiting worker is live), so this is what tells the
    * accessor the live work is waiting on an answer.
    */
-  openQuestions?: Array<{ taskId: string; title?: string | null; prompt: string | null }>;
+  openQuestions?: Array<{ taskId: string; title?: string | null; prompt: string | null; repairTaskId?: string | null }>;
   /**
    * From `deriveLocalStrand` (lib/local-strand.ts), plus the refusal the
    * executor flip would meet (`continueOnRunnerBlockedReason`). Read only on a
@@ -808,7 +816,7 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
           : { ...getMissionStateChip(resolved.displayState), label: 'READY TO COMPLETE' }
       : w?.kind === 'task' && w.nextInLine
         ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
-      : w?.kind === 'task' && (w.hold || w.waitingNoCause)
+      : w?.kind === 'task' && (w.hold || w.waitingNoCause || w.noRunner)
         ? { ...getMissionStateChip(resolved.displayState), label: 'WAITING' }
       : resolved.kind === 'held'
         ? { ...getMissionStateChip(resolved.displayState), label: missionStartCopyFor(input).label.toUpperCase() }
@@ -1060,7 +1068,25 @@ function resolve(input: MissionStateInput): Resolution {
 
 /** Rule 4¾ — a worker waiting on a person's answer. */
 function questionFact(input: MissionStateInput): Resolution | null {
-  const qs = input.openQuestions ?? [];
+  const parked = input.openQuestions ?? [];
+  // A `recovered` park waits on its repair task, not on a person: the task
+  // resumes when the repair completes (agent-question-protocol AC-55).
+  const qs = parked.filter(q => !q.repairTaskId);
+  const repair = parked.find(q => q.repairTaskId)?.repairTaskId;
+  if (qs.length === 0 && repair) {
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'self_resolving_wait',
+        tone: 'neutral',
+        label: `Waiting: repair task ${repair.slice(0, 8)} is fixing a platform blocker; this resumes when it completes`,
+        reason: 'platform repair',
+        waitUntil: null,
+      },
+      displayState: isLocal(input) ? 'local' : 'active',
+      source: 'workers.waitingFor',
+    };
+  }
   if (qs.length === 0) return null;
   const prompt = qs.length === 1 ? qs[0].prompt : null;
   return {
@@ -1581,7 +1607,9 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       return {
         kind: 'waiting',
         waitingOn: nothingHolds
-          ? { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true }
+          ? input.runnerOnline === false
+            ? { ...base, tone: 'warning', label: `No runner online: ${subject} queued`, noRunner: true }
+            : { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true }
           : { ...base, tone: 'neutral', label: `${subject} waiting`, waitingNoCause: true },
         displayState: 'active',
         source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
@@ -1645,7 +1673,7 @@ function criterionBlockers(
   let openBlockers = 0;
   if (types.has('no_open_tasks')) {
     for (const t of input.openTasks ?? []) {
-      if (isSurfaceAuditTask(t.title ?? '')) continue;
+      if (t.surfaceAudit || isSurfaceAuditTask(t.title ?? '')) continue;
       openBlockers++;
       push({ taskId: t.id, title: t.title ?? t.id, status: OPEN_STATUS_LABEL[t.status] ?? t.status.replace(/_/g, ' ') });
     }
@@ -1899,6 +1927,9 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
     // A wait and a stall both claim nothing is executing. Held/idle missions
     // keep them; a running one would be publishing a contradiction.
     if (live && c.fact.kind === 'self_resolving_wait') continue;
+    // A stranded local mission's work has not run, so a verdict is not due: the
+    // quiet "run verification" line would point at a step that cannot start.
+    if (resolved.displayState === 'stranded' && c.fact.kind === 'criterion_unverified' && c.fact.tone === 'neutral') continue;
     if (seen.has(c.fact.kind)) continue;
     seen.add(c.fact.kind);
     out.push(c);
@@ -1940,6 +1971,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.visualRunning) return 'visual review running';
       if (d.visualQueued) return d.hold ? `visual review queued: ${d.hold}` : 'visual review queued';
       if (d.hold) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued: ${d.hold}`;
+      if (d.noRunner) return `no runner online: ${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued`;
       if (d.nextInLine) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} next in line for a runner`;
       if (d.waitingNoCause) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} waiting`;
       // `neutral` is open work with something live on the mission; `warning`
@@ -2183,6 +2215,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.blockedBy) {
         return `Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
+      if (waitingOn.noRunner) return 'It starts when a runner comes online and picks it up. Cancel it if you no longer want the work.';
       if (waitingOn.nextInLine) return 'It starts when a runner picks it up. Cancel it if you no longer want the work.';
       if (waitingOn.waitingNoCause) return 'It starts when what holds it clears. Cancel it if you no longer want the work.';
       if (waitingOn.visualBlocked) return 'A person can skip the visual review, or fix what keeps it from running.';

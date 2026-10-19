@@ -3,7 +3,7 @@
  * be a delta review that carries it? Every "no" here is a full review.
  */
 import { describe, expect, test } from 'bun:test';
-import { DELTA_MAX_FILES, DELTA_MAX_LINES, deltaApprovalEligibility, deltaApprovalSource, isTestOrConfigPath, type DeltaReading } from './delta-approval';
+import { DELTA_MAX_FILES, DELTA_MAX_LINES, deltaApprovalEligibility, deltaApprovalSource, emptyDeltaCarry, isTestOrConfigPath, type DeltaReading } from './delta-approval';
 import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 const D = (o: Partial<DeliverySnapshot> = {}): DeliverySnapshot => ({
@@ -107,5 +107,19 @@ describe('deltaApprovalEligibility', () => {
     const carried = approved({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta', scope: { deltaApproval: { eligible: true, fromHeadSha: 'H1' } } });
     expect(deltaApprovalSource(V({ d: { approvedHeads: ['H2'] }, rounds: [approved(), carried] }))).toBe('H1');
     expect(deltaApprovalSource(V({ d: { approvalBasis: 'human' } }))).toBeNull();
+  });
+});
+
+// 92a439a6: a clean base merge reads as an empty bounded delta; it carries with no round.
+describe('emptyDeltaCarry', () => {
+  test('an empty delta from the approval source carries from it', () => {
+    expect(emptyDeltaCarry(V(), 'H2', reading({ files: [] }))).toBe('H1');
+  });
+  test('a non-empty delta, an unread one, or one the eligibility rule refuses does not', () => {
+    expect(emptyDeltaCarry(V(), 'H2', reading())).toBeNull();
+    expect(emptyDeltaCarry(V(), 'H2', null)).toBeNull();
+    expect(emptyDeltaCarry(V(), 'H3', reading({ files: [] }))).toBeNull();
+    expect(emptyDeltaCarry(V(), 'H2', reading({ fromHeadSha: 'H0', files: [] }))).toBeNull();
+    expect(emptyDeltaCarry(V({ d: { approvalBasis: 'human' } }), 'H2', reading({ files: [] }))).toBeNull();
   });
 });

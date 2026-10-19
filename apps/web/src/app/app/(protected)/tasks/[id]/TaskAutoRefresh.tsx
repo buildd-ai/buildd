@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { useRegionRefresher } from '@/components/LiveRegion';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 
 interface RouterLike {
@@ -86,7 +87,8 @@ export default function TaskAutoRefresh({
   hasSubTasks: boolean;
   workerHasOpenPr: boolean;
 }) {
-  const router = useRouter();
+  // Inside the page's live region a refresh re-reads the region, not the page.
+  const router = useRegionRefresher(useRouter());
 
   // Stabilize depTaskIds to avoid infinite re-renders (arrays are compared by reference)
   // eslint-disable-next-line react-hooks/exhaustive-deps

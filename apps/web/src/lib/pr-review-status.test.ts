@@ -448,11 +448,12 @@ describe('derivePrReviewStatus with a delivery', () => {
     expect(derive(delivery({ rounds: [round({ status: 'failed', verdict: null })] })).state).toBe('review_failed');
   });
 
-  it('reads a decided approve, with the round, max rounds and head from the delivery', () => {
+  it('reads a decided approve, with the fix budget used, max and head from the delivery', () => {
     const s = derive(delivery({ rounds: [round({ round: 2 })] }));
     expect(s.state).toBe('approved');
     expect(s.verdict).toBe('approve');
-    expect(s.iteration).toBe(2);
+    // Rounds count pushes (CI fixes, base merges); the budget counts review fixes.
+    expect(s.iteration).toBe(1);
     expect(s.maxIterations).toBe(3);
     expect(s.reviewHeadSha).toBe('sha1');
   });
@@ -469,6 +470,26 @@ describe('derivePrReviewStatus with a delivery', () => {
   it('ignores superseded rounds', () => {
     const s = derive(delivery({ rounds: [round({ round: 1 }), round({ round: 2, status: 'superseded' })] }));
     expect(s.iteration).toBe(1);
+  });
+
+  it('counts review-fix attempts, not pushes: two CI-fix pushes plus one request-changes leave review budget unspent', () => {
+    // Rounds include all pushes (CI fixes, review fixes, base merges).
+    // But the review budget only counts review-fix attempts.
+    // Scenario: reviewer asks for changes (round 1), then two CI-fix pushes (rounds 2-3).
+    // fixesUsed should be 1 (only the review-fix attempt), not 3 (the round count).
+    const s = derive(delivery({
+      rounds: [
+        round({ round: 1, verdict: 'request_changes' }),
+        round({ round: 2, status: 'superseded' }),
+        round({ round: 3, status: 'superseded' }),
+      ],
+      // fixesUsed is 1: only the initial request-changes attempt, not the CI fixes
+      attempts: { review_fix: { n: 1, m: 3 } },
+    }));
+    expect(s.state).toBe('changes_requested');
+    expect(s.iteration).toBe(1); // Should be fixesUsed (1), not latest round (3)
+    expect(s.maxIterations).toBe(3);
+    expect(isReviewBudgetSpent(s)).toBe(false); // 1 < 3, so budget is not spent
   });
 
   it('is escalated whatever the last round said', () => {

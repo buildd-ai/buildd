@@ -24,7 +24,7 @@ import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { MISSION_DETAIL_WITH } from '@/app/app/(protected)/missions/[id]/mission-page-query';
 import type { MissionObjectView } from '@/components/chat/objects/object-views';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { isMissionAuditTask } from '@buildd/core/surface-audit';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -46,7 +46,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
 
   // The visual review (docs/design/visual-qa-human-review.md, Chat), through
   // the one auditor-scoped loader. No audit task on the mission: no query.
-  const hasAudit = (mission.tasks ?? []).some(t => (t as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG);
+  const hasAudit = (mission.tasks ?? []).some(t => isMissionAuditTask(t));
 
   const [roles, humanSteeringNotes, runnerHeartbeats, fleetCapacity, visual, deliveries] = await Promise.all([
     (async () => {
