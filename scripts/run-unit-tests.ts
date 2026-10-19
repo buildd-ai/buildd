@@ -30,6 +30,7 @@ const UNIT_TEST_ROOTS = [
   'packages/shared/',
   'packages/workflow-kernel/',
   'scripts/',
+  'tests/integration/',
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {
