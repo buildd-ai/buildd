@@ -450,3 +450,47 @@ describe('one accountable principal across totals, Mine and member rows', () => 
   });
 });
 
+describe('principal for work, physical runner for occupancy', () => {
+  const span = { startedAt: NOW - 2 * H, completedAt: NOW - H };
+
+  for (const window of ['24h', '7d', '30d'] as const) {
+    it(`${window}: task owner A claimed by B is A's in Mine, in the members list and in the managed class`, () => {
+      const s = buildOccupancySeries({
+        window, now: NOW, viewerId: 'A',
+        workers: [row({ ...span, ownerId: 'B', taskOwnerId: 'A', runnerClass: 'managed' })],
+      });
+      expect(s.summary.runnerBy.mine.peak).toBe(1);
+      expect(s.summary.runnerBy.others.peak).toBe(0);
+      expect(s.summary.runnerByClass.managed.peak).toBe(1);
+      expect(s.members!.map(m => [m.id, m.peak])).toEqual([['A', 1]]);
+      expect(s.members!.find(m => m.id === 'B')).toBeUndefined();
+      expect(occupancyDiscrepancies(s)).toEqual([]);
+    });
+
+    it(`${window}: a service-owned task credits no member, even to its claimer`, () => {
+      const s = buildOccupancySeries({
+        window, now: NOW, viewerId: 'B',
+        workers: [row({ ...span, ownerId: 'B', taskOwnerId: null, runnerClass: 'managed' })],
+      });
+      expect(s.summary.runnerBy.unattributed.peak).toBe(1);
+      expect(s.summary.runnerBy.mine.peak).toBe(0);
+      expect(s.members).toEqual([]);
+      expect(s.summary.coverage.ownerMissing).toBe(1);
+    });
+
+    it(`${window}: a session still belongs to its claimer and never to the member list`, () => {
+      const s = buildOccupancySeries({
+        window, now: NOW, viewerId: 'B',
+        workers: [row({ ...span, runner: 'mcp', ownerId: 'B', taskOwnerId: 'A' })],
+      });
+      expect(s.summary.sessionsBy.mine.peak).toBe(1);
+      expect(s.members).toEqual([]);
+    });
+  }
+
+  it('without a task owner on the row the claimer is the principal (older callers)', () => {
+    const s = buildOccupancySeries({ window: '24h', now: NOW, viewerId: 'B', workers: [row({ ...span, ownerId: 'B' })] });
+    expect(s.members!.map(m => m.id)).toEqual(['B']);
+  });
+});
+

@@ -208,9 +208,9 @@ export function buildFleetSnapshot(
   const capacity = fleetCapacity(heartbeats, { now, onlineThresholdMs: onlineMs });
 
   /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
-  const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }) => {
+  const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }, isSession = false) => {
     const t = w.task ?? null;
-    const principal = accountablePrincipal(slot.lane.id.startsWith('sessions:') ? 'interactive' : 'runner', w.ownerId, w.taskOwnerId);
+    const principal = accountablePrincipal(isSession ? 'interactive' : 'runner', w.ownerId, w.taskOwnerId);
     const mine = opts.viewerId ? (principal ? principal === opts.viewerId : null) : undefined;
     const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
     // The task's own short label ("reconcile exports spec") names the run;
@@ -319,7 +319,7 @@ export function buildFleetSnapshot(
       .map(w => ({ w, start: [ms(w.startedAt), ms(w.updatedAt)].find(Number.isFinite) ?? now }))
       .sort((a, b) => a.start - b.start || a.w.id.localeCompare(b.w.id));
     const slots: FleetSlot[] = running.map((_, index) => ({ index, worker: null, last: null, lane: { id: `sessions:${index}`, bars: [] } }));
-    running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }));
+    running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }, true));
     live = liveBefore; // session claims are not runner slots
     sessions = {
       id: 'sessions', name: SESSIONS_LANE_NAME, machine: null, maxSlots: slots.length, online: true, slots,

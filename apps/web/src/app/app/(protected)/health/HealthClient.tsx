@@ -5,7 +5,7 @@ import { FailureGroupsSection, failureProblemLine } from './_components/FailureG
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { deriveSandboxPosture, isRunnerOnline, runnerSection } from '@/lib/runner-heartbeats-shared';
 import { isolationProblem, isolationStrandedProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
@@ -850,8 +850,8 @@ export function HealthClient({
           </div>
         )}
         {[
-          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
-          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => runnerSection(r) === 'mine') },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => runnerSection(r) === 'team') },
         ].filter(g => g.list.length > 0).map(g => (
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
