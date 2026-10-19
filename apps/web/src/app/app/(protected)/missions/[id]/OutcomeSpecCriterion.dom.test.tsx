@@ -90,29 +90,6 @@ const setInput = (el: HTMLInputElement, value: string) => {
 };
 
 describe('outcome spec row', () => {
-  it('AC-128: lists reviewer-judged checks apart from tested checks', () => {
-    const evaluated = state();
-    evaluated.criteria[1].spec!.standings = [
-      { criterionId: 'AC-1', standing: 'pass', headSha: 'abc1234def', source: 'test' },
-      { criterionId: 'AC-2', standing: 'pass', headSha: 'abc1234def', source: 'review' },
-      { criterionId: 'AC-3', standing: 'stale', headSha: 'old', source: 'review' },
-      { criterionId: 'R-3', standing: 'pass', headSha: 'abc1234def', source: 'review' },
-    ];
-    act(() => root.render(createElement(MissionGoalCriteria, { missionId: 'm1', criteria: [COMMAND, SPEC], criteriaState: evaluated, readonly: true })));
-    expand();
-    expect(container.querySelector('[data-testid="outcome-spec-tested"]')?.textContent).toBe('Tested: AC-1');
-    expect(container.querySelector('[data-testid="outcome-spec-judged"]')?.textContent).toBe('Judged: AC-2');
-  });
-
-  it('omits empty tested and judged lists before any checks pass', () => {
-    const evaluated = state();
-    evaluated.criteria[1].spec!.standings = [];
-    act(() => root.render(createElement(MissionGoalCriteria, { missionId: 'm1', criteria: [COMMAND, SPEC], criteriaState: evaluated, readonly: true })));
-    expand();
-    expect(container.querySelector('[data-testid="outcome-spec-tested"]')).toBeNull();
-    expect(container.querySelector('[data-testid="outcome-spec-judged"]')).toBeNull();
-  });
-
   it('counts only real passes: a waived and a stale requirement are not passed', () => {
     render();
     const summary = container.querySelector('[data-testid="outcome-spec-summary"]')!.textContent!;

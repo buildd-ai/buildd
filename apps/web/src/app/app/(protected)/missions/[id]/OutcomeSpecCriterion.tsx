@@ -74,11 +74,6 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
           Only {v.narrowed.criterionIds.join(', ')}: {v.narrowed.reason}
         </p>
       )}
-      {(['tested', 'judged'] as const).map(group => v[group].length > 0 && (
-        <p key={group} className="text-meta text-text-secondary leading-snug break-words" data-testid={`outcome-spec-${group}`}>
-          {group === 'tested' ? 'Tested' : 'Judged'}: <span className="font-mono text-text-muted">{v[group].join(', ')}</span>
-        </p>
-      ))}
       {v.outranked.length > 0 && (
         <ul className="space-y-1" data-testid="outcome-spec-outranked">
           {v.outranked.map(o => (
@@ -89,32 +84,32 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
         </ul>
       )}
       {v.open.length > 0 && (
-      <ul className="space-y-1" data-testid="outcome-spec-open">
-        {v.open.map(o => (
-          <li key={o.standing} data-standing={o.standing} className="text-meta leading-snug">
-            <span className={o.standing === 'fail' ? 'text-status-error' : 'text-text-secondary'}>{o.label}</span>
-            <span className="text-text-muted">: </span>
-            {o.criterionIds.map((id, i) => (
-              <span key={id} className="font-mono text-text-muted">
-                {i > 0 && ', '}
-                {id}
-                {!readonly && (
-                  <button
-                    type="button"
-                    className={`${ACTION} ml-1`}
-                    disabled={saving}
-                    data-testid={`waive-${id}`}
-                    onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
-                  >
-                    Waive
-                  </button>
-                )}
-              </span>
-            ))}
-          </li>
-        ))}
-      </ul>
-    )}
+        <ul className="space-y-1" data-testid="outcome-spec-open">
+          {v.open.map(o => (
+            <li key={o.standing} data-standing={o.standing} className="text-meta leading-snug">
+              <span className={o.standing === 'fail' ? 'text-status-error' : 'text-text-secondary'}>{o.label}</span>
+              <span className="text-text-muted">: </span>
+              {o.criterionIds.map((id, i) => (
+                <span key={id} className="font-mono text-text-muted">
+                  {i > 0 && ', '}
+                  {id}
+                  {!readonly && (
+                    <button
+                      type="button"
+                      className={`${ACTION} ml-1`}
+                      disabled={saving}
+                      data-testid={`waive-${id}`}
+                      onClick={() => { setPending({ kind: 'waive', criterionId: id }); setReason(''); }}
+                    >
+                      Waive
+                    </button>
+                  )}
+                </span>
+              ))}
+            </li>
+          ))}
+        </ul>
+      )}
       {v.judged.length > 0 && (
         <p className="text-meta text-text-muted leading-snug" data-testid="outcome-spec-judged">
           Passed by reviewer: <span className="font-mono">{v.judged.join(', ')}</span>

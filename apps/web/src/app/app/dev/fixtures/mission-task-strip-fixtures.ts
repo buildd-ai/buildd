@@ -494,7 +494,7 @@ export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: num
     if (variant === 'outcome-spec-proposed') return id === 'R-1' ? 'pass' : 'missing';
     return 'pass';
   };
-  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({ criterionId: id, source: id.startsWith('AC-') ? 'review' : 'test', standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD }));
+  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({ criterionId: id, standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD }));
   const allPass = standings.every(s => s.standing === 'pass');
   const verdict: CriterionVerdict = variant === 'outcome-spec-verifying' ? 'PENDING' : allPass ? 'pass' : 'UNVERIFIED';
   const command = handoff.checks!.criteria[0];
