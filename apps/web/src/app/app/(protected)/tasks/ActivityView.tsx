@@ -303,7 +303,10 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
   const rounds = row.delivery.repairRounds;
   const state = lifecycleState(row.delivery.kind);
   // Repair attempts are children of their delivery: always visible, never a row of their own, oldest first.
-  const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair').sort((a, b) => a.round - b.round);
+  // A kernel delivery's repairs carry no number: they arrive newest first, and read oldest first here.
+  const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair');
+  if (repairs.every(r => r.round != null)) repairs.sort((a, b) => a.round! - b.round!);
+  else repairs.reverse();
   const head = (
     <>
       <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}><TaskTitle short title={row.title} /></span>
@@ -333,7 +336,7 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
       )}
       {repairs.length > 0 && (
         <ul data-testid="activity-repairs" aria-label="Repair attempts" className="mb-2 ml-3 border-l border-border-strong pl-3">
-          {repairs.map(r => <RepairChild key={r.round} entry={r} />)}
+          {repairs.map((r, i) => <RepairChild key={i} entry={r} />)}
         </ul>
       )}
       {expandable && open && (
@@ -347,8 +350,10 @@ function NowRowView({ row, nowMs, startOpen }: { row: NowRow; nowMs: number; sta
 }
 
 const REPAIR_STATE: Record<Extract<EvidenceEntry, { type: 'repair' }>['status'], StateKey> = {
-  running: 'fixing', pushed: 'review', failed: 'failed', queued: 'queued',
+  running: 'fixing', pushed: 'review', failed: 'failed', queued: 'queued', ended: 'not_landed', superseded: 'not_landed',
 };
+/** The ledger's own word where the state's label would say something else ("Not landed" for a repair). */
+const REPAIR_LABEL: Partial<Record<Extract<EvidenceEntry, { type: 'repair' }>['status'], string>> = { ended: 'Done', superseded: 'Replaced' };
 const REPAIR_WHY: Record<string, string> = { ci: 'CI failed', conflict: 'branch conflict', review: 'review asked for changes' };
 
 /** One repair attempt, indented under its delivery: `↻ Repairing · Repair 1 · CI failed`. */
@@ -356,8 +361,8 @@ function RepairChild({ entry }: { entry: Extract<EvidenceEntry, { type: 'repair'
   const why = entry.reason ? REPAIR_WHY[entry.reason] ?? null : null;
   return (
     <li data-testid="activity-repair" data-status={entry.status} className="flex flex-wrap items-baseline gap-x-2 py-0.5 text-meta text-text-secondary">
-      <StatePill state={REPAIR_STATE[entry.status]} variant="plain" />
-      <span>Repair {entry.round}{why ? ` · ${why}` : ''}{entry.sha ? ` · ${entry.sha}` : ''}</span>
+      <StatePill state={REPAIR_STATE[entry.status]} label={REPAIR_LABEL[entry.status]} variant="plain" />
+      <span>Repair{entry.round != null ? ` ${entry.round}` : ''}{why ? ` · ${why}` : ''}{entry.sha ? ` · ${entry.sha}` : ''}</span>
     </li>
   );
 }
