@@ -142,11 +142,6 @@ When you encounter pain points, blockers, or broken tooling while working a task
 - **About buildd itself** (a buildd MCP tool or route misbehaved, or the error carries a traced signature from `get_error_traces` / `get_failure_analytics`): this is a platform signal, not a task in your repo's backlog. Pass `context: { frictionSignature, frictionTool, frictionErrorCode }` as the signature sources give them. Signals are deduplicated by signature across teams and carry only signature, tool, error code, buildd version and count, never task content. Operators open the fix task from it. Do not file buildd-platform friction in an unrelated repo's workspace.
 - **Excerpts are opt-in.** `frictionExcerpt` is attached only if the team has opted in to sharing excerpts; otherwise it is dropped. Never paste task content, code or secrets into it.
 
-**Classify first (spec `workspace-routing-and-reach` §4 I-18, D-1).** Ask whose problem it is:
-- **About your own repo** (its code, its CI, its tests, its docs): file `[friction]` in your own workspace. It stays there.
-- **About buildd itself** (a buildd MCP tool or route misbehaved, or the error carries a traced signature from `get_error_traces` / `get_failure_analytics`): this is a platform signal, not a task in your repo's backlog. Pass `context: { frictionSignature, frictionTool, frictionErrorCode }` as the signature sources give them. Signals are deduplicated by signature across teams and carry only signature, tool, error code, buildd version and count, never task content. Operators open the fix task from it. Do not file buildd-platform friction in an unrelated repo's workspace.
-- **Excerpts are opt-in.** `frictionExcerpt` is attached only if the team has opted in to sharing excerpts; otherwise it is dropped. Never paste task content, code or secrets into it.
-
 **How to report:** Create a task in the same workspace with title `[friction] <short description>` and description explaining what broke, what you expected, and what you actually had to do instead. Use `create_task` (MCP or API). Low priority is fine; this is background signal, not a blocker.
 
 If the friction arose from a traced error (one that appears in `get_error_traces`), call `get_error_traces` first to get the pattern slug, then include it in the `create_task` call:
