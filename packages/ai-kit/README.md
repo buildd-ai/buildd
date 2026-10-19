@@ -29,7 +29,7 @@ to npm with provenance and is tagged `ai-kit-v<version>`. See
 | `@builddai/ai-kit/chat/schema.sql` | Reference Postgres tables for a `ChatStore` (never run by the kit) | Reference |
 | `@builddai/ai-kit/models` | Model-plan client + usage sink. No deps; Node, Bun, edge | Ready |
 | `@builddai/ai-kit/policy` | Standalone model policy: surface + tier → provider, model, effort. Local-first, optional remote service with fallback. No deps; Node, Bun, edge | Ready |
-| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.6.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
+| `@builddai/ai-kit/decide` | Jev decisions: typed questions, gating, versioning, eval. Optional peer `@typesafe-ai/sdk@0.7.0`: install it to call `decide`; without it the module still loads and `decide` returns `sdk_missing` | Ready |
 | `@builddai/ai-kit/surfaces` | Jev picks the app's own chips and card: `defineSurface` (rank and choice slots in one call, shadow first, a slot gated only after an eval of at least 700 held-out rows) and the single-slot `defineRankSurface` | Ready (shadow) |
 
 ## Model plans
