@@ -128,6 +128,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   record_pr_supersession: 'work',
   post_note: 'work',
   suggest_schedule_update: 'work',
+  propose_schedule_move: 'work',
 };
 
 /** Declared in @buildd/shared so tool-name matching needs no action registry. */
@@ -271,6 +272,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   query_events: 'more',
   emit_event: 'more',
   suggest_schedule_update: 'more',
+  propose_schedule_move: 'more',
   list_connectors: 'more',
   resolve_capability: 'more',
   request_capability: 'more',
@@ -343,7 +345,8 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'audit page source', actions: ['get_page_source'] },
       { text: 'deploy as the Platform Operator', actions: ['deploy'] },
       { text: 'open the PR', actions: ['create_pr', 'record_pr_supersession'] },
-      { text: 'suggest a schedule change', actions: ['suggest_schedule_update'] },
+      { text: 'suggest schedule changes', actions: ['suggest_schedule_update'] },
+      { text: 'propose a move', actions: ['propose_schedule_move'] },
       { text: 'complete', actions: ['complete_task'] },
     ],
   },
@@ -501,6 +504,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   record_pr_supersession: 'record that a closed PR was superseded',
   post_note: 'post a note or question to the task feed',
   suggest_schedule_update: 'propose a change to your schedule',
+  propose_schedule_move: 'propose moving your schedule',
 };
 
 /**
@@ -775,7 +779,8 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('operation', str, [{ text: 'status|put_secret|upload_worker|ensure_bucket', actions: ['deploy'] }]),
     param('prNumber', num, [{ text: 'PR number', actions: ['record_pr_supersession', 'get_page_source'] }]),
     param('supersedingPrNumber', num, [{ text: 'Merged PR carrying the work', actions: ['record_pr_supersession'] }]),
-    param('reason', str, [{ text: 'Why (recorded)', actions: ['record_pr_supersession', 'suggest_schedule_update'] }]),
+    param('reason', str, [{ text: 'Why (recorded)', actions: ['record_pr_supersession', 'suggest_schedule_update', 'propose_schedule_move'] }]),
+    param('workspace', str, [{ text: 'Target id, name or owner/repo', actions: ['propose_schedule_move'] }]),
     param('label', str, [{ text: 'Event label', actions: ['emit_event'] }]),
   ],
   admin: [

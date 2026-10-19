@@ -43,6 +43,11 @@ vi.mock('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: vi.fn(),
 }));
 
+vi.mock('@/lib/schedule-move', () => ({
+  validateScheduleMove: vi.fn(),
+  applyScheduleMove: vi.fn(),
+}));
+
 vi.mock('@/lib/schedule-helpers', () => ({
   validateCronExpression: vi.fn(),
   computeNextRunAt: vi.fn(),
@@ -54,6 +59,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
+import { applyScheduleMove, validateScheduleMove } from '@/lib/schedule-move';
 import { NextRequest } from 'next/server';
 
 const WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
@@ -320,12 +326,42 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
     expect((set.mock.calls[0] as any)[0].delegation).toBeNull();
   });
 
-  it('moving the schedule to another workspace drops its grant', async () => {
-    mockSessionUser();
-    const { set } = mockDbUpdate({ ...mockSchedule });
-    const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
-    expect(res.status).toBe(200);
-    expect((set.mock.calls[0] as any)[0].delegation).toBeNull();
+  describe('moving the schedule (I-26, AC-14)', () => {
+    beforeEach(() => {
+      (validateScheduleMove as any).mockResolvedValue({ ok: true, teamId: 'team-1' });
+      (applyScheduleMove as any).mockImplementation(async ({ targetWorkspaceId }: any) => ({ schedule: { ...mockSchedule, workspaceId: targetWorkspaceId }, move: {} }));
+    });
+
+    it('a team admin moves it through the validated move path, not a bare column write', async () => {
+      mockSessionUser();
+      teamRole('admin');
+      const { set } = mockDbUpdate({ ...mockSchedule });
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
+      expect(res.status).toBe(200);
+      expect(validateScheduleMove).toHaveBeenCalledWith(expect.objectContaining({ fromWorkspaceId: WORKSPACE_ID, targetWorkspaceId: TARGET }));
+      expect(applyScheduleMove).toHaveBeenCalledWith(expect.objectContaining({ targetWorkspaceId: TARGET }));
+      expect((set.mock.calls[0] as any)[0]).not.toHaveProperty('workspaceId');
+      expect((await res.json()).schedule.workspaceId).toBe(TARGET);
+    });
+
+    it('a team member without delegate_schedule_access is refused and nothing is written', async () => {
+      mockSessionUser();
+      teamRole('member');
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applyScheduleMove).not.toHaveBeenCalled();
+    });
+
+    it('a target that fails validation (another team) is refused and nothing is written', async () => {
+      mockSessionUser();
+      teamRole('admin');
+      (validateScheduleMove as any).mockResolvedValue({ ok: false, status: 404, error: 'Target workspace not found' });
+      const res = await PATCH(makeRequest('PATCH', { workspaceId: OTHER_TEAM_WS }), { params });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applyScheduleMove).not.toHaveBeenCalled();
+    });
   });
 });
 

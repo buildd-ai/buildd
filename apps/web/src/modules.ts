@@ -304,6 +304,10 @@ export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
  */
 export const ACCESS_NEEDS_YOU = accessNeedsYouRead;
 
+/** Open schedule move proposals, for the people who may answer them (lib/schedule-move-needs-you.ts). */
+export const SCHEDULE_MOVE_NEEDS_YOU = async (workspaceIds: readonly string[]) =>
+  (await import('@/lib/schedule-move-needs-you')).scheduleMoveNeedsYouRead(workspaceIds);
+
 /**
  * The missions module's slot for Home (lib/mission-summary-home.ts): live
  * readings for missions with no stored summary yet, the after-response
@@ -431,3 +435,7 @@ export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hook
   loadPolicy: async (gate, area) => (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area),
   record: async (row, replay) => (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision(row, replay),
 };
+
+/** Task filing reach refusal: optional schedules module observes repeated refusals. */
+export const TASK_REACH_REFUSAL = async (...args: Parameters<typeof import('@/lib/schedule-move').noteScheduleRefusal>) =>
+  (await import('@/lib/schedule-move')).noteScheduleRefusal(...args);
