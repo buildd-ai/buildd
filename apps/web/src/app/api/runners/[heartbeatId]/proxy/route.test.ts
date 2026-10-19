@@ -52,7 +52,7 @@ const VALID_HB = {
   accountId: 'acc-1',
   localUiUrl: 'https://runner.example.com',
   viewerToken: 'tok-abc',
-  account: { teamId: 'team-1' },
+  account: { teamId: 'team-1', createdByUserId: 'user-1' },
 };
 
 const DOCTOR_RESPONSE = {
@@ -227,4 +227,18 @@ describe('GET /api/runners/[heartbeatId]/proxy', () => {
     const res = await GET(req('11111111-1111-4111-8111-111111111111', 'debug/claims'), { params: makeParams('11111111-1111-4111-8111-111111111111') });
     expect(res.status).toBe(200);
   });
+});
+
+
+describe('Lifetime history owner authorization (AC-4)', () => {
+  for (const createdByUserId of ['teammate', null]) {
+    it(`denies same-team lifetime history when creator is ${createdByUserId}`, async () => {
+      mockHbFindFirst.mockResolvedValue({ ...VALID_HB, account: { teamId: 'team-1', createdByUserId } });
+      const upstream = mock(() => Promise.resolve(Response.json({ totalSessions: 73, totalCost: 12, avgDurationMs: 60000 })));
+      globalThis.fetch = upstream as unknown as typeof fetch;
+      const res = await GET(req(VALID_HB.id, 'history/stats'), { params: makeParams(VALID_HB.id) });
+      expect(res.status).toBe(403);
+      expect(upstream).not.toHaveBeenCalled();
+    });
+  }
 });

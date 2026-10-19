@@ -51,9 +51,15 @@ export async function GET(
 
   const hb = await db.query.workerHeartbeats.findFirst({
     where: sqlWhere(eq(workerHeartbeats.id, heartbeatId)),
-    with: { account: { columns: { teamId: true } } },
+    with: { account: { columns: { teamId: true, createdByUserId: true } } },
   });
   if (!hb) return NextResponse.json({ error: 'Runner not found' }, { status: 404 });
+
+  // Runner-local history spans every team and workspace. Team membership
+  // cannot authorize lifetime totals, including for service-owned accounts.
+  if (path === 'history/stats' && hb.account?.createdByUserId !== user.id) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   const accessible = await canAccessRunner(user.id, (hb as any).account?.teamId ?? null);
   if (!accessible) {

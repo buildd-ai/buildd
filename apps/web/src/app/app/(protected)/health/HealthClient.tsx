@@ -5,7 +5,7 @@ import { FailureGroupsSection, failureProblemLine } from './_components/FailureG
 import type { ClaimBlocker } from '@/lib/claim-blocker-projection';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { deriveSandboxPosture, isRunnerOnline, runnerSection } from '@/lib/runner-heartbeats-shared';
 import { isolationProblem, isolationStrandedProblem, runnerIsolationDetail, PLATFORM_TEXT } from '@/lib/runner-isolation-health';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
@@ -423,14 +423,14 @@ export function HealthClient({
     try {
       const [doctorRes, historyRes] = await Promise.allSettled([
         fetch(`/api/runners/${heartbeatId}/proxy?path=doctor`),
-        fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`),
+        hb?.mine ? fetch(`/api/runners/${heartbeatId}/proxy?path=history%2Fstats`) : Promise.resolve(null),
       ]);
 
       const doctor = doctorRes.status === 'fulfilled' && doctorRes.value.ok
         ? (await doctorRes.value.json()) as RunnerDoctorResult
         : undefined;
 
-      const historyStats = historyRes.status === 'fulfilled' && historyRes.value.ok
+      const historyStats = hb?.mine && historyRes.status === 'fulfilled' && historyRes.value?.ok
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
@@ -850,8 +850,8 @@ export function HealthClient({
           </div>
         )}
         {[
-          { key: 'mine', title: 'Your runners', list: runners.filter(r => r.mine) },
-          { key: 'team', title: 'Team runners', list: runners.filter(r => !r.mine) },
+          { key: 'mine', title: 'Your runners', list: runners.filter(r => runnerSection(r) === 'mine') },
+          { key: 'team', title: 'Team runners', list: runners.filter(r => runnerSection(r) === 'team') },
         ].filter(g => g.list.length > 0).map(g => (
         <div key={g.key} data-testid={`health-runners-${g.key}`} className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -984,7 +984,7 @@ export function HealthClient({
                             </div>
                           </div>
                         )}
-                        {health.historyStats && (
+                        {hb.mine && health.historyStats && (
                           <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
                             {/* LIFETIME, and runner-local: this comes from the
                                 runner's own SQLite, which has no team or
