@@ -170,9 +170,21 @@ describe('buildd top --dev / top-dev (the dev build of top)', () => {
     expect(refuseInDevCheckout(classifyCliArgs(argv()), {})).toBeNull();
     expect(refuseInDevCheckout(classifyCliArgs(argv('top-dev')), {})).toBeNull();
   });
-  test('help lists top --dev and top-dev', () => {
-    expect(RUNNER_USAGE).toMatch(/^ {2}buildd top --dev +\S/m);
-    expect(RUNNER_USAGE).toContain('buildd top-dev');
+  test('help does not list top --dev, top-dev or the config switch (contributors only)', () => {
+    expect(RUNNER_USAGE).not.toMatch(/--dev(?![a-z])/); // --device is login's
+    expect(RUNNER_USAGE).not.toContain('top-dev');
+    expect(RUNNER_USAGE).not.toContain('.buildd-dev');
+    expect(RUNNER_USAGE).not.toContain('devChannel');
+  });
+  test('config set devChannel on|off, and nothing else', () => {
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'on'))).toEqual({ kind: 'config-dev-channel', on: true });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'off'))).toEqual({ kind: 'config-dev-channel', on: false });
+    expect(classifyCliArgs(argv('config'))).toEqual({ kind: 'unknown', arg: 'config' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel'))).toEqual({ kind: 'unknown', arg: 'devChannel' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'yes'))).toEqual({ kind: 'unknown', arg: 'yes' });
+    expect(classifyCliArgs(argv('config', 'set', 'apiKey', 'x'))).toEqual({ kind: 'unknown', arg: 'apiKey' });
+    expect(classifyCliArgs(argv('config', 'get', 'devChannel'))).toEqual({ kind: 'unknown', arg: 'get' });
+    expect(classifyCliArgs(argv('config', 'set', 'devChannel', 'on', 'x'))).toEqual({ kind: 'unknown', arg: 'x' });
   });
 });
 
