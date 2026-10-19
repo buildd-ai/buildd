@@ -62,7 +62,7 @@ it('records an open fact for every row it bound, and never writes the status col
   expect(setPayloads).toHaveLength(1);
   expect(setPayloads[0]).toMatchObject({ prUrl: LOCAL_PR.url, prNumber: 7 });
   expect(setPayloads[0]).not.toHaveProperty('prLifecycleStatus');
-  expect(recordedFacts).toEqual([{ target: { workerIds: ['w1', 'w2'] }, fact: { kind: 'open' }, opts: undefined }]);
+  expect(recordedFacts).toEqual([{ target: { workerIds: ['w1', 'w2'] }, fact: { kind: 'open' }, opts: { scope: expect.objectContaining({ defers: expect.any(Function) }) } }]);
 });
 
 it('records no fact when no row was bound', async () => {

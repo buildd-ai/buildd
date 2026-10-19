@@ -7,11 +7,15 @@
  * comes from renderFrame(state), and every key goes through handleKey(state).
  *
  * Updates are pushed: /api/events streams worker changes the moment the runner
- * has them, and a queue change the runner learns of (a task assigned over
- * Pusher, a task claimed in one of its workspaces, a refused claim, a worker
- * starting or finishing) refetches the task list, at most once per
- * TASK_EVENT_MIN_MS, and the queue while the Queue view is open. Timers are
- * only the backstop: every 2 minutes for tasks, 5 for missions. Left without a
+ * has them, and a queue change the runner learns of (a task assigned, claimed,
+ * created or updated in one of its workspaces over Pusher, a refused claim, a
+ * worker starting or finishing) refetches the task list, at most once per
+ * TASK_EVENT_MIN_MS, and the queue while the Queue view is open. A mission-loop
+ * event on a listed mission (a new cycle, a stall, delivered, reopened)
+ * refetches the missions on the same floor. The timer is only the fallback
+ * for a missed event (spec 3ef37387 R-21, AC-5): one tick a minute, making at
+ * most one server read, the most overdue of tasks (2 minutes since the last
+ * read), missions (5) and, in the Queue view, the queue (1). Left without a
  * key for IDLE_PAUSE_MS, top stops asking the server at all (each task-list
  * and missions read is a database read on the server) and says so; the next
  * key catches up. Pushed worker changes still draw meanwhile: they come from
@@ -29,6 +33,10 @@ import { eventChangesQueue, initialState, reduce, type TopEvent, type TopState }
 export const EXIT_NO_RUNNER = 1;
 export const EXIT_NOT_A_TERMINAL = 64;
 
+/** The fallback timer: at most one server read per tick (spec 3ef37387 AC-5). */
+export const FALLBACK_TICK_MS = 60_000;
+/** A read whose clock is this close to due counts as due (timers fire slightly early). */
+const DUE_SLACK_MS = 1_000;
 /** Never fetch the task list on a timer faster than this (R-4). */
 export const TASK_REFRESH_MS = 120_000;
 /** Never fetch the missions list faster than this (R-24). */
@@ -52,6 +60,30 @@ const ESC_WAIT_MS = 50;
 
 export const ENTER_SCREEN = '\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J';
 export const LEAVE_SCREEN = '\x1b[0m\x1b[?25h\x1b[?1049l';
+
+/**
+ * Which read the fallback tick makes, if any: the most overdue of the task
+ * list (TASK_REFRESH_MS since its last read, event-driven reads included), the
+ * missions (MISSION_REFRESH_MS) and, while the Queue view is open, the queue
+ * (QUEUE_REFRESH_MS). One per tick, so a quiet top costs at most one server
+ * read a minute (spec 3ef37387 AC-5).
+ */
+export function fallbackRead(at: { now: number; tasksAt: number; missionsAt: number; queueAt: number; queueOpen: boolean }): 'tasks' | 'missions' | 'queue' | null {
+  const candidates: Array<['tasks' | 'missions' | 'queue', number, number]> = [
+    ['tasks', at.tasksAt, TASK_REFRESH_MS],
+    ['missions', at.missionsAt, MISSION_REFRESH_MS],
+  ];
+  if (at.queueOpen) candidates.push(['queue', at.queueAt, QUEUE_REFRESH_MS]);
+  let best: 'tasks' | 'missions' | 'queue' | null = null;
+  let bestRatio = 0;
+  for (const [name, last, every] of candidates) {
+    const elapsed = at.now - last;
+    if (elapsed + DUE_SLACK_MS < every) continue;
+    const ratio = elapsed / every;
+    if (ratio > bestRatio) { best = name; bestRatio = ratio; }
+  }
+  return best;
+}
 
 export function noRunnerMessage(): string {
   return 'No buildd runner is running on this machine. Start one with: buildd service install (or buildd to run it in this terminal)';
@@ -199,6 +231,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // The open and recently delivered missions of the runner's workspaces (R-24):
   // Event-triggered reads are throttled; the minute timer is its own cadence.
   let missionsAt = 0;
+  let missionsTrailing: ReturnType<typeof setTimeout> | null = null;
   const refreshMissions = async (timerTick = false) => {
     if (!timerTick && Date.now() - missionsAt < MISSION_REFRESH_MS) return;
     missionsAt = Date.now();
@@ -207,9 +240,22 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       if (r.status === 200 && Array.isArray(r.body?.missions)) dispatch({ type: 'missions', missions: r.body.missions });
     } catch { /* the pane keeps the missions the task list names */ }
   };
+  // A mission-loop event: the missions refetch on the task-event floor, not
+  // the 5-minute one, with one trailing read for a burst.
+  const refreshMissionsSoon = () => {
+    if (missionsTrailing) return;
+    const wait = missionsAt + taskEventMinMs - Date.now();
+    if (wait <= 0) { void refreshMissions(true); return; }
+    missionsTrailing = setTimeout(() => {
+      missionsTrailing = null;
+      if (serverReadsAllowed()) void refreshMissions(true);
+    }, wait);
+  };
   // The claim order for this runner (R-26): the Queue view, and the waiting
   // work the Missions view lists that the windowed task list leaves out.
+  let queueAt = 0;
   const refreshQueue = async () => {
+    queueAt = Date.now();
     try {
       const r = await client.get<{ teams?: any[]; truncated?: boolean; error?: string }>('/api/queue');
       if (r.status === 200 && Array.isArray(r.body?.teams)) dispatch({ type: 'queue', queue: { teams: r.body.teams, truncated: !!r.body.truncated } });
@@ -288,6 +334,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
         await client.events((event) => {
           backoff = 1_000;
           if (eventChangesQueue(state, event)) queueChanged();
+          if (event.type === 'mission_changed' && serverReadsAllowed()) refreshMissionsSoon();
           if (streamTouched) {
             if (event.type === 'worker_update' && (event as any).worker?.id) streamTouched.add((event as any).worker.id);
             if (event.type === 'init') for (const w of (event as any).workers ?? []) if (w?.id) streamTouched.add(w.id);
@@ -448,6 +495,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (renderTimer) clearTimeout(renderTimer);
     if (queueTimer) clearTimeout(queueTimer);
     if (tasksTrailing) clearTimeout(tasksTrailing);
+    if (missionsTrailing) clearTimeout(missionsTrailing);
     if (tasksCatchUp) clearTimeout(tasksCatchUp);
     if (escTimer) clearTimeout(escTimer);
     if (snapshotRetry) clearTimeout(snapshotRetry);
@@ -496,9 +544,14 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   scheduleDraw();
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
-  timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshTasks(); }, TASK_REFRESH_MS));
-  timers.push(setInterval(() => { if (serverReadsAllowed()) void refreshMissions(true); }, MISSION_REFRESH_MS));
-  timers.push(setInterval(() => { if (state.view === 'queue' && serverReadsAllowed()) void refreshQueue(); }, QUEUE_REFRESH_MS));
+  // The fallback for a missed event: one read a tick at most (AC-5).
+  timers.push(setInterval(() => {
+    if (!serverReadsAllowed()) return;
+    const due = fallbackRead({ now: Date.now(), tasksAt, missionsAt, queueAt, queueOpen: state.view === 'queue' });
+    if (due === 'tasks') void refreshTasks();
+    else if (due === 'missions') void refreshMissions(true);
+    else if (due === 'queue') void refreshQueue();
+  }, FALLBACK_TICK_MS));
   // The stream opens beside the snapshot, not after it: its init frame fills
   // the header (online, slots) while the slower task and mission reads load.
   void loadSnapshot().catch(() => {});
