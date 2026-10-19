@@ -714,6 +714,7 @@ export const workerActions = [
   'explain',
   'list_artifact_templates',
   'suggest_schedule_update',
+  'propose_schedule_move',
   'post_note',
   'list_schedules', 'trace_schedule',
   'get_task_messages',
@@ -1130,6 +1131,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
+    propose_schedule_move: '{ workspace (required: the workspace id, name or owner/repo of the team), reason (required), scheduleId? } — propose that the schedule which spawned this task starts its FUTURE runs in another workspace of the team. Only a task a schedule spawned can call it (anything else is refused). It records one open proposal per schedule (a newer one replaces it) and changes nothing else: a person with delegate_schedule_access answers it on Home or the schedule (Accept, Keep, or Accept with a read grant on the old home). The schedule keeps running where it is until then; if accepted, the next tick files in the new workspace, and this run and tasks already filed stay put. Use it when reads or filings for the workspace the work belongs to keep coming back FORBIDDEN or delegation_required, and say so in reason.',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
@@ -6199,6 +6201,28 @@ export async function handleBuilddAction(
       if (params.enabled !== undefined) changes.push(`enabled → ${params.enabled}`);
 
       return text(`Schedule suggestion created for schedule ${scheduleId}.\nProposed changes: ${changes.join(', ')}\nReason: ${params.reason}\n\nThe suggestion is now pending human approval in the dashboard.`);
+    }
+
+    case 'propose_schedule_move': {
+      if (!params.workspace || typeof params.workspace !== 'string') throw new Error('workspace is required');
+      if (!params.reason || typeof params.reason !== 'string') throw new Error('reason is required');
+      let scheduleId = params.scheduleId as string | undefined;
+      let wsId = ctx.workspaceId && UUID_RE.test(ctx.workspaceId) ? ctx.workspaceId : null;
+      if ((!scheduleId || !wsId) && ctx.workerId) {
+        const workerData = await api(`/api/workers/${ctx.workerId}`);
+        const taskContext = workerData?.task?.context || workerData?.context || {};
+        scheduleId = scheduleId ?? taskContext.scheduleId;
+        wsId = wsId ?? workerData?.workspaceId ?? workerData?.task?.workspaceId ?? null;
+      }
+      if (!scheduleId || !wsId) throw new Error('This task was not spawned by a schedule, so it cannot propose moving one.');
+      // The server resolves a name or owner/repo within the schedule's team: a task token's own
+      // workspace list does not show the workspace it wants to move to.
+      const result = await api(`/api/workspaces/${wsId}/schedules/${scheduleId}/move-proposal`, {
+        method: 'POST',
+        body: JSON.stringify({ workspace: params.workspace, reason: params.reason }),
+      });
+      const proposal = result?.proposal;
+      return text(`Move proposed${proposal?.id ? ` (${proposal.id})` : ''}: schedule ${scheduleId} → workspace ${params.workspace}.\nReason: ${params.reason}\n\nNothing has changed. A person with schedule access answers it; until then the schedule keeps running where it is, and an accepted move takes effect from the next run. This run and tasks already filed stay in their workspace.`);
     }
 
     case 'approve_plan': {
