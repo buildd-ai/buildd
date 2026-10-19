@@ -3306,6 +3306,29 @@ export const specVerdictSources = pgTable('spec_verdict_sources', {
 }));
 
 /**
+ * Links one verdict to the spec_criteria row it judged, keyed on the stable
+ * criterion id (AC-n, R-n) so each criterion is tracked on its own. One row per
+ * verdict. `verifiedBy` is what produced it: `test` (a criterion check run),
+ * `review` (a person or agent) or `baseline` (the state held before the work).
+ * Written best-effort after a verdict is recorded (apps/web/src/lib/specs/verdict-source.ts);
+ * spec_outcome_verdicts stays the log the folds read.
+ */
+export const verdictCriteria = pgTable('verdict_criteria', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  verdictId: uuid('verdict_id').references(() => specOutcomeVerdicts.id, { onDelete: 'cascade' }).notNull(),
+  specCriterionId: uuid('spec_criterion_id').references(() => specCriterionRecords.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  criterionId: text('criterion_id').notNull(),
+  verifiedBy: text('verified_by').notNull().$type<'test' | 'review' | 'baseline'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  verdictUnique: uniqueIndex('verdict_criteria_verdict_idx').on(t.verdictId),
+  criterionIdx: index('verdict_criteria_criterion_idx').on(t.specRevisionId, t.criterionId, t.verifiedBy),
+  specCriterionIdx: index('verdict_criteria_spec_criterion_idx').on(t.specCriterionId),
+  verifiedByCheck: check('verdict_criteria_verified_by', sql`${t.verifiedBy} IN ('test', 'review', 'baseline')`),
+}));
+
+/**
  * A human's decision on one visual-audit screenshot
  * (docs/design/visual-qa-human-review.md). Append-only: a new decision or an
  * undo sets `supersededAt` on the active row, then inserts. Kept out of
