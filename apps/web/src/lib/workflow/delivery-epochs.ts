@@ -29,6 +29,7 @@ import {
   type MissionEpochCommand, type MissionEpochView, type SettlementCandidate, type SettledPr,
 } from '@buildd/workflow-kernel/delivery-epochs';
 import type { Exec } from './kernel';
+import type { EpochEffectHandlers } from './epoch-effects';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -131,6 +132,8 @@ export interface MissionEpochHooks {
   legacyPrOf(missionId: string): Promise<LegacyMissionPr | null>;
   /** The workspace whose repo holds the mission's branches (`resolveMissionRepoWorkspaceId`). */
   repoWorkspaceOf(missionId: string, missionWorkspaceId: string | null): Promise<string | null>;
+  /** What runs each epoch effect the floor drains (epoch-effects.ts): the refresh is the missions module's. */
+  epochEffectHandlers: EpochEffectHandlers;
 }
 
 async function hooks(): Promise<MissionEpochHooks> {
