@@ -1,3 +1,4 @@
+import { createPeriodicSelfHeal } from './self-heal';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
@@ -3498,34 +3499,9 @@ setInterval(async () => {
 }, 60_000); // Check every 60 seconds
 
 // Periodic self-heal: run doctor checks every 30 minutes and auto-fix silently
-let lastSelfHeal = Date.now();
-setInterval(async () => {
-  if (Date.now() - lastSelfHeal < 30 * 60 * 1000) return;
-  lastSelfHeal = Date.now();
-
-  // The doctor is synchronous (git fetch, `du` and `git status` per worktree,
-  // each an execSync of up to 10s), so on a host with many worktrees it held
-  // the event loop for seconds at a time and the local socket missed /health.
-  // Run it as `--doctor --fix` in a child: same checks and fixes, and the
-  // runner's loop keeps serving. The child finds this runner through its socket.
-  try {
-    const { execFile } = await import('child_process');
-    const out = await new Promise<string>((resolve, reject) => {
-      execFile(process.execPath, [process.argv[1], '--doctor', '--fix'], {
-        encoding: 'utf-8', timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, NO_COLOR: '1' },
-      }, (err, stdout) => (err && !stdout ? reject(err) : resolve(stdout)));
-    });
-    const fixes = out.split('Auto-fixes:')[1];
-    if (fixes) {
-      for (const line of fixes.split('\n').map(l => l.trim()).filter(Boolean)) {
-        console.log(`[self-heal] ${line.replace(/\x1b\[[0-9;]*m/g, '')}`);
-      }
-    }
-  } catch (err: any) {
-    console.error('[self-heal] Doctor check failed:', err.message);
-  }
-}, 60_000); // Piggyback on same 60s tick, but only runs every 30 minutes
+// Doctor uses synchronous git and filesystem checks. Run it in a child so
+// the local socket continues serving health and worker requests during repairs.
+setInterval(createPeriodicSelfHeal(), 60_000);
 
 // Liveness heartbeat: a positive log signal so host-level monitors that watch
 // stdout staleness can distinguish "runner idle" from "runner wedged". Worker
