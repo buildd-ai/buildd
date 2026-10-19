@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "81440b7e-e34b-4bb9-b355-4776354e8512",
+  "id": "1b30280f-1c26-40ac-b099-4e26120adb54",
   "prevIds": [
-    "5dd6ec54-2c3d-4070-af96-632091b4b142"
+    "2c6a643d-a6c0-4069-81f5-acaf8780357b"
   ],
   "ddl": [
     {
@@ -715,6 +715,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "spec_verdict_sources",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "specs",
       "entityType": "tables",
       "schema": "public"
@@ -860,6 +866,18 @@
     {
       "isRlsEnabled": false,
       "name": "users",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "verdict_criteria",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "verdict_evidence",
       "entityType": "tables",
       "schema": "public"
     },
@@ -21536,6 +21554,149 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workspace_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_revision_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "criterion_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verdict_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verdict",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "overridden_reviews",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "decided_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "specs"
     },
     {
@@ -26710,6 +26871,188 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verdict_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_criterion_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_revision_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "criterion_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verified_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verdict_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_revision_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "criterion_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ref",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "visual_shot_reviews"
     },
     {
@@ -31518,6 +31861,19 @@
       "generated": null,
       "identity": null,
       "name": "actor",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolution",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_scope_amendments"
@@ -39146,6 +39502,76 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "task_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "task_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_verdict_sources_task_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "mission_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_verdict_sources_mission_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "workspace_id",
           "isExpression": false,
           "asc": true,
@@ -41157,6 +41583,174 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "users"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "verdict_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_criteria_verdict_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "verified_by",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_criteria_criterion_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_criteria_spec_criterion_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "verdict_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "ref",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_evidence_item_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_evidence_criterion_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "ref",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "verdict_evidence_ref_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "verdict_evidence"
     },
     {
       "nameExplicit": true,
@@ -46971,6 +47565,91 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "spec_verdict_sources_workspace_id_workspaces_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "task_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "tasks",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_verdict_sources_task_id_tasks_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_verdict_sources_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_revision_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_revisions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_verdict_sources_spec_revision_id_spec_revisions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "verdict_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_outcome_verdicts",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_verdict_sources_verdict_id_spec_outcome_verdicts_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workspace_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "specs_workspace_id_workspaces_id_fk",
       "entityType": "fks",
       "schema": "public",
@@ -47842,6 +48521,91 @@
       "entityType": "fks",
       "schema": "public",
       "table": "user_feedback"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "verdict_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_outcome_verdicts",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "verdict_criteria_verdict_id_spec_outcome_verdicts_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_criterion_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_criteria",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "verdict_criteria_spec_criterion_id_spec_criteria_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_revision_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_revisions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "verdict_criteria_spec_revision_id_spec_revisions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "verdict_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_outcome_verdicts",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "verdict_evidence_verdict_id_spec_outcome_verdicts_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "verdict_evidence"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_revision_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "spec_revisions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "verdict_evidence_spec_revision_id_spec_revisions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "verdict_evidence"
     },
     {
       "nameExplicit": false,
@@ -49777,6 +50541,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "spec_verdict_sources_pkey",
+      "schema": "public",
+      "table": "spec_verdict_sources",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "specs_pkey",
       "schema": "public",
       "table": "specs",
@@ -50000,6 +50774,26 @@
       "name": "users_pkey",
       "schema": "public",
       "table": "users",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "verdict_criteria_pkey",
+      "schema": "public",
+      "table": "verdict_criteria",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "verdict_evidence_pkey",
+      "schema": "public",
+      "table": "verdict_evidence",
       "entityType": "pks"
     },
     {
@@ -50430,6 +51224,13 @@
       "table": "spec_outcome_verdicts"
     },
     {
+      "value": "(\"task_id\" IS NULL) <> (\"mission_id\" IS NULL)",
+      "name": "spec_verdict_sources_one_subject",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "spec_verdict_sources"
+    },
+    {
       "value": "num_nonnulls(\"owner_user_id\", \"owner_task_id\", \"owner_account_id\") = 1",
       "name": "subscriptions_exactly_one_owner",
       "entityType": "checks",
@@ -50442,6 +51243,20 @@
       "entityType": "checks",
       "schema": "public",
       "table": "tasks"
+    },
+    {
+      "value": "\"verified_by\" IN ('test', 'review', 'baseline')",
+      "name": "verdict_criteria_verified_by",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "verdict_criteria"
+    },
+    {
+      "value": "\"kind\" IN ('test', 'task', 'pr', 'commit')",
+      "name": "verdict_evidence_kind",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "verdict_evidence"
     },
     {
       "value": "(\"epoch_id\" IS NULL AND \"delivery_id\" IS NOT NULL AND \"transition_id\" IS NOT NULL) OR (\"epoch_id\" IS NOT NULL AND \"delivery_id\" IS NULL AND \"transition_id\" IS NULL)",
