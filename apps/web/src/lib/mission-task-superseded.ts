@@ -39,6 +39,8 @@ export interface SupersededResult {
   supersedingTaskId: string | null;
   /** A failed visual audit a later completed audit replaced. */
   replacedByAudit?: true;
+  /** A failed visual audit a person waived. No later audit ran; it stays waived, not passed. */
+  waived?: true;
 }
 
 /**
@@ -124,7 +126,7 @@ export async function computeSupersededFailedTasks(
   // A person's waiver retires every failed audit row, same as completion does.
   if (waived) {
     for (const t of failedAudits) {
-      if (!result.has(t.id)) result.set(t.id, { taskId: t.id, prNumber: null, supersedingTaskId: null, replacedByAudit: true });
+      if (!result.has(t.id)) result.set(t.id, { taskId: t.id, prNumber: null, supersedingTaskId: null, waived: true });
     }
   }
 

@@ -205,7 +205,7 @@ describe('computeSupersededFailedTasks', () => {
     it('is superseded by the waiver; an implementation failure beside it is not', async () => {
       waived = true;
       const result = await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit, failedBuild]);
-      expect(result.get('a-1')?.replacedByAudit).toBe(true);
+      expect(result.get('a-1')?.waived).toBe(true);
       expect(result.has('t-1')).toBe(false);
     });
 

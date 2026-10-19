@@ -733,6 +733,7 @@ async function viewForMission(missionId: string, inputs?: MissionExplainInputs):
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
         ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
+        ...(superseded.waived ? { waived: true as const } : {}),
       })),
     },
   };
