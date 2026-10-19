@@ -95,6 +95,8 @@ export interface KernelOps {
   mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
   /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
   mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
+  /** The answer to a held scope decision, recorded once; the hold is released (§6 scope amendments). */
+  mission_scope_resolve: { input: Parameters<Seam['missionScopeResolveCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeResolveCommand']>> };
   /**
    * T4: an attempt of a delivery ended (the worker PATCH, the reaper, a cancel, a reviewer takeover).
    * `workspaceId` is the task's, carried at the top level so the reach check reads it like every op's.
@@ -161,6 +163,7 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   heal: async (_s, i) => (await import('./kernel-heal')).healHere([i.deliveryId]),
   mission_epoch: (s, i) => s.missionEpochCommand(i),
   mission_scope: (s, i) => s.missionScopeCommand(i),
+  mission_scope_resolve: (s, i) => s.missionScopeResolveCommand(i),
   attempt_ended: (s, { workspaceId, ...p }) => {
     // The reach check judged `workspaceId`: the end it applies must be for a task of that workspace.
     if (p.task?.workspaceId !== workspaceId) throw new Error('attempt_ended: input.workspaceId is not the task\'s workspace');
