@@ -32,17 +32,51 @@ export const isVerdict = (v: unknown): v is Verdict => typeof v === 'string' && 
 export const GOVERNED_OUTCOMES = ['verified', 'fail', 'unverified'] as const;
 export type GovernedOutcome = (typeof GOVERNED_OUTCOMES)[number];
 
+/**
+ * Which signal produced a verdict. `test`: a criterion check run, whose exit
+ * code is the verdict. `review`: anything a person or an agent judged (a
+ * reviewer, a final verification, a visual audit).
+ */
+export const VERDICT_SOURCES = ['test', 'review'] as const;
+export type VerdictSource = (typeof VERDICT_SOURCES)[number];
+
+/** The source of a verdict from its `recordedBy` author; check runs author `check:<task id>`, everything else is a review. */
+export const verdictSourceOf = (recordedBy: unknown): VerdictSource =>
+  typeof recordedBy === 'string' && recordedBy.startsWith('check:') ? 'test' : 'review';
+
+/** The source of a stored verdict row from its evidence blob. */
+export const verdictSourceOfEvidence = (evidence: unknown): VerdictSource =>
+  verdictSourceOf(evidence && typeof evidence === 'object' ? (evidence as Record<string, unknown>).recordedBy : null);
+
 export interface CriterionVerdict {
   criterionId: string;
   verdict: Verdict;
   headSha: string | null;
   at: Date | string;
+  /** Absent reads as `review`. */
+  source?: VerdictSource;
+}
+
+/**
+ * The one verdict that decides a criterion (Living Specs: a test result
+ * outranks a reviewer's opinion). Among a criterion's verdicts: if any test
+ * produced a result (pass or fail), the newest such test decides and no review
+ * can override it, whenever the review was recorded; a later test supersedes
+ * it. A test that settled nothing (inconclusive, unsupported) does not
+ * suppress a review. With no test result, the newest verdict stands.
+ */
+export function determiningVerdict<T extends { verdict: Verdict; at: Date | string; source?: VerdictSource }>(rows: readonly T[]): T | null {
+  const newest = (xs: readonly T[]) => xs.reduce<T | null>((best, x) => (!best || new Date(x.at).getTime() >= new Date(best.at).getTime() ? x : best), null);
+  const tests = rows.filter((x) => x.source === 'test' && (x.verdict === 'pass' || x.verdict === 'fail'));
+  return newest(tests) ?? newest(rows);
 }
 
 export interface CriterionStanding {
   criterionId: string;
-  /** The newest verdict, or null when none was recorded. */
+  /** The deciding verdict (see determiningVerdict), or null when none was recorded. */
   verdict: Verdict | null;
+  /** Which signal decided it; null when there is no verdict. */
+  source: VerdictSource | null;
   headSha: string | null;
   /** The newest verdict judged a head other than the current one. */
   stale: boolean;
@@ -70,17 +104,18 @@ export function foldGovernedOutcome(
   verdicts: readonly CriterionVerdict[],
   currentHeadSha: string | null,
 ): GovernedOutcomeReadout {
-  const newest = new Map<string, CriterionVerdict>();
+  const byCriterion = new Map<string, CriterionVerdict[]>();
   for (const v of verdicts) {
     if (!isVerdict(v.verdict)) continue;
-    const prev = newest.get(v.criterionId);
-    if (!prev || new Date(v.at).getTime() >= new Date(prev.at).getTime()) newest.set(v.criterionId, v);
+    byCriterion.set(v.criterionId, [...(byCriterion.get(v.criterionId) ?? []), v]);
   }
+  const newest = new Map<string, CriterionVerdict>();
+  for (const [id, rows] of byCriterion) newest.set(id, determiningVerdict(rows)!);
   const standings: CriterionStanding[] = criteria.map((id) => {
     const v = newest.get(id);
-    if (!v) return { criterionId: id, verdict: null, headSha: null, stale: false, holds: false };
+    if (!v) return { criterionId: id, verdict: null, source: null, headSha: null, stale: false, holds: false };
     const onHead = sameHead(v.headSha, currentHeadSha);
-    return { criterionId: id, verdict: v.verdict, headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead };
+    return { criterionId: id, verdict: v.verdict, source: v.source ?? 'review', headSha: v.headSha, stale: !onHead, holds: v.verdict === 'pass' && onHead };
   });
   const failed = standings.filter((s) => s.verdict === 'fail').map((s) => s.criterionId);
   if (failed.length > 0) return { outcome: 'fail', currentHeadSha, criteria: standings, reason: `${failed.join(', ')} failed` };

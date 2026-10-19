@@ -221,6 +221,7 @@ const SAFE: Record<string, string[]> = {
   spec_revisions: ['content_hash', 'repo_refs'], // repo paths pinned to commit SHAs
   // A criterion id from the spec body (R-1, AC-2) and a git SHA.
   spec_outcome_verdicts: ['criterion_id', 'head_sha'],
+  spec_verdict_sources: ['criterion_id'], // a criterion id from the spec body; source is a test|review literal union
   spec_neighbors: ['source'], // vector | lexical | pr_files | path_manifest | a decision model id
   spec_metadata_changes: ['field', 'changed_by_kind'], // a metadata key name and user|agent
   spec_comments: ['anchor_id', 'anchor_hash'], // an outline id (s3) or criterion id (AC-2), and a sha256
