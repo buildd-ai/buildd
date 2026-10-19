@@ -11,6 +11,23 @@ const base: MissionStateInput = {
 };
 
 describe('buildStateBecause', () => {
+  describe('superseded visual audits', () => {
+    const view = deriveMissionStateView({ ...base });
+    const subject = { missionId: 'm', workspaceId: 'ws' };
+
+    it('says a waived audit was waived by a person, not replaced by a passing audit', () => {
+      const chain = buildStateBecause(view, subject, { supersededTasks: [{ id: 'a-1', title: 'Audit X', prNumber: null, waived: true }] });
+      const claim = chain.map(l => l.claim).find(c => c.includes('Audit X'));
+      expect(claim).toBe('Visual audit "Audit X" stalled on infrastructure, but its review was waived by a person, so it does not count as a mission failure.');
+      expect(claim).not.toContain('later audit');
+    });
+
+    it('keeps the replaced-audit text', () => {
+      const chain = buildStateBecause(view, subject, { supersededTasks: [{ id: 'a-1', title: 'Audit X', prNumber: null, supersedingTaskId: 'a-2', replacedByAudit: true }] });
+      expect(chain.map(l => l.claim)).toContain('Visual audit "Audit X" failed, but a later audit ("a-2") completed with passing phone and desktop screenshots of the same routes, so it does not count as a mission failure.');
+    });
+  });
+
   describe('a mission blocked on an upstream gate', () => {
     const view = deriveMissionStateView({ ...base, health: 'BLOCKED', dependsOnMissionId: 'up-1' });
     const subject = { missionId: 'm', workspaceId: 'ws' };
