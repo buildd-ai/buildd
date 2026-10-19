@@ -66,7 +66,9 @@ export {
 } from '@buildd/core/mission-completion-codes';
 export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
-import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { sqlExtras, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+// Subpath, as relational-sql does: route tests mock 'drizzle-orm' without `sql`.
+import { sql as rawSql } from 'drizzle-orm/sql/sql';
 import { noteWorkChanged } from './work-changed';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
@@ -297,21 +299,46 @@ const BLOCK_NOTE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
 
+/**
+ * The `result` and `context` keys the gate reads, picked in SQL (spec "Fast at
+ * any size", R-25): `result.errorType` (the infra_stalled refusal), and the
+ * context keys that say what kind of deliverable a row is (`isTrunkRefreshTask`,
+ * `deliverableRole`). Both columns are KBs per task and the gate reads every
+ * task of the mission, on every heartbeat that proposes completion. A NULL
+ * column stays NULL; an absent key reads as null, which every reader treats
+ * as absent. The mission page hands the gate a wider digest of the same
+ * columns (`opts.loaded`), which covers these keys.
+ */
+export const COMPLETION_RESULT_KEYS = ['errorType'] as const;
+// DELIVERABLE_ROLE_CONTEXT_KEYS' values and object markers, spelled out: several
+// route tests stub mission-helpers without it (a test pins the two equal).
+export const COMPLETION_CONTEXT_KEYS = ['requireMergeCommit', 'refreshTrunk', 'finalVerification', 'surfaceFix', 'specRepair'] as const;
+
+function completionTaskExtras() {
+  const pick = (col: unknown, keys: readonly string[]) =>
+    rawSql`CASE WHEN ${col} IS NULL THEN NULL ELSE jsonb_build_object(${rawSql.join(keys.map(k => rawSql`${k}::text, ${col}->${k}::text`), rawSql`, `)}) END`;
+  return sqlExtras({
+    result: pick(tasks.result, COMPLETION_RESULT_KEYS),
+    context: pick(tasks.context, COMPLETION_CONTEXT_KEYS),
+  });
+}
+
 /** The mission's tasks as the gate reads them, each with its newest worker. */
 function loadCompletionTasks(missionId: string) {
   return db.query.tasks.findMany({
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
-      taskClass: true, creationSource: true, category: true, result: true,
+      taskClass: true, creationSource: true, category: true,
       // Finds the visual audit, so a mission without one skips the hold check.
       roleSlug: true,
-      // The surface-audit gate reads the declared paths and each PR's repo,
-      // and context to recognise a trunk-refresh task.
-      workspaceId: true, pathManifest: true, context: true,
+      // The surface-audit gate reads the declared paths and each PR's repo.
+      workspaceId: true, pathManifest: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
+    // `result` and `context`: only the keys above.
+    extras: completionTaskExtras(),
     with: {
       // Latest worker only — enough to answer "did this deliverable's PR merge?"
       workers: {

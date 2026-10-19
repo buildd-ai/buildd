@@ -210,6 +210,15 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
     };
   }
 
+  // Never ran: build work it checks failed. Not a system problem, and nothing to retry here (spec 072de598 I-14).
+  if (state.status === 'queued' && state.waitingOn) {
+    const title = state.waitingOn.title?.trim();
+    return {
+      ...quiet, ...common, stage: 'verifying', tone: 'neutral', label: 'Waiting on failed work', showPanel: true,
+      detail: `${title ? `“${title}”` : 'Build work it checks'} failed. The visual check starts once it completes.`,
+    };
+  }
+
   // needed / queued / running
   if (state.nextActor === 'owner') {
     const owner: VisualReviewOwnerDecision = { kind: 'run_review', label: 'Run visual review', detail: 'This workspace asks before checking screens.' };

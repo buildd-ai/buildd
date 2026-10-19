@@ -110,6 +110,8 @@ export const VISUAL_REVIEW_TASK_SELECTION = {
   errorType: sql<string | null>`${tasks.result} ->> 'errorType'`.as('error_type'),
   // An audit's `why` (cancelled, failed): the summary only, never the whole result.
   resultSummary: sql<string | null>`case when ${isAuditTaskCol} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),
+  // A failed audit's dependency failure (`dependencyFailureOf`): the three keys it reads, never the whole result.
+  dependencyFailure: sql<Record<string, unknown> | null>`case when ${isAuditTaskCol} and ${tasks.status} = 'failed' then jsonb_build_object('errorType', ${tasks.result} -> 'errorType', 'blockedBy', ${tasks.result} -> 'blockedBy', 'error', left(${tasks.result} ->> 'error', 500)) else null end`.as('dependency_failure'),
 };
 
 export function visualReviewTasksQuery(q: Selectable, missionId: string) {

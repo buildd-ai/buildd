@@ -70,7 +70,8 @@ import { LandedThisWeek, type LandedMission } from './LandedThisWeek';
 import { buildAgentsModel } from '@/lib/home-agents';
 import { idleWhileQueued } from '@/lib/idle-while-queued';
 import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
-import { startOfDayInZone } from '@/lib/fleet-view';
+import { startOfDayInZone, type FleetHeartbeatRow } from '@/lib/fleet-view';
+import { withLiveRunnerBeats } from '@/lib/runner-beats';
 import { shortAgo } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { missionTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
@@ -82,6 +83,7 @@ import { agentCredentialProbe } from '@/lib/getting-started-load';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { missionCardHref, type MissionCardRow } from '@/lib/mission-card-view';
 import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
+import { HOME_JUST_LANDED_WINDOW_MS, isRecentlyDelivered } from '@/lib/recently-delivered';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,7 +115,7 @@ const HOME_LIVE_SUMMARY_CAP = 100;
 /** Held, stranded and just-landed missions read for Needs you and Landed. */
 const HOME_LISTED_MISSION_CAP = 40;
 /** A completed mission lands on Home for this long. */
-const RECENT_DONE_MS = 12 * 3_600_000;
+const RECENT_DONE_MS = HOME_JUST_LANDED_WINDOW_MS;
 const OPEN_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
 const MOVING_KINDS = ['landing', 'audit', 'repair', 'build'] as const;
 
@@ -761,7 +763,7 @@ async function loadHomeView(userId: string, opts: { wsFilter: string | null; now
   await orderStrandButtons(view.listed, teamId, userId, now);
 
   // ── Questions ──
-  const { questions, runnerConnected } = homeQuestionsFrom({ heartbeats: r1.heartbeats ?? [], rows: asking, superseded, now });
+  const { questions, runnerConnected } = homeQuestionsFrom({ heartbeats: await withLiveRunnerBeats((r1.heartbeats ?? []) as FleetHeartbeatRow[]), rows: asking, superseded, now });
   view.runnerConnected = hasWs ? runnerConnected : undefined;
   view.questions = questions.map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
@@ -1027,7 +1029,7 @@ function applyMissions(view: HomeView, input: {
     ...liveOpen.map(m => m.home.delivery),
   ]);
 
-  const recentDone = (m: MissionReading) => m.status === 'completed' && !!m.completedAt && now - new Date(m.completedAt).getTime() < RECENT_DONE_MS;
+  const recentDone = (m: MissionReading) => m.status === 'completed' && isRecentlyDelivered({ completedAt: m.completedAt }, now, RECENT_DONE_MS);
   const listedLive = input.live.filter(m => m.home.card.kind === 'held' || (m.home.card.listed && m.home.card.strand) || recentDone(m));
   const listed = [...input.listed, ...listedLive];
   view.listed = listed.flatMap(m => (m.home.card.strand && (m.home.card.listed || recentDone(m)) ? [{

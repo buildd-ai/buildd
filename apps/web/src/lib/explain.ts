@@ -31,7 +31,7 @@ import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-in
 import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
@@ -333,19 +333,40 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
 }
 
 /**
+ * The read behind {@link loadOpenAttempt}: `taskId`'s open attempts with only
+ * what `deriveOpenAttempt` reads (two context keys, the workers' status), not
+ * the full rows `viewForTask` loads. A page batches it and hands the rows to
+ * {@link openAttemptOf}.
+ */
+export function openAttemptQuery(taskId: string) {
+  return db.query.tasks.findMany({
+    where: sqlWhere(and(
+      eq(tasks.parentTaskId, taskId),
+      eq(tasks.taskClass, 'attempt'),
+      inArray(tasks.status, [...SHARED_OPEN_TASK_STATUSES]),
+    )),
+    columns: { id: true, title: true, status: true, taskClass: true, category: true, createdAt: true },
+    extras: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      context: (t: any, _ops?: unknown) => sql<Record<string, unknown>>`jsonb_build_object('iteration', ${t.context}->'iteration', 'maxIterations', ${t.context}->'maxIterations')`.as('attempt_context'),
+    },
+    with: { workers: { columns: { status: true } } },
+  });
+}
+
+/** The open-attempt fact from {@link openAttemptQuery}'s rows. */
+export function openAttemptOf(rows: Awaited<ReturnType<typeof openAttemptQuery>>): OpenAttemptInfo | null {
+  return deriveOpenAttempt(rows as unknown as LoadedTask[]);
+}
+
+/**
  * Convenience wrapper for a caller that only wants the open-attempt fact, not
  * a full `explainTask` answer (history, gate history, evidence objects, …).
- * One extra query — children of `taskId` with their latest worker — reading
- * the exact same columns and the exact same predicate `viewForTask` uses.
+ * One extra query — open children of `taskId` with their workers' status —
+ * under the same predicate `viewForTask` applies.
  */
 export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
-  const attempts = (await db.query.tasks.findMany({
-    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
-    columns: TASK_COLUMNS,
-    with: { workers: WORKER_WITH },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as LoadedTask[];
-  return deriveOpenAttempt(attempts);
+  return openAttemptOf(await openAttemptQuery(taskId));
 }
 
 function iso(d: Date | string | null | undefined): string | null {
@@ -1235,9 +1256,37 @@ async function loadBaseSideMerges(input: {
 }
 
 /**
- * Explain a PR. The state answer is its task's (a PR is not a separate subject
- * with its own lifecycle — it is how a task ships), and when the PR is
- * conflicted the conflict chain is prepended so `because[]` opens on the cause.
+ * The task a PR ships: the owner of its kernel delivery, else the task that
+ * opened it. Every fix attempt on the PR (a CI fix, a review fix) records the
+ * same PR number on its own worker, so the worker a PR number resolves to can
+ * be an attempt's; read as the subject, a cancelled CI fix reported an open,
+ * red PR as complete. An attempt that opened a PR of its own keeps it.
+ */
+export async function prOwnerTaskId(taskId: string, prNumber: number): Promise<string> {
+  const dv = (await getDeliveryViewsForTasks([taskId])).get(taskId);
+  if (dv && dv.prNumber === prNumber) return dv.ownerTaskId;
+  let id = taskId;
+  for (let hop = 0; hop < 8; hop++) {
+    const t = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, id)), columns: { id: true, parentTaskId: true, taskClass: true } });
+    if (!t?.parentTaskId || t.taskClass !== 'attempt') break;
+    const parent = (await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, t.parentTaskId)),
+      columns: { id: true },
+      with: { workers: { columns: { prNumber: true } } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any as { id: string; workers?: Array<{ prNumber: number | null }> } | undefined;
+    if (!parent?.workers?.some(w => w.prNumber === prNumber)) break;
+    id = parent.id;
+  }
+  return id;
+}
+
+/**
+ * Explain a PR. The state answer is its owner task's (a PR is not a separate
+ * subject with its own lifecycle — it is how a task ships; `prOwnerTaskId`),
+ * and when the PR is conflicted the conflict chain is prepended so `because[]`
+ * opens on the cause. A kernel-owned PR carries its delivery's reading, owner
+ * included.
  */
 export async function explainPr(worker: {
   id: string;
@@ -1256,9 +1305,10 @@ export async function explainPr(worker: {
 }, actor: EvidenceActor): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
-  const loaded = await viewForTask(worker.taskId);
+  const taskId = await prOwnerTaskId(worker.taskId, worker.prNumber);
+  const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, ownDelivery } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'pr',
@@ -1266,11 +1316,11 @@ export async function explainPr(worker: {
     label: `PR #${worker.prNumber}: ${task.title}`,
     workspaceId: workspaceId ?? worker.workspaceId,
     missionId,
-    taskId: worker.taskId,
+    taskId,
     prNumber: worker.prNumber,
   };
 
-  let because = buildStateBecause(view, { taskId: worker.taskId, missionId, workspaceId }, answerExtras);
+  let because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
 
   // `mergeable: dirty` is stored locally as prLifecycleStatus='conflict'
   // (kept live by the GitHub webhook), so naming the cause needs no API call.
@@ -1291,7 +1341,7 @@ export async function explainPr(worker: {
 
     const conflict: ConflictSubject = {
       prNumber: worker.prNumber,
-      taskId: worker.taskId,
+      taskId,
       branch: worker.branch,
       baseRef: worker.prBaseRef,
       lifecycleStatus: worker.prLifecycleStatus,
@@ -1313,9 +1363,9 @@ export async function explainPr(worker: {
 
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
-  const gateHistory = await loadGateHistory(worker.taskId);
-  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
+  const gateHistory = await loadGateHistory(taskId);
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, taskId, { surface: 'explain', actor });
+  return { scope: 'pr', subjects: [withDelivery(withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task), ownDelivery ?? null)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

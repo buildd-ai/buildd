@@ -91,6 +91,11 @@ mock.module('@/lib/workflow/landing', () => ({
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// AC-13: the door adopts a PR with no delivery before it merges. The default answer is the legacy
+// arm (as a workspace with the kill switch off), so the legacy-path tests below read as before.
+const mockAdoptBeforeMerge = mock(async (..._a: any[]): Promise<any> => ({ kind: 'legacy', reason: 'kernel_off' }));
+const mockMergeOutsideKernel = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'PR merged' }));
+mock.module('@/lib/pr-landing-adoption', () => ({ adoptBeforeMerge: mockAdoptBeforeMerge, mergeOutsideKernel: mockMergeOutsideKernel }));
 // Slice F: get_pr reads a kernel-owned PR's record from its DeliveryView.
 // Default: no kernel delivery, so every legacy case reads the columns.
 const mockGetDeliveryViewsForTasks = mock(async (..._a: any[]): Promise<Map<string, any>> => new Map());
@@ -278,6 +283,8 @@ mock.module('@/lib/pr-review-status', () => ({
 // here only the merge_pr door's wiring is asserted. Mode resolution is the real rule.
 const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'sha-42' }));
 mock.module('@/lib/pr-landing', () => ({
+  adoptBeforeMerge: mockAdoptBeforeMerge,
+  mergeOutsideKernel: mockMergeOutsideKernel,
   landPr: mockLandPr,
   resolveLandingMode: (gitConfig: any) => {
     const mode = gitConfig?.landing?.mode;
@@ -2296,6 +2303,35 @@ describe('POST /api/github/pr', () => {
       expect(JSON.parse((createCall as any[])[2].body).head).toBe('second-branch');
     });
 
+    it('a second PR on a different head names the task\'s first open PR and asks for record_pr_supersession', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(firstPr);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockWorkersFindMany.mockResolvedValue([
+        { prNumber: 3193, prUrl: firstPr.prUrl, prLifecycleStatus: 'pr_open' },
+        { prNumber: 3195, prUrl: 'https://github.com/owner/repo/pull/3195', prLifecycleStatus: 'pr_open' },
+        { prNumber: 3100, prUrl: 'https://github.com/owner/repo/pull/3100', prLifecycleStatus: 'closed' },
+      ]);
+      mockGithubApi.mockResolvedValue({
+        number: 3195,
+        html_url: 'https://github.com/owner/repo/pull/3195',
+        state: 'open',
+        title: 'Second PR',
+      });
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Second PR', head: 'second-branch', base: 'other-base' },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.pr.number).toBe(3195);
+      expect(data.otherOpenPrs).toEqual([{ number: 3193, url: firstPr.prUrl }]);
+      expect(data.supersessionHint).toContain('record_pr_supersession');
+      expect(data.supersessionHint).toContain('#3193');
+    });
+
     it('still dedups to the task PR when the head is the same branch', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(firstPr);
@@ -4100,6 +4136,86 @@ describe('PUT /api/github/pr', () => {
 
     // Workflow kernel (workflow-state-kernel.md §14 Slice C): a kernel-owned PR is merged by the
     // kernel (T15/T16) and its post-merge work is the kernel's; a stale version is a 409 (S20).
+    describe('a PR with no delivery (D5, AC-13)', () => {
+      const current = { state: 'AWAITING_REVIEW', version: 3, head: 'sha-42', round: 1 };
+      const put = () => PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42 } }));
+      beforeEach(() => {
+        mockLandThroughKernel.mockReset();
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue(null);
+        mockAdoptBeforeMerge.mockReset();
+      });
+      afterAll(() => {
+        mockAdoptBeforeMerge.mockReset();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'legacy', reason: 'kernel_off' });
+        mockKernelLandingView.mockReset();
+        mockKernelLandingView.mockResolvedValue(null);
+        mockLandThroughKernel.mockReset();
+        mockLandThroughKernel.mockResolvedValue(null);
+      });
+
+      it('adopts it with the worker\'s task before any rail, then lands it through the kernel; the legacy merge is never called', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockImplementation(async () => {
+          mockKernelLandingView.mockResolvedValue({ deliveryId: 'd-new', current });
+          return { kind: 'kernel', deliveryId: 'd-new', adopted: true };
+        });
+        mockLandThroughKernel.mockResolvedValue({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved', mergeCommitSha: null, current, result: null });
+        const res = await put();
+        expect(mockAdoptBeforeMerge).toHaveBeenCalledTimes(1);
+        expect(mockAdoptBeforeMerge.mock.calls[0]![0]).toMatchObject({ repoFullName: 'owner/repo', prNumber: 42, door: 'merge_pr' });
+        expect(mockLandThroughKernel).toHaveBeenCalledTimes(1);
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, kernel: { outcome: 'rejected', reason: 'state_not_allowed' } });
+        expect(recordedFacts).toHaveLength(0);
+      });
+
+      it('a refused adoption is a 409 naming why, before any rail; nothing merges', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'refused', reason: 'adoption_failed:no_owner_task', message: 'PR #42 has no review record in buildd and no task owns it, so nothing was merged. Request a review of it first.' });
+        const res = await put();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ ok: false, merged: false, reason: 'adoption_failed:no_owner_task' });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      });
+
+      it('a release candidate (adoption answers gate) opens no delivery: the release gate merges it, never the kernel or the unpinned merge', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'gate', why: 'release' });
+        mockMergeOutsideKernel.mockReset();
+        mockMergeOutsideKernel.mockResolvedValue({ merged: true, message: 'PR merged' });
+        const res = await put();
+        expect(mockMergeOutsideKernel).toHaveBeenCalledTimes(1);
+        expect(mockMergeOutsideKernel.mock.calls[0]![0]).toMatchObject({ repoFullName: 'owner/repo', prNumber: 42, door: 'merge_pr' });
+        expect(mockLandThroughKernel).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+      });
+
+      it('a release candidate the release gate holds is a 409 wait, not a failed merge', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'gate', why: 'release' });
+        mockMergeOutsideKernel.mockReset();
+        mockMergeOutsideKernel.mockResolvedValue({ merged: false, message: 'GitHub is holding it', hold: true });
+        const res = await put();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ merged: false, waiting: true, reason: 'release_gate_hold' });
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it('adopted, but the kernel did not take the merge: refused, never the legacy merge', async () => {
+        workerOk();
+        mockAdoptBeforeMerge.mockResolvedValue({ kind: 'kernel', deliveryId: 'd-new', adopted: true });
+        mockLandThroughKernel.mockResolvedValue(null);
+        const res = await put();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(res.status).toBeGreaterThanOrEqual(400);
+      });
+    });
+
     describe('kernel-owned PR (Slice C)', () => {
       const current = { state: 'APPROVED', version: 7, head: 'sha-42', round: 1 };
       const putV = (version?: number) => PUT(createPutRequest({
@@ -6275,7 +6391,7 @@ describe('GET /api/github/pr', () => {
     expect(data.reviews).toMatchObject({ approved: 0, changesRequested: 0 });
     expect(data.delivery).toMatchObject({
       state: 'AWAITING_REVIEW', headline: 'Review queued',
-      review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
+      review: { rounds: 2, latestVerdict: 'request_changes', findings: { open: 1, verifiedResolved: 1, total: 2 }, line: '2 rounds · latest: changes requested · 1 open finding, 1 verified resolved' },
       repairs: [{ label: 'Review fix 1 of up to 3', phase: 'pushed', taskId: 'fx' }],
     });
   });

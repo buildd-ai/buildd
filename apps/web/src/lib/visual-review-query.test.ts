@@ -52,27 +52,34 @@ describe('workspaceAwaitingMissionsQuery', () => {
 });
 
 describe('one audit identity in SQL', () => {
-  const ROLE = `"t".role_slug = $`;
-  const TITLE = `"t".title like $`;
-  it('every task-scoped audit predicate matches the role or the title prefix', () => {
-    const shotsQ = visualReviewWorkersQuery(qb(), MISSION).toSQL();
-    const awaitingQ = workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL();
-    const batchShotsQ = visualShotsForMissionsQuery(qb(), [MISSION]).toSQL();
-    const batchWorkersQ = visualReviewWorkersForMissionsQuery(qb(), [MISSION]).toSQL();
-    for (const { sql, params } of [shotsQ, awaitingQ, batchShotsQ, batchWorkersQ]) {
-      expect(sql).toContain(ROLE);
-      expect(sql).toContain(TITLE);
-      // The bound values are the identity: the role slug and the title prefix.
-      expect(params).toContain(VISUAL_AUDITOR_ROLE_SLUG);
-      expect(params).toContain(`${SURFACE_AUDIT_TITLE_PREFIX}%`);
+  // Each audit predicate is `(<alias>.role_slug = $a or <alias>.title like $b)`. Resolve $a and $b
+  // against the bound params, so a swapped, shared or wrong value fails, not only a missing one.
+  const boundPairs = (sql: string, params: unknown[], col: string) =>
+    [...sql.matchAll(new RegExp(`\\(${col}\\.role_slug = \\$(\\d+) or ${col}\\.title like \\$(\\d+)\\)`, 'g'))]
+      .map(m => ({ role: params[Number(m[1]) - 1], title: params[Number(m[2]) - 1] }));
+  const EXPECTED = { role: VISUAL_AUDITOR_ROLE_SLUG, title: `${SURFACE_AUDIT_TITLE_PREFIX}%` };
+
+  it('every task-scoped audit predicate binds the role slug and the title prefix', () => {
+    const queries = [
+      visualReviewWorkersQuery(qb(), MISSION).toSQL(),
+      workspaceAwaitingMissionsQuery(qb(), WS, ['t']).toSQL(),
+      visualShotsForMissionsQuery(qb(), [MISSION]).toSQL(),
+      visualReviewWorkersForMissionsQuery(qb(), [MISSION]).toSQL(),
+    ];
+    for (const { sql, params } of queries) {
+      const pairs = boundPairs(sql, params, '"t"');
+      expect(pairs.length).toBeGreaterThan(0);
+      for (const pair of pairs) expect(pair).toEqual(EXPECTED);
     }
-    expect(awaitingQ.sql.split(TITLE).length - 1).toBe(2);
+    // The awaiting query carries two audit predicates: the candidate shot and the open audit.
+    expect(boundPairs(queries[1].sql, queries[1].params, '"t"')).toHaveLength(2);
   });
-  it('the audit context and summary projections cover a title-only audit', () => {
+  it('the audit context, summary and dependency-failure projections bind both values', () => {
     const { sql, params } = visualReviewTasksQuery(qb(), MISSION).toSQL();
-    expect(sql).toMatch(/case when \("tasks"\."role_slug" = \$\d+ or "tasks"\."title" like \$\d+\) then (jsonb_build_object|left)/);
-    expect(params).toContain(VISUAL_AUDITOR_ROLE_SLUG);
-    expect(params).toContain(`${SURFACE_AUDIT_TITLE_PREFIX}%`);
+    const pairs = [...sql.matchAll(/\("tasks"\."role_slug" = \$(\d+) or "tasks"\."title" like \$(\d+)\) (?:then|and)/g)]
+      .map(m => ({ role: params[Number(m[1]) - 1], title: params[Number(m[2]) - 1] }));
+    expect(pairs).toHaveLength(3);
+    for (const pair of pairs) expect(pair).toEqual(EXPECTED);
   });
 });
 

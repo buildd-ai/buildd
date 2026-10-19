@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import AiFeedback from '@/components/AiFeedback';
 import type { MissionNote, MissionNoteType } from '@buildd/shared';
-import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/escalation-note-title';
 import { isReplyableQuestion } from '@/lib/mission-note-reply';
 import SideSheet from '@/components/SideSheet';
 
